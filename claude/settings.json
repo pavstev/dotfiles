@@ -31,7 +31,16 @@
     "deny": [
       "Read(./.env)",
       "Read(./.env.*)",
-      "Read(./secrets/**)"
+      "Read(./secrets/**)",
+      "SuggestPluginInstall",
+      "SearchPlugins",
+      "SuggestSkills",
+      "mcp__Claude_Code_iOS_Simulator__*",
+      "mcp__45831831-e75c-46d3-a3ed-84c1cb884d7b__*",
+      "mcp__a16997c4-316a-4f39-816e-0b9b5ac48d05__*",
+      "mcp__claude_ai_Google_Drive__*",
+      "mcp__claude_ai_PDF_Viewer__*",
+      "mcp__plugin_pdf-viewer_pdf__*"
     ]
   },
   "statusLine": {
