@@ -33,6 +33,7 @@ new files, package installs, and machine setup only take effect after running
 | `docs/guide.md` | the full user guide; `README.md` is the short start page. |
 | `docs/cursor-port.md` | Cursor port design: profiles, the Claude to Cursor mapping, and the gap table. |
 | `Brewfile` | every package (per-machine extras in gitignored `Brewfile.local`). |
+| `scripts/private.sh` | the private settings questions (private rules, private words); run by the first run and by `dots private`. |
 | `scripts/setup-lib.sh` | shared step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`) and `dotfiles_profile`. |
 | `bootstrap.sh` | fresh-Mac one-liner. |
 
@@ -90,22 +91,27 @@ the mapping table in `docs/cursor-port.md`.
 
 1. `DOTFILES_PROFILE` env var.
 2. `~/.config/dotfiles/profile`.
-3. `owner` if the owner overlay `~/.config/dotfiles/owner.md` exists. The answer is saved to step 2.
+3. `owner` if private rules (`~/.config/dotfiles/owner.md`) exist. The answer is saved to step 2.
 4. Else `shared` (the default).
 
 Every profile links `~/.claude/CLAUDE.md` to `claude/CLAUDE.md`. The repo holds nothing
 personal; private rules live outside it.
 
-- **owner:** `~/.config/dotfiles/owner.md` (plain Markdown, never in git) is linked as
-  `~/.claude/rules/owner.md` (Claude Code loads user rules in every project) and added
-  to the Cursor global rule. Without the file, `dots` warns. Cursor MCP servers are on.
+- **owner:** the private rules `~/.config/dotfiles/owner.md` (plain Markdown, never in
+  git) are linked as `~/.claude/rules/owner.md` (Claude Code loads user rules in every
+  project) and added to the Cursor global rule. Without the file, `dots` warns. Cursor
+  MCP servers are on, unless `~/.config/dotfiles/mcp` says `off`.
 - **shared:** no overlay. Cursor MCP servers (`cursor/mcp.json`) are opt-in:
   `echo on > ~/.config/dotfiles/mcp` (or `DOTFILES_MCP=on`), then `dots`. Claude plugins
   in `claude/settings.json` are shared as is.
-- **The owner on a new Mac** copies `owner.md` to `~/.config/dotfiles/` before the
-  bootstrap. `dots` then picks `owner` and saves it (`DOTFILES_PROFILE=owner` alone is not
-  saved). Check it after `dots`: `rg -n '^## ' ~/.claude/rules/owner.md`.
-- **Personal rules on any Mac** go in `~/.claude/rules/<name>.md`, not in
+- **Private settings** (`scripts/private.sh`): the first run at a terminal asks for the
+  private rules (`owner.md`) and the private words (`private-words`), both mode 600 in
+  `~/.config/dotfiles`. `dots private` asks again later, then refreshes the links and the
+  Cursor rule. On a new Mac, paste them from another Mac (there, run
+  `pbcopy < ~/.config/dotfiles/owner.md`). The first run also asks about Cursor MCP on
+  every profile and keeps the answer. `DOTFILES_PROFILE=owner` alone is not saved.
+  Check: `rg -n '^## ' ~/.claude/rules/owner.md`.
+- **Personal rules** go in the private rules (`dots private`), not in
   `~/.claude/CLAUDE.md`. That file is the repo file, and a local edit can stop the pull.
 
 ## Conventions
@@ -119,8 +125,8 @@ personal; private rules live outside it.
   in the default clone URL (`DOTFILES_REPO` in `bootstrap.sh`, and the README one-liner).
   Private rules go in `~/.config/dotfiles/owner.md`.
   Session notes, hand-offs and ledgers stay in the ignored `.agents/`.
-  Optional guard: list private words in `~/.config/dotfiles/private-words` (one per
-  line). The git hooks then block a staged file name, added line or commit message that
+  Private words: `~/.config/dotfiles/private-words` (one per line; `dots private` edits
+  it). The git hooks then block a staged file name, added line or commit message that
   holds one.
 - **Idempotent & safe:** setup steps detect what's installed and skip it, back up
   pre-existing config before override, and warn-and-continue on failure. Keep new steps
@@ -136,5 +142,6 @@ personal; private rules live outside it.
 Run the one-liner in README.md "Set up a Mac". `bootstrap.sh` installs Xcode CLT, clones
 this repo (`DOTFILES_REPO`, set at its top), and runs `./dotfiles` end to end. At a
 terminal the first run is guided (gum menus, `scripts/setup-lib.sh`): git name and
-email, optional extras, then the sign-ins in `scripts/install.d/90-sign-in.sh`. Without a
+email, private rules and words, optional extras, then the sign-ins in
+`scripts/install.d/90-sign-in.sh`. Without a
 terminal (a pipe, a test) it reads plain lines from stdin and skips the extras and sign-ins.

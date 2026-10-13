@@ -31,10 +31,10 @@ shipped app and CLI bundles.
 
 | Profile | Who | Claude | Cursor global rule | Cursor MCP |
 |---------|-----|--------|--------------------|------------|
-| `owner` | the repo owner | `CLAUDE.md` link, plus `~/.claude/rules/owner.md` linked to `~/.config/dotfiles/owner.md` | `claude/CLAUDE.md` + `owner.md` | on |
+| `owner` | a Mac with private rules | `CLAUDE.md` link, plus `~/.claude/rules/owner.md` linked to `~/.config/dotfiles/owner.md` | `claude/CLAUDE.md` + `owner.md` | on |
 | `shared` | anyone else (default) | `CLAUDE.md` link | `claude/CLAUDE.md` | opt-in |
 
-`owner.md` is the owner's private overlay. It never enters the repo. Order:
+`owner.md` holds the private rules (`dots private`). It never enters the repo. Order:
 `DOTFILES_PROFILE` env, then `~/.config/dotfiles/profile`, then `owner` when `owner.md`
 exists (the answer is saved to the profile file), else `shared`.
 

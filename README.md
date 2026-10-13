@@ -20,6 +20,7 @@
 3. Type your Mac password when it asks. Homebrew needs it.
 4. Answer the questions. Use ↑ ↓ to move and Enter to pick.
    - 👤 your name and ✉️ your email, for git commits
+   - 🔒 your private rules and 🚫 private words (optional, they stay on this Mac)
    - ✨ optional extras: the Claude desktop app, Cloudflare docs search in Cursor
 5. Wait. The first run takes about 20 to 40 minutes.
 6. 🔑 Pick what to sign in to: GitHub, Claude Code, Cursor. A browser opens for each one.
@@ -35,15 +36,17 @@
 
 - Run `dots` to get the newest setup. You can run it at any time.
 - Edit the files in `~/dotfiles/home/`. Your Mac uses the change at once.
-- Put your own Claude rules in `~/.claude/rules/mine.md`. Do not edit `~/.claude/CLAUDE.md`:
-  it comes from this repo, and `dots` updates it.
+- Run `dots private` to change your private rules and private words. They stay on this
+  Mac, never in git.
+- Do not edit `~/.claude/CLAUDE.md`: it comes from this repo, and `dots` updates it.
 
 ## More
 
 - [Full guide](docs/guide.md): what is inside, shortcuts, how to change things, uninstall, fixes.
 - [AGENTS.md](AGENTS.md): how AI agents work on this repo, and the `owner` and `shared` profiles.
 - [Cursor details](docs/cursor-port.md).
-- Repo owner on a new Mac: copy your `owner.md` to `~/.config/dotfiles/` before step 2.
+- New Mac, same private rules: on the old Mac run `pbcopy < ~/.config/dotfiles/owner.md`,
+  then paste when the new Mac asks (step 4).
 - On a fork: change `DOTFILES_REPO` at the top of [`bootstrap.sh`](bootstrap.sh) and the URL in step 2.
 
 ## License

@@ -14,7 +14,7 @@
 #            have <cmd>                       (is a command on PATH?)
 #            brew_env · ensure_brew           (load or install Homebrew)
 #            at_terminal · fancy · banner     (guided setup with gum menus)
-#            ask_text · ask_email · ask_one · spin
+#            ask_text · ask_email · ask_one · ask_long · spin
 #            link_item <src> <dst>             (symlink, backing up a conflict)
 #            dotfiles_profile                  (owner or shared)
 # ============================================================================
@@ -71,7 +71,9 @@ export GUM_INPUT_PROMPT_FOREGROUND=173 GUM_INPUT_CURSOR_FOREGROUND=173 \
   GUM_INPUT_HEADER_FOREGROUND=245 GUM_INPUT_PLACEHOLDER_FOREGROUND=240 \
   GUM_CHOOSE_CURSOR_FOREGROUND=173 GUM_CHOOSE_SELECTED_FOREGROUND=173 \
   GUM_CHOOSE_HEADER_FOREGROUND=245 GUM_CONFIRM_PROMPT_FOREGROUND=173 \
-  GUM_CONFIRM_SELECTED_BACKGROUND=173 GUM_SPIN_SPINNER_FOREGROUND=173
+  GUM_CONFIRM_SELECTED_BACKGROUND=173 GUM_SPIN_SPINNER_FOREGROUND=173 \
+  GUM_WRITE_HEADER_FOREGROUND=245 GUM_WRITE_CURSOR_FOREGROUND=173 \
+  GUM_WRITE_PLACEHOLDER_FOREGROUND=240
 
 # A person can answer: stdin and stderr are the terminal. Not stdout: gum draws on
 # stderr, so "$(ask_text ...)" still shows its menu.
@@ -124,6 +126,24 @@ ask_one() {
   i=0
   for item in "$@"; do i=$((i + 1)); [[ $i -eq $a ]] && printf '%s\n' "$item"; done
   return 0
+}
+
+# ask_long <header> [text]: several lines of text in a box (gum write). Pasting
+# works; Enter saves, Ctrl+J adds a line, Esc cancels (exit 1). Plain fallback:
+# lines until one that holds only a dot; an empty answer keeps [text].
+ask_long() {
+  local header="$1" value="${2:-}" line out=""
+  if fancy; then
+    gum write --header "$header"$'\n'"Enter saves · Ctrl+J adds a line · Esc cancels" \
+      --value "$value" --placeholder "Paste or type here." --width 80 --height 12
+    return
+  fi
+  printf '%s\nPaste or type. End with a line that holds only a dot.\n' "$header" >&2
+  while IFS= read -r line; do
+    [[ "$line" == . ]] && break
+    out+="$line"$'\n'
+  done
+  printf '%s' "${out:-$value}"
 }
 
 # spin <title> <command...>: run a command quietly, with a spinner under gum.

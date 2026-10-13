@@ -303,7 +303,7 @@ def cursor_rules(home, profile):
         srcs.append(f"~/{OWNER_MD}")
         desc, mode = desc + " and the owner's private rules", 0o600
     elif profile == "owner":
-        warn(f"no ~/{OWNER_MD}, so the Cursor rule has no owner-only rules (AGENTS.md \"Profiles\")")
+        warn(f"no ~/{OWNER_MD}, so the Cursor rule has no owner-only rules. Add them with: dots private")
     body = stamp(*srcs) + CURSOR_NOTE + rules_text(home, profile)
     write_generated(rules / "claude-global.mdc", mdc(desc, body), mode)
 

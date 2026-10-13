@@ -208,7 +208,8 @@ dotfiles/
 │       Cursor/User/{settings,keybindings}.json       # Cursor: same
 ├── scripts/
 │   ├── setup-lib.sh          # shared step helpers (step/info/ok/warn/skip/have/brew_env/link_item),
-│   │                         #   gum prompts (banner/ask_text/ask_one) and dotfiles_profile
+│   │                         #   gum prompts (banner/ask_text/ask_one/ask_long) and dotfiles_profile
+│   ├── private.sh            # private rules and words: first run and `dots private`
 │   ├── agent-config.py       # generates and merges the Cursor files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:

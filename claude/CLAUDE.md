@@ -2,8 +2,9 @@
 
 These are the default rules for every project on this machine. The source is
 `claude/CLAUDE.md` in the dotfiles repo (`~/dotfiles` by default), symlinked to
-`~/.claude/CLAUDE.md`. Personal rules go in `~/.claude/rules/<name>.md`, not here: this
-file comes from the repo, and `dots` updates it.
+`~/.claude/CLAUDE.md`. Personal rules go in the private rules file
+(`~/.config/dotfiles/owner.md`, or `dots private`), not here: this file comes from the
+repo, and `dots` updates it.
 
 ## Environment
 
