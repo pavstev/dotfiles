@@ -1,0 +1,34 @@
+# lazygit config — symlinked from this repo.
+# Reads from ~/.config/lazygit/config.yml on macOS (XDG PR merged).
+gui:
+  nerdFontsVersion: "3"
+  showFileTree: true
+  showRandomTip: false
+  theme:
+    activeBorderColor:
+      - '#c17f5a'   # copper
+      - bold
+    inactiveBorderColor:
+      - '#78716c'   # stone-500
+    selectedLineBgColor:
+      - '#292524'   # stone-800
+    cherryPickedCommitFgColor:
+      - '#c17f5a'
+    cherryPickedCommitBgColor:
+      - '#292524'
+    markedBaseCommitFgColor:
+      - '#e0825f'
+    markedBaseCommitBgColor:
+      - '#292524'
+    unstagedChangesColor:
+      - '#d97066'   # warm red
+    defaultFgColor:
+      - '#ede8e3'   # stone-100
+git:
+  paging:
+    colorArg: always
+    pager: delta --paging=never
+  commit:
+    signOff: false
+  log:
+    showGraph: always

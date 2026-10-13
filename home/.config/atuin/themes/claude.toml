@@ -1,0 +1,13 @@
+## Claude copper theme for atuin — warm cream text, copper accents.
+[theme]
+name = "claude"
+
+[colors]
+Base       = "#EDE8E3"   # cream — primary text
+Title      = "#E0825F"   # copper accent
+Important   = "#E0825F"  # copper
+Annotation = "#A8A29E"   # muted stone
+Guidance   = "#7FA6CC"   # steel
+AlertInfo  = "#87B083"   # sage
+AlertWarn  = "#DBA85C"   # amber
+AlertError = "#D97066"   # terracotta

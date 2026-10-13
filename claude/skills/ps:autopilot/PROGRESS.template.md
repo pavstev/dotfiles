@@ -1,0 +1,28 @@
+# PROGRESS
+
+Brief: <path or one-line summary>
+Repo: <path> · Branch: <branch> · Started: <date time>
+Resume command: `/loop 30m Read PROGRESS.md and continue the next open task`
+Next step: <one line, the very next action>
+
+## Tasks
+
+| # | Task | Status (todo / doing / done / blocked) | Commit | Check |
+|---|------|----------------------------------------|--------|-------|
+| 1 | <task> | todo | | |
+| 2 | <task> | todo | | |
+| 3 | <task> | todo | | |
+
+## Blockers, with the default taken
+
+| Time | Blocker | Default taken | Why safe |
+|------|---------|---------------|----------|
+| | | | |
+
+## Hourly status
+
+<!-- HH:MM · done n/N · now <task> · next <task> · blockers n -->
+
+## Limit and restart log
+
+<!-- time · what happened · resume time · next step -->

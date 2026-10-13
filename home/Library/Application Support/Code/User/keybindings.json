@@ -1,0 +1,15 @@
+// Symlinked from this repo. Edit here, or in VS Code — same file either way.
+[
+  // Insert a line above the current line without moving to it (like IntelliJ Shift+Enter)
+  {
+    "key": "cmd+shift+enter",
+    "command": "editor.action.insertLineBefore",
+    "when": "editorTextFocus && !editorReadonly"
+  },
+  // Quick format (useful when formatOnSave isn't available)
+  {
+    "key": "shift+alt+f",
+    "command": "editor.action.formatDocument",
+    "when": "editorTextFocus && !editorReadonly"
+  }
+]

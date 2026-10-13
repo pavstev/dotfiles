@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "cleanupPeriodDays": 60,
+  "autoCompactWindow": 500000,
+  "modelSettings": {
+    "claude-opus-5-5": { "effortLevel": "high" },
+    "claude-sonnet-5-5": { "effortLevel": "high" },
+    "claude-fable-5-1": { "effortLevel": "high" }
+  },
+  "subagentPromptCacheTtl": "1h",
+  "env": { "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet" },
+  "includeCoAuthoredBy": false,
+  "attribution": { "commit": "", "pr": "" },
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch --list:*)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch -vv)",
+      "Bash(git branch -r)",
+      "Bash(git show:*)",
+      "Bash(ls:*)",
+      "Bash(eza:*)",
+      "Bash(bat:*)",
+      "Bash(brew list:*)",
+      "Bash(brew info:*)",
+      "Read(~/dotfiles/**)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh",
+    "padding": 0
+  },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion",
+        "hooks": [ { "type": "command", "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py pretool", "timeout": 10 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py prompt", "timeout": 10 } ] }
+    ]
+  },
+  "enabledPlugins": {
+    "cloudflare@cloudflare": true,
+    "data@synced": false,
+    "brightdata-plugin@synced": false,
+    "cowork-plugin-management@synced": false
+  },
+  "skillOverrides": {
+    "anthropic-skills:spark": "user-invocable-only",
+    "anthropic-skills:spark-persona-exec-assistant": "user-invocable-only",
+    "anthropic-skills:spark-recipe-inbox-zero": "user-invocable-only",
+    "anthropic-skills:spark-recipe-invitation-manager": "user-invocable-only",
+    "anthropic-skills:spark-recipe-label-organize": "user-invocable-only",
+    "productivity:memory-management": "user-invocable-only",
+    "productivity:start": "user-invocable-only",
+    "productivity:task-management": "user-invocable-only",
+    "productivity:update": "user-invocable-only",
+    "cowork-plugin-management:cowork-plugin-customizer": "user-invocable-only",
+    "cowork-plugin-management:create-cowork-plugin": "user-invocable-only",
+    "desktop-commander:ai-tools-setup": "user-invocable-only",
+    "desktop-commander:computer-health-check": "user-invocable-only",
+    "desktop-commander:knowledge-base": "user-invocable-only",
+    "desktop-commander:obsidian-vault": "user-invocable-only",
+    "engineering:incident-response": "user-invocable-only",
+    "engineering:standup": "user-invocable-only",
+    "pdf-viewer:annotate": "user-invocable-only",
+    "pdf-viewer:fill-form": "user-invocable-only",
+    "pdf-viewer:sign": "user-invocable-only"
+  },
+  "extraKnownMarketplaces": {
+    "cloudflare": {
+      "source": {
+        "source": "github",
+        "repo": "cloudflare/skills"
+      }
+    }
+  },
+  "outputStyle": "ELI5",
+  "skipWorkflowUsageWarning": true,
+  "theme": "dark",
+  "inputNeededNotifEnabled": true,
+  "agentPushNotifEnabled": true
+}

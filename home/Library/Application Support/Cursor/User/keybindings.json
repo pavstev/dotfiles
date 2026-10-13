@@ -1,0 +1,13 @@
+// Symlinked from this repo. Edit here, or in Cursor — same file either way.
+[
+  {
+    "key": "cmd+shift+enter",
+    "command": "editor.action.insertLineBefore",
+    "when": "editorTextFocus && !editorReadonly"
+  },
+  {
+    "key": "shift+alt+f",
+    "command": "editor.action.formatDocument",
+    "when": "editorTextFocus && !editorReadonly"
+  }
+]

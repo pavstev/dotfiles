@@ -1,0 +1,98 @@
+# Ghostty configuration
+# Docs: https://ghostty.org/docs/config
+
+# ---- Font ------------------------------------------------------------------
+# Compact: a notch smaller than default so more fits on screen, still crisp.
+font-family = "FiraCode Nerd Font Mono"
+font-size = 13
+font-thicken = true
+
+# ---- Claude-inspired color theme -------------------------------------------
+#
+#  Warm dark stone background, copper/terracotta accent, cream text —
+#  modelled on the Claude desktop app's visual language. Refined for richer,
+#  more legible accents while keeping the warm, coherent feel.
+#
+#  Palette:
+#    bg       #1C1917  warm very-dark stone
+#    bg+      #292524  slightly lighter background
+#    surface  #44403C  selection / lifted stone
+#    fg       #EDE8E3  warm cream
+#    fg-dim   #A8A29E  muted stone
+#    accent   #E0825F  Claude copper / terracotta  ← the signature colour
+#
+background               = #1C1917
+foreground               = #EDE8E3
+cursor-color             = #E0825F
+cursor-text              = #1C1917
+selection-background     = #44403C
+selection-foreground     = #EDE8E3
+
+# 16-colour palette — warm, coherent with the background, richer than before.
+# NOTE: Ghostty does not allow trailing inline comments on `palette` lines
+# (the whole value after `=` is parsed), so the legend lives here instead:
+#    0  #3D3835  black          (lifted dark stone, so "black" text is legible)
+#    1  #D97066  red            (terracotta)
+#    2  #87B083  green          (sage)
+#    3  #DBA85C  yellow         (warm amber)
+#    4  #7FA6CC  blue           (steel)
+#    5  #C089AD  magenta        (mauve)
+#    6  #5FB3B0  cyan           (teal)
+#    7  #D7CFC6  white          (warm stone)
+#    8  #57514C  bright black   (lighter stone)
+#    9  #E0825F  bright red     (Claude copper — doubles as accent)
+#   10  #97C293  bright green
+#   11  #E8BC77  bright yellow  (gold)
+#   12  #95BADF  bright blue
+#   13  #D09EC0  bright magenta
+#   14  #74C6C3  bright cyan
+#   15  #EDE8E3  bright white   (cream)
+palette = 0=#3D3835
+palette = 1=#D97066
+palette = 2=#87B083
+palette = 3=#DBA85C
+palette = 4=#7FA6CC
+palette = 5=#C089AD
+palette = 6=#5FB3B0
+palette = 7=#D7CFC6
+palette = 8=#57514C
+palette = 9=#E0825F
+palette = 10=#97C293
+palette = 11=#E8BC77
+palette = 12=#95BADF
+palette = 13=#D09EC0
+palette = 14=#74C6C3
+palette = 15=#EDE8E3
+
+# ---- Window ----------------------------------------------------------------
+# Compact: tight padding hugs the content without crowding it.
+background-opacity       = 0.97
+background-blur          = 20
+window-padding-x         = 6
+window-padding-y         = 4
+window-padding-balance   = true
+window-decoration        = true
+macos-titlebar-style     = "transparent"
+window-colorspace        = "display-p3"
+
+# ---- Cursor ----------------------------------------------------------------
+cursor-style             = "block"
+cursor-style-blink       = true
+shell-integration        = "zsh"
+shell-integration-features = "cursor,sudo,title"
+
+# ---- Scrollback & behaviour ------------------------------------------------
+scrollback-limit         = 10000000
+copy-on-select           = "clipboard"
+mouse-hide-while-typing  = true
+confirm-close-surface    = false
+
+# ---- Keybindings -----------------------------------------------------------
+keybind = cmd+k=clear_screen
+keybind = cmd+plus=increase_font_size:1
+keybind = cmd+minus=decrease_font_size:1
+keybind = cmd+zero=reset_font_size
+keybind = cmd+d=new_split:right
+keybind = cmd+shift+d=new_split:down
+keybind = cmd+left_bracket=goto_split:previous
+keybind = cmd+right_bracket=goto_split:next

@@ -1,0 +1,43 @@
+---
+name: ps:autopilot
+description: "Runs a saved or pasted brief to completion without asking: keeps a PROGRESS ledger, commits per task, re-arms itself after compaction, app restarts or usage-limit resets, and reports one line per hour. Use when the user says execute it exactly start to finish, do not ask me anything, overnight, do not stop until fully completed, or continue when the limit resets."
+argument-hint: "[path to the brief, or paste the brief]"
+---
+
+# Autopilot
+
+Run the brief to the end while the user is away. The ledger is the memory. Commits are the proof. No turn ends with a question.
+
+## Core loop
+
+1. **Resume check first.** If the prompt says "continued from a previous conversation" or "app was quit", or a limit just reset, read `PROGRESS.md` and jump to step 5. Do not re-plan.
+2. **Write the ledger now.** Copy [the template](PROGRESS.template.md) to `PROGRESS.md` in the repo root. Fill one row per task, the next step, and the resume command. Commit it.
+3. **Arm the resume on turn one.** Before any task work, start `/loop 30m` (or one CronCreate every 30 min) with the prompt "Read PROGRESS.md and continue the next open task". Use 30 min, not shorter: a hook denies shorter polls at large context. Do it even if no limit has hit yet.
+4. **Decide, never ask.** A blocker becomes a default. Pick the safest option, take it, and log it in the blockers table with the default taken. Stop only for an irreversible or paid action, and name it in the ledger.
+5. **Per task:** implement, run the repo's check, tick the row, commit both in one commit per task (even if the brief did not ask), update "next step". Then start the next task in the same turn.
+   A command that asks questions (y/N, a REPL): run it with desktop-commander `start_process` (Claude Code: load with ToolSearch `+desktop-commander start_process interact_with_process`), read each prompt, answer it with `interact_with_process`, log the PID and the answers in the ledger. Never pipe answers you have not read. No desktop-commander → use the command's non-interactive flag or env (`--yes`, `CI=1`); none → blocker row, default taken.
+6. **Before each fan-out,** call `mcp__ccd_session_mgmt__get_usage` if it exists. If under 30% of the 5-hour window remains, dispatch at most 3 agents. Every Agent call passes `model` and `effort`. A hook denies calls without them.
+7. **Hourly:** append one status line to the ledger and print the same line in chat. Format: `HH:MM · done n/N · now <task> · next <task> · blockers n`.
+8. **Limit hit:** write the resume time and next step in the ledger, end the turn quietly. The loop picks it up after the reset.
+9. **Finish:** all rows ticked, checks green, everything pushed. Delete the loop or cron. Run `/ps:mic-drop`.
+
+## Red flags
+
+These thoughts mean you are skipping a step.
+
+| Excuse | Do instead |
+|---|---|
+| "The brief didn't ask for commits" | Commit per task anyway. The ledger row names the commit subject. |
+| "Nothing hit a limit yet, so nothing to schedule" | Arm the 30 min resume now. A limit gives no warning. |
+| "I'll ask just this once" | Pick the default, log it, keep going. |
+| "I'll remember where I was" | You will not after compaction. Update the ledger after every task. |
+| "A ledger is overhead for 3 tasks" | Write it. A restart costs more than the file. |
+| "I will wrap up when it feels done" | Done means every row ticked and `/ps:mic-drop` clean. |
+| "Checking usage costs a call" | Check before fan-out. Spawning blind is what trips the cap. |
+| "I can poll every 5 minutes" | Hooks deny it. Use 30 min or more, or wait for a limit reset. |
+
+## Rules
+
+- First action after any restart or compaction is reading `PROGRESS.md`.
+- The last line of every turn is a ledger update or a final report, never a question.
+- Plain short sentences in the ledger. No em dashes.
