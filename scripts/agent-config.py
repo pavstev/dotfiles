@@ -33,7 +33,8 @@ GUARD_TAG = "cursor/hooks/guard_cursor.py"  # marks our hooks.json entries, quot
 MANAGED = ".dotfiles-managed.json"  # in ~/.cursor: the permission rules we added last run
 MARK = "generated-by: dotfiles"
 CONF = Path(".config") / "dotfiles"  # per-machine switches, under HOME (AGENTS.md "Profiles")
-OWNER_MD = CONF / "owner.md"  # the owner's private rules; never in the repo
+OWNER_MD = CONF / "owner.md"  # the private rules, free text; never in the repo
+SETTINGS = CONF / "settings"  # NAME="value" lines (settings.example); dots settings edits it
 PROFILES = ("owner", "shared")
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"}
 
@@ -303,7 +304,7 @@ def cursor_rules(home, profile):
         srcs.append(f"~/{OWNER_MD}")
         desc, mode = desc + " and the owner's private rules", 0o600
     elif profile == "owner":
-        warn(f"no ~/{OWNER_MD}, so the Cursor rule has no owner-only rules. Add them with: dots private")
+        warn(f"no ~/{OWNER_MD}, so the Cursor rule has no owner-only rules. Add them with: dots settings")
     body = stamp(*srcs) + CURSOR_NOTE + rules_text(home, profile)
     write_generated(rules / "claude-global.mdc", mdc(desc, body), mode)
 
@@ -375,28 +376,38 @@ def cursor_hooks(home):
     save_json(path, old, new)
 
 
-def mcp_wanted(home, profile):
-    """MCP servers are on for the owner and opt-in for the shared profile.
+def setting(home, name):
+    """The value of NAME in ~/.config/dotfiles/settings, or "".
 
-    DOTFILES_MCP=on|off wins, then ~/.config/dotfiles/mcp (one word: on or off).
+    Same rules as setting in scripts/setup-lib.sh: the last NAME line wins, and one
+    pair of "" around the value goes.
     """
-    v = os.environ.get("DOTFILES_MCP", "").strip().lower()
-    if not v:
-        try:
-            v = (home / CONF / "mcp").read_text().strip().lower()
-        except OSError:
-            v = ""
-    if v in ("1", "on", "yes", "true"):
-        return True
-    if v in ("0", "off", "no", "false"):
-        return False
-    return profile == "owner"
+    try:
+        data = (home / SETTINGS).read_bytes()
+    except OSError:
+        return ""
+    # Lines end at "\n" only, and odd bytes do not stop the read, as in awk.
+    lines = data.decode("utf-8", "surrogateescape").split("\n")
+    value = ""
+    for line in lines:
+        if line.startswith(name + "="):
+            value = line[len(name) + 1:].rstrip().removeprefix('"').removesuffix('"')
+    return value
 
 
-def cursor_mcp(home, profile="owner"):
+def mcp_wanted(home):
+    """MCP servers are opt-in on every profile: connectors are never forced on.
+
+    DOTFILES_MCP=on|off wins, then CURSOR_MCP in the settings (dots settings).
+    """
+    v = os.environ.get("DOTFILES_MCP", "").strip().lower() or setting(home, "CURSOR_MCP").strip().lower()
+    return v in ("1", "on", "yes", "true")
+
+
+def cursor_mcp(home):
     path = home / ".cursor" / "mcp.json"
-    if not mcp_wanted(home, profile):
-        info("MCP servers from cursor/mcp.json are opt-in on this profile: echo on > ~/.config/dotfiles/mcp, then dots")
+    if not mcp_wanted(home):
+        info("MCP servers from cursor/mcp.json are opt-in: turn on Cursor MCP in dots settings")
         return
     ours = (load_json(CURSOR_SRC / "mcp.json") or {}).get("mcpServers") or {}
     old = load_json(path)
@@ -476,7 +487,7 @@ def cmd_cursor(args):
     info(f"Cursor config from {tilde(CLAUDE)} (profile: {args.profile})")
     failed = 0
     for part in (lambda: cursor_rules(home, args.profile), lambda: cursor_agents(home),
-                 lambda: cursor_hooks(home), lambda: cursor_mcp(home, args.profile), lambda: cursor_cli_config(home)):
+                 lambda: cursor_hooks(home), lambda: cursor_mcp(home), lambda: cursor_cli_config(home)):
         try:
             part()
         except Exception as e:  # one bad file must not stop the other parts
@@ -511,10 +522,7 @@ def cmd_user_rules(args):
 def default_profile():
     """Same order as dotfiles_profile in scripts/setup-lib.sh (which also saves a guess)."""
     home = Path.home()
-    p = os.environ.get("DOTFILES_PROFILE", "")
-    f = home / CONF / "profile"
-    if not p and f.exists():
-        p = f.read_text().strip()
+    p = os.environ.get("DOTFILES_PROFILE", "") or setting(home, "PROFILE")
     if not p and (home / OWNER_MD).is_file():
         p = "owner"
     return p if p in PROFILES else "shared"

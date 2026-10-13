@@ -20,9 +20,9 @@
 3. Type your Mac password when it asks. Homebrew needs it.
 4. Answer the questions. Use ↑ ↓ to move and Enter to pick.
    - 👤 your name and ✉️ your email, for git commits
-   - 🔒 your private rules, 🚫 private words and ☕ which Java to use (all optional,
-     they stay on this Mac)
-   - ✨ optional extras: the Claude desktop app, Cloudflare docs search in Cursor
+   - ⚙️ the settings menu: Java, private rules, private words and more. Pick ✅ Done to
+     keep the defaults.
+   - ✨ an optional extra: the Claude desktop app
 5. Wait. The first run takes about 20 to 40 minutes.
 6. 🔑 Pick what to sign in to: GitHub, Claude Code, Cursor. A browser opens for each one.
 7. Open a new Terminal window.
@@ -37,8 +37,8 @@
 
 - Run `dots` to get the newest setup. You can run it at any time.
 - Edit the files in `~/dotfiles/home/`. Your Mac uses the change at once.
-- Run `dots private` to change your private rules, private words and Java. They stay
-  on this Mac, never in git.
+- Run `dots settings` to change a setting: git name, Java, private rules and more. The
+  settings stay on this Mac, never in git. `settings.example` lists them all.
 - Do not edit `~/.claude/CLAUDE.md`: it comes from this repo, and `dots` updates it.
 
 ## More

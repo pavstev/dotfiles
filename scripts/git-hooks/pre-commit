@@ -24,7 +24,7 @@ priv=$(
   } | private_hits
 )
 if [[ -n "$priv" ]]; then
-  printf '\n\033[1;31m✖ pre-commit: a staged name or line holds a word from %s:\033[0m\n\n' "$PRIVATE_WORDS"
+  printf '\n\033[1;31m✖ pre-commit: a staged name or line holds a private word (dots settings):\033[0m\n\n'
   printf '%s\n' "$priv" | head -20
   printf '\n'
   exit 1

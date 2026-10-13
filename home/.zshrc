@@ -10,4 +10,6 @@ export DOTFILES="${DOTFILES:-$HOME/dotfiles}"
 
 # Machine-local overrides (gitignored; not managed by this repo).
 [[ -f "$HOME/.config/zsh/local.zsh" ]] && source "$HOME/.config/zsh/local.zsh"
+# Values from `dots settings` (private, outside the repo), after local.zsh.
+[[ -f "$HOME/.config/zsh/settings.zsh" ]] && source "$HOME/.config/zsh/settings.zsh"
 [[ -f "$HOME/.zshrc.local" ]] && source "$HOME/.zshrc.local"

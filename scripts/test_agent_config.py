@@ -237,14 +237,27 @@ class SmallHelpersTest(Base):
         p.write_text('{"a": 1}')
         self.assertEqual(AC.load_json(p), {"a": 1})
 
+    def settings(self, text):
+        f = self.home / AC.SETTINGS
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(text)
+
+    def test_setting_reads_like_setup_lib(self):
+        self.assertEqual(AC.setting(self.home, "PROFILE"), "")  # no file
+        self.settings('# PROFILE="note"\nPROFILE="owner"\nX=1\nPROFILE=shared  \nPROFILEX="no"\n')
+        self.assertEqual(AC.setting(self.home, "PROFILE"), "shared")  # the last line wins
+        self.assertEqual(AC.setting(self.home, "X"), "1")
+        self.assertEqual(AC.setting(self.home, "MISSING"), "")
+        self.settings('JAVA_HOME="/a b/c"\r\nEMPTY=""\n')
+        self.assertEqual(AC.setting(self.home, "JAVA_HOME"), "/a b/c")
+        self.assertEqual(AC.setting(self.home, "EMPTY"), "")
+
     def test_default_profile_order(self):
         self.assertEqual(AC.default_profile(), "shared")
-        pf = self.home / ".config" / "dotfiles" / "profile"
-        pf.parent.mkdir(parents=True)
-        pf.write_text("owner\n")
+        self.settings('PROFILE="owner"\n')
         self.assertEqual(AC.default_profile(), "owner")
         os.environ["DOTFILES_PROFILE"] = "shared"
-        self.assertEqual(AC.default_profile(), "shared")  # env beats the file
+        self.assertEqual(AC.default_profile(), "shared")  # env beats the setting
         os.environ["DOTFILES_PROFILE"] = "bogus"
         self.assertEqual(AC.default_profile(), "shared")  # invalid -> default
 
@@ -253,15 +266,13 @@ class SmallHelpersTest(Base):
         f.parent.mkdir(parents=True)
         f.write_text("x\n")
         self.assertEqual(AC.default_profile(), "owner")
-        (self.home / AC.CONF / "profile").write_text("shared\n")
-        self.assertEqual(AC.default_profile(), "shared")  # the file beats the overlay
+        self.settings('PROFILE="shared"\n')
+        self.assertEqual(AC.default_profile(), "shared")  # the setting beats the overlay
         os.environ["DOTFILES_PROFILE"] = "shared"
         self.assertEqual(AC.default_profile(), "shared")
 
-    def test_default_profile_garbage_in_file(self):
-        pf = self.home / ".config" / "dotfiles" / "profile"
-        pf.parent.mkdir(parents=True)
-        pf.write_text("admin\n")
+    def test_default_profile_garbage_in_setting(self):
+        self.settings('PROFILE="admin"\n')
         self.assertEqual(AC.default_profile(), "shared")
 
 
@@ -741,6 +752,10 @@ class CursorHooksTest(Base):
 class CursorMcpTest(Base):
     path = property(lambda self: self.cdir / "mcp.json")
 
+    def setUp(self):
+        super().setUp()
+        self.cursor_mcp_setting("on")  # MCP is opt-in; most tests here are about the merge
+
     def ours(self, servers):
         wj(self.cursor_src / "mcp.json", {"mcpServers": servers})
 
@@ -779,28 +794,41 @@ class CursorMcpTest(Base):
         self.assertEqual(self.path.read_text(), "[]")
         self.assertIn("not valid JSON", err)
 
-    def test_shared_profile_skips_without_opt_in(self):
+    def test_skips_without_opt_in_on_every_profile(self):
         self.ours({"docs": {}})
-        _, out, _ = call(AC.cursor_mcp, self.home, "shared")
+        (self.home / AC.SETTINGS).unlink()
+        self.overlay()  # private rules (the owner profile) do not turn MCP on
+        _, out, _ = call(AC.cursor_mcp, self.home)
         self.assertFalse(self.path.exists())
         self.assertIn("opt-in", out)
 
-    def test_shared_profile_opt_in_file(self):
+    def cursor_mcp_setting(self, value):
+        f = self.home / AC.SETTINGS
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f'CURSOR_MCP="{value}"\n')
+
+    def test_opt_in_setting(self):
         self.ours({"docs": {}})
-        (self.home / ".config" / "dotfiles").mkdir(parents=True)
-        (self.home / ".config" / "dotfiles" / "mcp").write_text("on\n")
-        call(AC.cursor_mcp, self.home, "shared")
+        self.cursor_mcp_setting("on")
+        call(AC.cursor_mcp, self.home)
         self.assertIn("docs", rj(self.path)["mcpServers"])
 
-    def test_env_wins_over_file_and_profile(self):
+    def test_off_setting(self):
         self.ours({"docs": {}})
-        (self.home / ".config" / "dotfiles").mkdir(parents=True)
-        (self.home / ".config" / "dotfiles" / "mcp").write_text("on\n")
-        os.environ["DOTFILES_MCP"] = "off"
-        call(AC.cursor_mcp, self.home, "owner")
+        self.cursor_mcp_setting("off")
+        _, out, _ = call(AC.cursor_mcp, self.home)
         self.assertFalse(self.path.exists())
+        self.assertIn("dots settings", out)
+
+    def test_env_wins_over_setting(self):
+        self.ours({"docs": {}})
+        self.cursor_mcp_setting("on")
+        os.environ["DOTFILES_MCP"] = "off"
+        call(AC.cursor_mcp, self.home)
+        self.assertFalse(self.path.exists())
+        self.cursor_mcp_setting("off")
         os.environ["DOTFILES_MCP"] = "1"
-        call(AC.cursor_mcp, self.home, "shared")
+        call(AC.cursor_mcp, self.home)
         self.assertTrue(self.path.exists())
 
     def test_change_makes_backup(self):
@@ -989,16 +1017,19 @@ class CmdCursorTest(Base):
         self.assertEqual(err, "")
         for rel in ("rules/claude-global.mdc", "agents/a.md", "hooks.json", "cli-config.json", AC.MANAGED):
             self.assertTrue((self.cdir / rel).exists(), rel)
-        self.assertFalse((self.cdir / "mcp.json").exists())  # MCP is opt-in on shared
+        self.assertFalse((self.cdir / "mcp.json").exists())  # MCP is opt-in on every profile
         self.assertFalse((self.home / ".claude").exists())
         self.assertNotIn("Off-limits", (self.cdir / "rules" / "claude-global.mdc").read_text())
 
-    def test_owner_profile_gets_overlay_and_mcp(self):
+    def test_owner_profile_gets_overlay_but_mcp_stays_opt_in(self):
         self.overlay()
         wj(self.cursor_src / "mcp.json", {"mcpServers": {"docs": {"url": "u"}}})
         call(AC.main, ["cursor", "--profile", "owner"])
-        self.assertTrue((self.cdir / "mcp.json").exists())
+        self.assertFalse((self.cdir / "mcp.json").exists())
         self.assertIn("## Off-limits", (self.cdir / "rules" / "claude-global.mdc").read_text())
+        (self.home / AC.SETTINGS).write_text('CURSOR_MCP="on"\n')
+        call(AC.main, ["cursor", "--profile", "owner"])
+        self.assertTrue((self.cdir / "mcp.json").exists())
 
     def test_owner_rule_file_is_private_and_names_both_sources(self):
         self.overlay()

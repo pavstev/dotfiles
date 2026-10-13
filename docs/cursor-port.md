@@ -31,12 +31,12 @@ shipped app and CLI bundles.
 
 | Profile | Who | Claude | Cursor global rule | Cursor MCP |
 |---------|-----|--------|--------------------|------------|
-| `owner` | a Mac with private rules | `CLAUDE.md` link, plus `~/.claude/rules/owner.md` linked to `~/.config/dotfiles/owner.md` | `claude/CLAUDE.md` + `owner.md` | on |
+| `owner` | a Mac with private rules | `CLAUDE.md` link, plus `~/.claude/rules/owner.md` linked to `~/.config/dotfiles/owner.md` | `claude/CLAUDE.md` + `owner.md` | opt-in |
 | `shared` | anyone else (default) | `CLAUDE.md` link | `claude/CLAUDE.md` | opt-in |
 
-`owner.md` holds the private rules (`dots private`). It never enters the repo. Order:
-`DOTFILES_PROFILE` env, then `~/.config/dotfiles/profile`, then `owner` when `owner.md`
-exists (the answer is saved to the profile file), else `shared`.
+`owner.md` holds the private rules (`dots settings`). It never enters the repo. Order:
+`DOTFILES_PROFILE` env, then `PROFILE` in `~/.config/dotfiles/settings`, then `owner` when `owner.md`
+exists (saved as `PROFILE` in the settings), else `shared`.
 
 ## Mapping
 
@@ -52,7 +52,7 @@ exists (the answer is saved to the profile file), else `shared`.
 | `includeCoAuthoredBy: false`, `attribution` | `cli-config.json` `attribution.attributeCommitsToAgent/PRsToAgent = false` | merge (forced false) |
 | `statusLine` -> `statusline.sh` | `cli-config.json` `statusLine` (CLI only) | merge, same script |
 | `enabledPlugins` (cloudflare) | Cursor imports Claude plugins | native compat |
-| MCP | `~/.cursor/mcp.json` from `cursor/mcp.json` (`cloudflare-docs`) | merge; owner always, `shared` only after `echo on > ~/.config/dotfiles/mcp` or `DOTFILES_MCP=on` |
+| MCP | `~/.cursor/mcp.json` from `cursor/mcp.json` (`cloudflare-docs`) | merge; on every profile only with `CURSOR_MCP="on"` (`dots settings`) or `DOTFILES_MCP=on` |
 | editor settings, keybindings | `~/Library/Application Support/Cursor/User/*` | link (unchanged) |
 | Brewfile `vscode` extensions | Cursor extensions | `cursor --install-extension` loop |
 

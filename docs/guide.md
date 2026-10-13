@@ -36,7 +36,7 @@ either side edits the same file:
 $EDITOR ~/dotfiles/home/.config/zsh/init.zsh   # edit: it's live immediately, no apply step
 dotd                                            # preview source changes  (git diff)
 dots                                            # pull + relink + reprovision: for new files, packages, machines
-dots private                                    # private rules, private words, Java (JAVA_HOME)
+dots settings                                   # the settings menu: git name, Java, private rules and more
 dot                                             # cd into the repo
 ```
 
@@ -120,8 +120,8 @@ What Cursor gets:
   without it is yours, and the script leaves it alone.
 - **Merged key by key:** `~/.cursor/hooks.json` (guard adapter
   [`cursor/hooks/guard_cursor.py`](../cursor/hooks/guard_cursor.py)), `~/.cursor/mcp.json`
-  (from [`cursor/mcp.json`](../cursor/mcp.json), ships `cloudflare-docs`; on for the owner,
-  opt-in on the `shared` profile: `echo on > ~/.config/dotfiles/mcp`, then `dots`), and
+  (from [`cursor/mcp.json`](../cursor/mcp.json), ships `cloudflare-docs`; opt-in on every
+  profile: turn on Cursor MCP in `dots settings`), and
   `~/.cursor/cli-config.json` (`permissions`, `attribution`, `statusLine`). Your own
   values win. Commit attribution to the agent is always off.
 
@@ -210,7 +210,7 @@ dotfiles/
 ├── scripts/
 │   ├── setup-lib.sh          # shared step helpers (step/info/ok/warn/skip/have/brew_env/link_item),
 │   │                         #   gum prompts (banner/ask_text/ask_one/ask_long) and dotfiles_profile
-│   ├── private.sh            # private rules, words and Java: first run and `dots private`
+│   ├── settings.sh           # the settings menu: first run and `dots settings`
 │   ├── agent-config.py       # generates and merges the Cursor files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
@@ -239,7 +239,7 @@ dotfiles/
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
-| Private rules, private words, Java | `dots private` (kept in `~/.config/dotfiles` and `local.zsh`, never in git) | at once (Java: new shell) |
+| Settings: git name, profile, Cursor MCP, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
 
 ## Updating
 
