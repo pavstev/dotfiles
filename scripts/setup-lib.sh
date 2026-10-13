@@ -92,15 +92,17 @@ banner() {
   fi
 }
 
-# ask_text <label> [example]: one line of text, asked again while it is empty.
+# ask_text <label> [example] [empty-ok]: one line of text. Asked again while it is
+# empty, unless the third word is empty-ok.
 ask_text() {
-  local label="$1" hint="${2:-}" v=""
-  while [[ -z "$v" ]]; do
+  local label="$1" hint="${2:-}" empty="${3:-}" v=""
+  while :; do
     # A fixed width: gum input can crash when the terminal reports no size.
     if ! fancy || ! v="$(gum input --width 60 --header "$label" --placeholder "$hint" --prompt "› ")"; then
       read -r -p "$label: " v || return 1
     fi
     v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+    if [[ -n "$v" || "$empty" == empty-ok ]]; then break; fi
   done
   printf '%s\n' "$v"
 }

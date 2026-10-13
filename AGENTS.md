@@ -33,7 +33,7 @@ new files, package installs, and machine setup only take effect after running
 | `docs/guide.md` | the full user guide; `README.md` is the short start page. |
 | `docs/cursor-port.md` | Cursor port design: profiles, the Claude to Cursor mapping, and the gap table. |
 | `Brewfile` | every package (per-machine extras in gitignored `Brewfile.local`). |
-| `scripts/private.sh` | the private settings questions (private rules, private words); run by the first run and by `dots private`. |
+| `scripts/private.sh` | the private settings questions (private rules, private words, Java); run by the first run and by `dots private`. |
 | `scripts/setup-lib.sh` | shared step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`) and `dotfiles_profile`. |
 | `bootstrap.sh` | fresh-Mac one-liner. |
 
@@ -57,7 +57,7 @@ Skills are `SKILL.md` folders in `claude/skills/`, synced by `claude/skill-sync.
   local one wins). `_template/` and loose docs are skipped.
 - **Cursor** reads `~/.claude/skills` natively ("Include Third-Party Plugins, Skills,
   and Other Configs", on by default). The script does not link skills into
-  `~/.cursor/skills`. It removes its own old links there and never touches other entries.
+  `~/.cursor/skills` and never touches that folder.
 
 To add a skill: copy `claude/skills/_template/` to `claude/skills/<name>/`, keep the
 folder name == the `name:` in `SKILL.md`, then run `dots` (or `claude/skill-sync.sh` directly).
@@ -106,11 +106,14 @@ personal; private rules live outside it.
   in `claude/settings.json` are shared as is.
 - **Private settings** (`scripts/private.sh`): the first run at a terminal asks for the
   private rules (`owner.md`) and the private words (`private-words`), both mode 600 in
-  `~/.config/dotfiles`. `dots private` asks again later, then refreshes the links and the
-  Cursor rule. On a new Mac, paste them from another Mac (there, run
-  `pbcopy < ~/.config/dotfiles/owner.md`). The first run also asks about Cursor MCP on
-  every profile and keeps the answer. `DOTFILES_PROFILE=owner` alone is not saved.
-  Check: `rg -n '^## ' ~/.claude/rules/owner.md`.
+  `~/.config/dotfiles`, and for the Java to use. Java: it looks in the usual places
+  (`java_home`, `/Library/Java`, Homebrew, mise, SDKMAN, asdf, jenv, Gradle, jbang,
+  Android Studio), offers the current one or else the newest long-term-support one
+  first, or takes a typed path. It writes `JAVA_HOME` in a marked block at the end of
+  the ignored `home/.config/zsh/local.zsh` and leaves the other lines alone.
+  `dots private` asks again later, then refreshes the links and the Cursor rule. The
+  first run also asks about Cursor MCP on every profile and keeps the answer.
+  `DOTFILES_PROFILE=owner` alone is not saved. Check: `rg -n '^## ' ~/.claude/rules/owner.md`.
 - **Personal rules** go in the private rules (`dots private`), not in
   `~/.claude/CLAUDE.md`. That file is the repo file, and a local edit can stop the pull.
 

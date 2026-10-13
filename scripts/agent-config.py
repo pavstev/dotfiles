@@ -434,12 +434,6 @@ def translate_permission(rule, kind="allow"):
     return None
 
 
-def legacy_rule(rule):
-    """What the first version (2026-10-13) emitted for an exact Bash rule: a prefix rule."""
-    m = re.fullmatch(r"Bash\(([^*]*)\)", rule.strip())
-    return f"Shell({m.group(1).strip()})" if m and not m.group(1).endswith(":") else None
-
-
 def cursor_cli_config(home):
     path = home / ".cursor" / "cli-config.json"
     old = load_json(path)
@@ -452,7 +446,6 @@ def cursor_cli_config(home):
     perms = new.setdefault("permissions", {})
     src = (load_json(CLAUDE / "settings.json") or {}).get("permissions") or {}
     side = home / ".cursor" / MANAGED
-    first = not side.exists()
     managed = load_json(side)
     managed = managed if isinstance(managed, dict) else {}
     added = {}
@@ -461,8 +454,6 @@ def cursor_cli_config(home):
         rules = src.get(kind) or []
         want = [m for m in (translate_permission(r, kind) for r in rules) if m]
         prev = set(managed.get(kind) or [])
-        if first:  # adopt the rules the first version wrote before this file existed
-            prev |= {m for m in (legacy_rule(r) for r in rules) if m}
         have[:] = [r for r in have if r in want or r not in prev]  # drop our stale rules
         for m in want:
             if m not in have:

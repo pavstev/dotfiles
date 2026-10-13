@@ -157,12 +157,6 @@ CLAUDE_SRC="$REPO/claude"
 CLAUDE_DST="$HOME/.claude"
 if [[ -d "$CLAUDE_SRC" ]]; then
   mkdir -p "$CLAUDE_DST" 2>/dev/null || warn "couldn't create $CLAUDE_DST"
-  # Old shared profile: CLAUDE.md linked a generated copy in .generated/ (git
-  # ignores it). Relink. Keep the folder: it can hold the user's saved edits.
-  if [[ "$(readlink "$CLAUDE_DST/CLAUDE.md" 2>/dev/null)" == "$REPO/.generated/"* ]]; then
-    rm -f "$CLAUDE_DST/CLAUDE.md"
-    info "old CLAUDE.md copy kept in $REPO/.generated. Put your own rules in ~/.claude/rules/<name>.md"
-  fi
   # Per-item, never the whole dir — Claude Code recreates ~/.claude and
   # writes session state there.
   for d in agents hooks output-styles; do

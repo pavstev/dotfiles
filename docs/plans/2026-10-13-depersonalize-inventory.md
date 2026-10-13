@@ -54,7 +54,8 @@ person, but it is a reply style any user can pick), the profile names `owner` an
 - `claude/skills-parked/`: the owner parked `ps:teach` on 2026-10-12.
 - `claude/hooks/format-after-edit.sh`: a documented opt-in sample.
 - `legacy_rule` in `agent-config.py` and `unlink_ours` in `skill-sync.sh`: migrations for
-  Macs that have not run `dots` since the first Cursor port.
+  Macs that have not run `dots` since the first Cursor port. Removed later the same day:
+  no Mac needs them any more.
 - Shared state helpers for the two guards, shared test helpers: small payoff, and the
   guard must stay fail-open.
 - About 30 lines shared by `whatsleft-scan.py` and `hurry-scan.py`: each skill change needs
@@ -91,8 +92,8 @@ repo.
   file, `dots` warns.
 - `claude/CLAUDE.md` holds no owner text, so every profile links it directly. The generated
   shared copy (`.generated/`), the section cut and the hand-edit backups go away. `dots`
-  replaces an old link to the generated copy and keeps that folder (still ignored by git),
-  because it can hold saved edits.
+  replaced an old link to the generated copy and kept that folder for a while. That code
+  and the ignore line were removed later the same day: no Mac has the old link any more.
 - Profile order: `DOTFILES_PROFILE`, then `~/.config/dotfiles/profile`, then `owner` when the
   overlay file exists (saved to the profile file), else `shared`.
 - Clone URL: one `DOTFILES_REPO` variable in `bootstrap.sh` (the environment wins). The owner
@@ -111,8 +112,8 @@ repo.
   the name and email from stdin and offers nothing else.
 - The README is one short page. The long reference moved to `docs/guide.md`.
 - Review fixes: the pull has no autostash and no password prompt, and restarts the new
-  script after new commits. The old `.generated/` folder is kept (ignored again), not
-  deleted. The Cursor rule that holds `owner.md` text is written 0600. The git hooks also
+  script after new commits. The old `.generated/` folder was kept at first (removed
+  later the same day, with the other old-install code). The Cursor rule that holds `owner.md` text is written 0600. The git hooks also
   check file names, commit messages and absolute symlink targets.
 - Not changed: the commit types of be1f47a and a773c41 (no history rewrite), and there is
   no shell test suite for `dotfiles` yet (temp-HOME runs cover it by hand).

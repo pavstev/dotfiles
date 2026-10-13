@@ -154,20 +154,6 @@ class TranslatePermissionTest(unittest.TestCase):
         self.assertEqual(self.t("  Bash(git status:*)  "), "Shell(git status)")
 
 
-class LegacyRuleTest(unittest.TestCase):
-    def test_exact_bash_rule_was_a_prefix_rule(self):
-        self.assertEqual(AC.legacy_rule("Bash(git status)"), "Shell(git status)")
-        self.assertEqual(AC.legacy_rule("Bash(  ls -la )"), "Shell(ls -la)")
-
-    def test_prefix_and_star_rules_have_no_legacy_form(self):
-        self.assertIsNone(AC.legacy_rule("Bash(git status:*)"))
-        self.assertIsNone(AC.legacy_rule("Bash(npm run *)"))
-
-    def test_non_bash_rules(self):
-        self.assertIsNone(AC.legacy_rule("Read(x)"))
-        self.assertIsNone(AC.legacy_rule("nonsense"))
-
-
 class SplitFrontmatterTest(unittest.TestCase):
     def test_basic(self):
         meta, body = AC.split_frontmatter("---\nname: foo\ndescription: does things\n---\nbody here\n")
@@ -924,27 +910,8 @@ class CliConfigTest(Base):
         self.run_cfg()
         self.assertEqual(rj(self.path)["permissions"]["allow"], ["Shell(git status)"])
 
-    def test_legacy_rules_from_first_version_are_cleaned_once(self):
-        # v1 turned the exact rule Bash(git status) into the prefix rule Shell(git status)
-        self.perms(allow=["Bash(git status)"], deny=["Bash(git push)"])
-        wj(self.path, {"permissions": {
-            "allow": ["Shell(git status)", "Shell(ls)"], "deny": ["Shell(git push)", "Read(mine)"]}})
-        self.assertFalse(self.side.exists())
-        self.run_cfg()
-        p = rj(self.path)["permissions"]
-        self.assertEqual(p["allow"], ["Shell(ls)", "Shell(git:status)"])
-        self.assertEqual(p["deny"], ["Read(mine)", "Shell(git:push)"])
-
-    def test_legacy_rules_are_not_adopted_once_the_sidecar_exists(self):
-        self.perms(allow=["Bash(git status)"])
-        wj(self.side, {"allow": [], "deny": []})
-        wj(self.path, {"permissions": {"allow": ["Shell(git status)"]}})
-        self.run_cfg()
-        self.assertIn("Shell(git status)", rj(self.path)["permissions"]["allow"])
-
-    def test_legacy_prefix_source_rule_has_no_legacy_form(self):
-        # Bash(x:*) was already translated correctly by v1, so a user rule with the same text
-        # is also what we manage now and is kept.
+    def test_user_rule_equal_to_ours_is_kept_once(self):
+        # A hand-written rule that equals one of ours stays, and is not added twice.
         self.perms(allow=["Bash(git status:*)"])
         wj(self.path, {"permissions": {"allow": ["Shell(git status)"]}})
         self.run_cfg()

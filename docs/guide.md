@@ -36,6 +36,7 @@ either side edits the same file:
 $EDITOR ~/dotfiles/home/.config/zsh/init.zsh   # edit: it's live immediately, no apply step
 dotd                                            # preview source changes  (git diff)
 dots                                            # pull + relink + reprovision: for new files, packages, machines
+dots private                                    # private rules, private words, Java (JAVA_HOME)
 dot                                             # cd into the repo
 ```
 
@@ -88,7 +89,7 @@ Claude Code **and Cursor** **and Codex** (`~/.codex/skills`):
   there are never moved or overwritten (on a name clash, *yours* wins); `_template` and
   loose docs are skipped. Removing them is just deleting the symlinks.
 - **Cursor** reads `~/.claude/skills` natively, so nothing is linked into
-  `~/.cursor/skills`. The script removes its own old links there and nothing else.
+  `~/.cursor/skills`. The script never touches that folder.
 
 Ships the `ps:*` workflow skills (provenance and test notes in
 [`SOURCES.md`](../claude/skills/SOURCES.md)); grow your own from
@@ -209,7 +210,7 @@ dotfiles/
 ├── scripts/
 │   ├── setup-lib.sh          # shared step helpers (step/info/ok/warn/skip/have/brew_env/link_item),
 │   │                         #   gum prompts (banner/ask_text/ask_one/ask_long) and dotfiles_profile
-│   ├── private.sh            # private rules and words: first run and `dots private`
+│   ├── private.sh            # private rules, words and Java: first run and `dots private`
 │   ├── agent-config.py       # generates and merges the Cursor files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
@@ -238,6 +239,7 @@ dotfiles/
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
+| Private rules, private words, Java | `dots private` (kept in `~/.config/dotfiles` and `local.zsh`, never in git) | at once (Java: new shell) |
 
 ## Updating
 
