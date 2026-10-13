@@ -61,7 +61,14 @@
     "cloudflare@cloudflare": true,
     "data@synced": false,
     "brightdata-plugin@synced": false,
-    "cowork-plugin-management@synced": false
+    "cowork-plugin-management@synced": false,
+    "cowork-plugin-management@inline": false,
+    "productivity@synced": false,
+    "productivity@inline": false,
+    "pdf-viewer@synced": false,
+    "pdf-viewer@inline": false,
+    "jev@synced": false,
+    "jev@inline": false
   },
   "skillOverrides": {
     "anthropic-skills:spark": "user-invocable-only",
