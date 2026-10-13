@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Sync this repo's skills into every installed agent tool, from ONE source.
 #
-#   Claude Code   ~/.claude/skills   ┐ ADDED per-skill, non-destructively: your
-#   Codex         ~/.codex/skills     ┘ own skills there are left untouched; ours
-#                                       appear alongside them. Re-runnable & safe.
+#   Claude Code   ~/.claude/skills   ADDED per-skill, non-destructively: your own
+#                                    skills there are left untouched; ours appear
+#                                    alongside them. Re-runnable & safe.
 #   Cursor        reads ~/.claude/skills itself, so nothing is linked for it.
 #
 # ~/.claude/skills is a REAL directory, not a whole-dir symlink: plugins and other
@@ -11,7 +11,7 @@
 # them on every run. If it is a symlink, link_each() leaves it alone.
 #
 # Skill discovery skips `_template`, dotfiles, and loose files (README/SOURCES).
-# Cursor & Codex read the SKILL.md / agentskills.io format natively. The spec allows
+# Cursor reads the SKILL.md / agentskills.io format natively. The spec allows
 # only a-z, 0-9 and "-" in `name:`. Our `ps:*` names still load in Cursor, because
 # its loaders do not check the name (docs/cursor-port.md, "Gaps").
 set -euo pipefail
@@ -30,7 +30,7 @@ list_skills() {
   done
 }
 
-# --- Claude / Codex: per-skill symlinks, ADDITIVE and NON-DESTRUCTIVE -------
+# --- Claude: per-skill symlinks, ADDITIVE and NON-DESTRUCTIVE ---------------
 # prune_stale <root> — remove OUR OWN broken symlinks (target was under $SRC but
 # no longer exists, e.g. a skill folder we renamed or deleted). Never touches a
 # real directory or a symlink pointing anywhere else — those are the user's.
@@ -79,8 +79,5 @@ link_each "$HOME/.claude/skills"
 # A second copy in ~/.cursor/skills adds nothing (3.24.12 drops duplicate paths) and
 # older builds listed such skills twice (forum.cursor.com/t/150137). So this script
 # never touches ~/.cursor/skills.
-
-# Codex: only if installed.
-[[ -d "$HOME/.codex"  ]] && { echo "›› Codex detected — adding skills (non-destructive)";   link_each "$HOME/.codex/skills"; }
 
 echo "✓ skill-sync complete"

@@ -68,7 +68,9 @@
     "pdf-viewer@synced": false,
     "pdf-viewer@inline": false,
     "jev@synced": false,
-    "jev@inline": false
+    "jev@inline": false,
+    "adversarial-review@synced": false,
+    "adversarial-review@inline": false
   },
   "skillOverrides": {
     "anthropic-skills:spark": "user-invocable-only",

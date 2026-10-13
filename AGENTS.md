@@ -2,8 +2,8 @@
 
 This is a **plain-git dotfiles repo** — no dotfiles manager, no templating
 engine. Your machine is a *projection* of it, wired up by one script. This
-file is the operating manual for any AI agent (Claude Code, Cursor, Codex, …)
-making changes here. Read it before editing. Cursor/Codex pick it up automatically
+file is the operating manual for any AI agent (Claude Code, Cursor, …)
+making changes here. Read it before editing. Cursor picks it up automatically
 as `AGENTS.md`; Claude Code reads it via the repo's `CLAUDE.md` (which imports this).
 
 ## The one rule
@@ -53,7 +53,7 @@ Commit and push your own changes when you're ready — nothing does it for you.
 
 Skills are `SKILL.md` folders in `claude/skills/`, synced by `claude/skill-sync.sh`:
 
-- **Claude** → `~/.claude/skills`, **Codex** → `~/.codex/skills` — added **per-skill,
+- **Claude** → `~/.claude/skills` — added **per-skill,
   non-destructively**: existing skills there are never touched (on a name clash, the
   local one wins). `_template/` and loose docs are skipped.
 - **Cursor** reads `~/.claude/skills` natively ("Include Third-Party Plugins, Skills,

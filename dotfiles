@@ -174,7 +174,7 @@ else
   warn "$CLAUDE_SRC missing — skipping Claude config link"
 fi
 
-step "Claude/Cursor/Codex skills"
+step "Claude/Cursor skills"
 if [[ -x "$REPO/claude/skill-sync.sh" ]]; then
   "$REPO/claude/skill-sync.sh" || warn "skill-sync.sh reported an issue — skills may be unlinked"
 else
