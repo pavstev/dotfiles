@@ -34,12 +34,16 @@ if [[ -s "$OWNER_MD" ]]; then
   lines="$(wc -l <"$OWNER_MD" | tr -d ' ')"
   if [[ "$(ask_one "🔒 Your private rules for Claude and Cursor: $lines lines" "$keep" "$change")" == "$change" ]]; then
     edit_file "$OWNER_MD" "private rules" "🔒 Private rules (Markdown)" "$(cat "$OWNER_MD")"
+  else
+    info "private rules: kept ($lines lines)"
   fi
 else
   info "Private rules are extra rules for Claude and Cursor, only on this Mac."
   info "Have them on another Mac? Run there: pbcopy < ~/.config/dotfiles/owner.md"
   if [[ "$(ask_one "🔒 Add private rules for Claude and Cursor?" "$skip" "$add")" == "$add" ]]; then
     edit_file "$OWNER_MD" "private rules" "🔒 Private rules (Markdown). Paste or type them."
+  else
+    info "private rules: none. Add them later with: dots private"
   fi
 fi
 
@@ -48,6 +52,8 @@ if [[ -s "$WORDS" ]]; then
   n="$(grep -cvE '^[[:space:]]*(#|$)' "$WORDS")"
   if [[ "$(ask_one "🚫 Your private words: $n" "$keep" "$change")" == "$change" ]]; then
     edit_file "$WORDS" "private words" "🚫 Private words, one per line" "$(cat "$WORDS")"
+  else
+    info "private words: kept ($n)"
   fi
 else
   info "Private words never go into a commit of this repo. The git hooks block them."
@@ -58,5 +64,7 @@ else
       if [[ -n "$v" ]]; then value+=$'\n'"$v"; fi
     done
     edit_file "$WORDS" "private words" "🚫 Private words, one per line" "$value"
+  else
+    info "private words: none. Add them later with: dots private"
   fi
 fi
