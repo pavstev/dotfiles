@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Pre-commit checks for the dotfiles repo: skill lint, private words, symlinks,
+# and a scan for added lines that look like a credential.
+# Wired via: git config core.hooksPath scripts/git-hooks  (done by scripts/install.d/77-dotfiles-git-hooks.sh)
+#
+# False positive? Add a `grep -Fv 'your-literal-string'` exclusion before exit 1,
+# or annotate the line with  # scan-allowlist  to skip it.
+set -uo pipefail
+
+# --- Skill lint: any staged change under claude/skills/ must pass check.py ----
+if git diff --cached --name-only 2>/dev/null | grep -q '^claude/skills/'; then
+  if ! python3 claude/skills/check.py -q; then
+    printf '\n\033[1;31m✖ pre-commit: claude/skills/check.py failed — fix the skill or run it for details.\033[0m\n\n'
+    exit 1
+  fi
+fi
+
+# --- Private words (private-words.sh): block a staged file name or an added
+# line that holds one. The commit-msg hook checks the message.
+. "$(dirname "$0")/private-words.sh"
+priv=$(
+  { git diff --cached --name-only --diff-filter=d 2>/dev/null
+    git diff --cached -U0 2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+ (b/|/dev/null)'
+  } | private_hits
+)
+if [[ -n "$priv" ]]; then
+  printf '\n\033[1;31m✖ pre-commit: a staged name or line holds a word from %s:\033[0m\n\n' "$PRIVATE_WORDS"
+  printf '%s\n' "$priv" | head -20
+  printf '\n'
+  exit 1
+fi
+
+# --- Symlinks: links in the repo point inside it. An absolute target leaks a
+# home path and works on one Mac only.
+abs=$(
+  git diff --cached --name-only --diff-filter=d -z 2>/dev/null \
+  | while IFS= read -r -d '' p; do
+      [[ "$(git ls-files -s -- "$p" | cut -c1-6)" == 120000 ]] || continue
+      t="$(git cat-file -p ":$p" 2>/dev/null)"
+      if [[ "$t" == /* ]]; then printf '%s -> %s\n' "$p" "$t"; fi
+    done
+)
+if [[ -n "$abs" ]]; then
+  printf '\n\033[1;31m✖ pre-commit: a staged symlink has an absolute target:\033[0m\n\n%s\n\n' "$abs"
+  exit 1
+fi
+
+# Match credential ASSIGNMENTS and PEM headers, not just the words in prose/comments.
+# Group 1: key=value / key: value patterns with a non-whitespace value
+# Group 2: PEM private key headers
+# Group 3: URL query-string token params (token=VALUE in a URL)
+PATTERNS='((token|secret|password|api[_-]?key|auth[_-]?key|access[_-]?key|client[_-]?secret)\s*[=:]\s*\S+|BEGIN [A-Z ]+PRIVATE KEY|\?[^ &]*token=[^& \n]+)'   # scan-allowlist
+
+hits=$(
+  git diff --cached -U0 2>/dev/null \
+  | grep -E '^\+[^+]' \
+  | grep -v '^\+\s*#'         \
+  | grep -iE "$PATTERNS" \
+  | grep -v 'scan-allowlist' \
+  || true
+)
+
+[[ -z "$hits" ]] && exit 0
+
+printf '\n\033[1;31m✖ pre-commit: possible credential in staged changes:\033[0m\n\n'
+printf '%s\n' "$hits" | head -20
+printf '\n\033[33mFalse positive? Add a grep -Fv exclusion or append  # scan-allowlist  to the line.\033[0m\n\n'
+exit 1

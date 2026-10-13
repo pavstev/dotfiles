@@ -1,0 +1,23 @@
+## atuin — synced, searchable shell history.
+## Docs: https://docs.atuin.sh/configuration/config/
+## Sync is opt-in: run `atuin register` / `atuin login` once, then it just works.
+
+auto_sync = true
+sync_frequency = "5m"
+update_check = false
+
+search_mode = "fuzzy"
+filter_mode = "global"          # search across all synced machines
+style = "compact"
+inline_height = 25
+show_preview = true
+show_help = true
+
+# Enter puts the command on the prompt to review/edit (doesn't auto-run it).
+enter_accept = false
+
+# Up arrow stays native (we bind atuin to Ctrl-R via `atuin init --disable-up-arrow`).
+keymap_mode = "auto"
+
+[theme]
+name = "claude"

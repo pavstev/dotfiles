@@ -1,0 +1,7 @@
+# bat config — symlinked from this repo.
+# Theme is set by BAT_THEME="ansi" in init.zsh (inherits terminal palette).
+
+--style=numbers,changes,header-filename
+--italic-text=always
+--paging=auto
+--wrap=auto

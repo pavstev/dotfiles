@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# commit-msg: block a commit message that holds a private word (private-words.sh).
+# Wired with pre-commit: git config core.hooksPath scripts/git-hooks (install.d/77).
+set -uo pipefail
+. "$(dirname "$0")/private-words.sh"
+
+priv=$(grep -v '^#' "$1" | private_hits)
+if [[ -n "$priv" ]]; then
+  printf '\n\033[1;31m✖ commit-msg: the message holds a word from %s:\033[0m\n\n' "$PRIVATE_WORDS"
+  printf '%s\n\n' "$priv"
+  exit 1
+fi
+exit 0

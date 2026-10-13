@@ -1,0 +1,155 @@
+# ============================================================================
+#  ~/.gitconfig  —  symlinked from this repo (home/.gitconfig).
+#  Edit here directly — it's live immediately, no apply step.
+#
+#  Identity lives in ~/.gitconfig.local (gitignored, seeded once by
+#  `./dotfiles`), never committed, so this file is safe in a public repo.
+# ============================================================================
+
+[include]
+	path = ~/.gitconfig.local
+
+# ---- Core ------------------------------------------------------------------
+[core]
+	editor = code --wait
+	pager = delta
+	autocrlf = input
+	whitespace = trailing-space,space-before-tab
+
+# ---- VS Code as diff + merge tool ------------------------------------------
+[diff]
+	tool = vscode
+	colorMoved = default
+[difftool "vscode"]
+	cmd = code --wait --diff $LOCAL $REMOTE
+[difftool "difftastic"]
+	cmd = difft "$LOCAL" "$REMOTE"
+[difftool]
+	prompt = false
+
+[merge]
+	tool = vscode
+	conflictStyle = zdiff3
+[mergetool "vscode"]
+	cmd = code --wait $MERGED
+[mergetool]
+	keepBackup = false
+	prompt = false
+
+# ---- Delta (pager / syntax highlighter) ------------------------------------
+[interactive]
+	diffFilter = delta --color-only
+
+[delta]
+	navigate = true
+	dark = true
+	line-numbers = true
+	side-by-side = false
+	syntax-theme = ansi
+	# Backgrounds — warm green/red tinted to match the Claude palette
+	plus-style = "syntax #1B2A1E"
+	minus-style = "syntax #2A1B1B"
+	plus-emph-style = "syntax #2B4730"
+	minus-emph-style = "syntax #4A2424"
+	# Line number colours — refined Claude palette
+	line-numbers-minus-style = "#D97066"
+	line-numbers-plus-style = "#87B083"
+	line-numbers-zero-style = "#57514C"
+	# Hunk header
+	hunk-header-style = "file line-number syntax"
+	hunk-header-file-style = "#E0825F"
+	hunk-header-line-number-style = "#A8A29E"
+	hunk-header-decoration-style = "#3D3835 box"
+
+# ---- Aliases ---------------------------------------------------------------
+[alias]
+	# Status / info
+	s  = status -sb
+	st = status
+
+	# Add / commit
+	a  = add
+	aa = add -A
+	c  = commit
+	cm = commit -m
+	ca = commit --amend
+	can = commit --amend --no-edit
+
+	# Branch / checkout
+	co  = checkout
+	sw  = switch
+	swc = switch -c
+	br  = branch -vv
+	brd = branch -d
+	brD = branch -D
+
+	# Diff
+	d   = diff
+	ds  = diff --staged
+	dw  = diff --word-diff
+
+	# Log
+	lg  = log --oneline --graph --decorate -20
+	lga = log --oneline --graph --decorate --all
+	lgl = log --graph --pretty=format:'%C(bold #E0825F)%h%Creset%C(auto)%d%Creset %s %C(#A8A29E)(%cr) %C(#87B083)<%an>%Creset'
+	last = log -1 HEAD --stat
+
+	# Structural (syntax-aware) diff via difftastic — opt-in, keeps delta as default
+	dft  = "!f(){ GIT_EXTERNAL_DIFF=difft git diff \"$@\"; }; f"
+	dfts = "!f(){ GIT_EXTERNAL_DIFF=difft git diff --staged \"$@\"; }; f"
+
+	# Remote
+	p   = push
+	pl  = pull
+	f   = fetch --all --prune
+	psu = push --set-upstream origin HEAD
+
+	# Undo / fixup
+	unstage = reset HEAD --
+	undo    = reset --soft HEAD~1
+	wip     = !git add -A && git commit -m "wip"
+	unwip   = !git log -1 --format='%s' | grep -q 'wip' && git reset HEAD~1 || echo 'HEAD is not a wip commit'
+
+	# Stash
+	ss  = stash
+	ssp = stash pop
+	ssl = stash list
+
+	# Utility
+	root = rev-parse --show-toplevel
+	aliases = config --get-regexp '^alias\\.'
+
+# ---- Behaviour -------------------------------------------------------------
+[init]
+	defaultBranch = main
+
+[pull]
+	rebase = true
+
+[push]
+	autoSetupRemote = true
+
+[fetch]
+	prune = true
+
+[rebase]
+	autoStash = true
+	updateRefs = true
+
+[rerere]
+	enabled = true
+
+[column]
+	ui = auto
+
+[branch]
+	sort = -committerdate
+
+[tag]
+	sort = -version:refname
+
+[color]
+	ui = auto
+
+[help]
+	autocorrect = prompt

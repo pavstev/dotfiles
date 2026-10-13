@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pick Your Option</title>
+<style>
+:root {
+  --bg: #f5f2ee; --surface: #fffdfa; --ink: #2b2622; --muted: #6f655c;
+  --line: #ddd5cb; --accent: #b4552d; --accent-ink: #ffffff; --accent-soft: #f3e1d6;
+  --radius: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1d1a17; --surface: #272320; --ink: #f1ebe4; --muted: #a49a8f;
+    --line: #3a342f; --accent: #d9774a; --accent-ink: #1d1a17; --accent-soft: #3a2a21;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #1d1a17; --surface: #272320; --ink: #f1ebe4; --muted: #a49a8f;
+  --line: #3a342f; --accent: #d9774a; --accent-ink: #1d1a17; --accent-soft: #3a2a21;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  padding: 0 16px 120px; overflow-x: hidden;
+}
+main { max-width: 1040px; margin: 0 auto; }
+header { padding: 24px 0 8px; }
+h1 { font-size: 1.5rem; line-height: 1.2; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0; }
+h2 { font-size: 1rem; margin: 28px 0 10px; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); }
+.card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0;
+}
+.card[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.head { display: flex; align-items: baseline; gap: 8px; }
+.id { font: 600 .8rem ui-monospace, Menlo, monospace; background: var(--accent-soft); color: var(--accent); padding: 2px 8px; border-radius: 999px; }
+.label { font-weight: 600; overflow-wrap: anywhere; }
+.preview {
+  border: 1px dashed var(--line); border-radius: 8px; padding: 14px; min-height: 96px;
+  overflow: hidden; overflow-wrap: anywhere; background: var(--bg);
+}
+.knobs { display: grid; gap: 6px; }
+.knob { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: .85rem; color: var(--muted); align-items: center; }
+.knob input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.knob input[type=color] { width: 44px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; }
+button {
+  font: inherit; cursor: pointer; border-radius: 8px; padding: 10px 14px; min-height: 44px;
+  border: 1px solid var(--accent); background: transparent; color: var(--accent);
+}
+button.primary { background: var(--accent); color: var(--accent-ink); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+footer {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  background: var(--surface); border-top: 1px solid var(--line);
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+}
+.bar { max-width: 1040px; margin: 0 auto; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.now { flex: 1 1 200px; min-width: 0; font: .85rem ui-monospace, Menlo, monospace; overflow-wrap: anywhere; }
+.now small { display: block; color: var(--muted); font-family: system-ui, sans-serif; }
+#fallback { display: none; width: 100%; font: .85rem ui-monospace, Menlo, monospace; background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Pick Your Option</h1>
+    <p class="sub" id="sub">Choose a card, adjust its knobs, then copy your pick.</p>
+  </header>
+  <div id="root"></div>
+</main>
+<footer>
+  <div class="bar">
+    <div class="now" id="now" aria-live="polite"><small>Current pick</small><span id="nowText">none yet</span></div>
+    <button class="primary" id="copy" type="button" disabled>Copy my pick</button>
+  </div>
+  <textarea id="fallback" rows="2" readonly aria-label="Your pick"></textarea>
+</footer>
+<script>
+// ---- Fill this part ---------------------------------------------------------
+// Ids: a letter for the group plus a number (A1, A2, B3). At most 20 variants.
+// data: the facts of the variant. It is copied into the pick line as JSON.
+//   data.css is optional: inline CSS for the default preview. It is left out of the pick line.
+// knobs: only for continuous values. type "range" or "color".
+const TITLE = "Pick Your Option";
+const SUBTITLE = "Choose a card, adjust its knobs, then copy your pick.";
+const GROUPS = { A: "Group A: what it varies", B: "Group B: what it varies" };
+// FONTS: Google Fonts css2 URLs to load (e.g. for font picks). Leave empty otherwise.
+const FONTS = [];
+const SAMPLE = "The quick brown fox jumps over the lazy dog";
+const VARIANTS = [
+  { id: "A1", label: "Example serif", data: { family: "Georgia, serif", css: "font-family: Georgia, serif" },
+    knobs: [{ key: "size", label: "Size (px)", type: "range", min: 14, max: 40, step: 1, value: 22 }] },
+  { id: "A2", label: "Example sans", data: { family: "system-ui, sans-serif", css: "font-family: system-ui, sans-serif" },
+    knobs: [{ key: "size", label: "Size (px)", type: "range", min: 14, max: 40, step: 1, value: 22 },
+            { key: "color", label: "Ink", type: "color", value: "#b4552d" }] },
+  { id: "B1", label: "Example mono", data: { family: "ui-monospace, Menlo, monospace", css: "font-family: ui-monospace, Menlo, monospace" } }
+];
+// Override to draw the real thing (a layout, a swatch, a button). Return an HTML string.
+// Escape any user text with esc(). Knob values arrive in k (strings for color, numbers for range).
+function renderPreview(v, k) {
+  const style = [v.data.css || "", k.size ? "font-size:" + k.size + "px" : "", k.color ? "color:" + k.color : ""].join(";");
+  return '<div style="' + esc(style) + '">' + esc(SAMPLE) + "</div>";
+}
+// ---- End of the part to fill ------------------------------------------------
+
+const $ = (s) => document.querySelector(s);
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+const state = { pick: null, knobs: {} };
+VARIANTS.forEach((v) => {
+  state.knobs[v.id] = {};
+  (v.knobs || []).forEach((n) => { state.knobs[v.id][n.key] = n.value; });
+});
+
+function cardHtml(v) {
+  const knobs = (v.knobs || []).map((n) => {
+    const inp = n.type === "color"
+      ? '<input type="color" data-id="' + v.id + '" data-key="' + n.key + '" value="' + esc(n.value) + '" aria-label="' + esc(n.label) + '">'
+      : '<input type="range" data-id="' + v.id + '" data-key="' + n.key + '" min="' + n.min + '" max="' + n.max + '" step="' + (n.step || 1) + '" value="' + n.value + '" aria-label="' + esc(n.label) + '">';
+    return '<label class="knob"><span>' + esc(n.label) + '</span><output data-out="' + v.id + "-" + n.key + '">' + esc(n.value) + "</output>" + inp + "</label>";
+  }).join("");
+  return '<article class="card" id="card-' + v.id + '"><div class="head"><span class="id">' + esc(v.id) + '</span><span class="label">' + esc(v.label) + "</span></div>" +
+    '<div class="preview" id="pv-' + v.id + '"></div>' + (knobs ? '<div class="knobs">' + knobs + "</div>" : "") +
+    '<button type="button" data-pick="' + v.id + '">Pick this</button></article>';
+}
+
+function build() {
+  document.title = TITLE; $("#title").textContent = TITLE; $("#sub").textContent = SUBTITLE;
+  const order = [];
+  VARIANTS.forEach((v) => { const g = v.id[0]; if (order.indexOf(g) < 0) order.push(g); });
+  $("#root").innerHTML = order.map((g) =>
+    "<h2>" + esc(GROUPS[g] || "Group " + g) + '</h2><div class="grid">' +
+    VARIANTS.filter((v) => v.id[0] === g).map(cardHtml).join("") + "</div>").join("");
+  VARIANTS.forEach(paint);
+}
+
+function paint(v) { $("#pv-" + v.id).innerHTML = renderPreview(v, state.knobs[v.id]); }
+document.title = TITLE;
+FONTS.forEach((href) => { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = href; document.head.appendChild(l); });
+function find(id) { return VARIANTS.filter((v) => v.id === id)[0]; }
+function line() {
+  if (!state.pick) return "";
+  const v = find(state.pick);
+  const out = Object.assign({ label: v.label }, v.data, state.knobs[v.id]);
+  delete out.css;
+  return "pick: " + v.id + " " + JSON.stringify(out);
+}
+function refresh() {
+  const l = line();
+  $("#nowText").textContent = l || "none yet";
+  $("#copy").disabled = !l;
+  VARIANTS.forEach((v) => { const c = $("#card-" + v.id); if (state.pick === v.id) c.setAttribute("aria-current", "true"); else c.removeAttribute("aria-current"); });
+}
+
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pick]");
+  if (b) { state.pick = b.getAttribute("data-pick"); refresh(); }
+});
+document.addEventListener("input", (e) => {
+  const t = e.target;
+  if (!t.dataset || !t.dataset.key) return;
+  const v = find(t.dataset.id);
+  state.knobs[v.id][t.dataset.key] = t.type === "range" ? Number(t.value) : t.value;
+  const out = document.querySelector('[data-out="' + v.id + "-" + t.dataset.key + '"]');
+  if (out) out.textContent = t.value;
+  state.pick = v.id; // moving a knob on a card picks that card
+  paint(v); refresh();
+});
+
+$("#copy").addEventListener("click", async () => {
+  const text = line(); if (!text) return;
+  const btn = $("#copy"); const fb = $("#fallback");
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (err) { ok = false; }
+  if (!ok) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (err) { ok = false; }
+  }
+  if (ok) { btn.textContent = "Copied. Paste it in the chat"; fb.style.display = "none"; }
+  else { btn.textContent = "Copy by hand below"; fb.value = text; fb.style.display = "block"; fb.focus(); fb.select(); }
+  setTimeout(() => { btn.textContent = "Copy my pick"; }, 2500);
+});
+
+build(); refresh();
+</script>
+</body>
+</html>

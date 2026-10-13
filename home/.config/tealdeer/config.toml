@@ -1,0 +1,11 @@
+# tealdeer config — symlinked from this repo.
+# Location: $TEALDEER_CONFIG_DIR/config.toml (env var set in init.zsh).
+# On macOS without the env var, tealdeer defaults to ~/Library/Application Support/tealdeer/
+
+[display]
+compact = false
+use_pager = false
+
+[updates]
+auto_update = false
+auto_update_interval_hours = 720

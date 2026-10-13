@@ -1,0 +1,8 @@
+# Brewfile.local — per-machine packages, NOT committed (copy to Brewfile.local).
+# Merged automatically by the brew-bundle step if present.
+#
+# Example: work laptop extras
+# cask "slack"
+# cask "zoom"
+# brew "awscli"
+# mas "Xcode", id: 497799835

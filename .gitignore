@@ -1,0 +1,30 @@
+# Backups created by the link/setup scripts
+*.bak-*
+*.bak
+
+# Per-machine, untracked overrides (live only in $HOME)
+.zshrc.local
+local.zsh
+.gitconfig.local
+Brewfile.local
+
+# Secrets — NEVER commit private keys. (age-encrypted *.age files ARE meant to be committed.)
+key.txt
+*.key
+
+# macOS noise
+.DS_Store
+
+tmp/
+
+# tool caches (ruff/pytest/python) that scripts leave next to themselves
+.ruff_cache/
+__pycache__/
+.pytest_cache/
+
+# Old generated CLAUDE.md copy (shared profile until 2026-10-13). dots keeps it: it can
+# hold the user's saved edits.
+.generated/
+
+# Session notes, hand-offs and ledgers from AI agents stay on the machine
+.agents/

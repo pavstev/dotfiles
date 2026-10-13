@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  ./dotfiles — the one command: pull latest, link files, provision tools.
+#
+#  Safe to run repeatedly on any machine, in either role:
+#    - the machine you EDIT on: local commits make the pull a harmless no-op,
+#      then linking/provisioning just re-confirms current state.
+#    - a machine that only PULLS: fast-forwards, links what's new, installs
+#      whatever the Brewfile/toolchain steps are missing.
+#
+#  No subcommands, no daemon. Just run it again whenever you want to sync.
+# ============================================================================
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export REPO
+export DOTFILES="$REPO"
+
+. "$REPO/scripts/setup-lib.sh" 2>/dev/null \
+  || { printf '!! scripts/setup-lib.sh missing or unreadable — repo incomplete?\n' >&2; exit 1; }
+brew_env   # brew and gum on PATH, also in a bare shell
+
+if [[ -n "${DOTFILES_PULLED:-}" ]]; then
+  ok "pulled the latest version"   # the run before this one printed the step
+else
+  step "Pulling latest"
+  before="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
+  # No autostash and no password prompt. A pull that would change a file edited
+  # here stops, instead of leaving conflict markers in a live config.
+  if GIT_TERMINAL_PROMPT=0 git -C "$REPO" -c rebase.autoStash=false -c merge.autoStash=false \
+      pull --ff-only --no-rebase --quiet; then
+    # New commits can change this script. Run the new one for the rest.
+    if [[ "$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" != "$before" ]]; then
+      exec env DOTFILES_PULLED=1 bash "$REPO/dotfiles"
+    fi
+    ok "up to date"
+  else
+    warn "couldn't pull (no network, local commits, or a changed file), so this run uses what is here"
+    changed="$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null | cut -c4- | tr '\n' ' ')"
+    if [[ -n "$changed" ]]; then info "changed here: $changed"; fi
+    if [[ " $changed " == *" claude/CLAUDE.md "* ]]; then
+      info "keep your own Claude rules in ~/.claude/rules/<name>.md, not in claude/CLAUDE.md"
+    fi
+  fi
+fi
+
+# A person at a terminal gets the guided setup. Its menus need gum.
+if at_terminal && ! have gum; then
+  step "Getting ready"
+  if ensure_brew && brew install --quiet gum >/dev/null 2>&1; then
+    ok "menus ready"
+  else
+    warn "couldn't install gum, so the questions use plain text"
+  fi
+fi
+
+step "Git identity"
+GITCONFIG_LOCAL="$HOME/.gitconfig.local"
+FIRST_RUN=""
+if [[ -f "$GITCONFIG_LOCAL" ]]; then
+  skip "git identity ($GITCONFIG_LOCAL exists)"
+else
+  FIRST_RUN=1
+  banner "🦴 dotfiles" "This sets up your Mac for Claude Code and Cursor." \
+    "A few questions first, then about 20 to 40 minutes of installs." \
+    "Use ↑ ↓ to move and Enter to pick."
+  name="$(git config --global user.name 2>/dev/null || true)"
+  email="$(git config --global user.email 2>/dev/null || true)"
+  [[ -n "$name" ]] || name="$(ask_text "👤 Your name, for git commits" "Jane Doe")" || name=""
+  [[ -n "$email" ]] || email="$(ask_email "✉️  Your email, for git commits" "jane@example.com")" || email=""
+  if [[ -n "$name" && -n "$email" ]]; then
+    printf '[user]\n\tname = %s\n\temail = %s\n' "$name" "$email" > "$GITCONFIG_LOCAL"
+    ok "git commits use: $name <$email>"
+  else
+    warn "no git name or email given. Run dots again in a terminal to set them."
+  fi
+fi
+export DOTFILES_FIRST_RUN="$FIRST_RUN"
+
+picked="${DOTFILES_PROFILE:-}"
+PROFILE="$(dotfiles_profile)"
+export DOTFILES_PROFILE="$PROFILE"
+
+# Optional extras, offered once: on the first run, at a terminal. "No" comes first.
+if [[ -n "$FIRST_RUN" ]] && at_terminal; then
+  no="⏭️  No, skip it" app="" mcp=""
+  [[ -d /Applications/Claude.app ]] || app="🖥️  Yes, install the Claude desktop app"
+  if [[ "$PROFILE" == shared && ! -f "$DOTFILES_CONF/mcp" ]]; then
+    mcp="🔌 Yes, add Cloudflare docs search to Cursor"
+  fi
+  if [[ -n "$app$mcp" ]]; then step "Extras"; fi
+  if [[ -n "$app" && "$(ask_one "✨ Install the Claude desktop app too?" "$no" "$app")" == "$app" ]]; then
+    if spin "Installing the Claude app" brew install --cask --quiet claude; then
+      ok "Claude desktop app installed"
+    else
+      warn "couldn't install the Claude app. Try later: brew install --cask claude"
+    fi
+  fi
+  if [[ -n "$mcp" ]] && mkdir -p "$DOTFILES_CONF"; then
+    if [[ "$(ask_one "✨ Add Cloudflare docs search (an MCP server) to Cursor?" "$no" "$mcp")" == "$mcp" ]]; then
+      echo on
+    else
+      echo off
+    fi > "$DOTFILES_CONF/mcp"
+  fi
+fi
+
+step "Linking files"
+# Explicit allow-list: relative paths under home/ map 1:1 to the same
+# relative path under $HOME. Anything NOT listed here is never touched —
+# secrets and per-machine state (gh hosts.yml, atuin data dir, VS Code/
+# Cursor caches, Raycast tokens, Docker/OrbStack/Cloudflared state, …)
+# simply live outside this list.
+LINKS=(
+  ".config/aerospace"
+  ".config/atuin"
+  ".config/bat"
+  ".config/btop"
+  ".config/fastfetch"
+  ".config/gh/config.yml"
+  ".config/ghostty"
+  ".config/lazygit"
+  ".config/starship.toml"
+  ".config/tealdeer"
+  ".config/yazi"
+  ".config/zsh"
+  ".gitconfig"
+  ".zshrc"
+  "Library/Application Support/Code/User/settings.json"
+  "Library/Application Support/Code/User/keybindings.json"
+  "Library/Application Support/Cursor/User/settings.json"
+  "Library/Application Support/Cursor/User/keybindings.json"
+)
+for item in "${LINKS[@]}"; do
+  link_item "$REPO/home/$item" "$HOME/$item"
+done
+
+step "Linking Claude config -> ~/.claude"
+info "profile: $PROFILE (AGENTS.md \"Profiles\")"
+if [[ "$PROFILE" == shared && -z "$picked" && ! -f "$DOTFILES_CONF/profile" ]]; then
+  info "repo owner on a new Mac? copy your owner.md to ~/.config/dotfiles/, then run dots"
+fi
+CLAUDE_SRC="$REPO/claude"
+CLAUDE_DST="$HOME/.claude"
+if [[ -d "$CLAUDE_SRC" ]]; then
+  mkdir -p "$CLAUDE_DST" 2>/dev/null || warn "couldn't create $CLAUDE_DST"
+  # Old shared profile: CLAUDE.md linked a generated copy in .generated/ (git
+  # ignores it). Relink. Keep the folder: it can hold the user's saved edits.
+  if [[ "$(readlink "$CLAUDE_DST/CLAUDE.md" 2>/dev/null)" == "$REPO/.generated/"* ]]; then
+    rm -f "$CLAUDE_DST/CLAUDE.md"
+    info "old CLAUDE.md copy kept in $REPO/.generated. Put your own rules in ~/.claude/rules/<name>.md"
+  fi
+  # Per-item, never the whole dir — Claude Code recreates ~/.claude and
+  # writes session state there.
+  for d in agents hooks output-styles; do
+    link_item "$CLAUDE_SRC/$d" "$CLAUDE_DST/$d"
+  done
+  for f in CLAUDE.md settings.json statusline.sh; do
+    link_item "$CLAUDE_SRC/$f" "$CLAUDE_DST/$f"
+  done
+  # The owner's private rules (never in the repo) load as a Claude user rule.
+  rule="$CLAUDE_DST/rules/owner.md"
+  if [[ "$PROFILE" == owner && -f "$OWNER_MD" ]]; then
+    link_item "$OWNER_MD" "$rule"
+  else
+    if [[ "$PROFILE" == owner ]]; then
+      warn "no $OWNER_MD, so owner-only rules are off on this Mac (AGENTS.md \"Profiles\")"
+    fi
+    if [[ -L "$rule" && "$(readlink "$rule")" == "$OWNER_MD" ]]; then
+      rm -f "$rule" && ok "removed the owner rules link"
+    fi
+  fi
+else
+  warn "$CLAUDE_SRC missing — skipping Claude config link"
+fi
+
+step "Claude/Cursor/Codex skills"
+if [[ -x "$REPO/claude/skill-sync.sh" ]]; then
+  "$REPO/claude/skill-sync.sh" || warn "skill-sync.sh reported an issue — skills may be unlinked"
+else
+  warn "claude/skill-sync.sh missing or not executable — skipping"
+fi
+
+if [[ -d "$REPO/scripts/install.d" ]]; then
+  # DOTFILES_STEPS="60-cursor ..." runs only the named steps (for temp-HOME tests).
+  for f in "$REPO"/scripts/install.d/*.sh; do
+    [[ -f "$f" ]] || continue
+    if [[ -n "${DOTFILES_STEPS:-}" && " $DOTFILES_STEPS " != *" $(basename "$f" .sh) "* ]]; then
+      continue
+    fi
+    bash "$f" || warn "$(basename "$f") exited non-zero — see output above"
+  done
+fi
+
+printf '\n'
+brew_env   # step 10 can install it during this run
+if ! have brew; then
+  warn "Homebrew is missing, so the apps and tools did not install. Fix the error above, then run dots again."
+elif [[ -n "$FIRST_RUN" ]]; then
+  banner "✅ All set" "Open a new Terminal window." \
+    "Claude Code: run claude, then type /ps: to see the skills." \
+    "Cursor: open the chat, then type /ps: to see the same skills."
+fi
+ok "dotfiles: done"
