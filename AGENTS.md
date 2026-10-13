@@ -33,6 +33,8 @@ new files, package installs, and machine setup only take effect after running
 | `docs/guide.md` | the full user guide; `README.md` is the short start page. |
 | `docs/cursor-port.md` | Cursor port design: profiles, the Claude to Cursor mapping, and the gap table. |
 | `Brewfile` | every package (per-machine extras in gitignored `Brewfile.local`). |
+| `settings.example` | every setting with a note and its default. This Mac's copy is `~/.config/dotfiles/settings` (see "Settings"). |
+| `scripts/settings.sh` | the settings menu: `dots settings` (also `dots private`) and the first run. |
 | `scripts/setup-lib.sh` | shared step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`) and `dotfiles_profile`. |
 | `bootstrap.sh` | fresh-Mac one-liner. |
 
@@ -56,7 +58,7 @@ Skills are `SKILL.md` folders in `claude/skills/`, synced by `claude/skill-sync.
   local one wins). `_template/` and loose docs are skipped.
 - **Cursor** reads `~/.claude/skills` natively ("Include Third-Party Plugins, Skills,
   and Other Configs", on by default). The script does not link skills into
-  `~/.cursor/skills`. It removes its own old links there and never touches other entries.
+  `~/.cursor/skills` and never touches that folder.
 
 To add a skill: copy `claude/skills/_template/` to `claude/skills/<name>/`, keep the
 folder name == the `name:` in `SKILL.md`, then run `dots` (or `claude/skill-sync.sh` directly).
@@ -89,24 +91,49 @@ the mapping table in `docs/cursor-port.md`.
 `dotfiles_profile` in `scripts/setup-lib.sh` picks one profile per machine:
 
 1. `DOTFILES_PROFILE` env var.
-2. `~/.config/dotfiles/profile`.
-3. `owner` if the owner overlay `~/.config/dotfiles/owner.md` exists. The answer is saved to step 2.
+2. `PROFILE` in the settings (`~/.config/dotfiles/settings`).
+3. `owner` if private rules (`~/.config/dotfiles/owner.md`) exist. The answer is saved to step 2.
 4. Else `shared` (the default).
 
 Every profile links `~/.claude/CLAUDE.md` to `claude/CLAUDE.md`. The repo holds nothing
 personal; private rules live outside it.
 
-- **owner:** `~/.config/dotfiles/owner.md` (plain Markdown, never in git) is linked as
-  `~/.claude/rules/owner.md` (Claude Code loads user rules in every project) and added
-  to the Cursor global rule. Without the file, `dots` warns. Cursor MCP servers are on.
-- **shared:** no overlay. Cursor MCP servers (`cursor/mcp.json`) are opt-in:
-  `echo on > ~/.config/dotfiles/mcp` (or `DOTFILES_MCP=on`), then `dots`. Claude plugins
-  in `claude/settings.json` are shared as is.
-- **The owner on a new Mac** copies `owner.md` to `~/.config/dotfiles/` before the
-  bootstrap. `dots` then picks `owner` and saves it (`DOTFILES_PROFILE=owner` alone is not
-  saved). Check it after `dots`: `rg -n '^## ' ~/.claude/rules/owner.md`.
-- **Personal rules on any Mac** go in `~/.claude/rules/<name>.md`, not in
+- **owner:** the private rules `~/.config/dotfiles/owner.md` (plain Markdown, never in
+  git) are linked as `~/.claude/rules/owner.md` (Claude Code loads user rules in every
+  project) and added to the Cursor global rule. Without the file, `dots` warns.
+- **shared:** no overlay. Claude plugins in `claude/settings.json` are shared as is.
+- **Cursor MCP servers** (`cursor/mcp.json`) are opt-in on every profile: turn them on
+  in `dots settings` (`CURSOR_MCP="on"`), or `DOTFILES_MCP=on` for one run.
+- `DOTFILES_PROFILE=owner` alone is not saved. Check the owner rules:
+  `rg -n '^## ' ~/.claude/rules/owner.md`.
+- **Personal rules** go in the private rules (`dots settings`), not in
   `~/.claude/CLAUDE.md`. That file is the repo file, and a local edit can stop the pull.
+
+## Settings
+
+One private file holds the settings of this Mac: `~/.config/dotfiles/settings`, one
+`NAME="value"` line each, mode 600, never in git. `settings.example` lists every name
+with a note and its default. `dots settings` (also `dots private`) opens a menu that
+shows each setting with its value: pick one, change it, and it saves at once. Done
+ends the menu, then `dots` refreshes the links and the Cursor rule. The first run is
+the run without the file: it asks for the git name and email, then shows the menu once,
+with the cursor on Done.
+
+| Setting | What it does |
+|---|---|
+| `GIT_NAME`, `GIT_EMAIL` | git identity; `dots` writes it to `~/.gitconfig.local` |
+| `PROFILE` | `owner` or `shared` (see "Profiles") |
+| `CURSOR_MCP` | `on` or `off` (empty: off). MCP servers are opt-in on every profile |
+| `JAVA_HOME` | the Java folder new shells use, picked from the Javas found (`java_home`, `/Library/Java`, Homebrew, mise, SDKMAN, asdf, jenv, Gradle, jbang, Android Studio) or typed |
+| `SKIP_STEPS` | `scripts/install.d` steps that never run on this Mac |
+| `PRIVATE_PROJECTS`, `PRIVATE_WORDS` | words the git hooks keep out of commits (see "Conventions") |
+
+- The private rules stay free text in `~/.config/dotfiles/owner.md`. The menu edits them.
+- Secrets never go in the settings. They stay in the ignored `~/.config/zsh/local.zsh`.
+- Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `scripts/agent-config.py`,
+  and `home/.config/zsh/settings.zsh`. `~/.zshrc` sources that file after `local.zsh`,
+  so its `JAVA_HOME` wins. The last line of a name wins.
+- Env vars still win for one run: `DOTFILES_PROFILE`, `DOTFILES_MCP`, `DOTFILES_STEPS`.
 
 ## Conventions
 
@@ -119,9 +146,12 @@ personal; private rules live outside it.
   in the default clone URL (`DOTFILES_REPO` in `bootstrap.sh`, and the README one-liner).
   Private rules go in `~/.config/dotfiles/owner.md`.
   Session notes, hand-offs and ledgers stay in the ignored `.agents/`.
-  Optional guard: list private words in `~/.config/dotfiles/private-words` (one per
-  line). The git hooks then block a staged file name, added line or commit message that
-  holds one.
+  Private words: `PRIVATE_PROJECTS` and `PRIVATE_WORDS` in the settings, plus the git
+  email, the full git name and that name as one word (a word in the origin URL is left
+  out). The git hooks block a staged file name, added line or commit message that
+  holds one. The pre-push hook checks every commit a push adds the same way (cherry-pick,
+  rebase and `--no-verify` skip the commit hooks). It also stops a push that brings a
+  second history (another first commit), such as an old private history.
 - **Idempotent & safe:** setup steps detect what's installed and skip it, back up
   pre-existing config before override, and warn-and-continue on failure. Keep new steps
   that way (source `scripts/setup-lib.sh`).
@@ -136,5 +166,6 @@ personal; private rules live outside it.
 Run the one-liner in README.md "Set up a Mac". `bootstrap.sh` installs Xcode CLT, clones
 this repo (`DOTFILES_REPO`, set at its top), and runs `./dotfiles` end to end. At a
 terminal the first run is guided (gum menus, `scripts/setup-lib.sh`): git name and
-email, optional extras, then the sign-ins in `scripts/install.d/90-sign-in.sh`. Without a
-terminal (a pipe, a test) it reads plain lines from stdin and skips the extras and sign-ins.
+email, the settings menu, an optional extra, then the sign-ins in
+`scripts/install.d/90-sign-in.sh`. Without a terminal (a pipe, a test) it reads the
+name and email as plain lines from stdin and skips the menu, the extra and the sign-ins.

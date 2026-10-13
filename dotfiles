@@ -8,7 +8,9 @@
 #    - a machine that only PULLS: fast-forwards, links what's new, installs
 #      whatever the Brewfile/toolchain steps are missing.
 #
-#  No subcommands, no daemon. Just run it again whenever you want to sync.
+#  No daemon. Just run it again whenever you want to sync.
+#  One option: `dots settings` (or `dots private`) opens the settings menu
+#  (scripts/settings.sh), then refreshes the links and the Cursor rule.
 # ============================================================================
 set -uo pipefail
 
@@ -19,6 +21,16 @@ export DOTFILES="$REPO"
 . "$REPO/scripts/setup-lib.sh" 2>/dev/null \
   || { printf '!! scripts/setup-lib.sh missing or unreadable — repo incomplete?\n' >&2; exit 1; }
 brew_env   # brew and gum on PATH, also in a bare shell
+
+ASK_SETTINGS="" OWN_STEPS=""
+case "${1:-}" in
+  "") ;;
+  settings|private)
+    ASK_SETTINGS=1
+    # Only the Cursor step runs then, to pick up the new settings.
+    if [[ -z "${DOTFILES_STEPS+set}" ]]; then export DOTFILES_STEPS=60-cursor; OWN_STEPS=1; fi ;;
+  *) printf 'usage: dots [settings]\n' >&2; exit 2 ;;
+esac
 
 if [[ -n "${DOTFILES_PULLED:-}" ]]; then
   ok "pulled the latest version"   # the run before this one printed the step
@@ -31,7 +43,7 @@ else
       pull --ff-only --no-rebase --quiet; then
     # New commits can change this script. Run the new one for the rest.
     if [[ "$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" != "$before" ]]; then
-      exec env DOTFILES_PULLED=1 bash "$REPO/dotfiles"
+      exec env DOTFILES_PULLED=1 bash "$REPO/dotfiles" "$@"
     fi
     ok "up to date"
   else
@@ -39,7 +51,7 @@ else
     changed="$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null | cut -c4- | tr '\n' ' ')"
     if [[ -n "$changed" ]]; then info "changed here: $changed"; fi
     if [[ " $changed " == *" claude/CLAUDE.md "* ]]; then
-      info "keep your own Claude rules in ~/.claude/rules/<name>.md, not in claude/CLAUDE.md"
+      info "keep your own rules in your private rules (dots settings), not in claude/CLAUDE.md"
     fi
   fi
 fi
@@ -54,54 +66,51 @@ if at_terminal && ! have gum; then
   fi
 fi
 
+# The first run is the one without a settings file (AGENTS.md "Settings").
 step "Git identity"
-GITCONFIG_LOCAL="$HOME/.gitconfig.local"
 FIRST_RUN=""
-if [[ -f "$GITCONFIG_LOCAL" ]]; then
-  skip "git identity ($GITCONFIG_LOCAL exists)"
-else
+if [[ ! -f "$DOTFILES_SETTINGS" ]]; then
   FIRST_RUN=1
   banner "🦴 dotfiles" "This sets up your Mac for Claude Code and Cursor." \
     "A few questions first, then about 20 to 40 minutes of installs." \
     "Use ↑ ↓ to move and Enter to pick."
-  name="$(git config --global user.name 2>/dev/null || true)"
-  email="$(git config --global user.email 2>/dev/null || true)"
-  [[ -n "$name" ]] || name="$(ask_text "👤 Your name, for git commits" "Jane Doe")" || name=""
-  [[ -n "$email" ]] || email="$(ask_email "✉️  Your email, for git commits" "jane@example.com")" || email=""
-  if [[ -n "$name" && -n "$email" ]]; then
-    printf '[user]\n\tname = %s\n\temail = %s\n' "$name" "$email" > "$GITCONFIG_LOCAL"
-    ok "git commits use: $name <$email>"
-  else
-    warn "no git name or email given. Run dots again in a terminal to set them."
-  fi
+fi
+name="$(setting GIT_NAME)" email="$(setting GIT_EMAIL)"
+# --includes: also read ~/.gitconfig.local, which ~/.gitconfig includes.
+[[ -n "$name" ]] || name="$(git config --global --includes user.name 2>/dev/null || true)"
+[[ -n "$email" ]] || email="$(git config --global --includes user.email 2>/dev/null || true)"
+[[ -n "$name" ]] || name="$(ask_text "👤 Your name, for git commits" "Jane Doe")" || name=""
+[[ -n "$email" ]] || email="$(ask_email "✉️  Your email, for git commits" "jane@example.com")" || email=""
+if [[ -n "$name" && -n "$email" ]]; then
+  [[ "$(setting GIT_NAME)" == "$name" ]] || set_setting GIT_NAME "$name" || warn "couldn't save GIT_NAME"
+  [[ "$(setting GIT_EMAIL)" == "$email" ]] || set_setting GIT_EMAIL "$email" || warn "couldn't save GIT_EMAIL"
+  git_identity "$name" "$email"
+else
+  warn "no git name or email given. Run dots settings in a terminal to set them."
 fi
 export DOTFILES_FIRST_RUN="$FIRST_RUN"
 
-picked="${DOTFILES_PROFILE:-}"
+# The settings menu (scripts/settings.sh): on the first run at a terminal, or any
+# time with: dots settings
+if [[ -n "$FIRST_RUN$ASK_SETTINGS" ]] && at_terminal; then
+  bash "$REPO/scripts/settings.sh" || warn "settings not finished. Run: dots settings"
+elif [[ -n "$ASK_SETTINGS" ]]; then
+  warn "dots settings asks questions, so run it in a terminal"
+fi
+
 PROFILE="$(dotfiles_profile)"
 export DOTFILES_PROFILE="$PROFILE"
 
-# Optional extras, offered once: on the first run, at a terminal. "No" comes first.
-if [[ -n "$FIRST_RUN" ]] && at_terminal; then
-  no="⏭️  No, skip it" app="" mcp=""
-  [[ -d /Applications/Claude.app ]] || app="🖥️  Yes, install the Claude desktop app"
-  if [[ "$PROFILE" == shared && ! -f "$DOTFILES_CONF/mcp" ]]; then
-    mcp="🔌 Yes, add Cloudflare docs search to Cursor"
-  fi
-  if [[ -n "$app$mcp" ]]; then step "Extras"; fi
-  if [[ -n "$app" && "$(ask_one "✨ Install the Claude desktop app too?" "$no" "$app")" == "$app" ]]; then
+# An optional extra, offered once: on the first run, at a terminal. "No" comes first.
+if [[ -n "$FIRST_RUN" ]] && at_terminal && [[ ! -d /Applications/Claude.app ]]; then
+  step "Extras"
+  no="⏭️  No, skip it" app="🖥️  Yes, install the Claude desktop app"
+  if [[ "$(ask_one "✨ Install the Claude desktop app too?" "$no" "$app")" == "$app" ]]; then
     if spin "Installing the Claude app" brew install --cask --quiet claude; then
       ok "Claude desktop app installed"
     else
       warn "couldn't install the Claude app. Try later: brew install --cask claude"
     fi
-  fi
-  if [[ -n "$mcp" ]] && mkdir -p "$DOTFILES_CONF"; then
-    if [[ "$(ask_one "✨ Add Cloudflare docs search (an MCP server) to Cursor?" "$no" "$mcp")" == "$mcp" ]]; then
-      echo on
-    else
-      echo off
-    fi > "$DOTFILES_CONF/mcp"
   fi
 fi
 
@@ -137,19 +146,10 @@ done
 
 step "Linking Claude config -> ~/.claude"
 info "profile: $PROFILE (AGENTS.md \"Profiles\")"
-if [[ "$PROFILE" == shared && -z "$picked" && ! -f "$DOTFILES_CONF/profile" ]]; then
-  info "repo owner on a new Mac? copy your owner.md to ~/.config/dotfiles/, then run dots"
-fi
 CLAUDE_SRC="$REPO/claude"
 CLAUDE_DST="$HOME/.claude"
 if [[ -d "$CLAUDE_SRC" ]]; then
   mkdir -p "$CLAUDE_DST" 2>/dev/null || warn "couldn't create $CLAUDE_DST"
-  # Old shared profile: CLAUDE.md linked a generated copy in .generated/ (git
-  # ignores it). Relink. Keep the folder: it can hold the user's saved edits.
-  if [[ "$(readlink "$CLAUDE_DST/CLAUDE.md" 2>/dev/null)" == "$REPO/.generated/"* ]]; then
-    rm -f "$CLAUDE_DST/CLAUDE.md"
-    info "old CLAUDE.md copy kept in $REPO/.generated. Put your own rules in ~/.claude/rules/<name>.md"
-  fi
   # Per-item, never the whole dir — Claude Code recreates ~/.claude and
   # writes session state there.
   for d in agents hooks output-styles; do
@@ -164,7 +164,7 @@ if [[ -d "$CLAUDE_SRC" ]]; then
     link_item "$OWNER_MD" "$rule"
   else
     if [[ "$PROFILE" == owner ]]; then
-      warn "no $OWNER_MD, so owner-only rules are off on this Mac (AGENTS.md \"Profiles\")"
+      warn "owner profile, but no private rules on this Mac. Add them with: dots settings"
     fi
     if [[ -L "$rule" && "$(readlink "$rule")" == "$OWNER_MD" ]]; then
       rm -f "$rule" && ok "removed the owner rules link"
@@ -182,13 +182,22 @@ else
 fi
 
 if [[ -d "$REPO/scripts/install.d" ]]; then
-  # DOTFILES_STEPS="60-cursor ..." runs only the named steps (for temp-HOME tests).
+  # DOTFILES_STEPS="60-cursor ..." runs only the named steps (for temp-HOME tests),
+  # also the ones in SKIP_STEPS: the env wins for one run. Else SKIP_STEPS in the
+  # settings names steps that never run on this Mac (also in dots settings).
+  skip_steps=" "
+  if [[ -z "${DOTFILES_STEPS:-}" || -n "$OWN_STEPS" ]]; then skip_steps=" $(setting SKIP_STEPS) "; fi
   for f in "$REPO"/scripts/install.d/*.sh; do
     [[ -f "$f" ]] || continue
-    if [[ -n "${DOTFILES_STEPS:-}" && " $DOTFILES_STEPS " != *" $(basename "$f" .sh) "* ]]; then
+    s="$(basename "$f" .sh)"
+    if [[ -n "${DOTFILES_STEPS:-}" && " $DOTFILES_STEPS " != *" $s "* ]]; then
       continue
     fi
-    bash "$f" || warn "$(basename "$f") exited non-zero — see output above"
+    if [[ "$skip_steps" == *" $s "* ]]; then
+      info "$s skipped (Steps to skip, in dots settings)"
+      continue
+    fi
+    bash "$f" || warn "$s.sh exited non-zero — see output above"
   done
 fi
 

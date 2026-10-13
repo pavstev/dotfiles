@@ -4,11 +4,11 @@
 #   Claude Code   ~/.claude/skills   ┐ ADDED per-skill, non-destructively: your
 #   Codex         ~/.codex/skills     ┘ own skills there are left untouched; ours
 #                                       appear alongside them. Re-runnable & safe.
-#   Cursor        reads ~/.claude/skills itself (see unlink_ours below).
+#   Cursor        reads ~/.claude/skills itself, so nothing is linked for it.
 #
 # ~/.claude/skills is a REAL directory, not a whole-dir symlink: plugins and other
 # tools may install their own skill folders there. A whole-dir link would delete
-# them on every run. An existing whole-dir link is migrated by link_each().
+# them on every run. If it is a symlink, link_each() leaves it alone.
 #
 # Skill discovery skips `_template`, dotfiles, and loose files (README/SOURCES).
 # Cursor & Codex read the SKILL.md / agentskills.io format natively. The spec allows
@@ -47,14 +47,9 @@ prune_stale() {
 
 link_each() { # <skills-root>
   local root="$1" name link target
-  # Migrate an old whole-dir symlink (root → $SRC) to a real dir of per-skill links.
   if [[ -L "$root" ]]; then
-    if [[ "$(readlink "$root")" == "$SRC" ]]; then
-      rm -f "$root" && echo "!  $root was a whole-dir link — migrating to per-skill links"
-    else
-      echo "!  $root is a symlink elsewhere — leaving it untouched (skills not added here)" >&2
-      return 0
-    fi
+    echo "!  $root is a symlink, left untouched (no skills added there)" >&2
+    return 0
   fi
   mkdir -p "$root" 2>/dev/null || { echo "!  can't create $root — skipping" >&2; return 0; }
   prune_stale "$root"
@@ -78,29 +73,14 @@ link_each() { # <skills-root>
 mkdir -p "$HOME/.claude" 2>/dev/null || true
 link_each "$HOME/.claude/skills"
 
-# --- Cursor: no links of ours ------------------------------------------------
+# --- Cursor: no links --------------------------------------------------------
 # Cursor loads ~/.claude/skills natively ("Include Third-Party Plugins, Skills, and
 # Other Configs", on by default; https://cursor.com/docs/context/skills, 2026-10-13).
 # A second copy in ~/.cursor/skills adds nothing (3.24.12 drops duplicate paths) and
-# older builds listed such skills twice (forum.cursor.com/t/150137). So we only remove
-# the links we made there before.
-# unlink_ours <root>: remove symlinks that point into $SRC; touch nothing else.
-unlink_ours() {
-  local root="$1" link
-  if [[ -L "$root" ]]; then
-    [[ "$(readlink "$root")" == "$SRC" ]] && rm -f "$root" && echo "·  removed $root (whole-dir link of ours)"
-    return 0
-  fi
-  [[ -d "$root" ]] || return 0
-  for link in "$root"/*; do
-    [[ -L "$link" ]] || continue
-    [[ "$(readlink "$link")" == "$SRC"/* ]] || continue
-    rm -f "$link" && echo "·  removed $link (Cursor reads ~/.claude/skills)"
-  done
-}
+# older builds listed such skills twice (forum.cursor.com/t/150137). So this script
+# never touches ~/.cursor/skills.
 
-# Other agents: only if installed.
-[[ -d "$HOME/.cursor" ]] && unlink_ours "$HOME/.cursor/skills"
+# Codex: only if installed.
 [[ -d "$HOME/.codex"  ]] && { echo "›› Codex detected — adding skills (non-destructive)";   link_each "$HOME/.codex/skills"; }
 
 echo "✓ skill-sync complete"

@@ -1,0 +1,29 @@
+# dotfiles settings: one NAME="value" line each. Your copy is
+# ~/.config/dotfiles/settings (mode 600, never in git). Change it with the menu,
+# `dots settings`, or by hand. An empty value means the default.
+# A value stays on one line, without " \ $ or `. Notes go on their own lines.
+
+# Your name and email for git commits (dots writes them to ~/.gitconfig.local).
+GIT_NAME=""
+GIT_EMAIL=""
+
+# owner or shared (AGENTS.md "Profiles"). Empty: owner when your private rules
+# (~/.config/dotfiles/owner.md) exist, else shared.
+PROFILE=""
+
+# Cloudflare docs search (an MCP server) in Cursor: on or off. Empty: off.
+# MCP servers are opt-in on every profile.
+CURSOR_MCP=""
+
+# The Java folder that new shells use as JAVA_HOME (the folder with bin/java).
+# Empty: dots sets no JAVA_HOME.
+JAVA_HOME=""
+
+# Setup steps that dots always skips, split by spaces. The names are the files in
+# scripts/install.d without .sh, for example: 70-macos-defaults
+SKIP_STEPS=""
+
+# Words the repo's git hooks keep out of every commit, split by spaces. Your git
+# email, your full git name and the name written as one word count too.
+PRIVATE_PROJECTS=""
+PRIVATE_WORDS=""

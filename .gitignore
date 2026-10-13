@@ -22,9 +22,5 @@ tmp/
 __pycache__/
 .pytest_cache/
 
-# Old generated CLAUDE.md copy (shared profile until 2026-10-13). dots keeps it: it can
-# hold the user's saved edits.
-.generated/
-
 # Session notes, hand-offs and ledgers from AI agents stay on the machine
 .agents/
