@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# pre-push: check each commit that this push adds to the remote.
+# - A commit that holds a private word (private-words.sh) stops the push. Commits
+#   made by cherry-pick, rebase, a merge or --no-verify skip the commit hooks.
+# - A second history (another first commit) for a remote that has one stops the
+#   push. So an old private history never mixes with a public one.
+# Wired with the other hooks: git config core.hooksPath scripts/git-hooks (install.d/77).
+set -uo pipefail
+. "$(dirname "$0")/private-words.sh"
+
+remote="$1"
+status=0
+while read -r lref lsha _ _; do
+  if [[ "$lsha" =~ ^0+$ ]]; then continue; fi   # a delete adds nothing
+  # The commits the remote does not have yet, as far as this clone knows.
+  new=(--not --remotes="$remote")
+  [[ -n "$(git rev-list -1 "$lsha" "${new[@]}" 2>/dev/null)" ]] || continue
+  if [[ -n "$(git for-each-ref --count=1 "refs/remotes/$remote/")" &&
+        -n "$(git rev-list --max-parents=0 "$lsha" "${new[@]}")" ]]; then
+    printf '\n\033[1;31m✖ pre-push: %s brings a second history to %s (another first commit).\033[0m\n' "$lref" "$remote"
+    printf 'Old history of another repo? Push it to that repo.\n\n'
+    status=1
+    continue
+  fi
+  priv=$(
+    { git log --format=%B "$lsha" "${new[@]}"
+      git log --format= --name-only --diff-filter=d "$lsha" "${new[@]}"
+      git log --format= -p -U0 --no-color --no-ext-diff --diff-merges=first-parent "$lsha" "${new[@]}" |
+        grep -E '^\+' | grep -vE '^\+\+\+ (b/|/dev/null)'
+    } | private_hits
+  )
+  if [[ -n "$priv" ]]; then
+    printf '\n\033[1;31m✖ pre-push: a commit in %s holds a private word (dots settings):\033[0m\n\n' "$lref"
+    printf '%s\n' "$priv" | head -20
+    printf '\n'
+    status=1
+  fi
+done
+exit "$status"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time: wire the git hooks of the dotfiles repo itself.
 # Sets core.hooksPath in ~/dotfiles/.git/config (not in ~/.gitconfig).
-# The hooks in scripts/git-hooks/ then run on every `git commit`.
+# The hooks in scripts/git-hooks/ then run on every `git commit` and `git push`.
 set -uo pipefail
 . "$REPO/scripts/setup-lib.sh"
 

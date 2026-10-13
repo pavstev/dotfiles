@@ -149,7 +149,9 @@ with the cursor on Done.
   Private words: `PRIVATE_PROJECTS` and `PRIVATE_WORDS` in the settings, plus the git
   email, the full git name and that name as one word (a word in the origin URL is left
   out). The git hooks block a staged file name, added line or commit message that
-  holds one.
+  holds one. The pre-push hook checks every commit a push adds the same way (cherry-pick,
+  rebase and `--no-verify` skip the commit hooks). It also stops a push that brings a
+  second history (another first commit), such as an old private history.
 - **Idempotent & safe:** setup steps detect what's installed and skip it, back up
   pre-existing config before override, and warn-and-continue on failure. Keep new steps
   that way (source `scripts/setup-lib.sh`).

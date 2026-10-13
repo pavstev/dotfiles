@@ -221,7 +221,7 @@ dotfiles/
 │   │                         #   (DOTFILES_STEPS="60-cursor" ./dotfiles runs only the named steps;
 │   │                         #    pull, links and skill sync still run)
 │   ├── fix-brew-permissions.sh
-│   └── git-hooks/            # secret scan, private words (wired by install.d/77)
+│   └── git-hooks/            # secret scan, private words, push check (install.d/77)
 ```
 
 ## Customizing
