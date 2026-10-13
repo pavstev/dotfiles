@@ -237,6 +237,7 @@ dotfiles/
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
 | bat / lazygit / btop / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
+| Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | next session (a deny beats every allow) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
 | Settings: git name, profile, Cursor MCP, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
