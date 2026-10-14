@@ -6,6 +6,11 @@
 #   bag-check.sh --watch [N]    repeat the card every N seconds (default 60); the ETA counts down
 # ETA formats: 45  45m  2h  1h30m. Always ends with one "VERDICT:" line.
 set -uo pipefail
+if [ "$(uname -s)" != Darwin ]; then
+  echo "bag-mode is for a Mac laptop (it reads pmset, sysctl and Amphetamine). Nothing to check on $(uname -s)."
+  echo "VERDICT: NOT APPLICABLE (not a Mac)"
+  exit 0
+fi
 PS=/bin/ps
 NCPU=$(sysctl -n hw.ncpu)
 HEAVY=${BAG_HEAVY_CPU:-15}   # % of ONE core that counts as "heavy"

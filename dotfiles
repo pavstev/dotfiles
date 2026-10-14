@@ -71,7 +71,8 @@ step "Git identity"
 FIRST_RUN=""
 if [[ ! -f "$DOTFILES_SETTINGS" ]]; then
   FIRST_RUN=1
-  banner "🦴 dotfiles" "This sets up your Mac for Claude Code and Cursor." \
+  is_macos && machine="Mac" || machine="Linux machine"
+  banner "🦴 dotfiles" "This sets up your $machine for Claude Code and Cursor." \
     "A few questions first, then about 20 to 40 minutes of installs." \
     "Use ↑ ↓ to move and Enter to pick."
 fi
@@ -102,7 +103,7 @@ PROFILE="$(dotfiles_profile)"
 export DOTFILES_PROFILE="$PROFILE"
 
 # An optional extra, offered once: on the first run, at a terminal. "No" comes first.
-if [[ -n "$FIRST_RUN" ]] && at_terminal && [[ ! -d /Applications/Claude.app ]]; then
+if is_macos && [[ -n "$FIRST_RUN" ]] && at_terminal && [[ ! -d /Applications/Claude.app ]]; then
   step "Extras"
   no="⏭️  No, skip it" app="🖥️  Yes, install the Claude desktop app"
   if [[ "$(ask_one "✨ Install the Claude desktop app too?" "$no" "$app")" == "$app" ]]; then
@@ -120,8 +121,10 @@ step "Linking files"
 # secrets and per-machine state (gh hosts.yml, atuin data dir, VS Code/
 # Cursor caches, Raycast tokens, Docker/OrbStack/Cloudflared state, …)
 # simply live outside this list.
-LINKS=(
-  ".config/aerospace"
+LINKS=()
+# AeroSpace is a Mac window manager.
+if is_macos; then LINKS+=(".config/aerospace"); fi
+LINKS+=(
   ".config/atuin"
   ".config/bat"
   ".config/btop"
@@ -135,13 +138,18 @@ LINKS=(
   ".config/zsh"
   ".gitconfig"
   ".zshrc"
-  "Library/Application Support/Code/User/settings.json"
-  "Library/Application Support/Code/User/keybindings.json"
-  "Library/Application Support/Cursor/User/settings.json"
-  "Library/Application Support/Cursor/User/keybindings.json"
 )
 for item in "${LINKS[@]}"; do
   link_item "$REPO/home/$item" "$HOME/$item"
+done
+
+# VS Code and Cursor settings: the repo keeps them under their Mac path in home/.
+# The same files link to where each OS looks for them.
+if is_macos; then editor_cfg="Library/Application Support"; else editor_cfg=".config"; fi
+for app in Code Cursor; do
+  for f in settings.json keybindings.json; do
+    link_item "$REPO/home/Library/Application Support/$app/User/$f" "$HOME/$editor_cfg/$app/User/$f"
+  done
 done
 
 step "Linking Claude config -> ~/.claude"
@@ -155,9 +163,14 @@ if [[ -d "$CLAUDE_SRC" ]]; then
   for d in agents hooks output-styles; do
     link_item "$CLAUDE_SRC/$d" "$CLAUDE_DST/$d"
   done
-  for f in CLAUDE.md settings.json statusline.sh; do
+  for f in CLAUDE.md statusline.sh; do
     link_item "$CLAUDE_SRC/$f" "$CLAUDE_DST/$f"
   done
+  # settings.json is built, not linked: the repo base plus the private layer
+  # (~/.config/dotfiles/claude-settings.json). Claude writes this file itself; what
+  # it changed since the last build moves into the private layer first.
+  python3 "$REPO/scripts/agent-config.py" claude-settings build \
+    || warn "couldn't build ~/.claude/settings.json, so it stays as it was"
   # The owner's private rules (never in the repo) load as a Claude user rule.
   rule="$CLAUDE_DST/rules/owner.md"
   if [[ "$PROFILE" == owner && -f "$OWNER_MD" ]]; then
@@ -206,7 +219,8 @@ brew_env   # step 10 can install it during this run
 if ! have brew; then
   warn "Homebrew is missing, so the apps and tools did not install. Fix the error above, then run dots again."
 elif [[ -n "$FIRST_RUN" ]]; then
-  banner "✅ All set" "Open a new Terminal window." \
+  is_macos && new_shell="Open a new Terminal window." || new_shell="Open a new terminal, or run: exec zsh"
+  banner "✅ All set" "$new_shell" \
     "Claude Code: run claude, then type /ps: to see the skills." \
     "Cursor: open the chat, then type /ps: to see the same skills."
 fi

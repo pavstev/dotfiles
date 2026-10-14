@@ -4,6 +4,7 @@
 # the remaining settings still apply.
 set -uo pipefail
 . "$REPO/scripts/setup-lib.sh"
+only_macos "macOS defaults"
 
 step "macOS defaults"
 info "Applying curated development defaults…"

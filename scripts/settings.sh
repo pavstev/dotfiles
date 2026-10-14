@@ -48,6 +48,7 @@ java_homes() {
       "${SDKMAN_DIR:-$HOME/.sdkman}"/candidates/java/* \
       "${ASDF_DATA_DIR:-$HOME/.asdf}"/installs/java/* "${JENV_ROOT:-$HOME/.jenv}"/versions/* \
       "$HOME"/.gradle/jdks/* "$HOME"/.gradle/jdks/*/* "$HOME"/.jbang/cache/jdks/* \
+      /usr/lib/jvm/* "$HOME"/.local/share/JetBrains/Toolbox/apps/android-studio/jbr \
       "/Applications/Android Studio.app/Contents/jbr" "${JAVA_HOME:-}"; do
       printf '%s\n' "$d"
     done

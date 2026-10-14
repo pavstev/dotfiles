@@ -1,6 +1,6 @@
 # dotfiles guide
 
-The full reference. To set up a Mac, start with the [README](../README.md).
+The full reference. To set up a Mac or a Linux machine, start with the [README](../README.md).
 
 > [!IMPORTANT]
 > Run `./dotfiles` from the Terminal app, not inside a Claude Code session. Claude rewrites
@@ -23,7 +23,7 @@ changes. The old tools get eaten by faster, prettier ones. The terminal goes **b
 - 🛟 **Override-safe**: a pre-existing config file is **moved aside** to
   `<file>.bak-<timestamp>` before its link goes in, so adopting these defaults on a
   machine that's already set up never costs you your old setup.
-- 🧳 **Portable**: Apple Silicon + Intel; machine-specific bits live in gitignored local files.
+- 🧳 **Portable**: Apple Silicon + Intel Macs, and Debian 13 and Ubuntu 24.04; machine-specific bits live in gitignored local files.
 - 🤖 **AI-ready**: Claude Code skills, agents, hooks, and settings live here and follow you everywhere.
 - 🎨 **Coherent**: one warm copper-on-stone palette across Ghostty, Starship, fzf, delta, atuin, and the prompt.
 
@@ -71,7 +71,7 @@ The repo owns your global Claude setup and symlinks each piece into `~/.claude`
 
 ```
 claude/
-├── settings.json   → ~/.claude/settings.json     curated, shared
+├── settings.json   ⇒ ~/.claude/settings.json     built by dots (see below), shared base
 ├── CLAUDE.md       → ~/.claude/CLAUDE.md          global instructions
 ├── statusline.sh   → ~/.claude/statusline.sh      copper-themed status line
 ├── skills/         → ~/.claude/skills  (per-skill; Cursor reads it)
@@ -79,6 +79,19 @@ claude/
 ├── hooks/          → ~/.claude/hooks
 └── output-styles/  → ~/.claude/output-styles
 ```
+
+`settings.json` is the one piece that is built, not linked, because Claude writes it
+itself. `dots` writes `~/.claude/settings.json` from `claude/settings.json` (the shared
+base) with your private layer `~/.config/dotfiles/claude-settings.json` on top (mode 600,
+never in git, on any profile). Objects merge, your values win, and `permissions.allow`,
+`deny` and `ask` add up. A key set to `null` in the layer removes it.
+
+Before it builds, `dots` compares the live file with what it wrote last time
+(`~/.config/dotfiles/claude-settings.last.json`). Each key Claude or you changed since
+then moves into the private layer, and `dots` prints its name (never its value). So
+nothing is lost, the repo stays clean, and the next run prints nothing new. A rewrite that
+only changes the layout counts as no change. To share a kept key with everyone, run
+`python3 scripts/agent-config.py claude-settings promote <key>` and commit.
 
 **Skills are the headline.** One source (`claude/skills`), synced everywhere by
 [`skill-sync.sh`](../claude/skill-sync.sh): write once, use in every agent. Skills use the
@@ -146,6 +159,53 @@ Cursor.app so you can sign in there too.
   [`CLAUDE.md`](../CLAUDE.md) (which imports it) teach any AI agent how to operate this repo,
   so Claude or Cursor on a fresh machine knows the workflow without being told.
 
+## Linux
+
+`./dotfiles` runs on Debian 13 and Ubuntu 24.04 (x86_64 and arm64) as a normal user with `sudo`.
+The code asks the OS with `is_macos` and `is_linux` (`scripts/setup-lib.sh`); a Mac behaves as
+before. On Linux:
+
+- **Packages:** step `05-linux-prereqs` installs `build-essential`, `curl`, `file`, `git`,
+  `procps`, `python3` and `zsh` with `apt`. Step `10-homebrew` then installs Homebrew on Linux
+  (`/home/linuxbrew/.linuxbrew`), and `20-brew-bundle` installs the Brewfile from it. A temp
+  copy of the Brewfile drops the lines that only work on a Mac (`cask`, `mas`, `tap`,
+  `vscode`). One Brewfile and one tool version on both systems, and no `batcat` or `fdfind`.
+- **Skipped on Linux:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
+  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Fira Code Nerd Font
+  are Mac-only too.
+- **Links:** `~/.config/Code/User/*` and `~/.config/Cursor/User/*` link to the same
+  files that a Mac gets under `~/Library/Application Support`. Ghostty reads
+  `~/.config/ghostty` on both.
+- **Shell:** `init.zsh` finds Homebrew on Linux, falls back to `C.UTF-8` when `en_US.UTF-8` is
+  not built, and sets `GIT_EDITOR` to `$EDITOR` in interactive zsh when VS Code is not installed
+  (`~/.gitconfig` asks for `code --wait`; git from bash or a hook still uses that).
+- **Not changed:** the login shell. `78-linux-extras` prints the `chsh` line when it is not zsh.
+- **Without `sudo`:** install the packages in `LINUX_PREREQS` (`scripts/setup-lib.sh`) as root,
+  and install Homebrew yourself under `~/.linuxbrew`; `dots` finds it there. Homebrew on Linux
+  needs a user that is not root.
+- **Other distros:** the prerequisites step needs `apt-get`. Without it, it prints the package
+  list and carries on; the Homebrew installer may then complain about missing tools.
+- **Skills:** `ps:bag-mode` is for a Mac laptop. On Linux its script says so and exits 0.
+  The other skill scripts run on both.
+
+### Test it
+
+`scripts/test-linux.sh <image>` runs `./dotfiles` twice in a fresh container, as a user with
+`sudo`, on a host with podman or docker (rootless podman is enough):
+
+```sh
+bash scripts/test-linux.sh debian:13
+bash scripts/test-linux.sh ubuntu:24.04
+```
+
+It builds a small base image once, copies the working tree in (git-ignored files stay out),
+runs `./dotfiles` and again `./dotfiles`, and checks: run 1 exits 0 with no warning, run 2
+changes nothing, the links, the tools, `zsh -ic exit` prints nothing, `bash -n` on every shell
+script, and the four Python test files. `--keep` leaves the container for a look
+(`podman exec -it dots-test-debian-13 bash`), `--reuse` syncs your edits into it and runs again.
+It runs without a terminal, so the gum menus, the password prompts and the sign-in step are
+not covered. A run takes about 10 minutes.
+
 ## Secrets
 
 This repo is **public**, so plaintext secrets never enter it:
@@ -183,7 +243,7 @@ fullscreen · `⌥⇧ ;` service mode (reload / reset).
 dotfiles/
 ├── assets/logo.svg           # the mark above
 ├── AGENTS.md  CLAUDE.md      # how AI agents (Claude/Cursor) operate this repo
-├── bootstrap.sh              # fresh-Mac one-liner
+├── bootstrap.sh              # fresh-machine one-liner (Mac, Debian, Ubuntu)
 ├── dotfiles                  # the one command: pull + link + provision
 ├── Brewfile                  # every package + VS Code extensions (Brewfile.local for extras)
 ├── claude/                   # Claude config, symlinked into ~/.claude
@@ -213,14 +273,18 @@ dotfiles/
 │   ├── settings.sh           # the settings menu: first run and `dots settings`
 │   ├── agent-config.py       # generates and merges the Cursor files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
+│   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
-│   │                         #   10 homebrew
+│   │                         #   05 linux-prereqs (Linux only)
+│   │                         #   → 10 homebrew
 │   │                         #   → 20 brew-bundle → 30 omz → 40 rust → 50 node → 55 gh
 │   │                         #   → 57 claude-code → 60 cursor → 70 macos → 72 touch-id
-│   │                         #   → 75 terminal → 77 git-hooks → 90 sign-in
+│   │                         #   → 75 terminal → 77 git-hooks → 78 linux-extras → 90 sign-in
+│   │                         #   (70, 72, 75: macOS only; 05, 78: Linux only)
 │   │                         #   (DOTFILES_STEPS="60-cursor" ./dotfiles runs only the named steps;
 │   │                         #    pull, links and skill sync still run)
-│   ├── fix-brew-permissions.sh
+│   ├── fix-brew-permissions.sh   # macOS only
+│   ├── test-linux.sh         # runs ./dotfiles twice in a Debian or Ubuntu container
 │   └── git-hooks/            # secret scan, private words, push check (install.d/77)
 ```
 
@@ -237,7 +301,9 @@ dotfiles/
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
 | bat / lazygit / btop / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
-| Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | next session (a deny beats every allow) |
+| Claude settings (`claude/settings.json`) | the repo base for everyone; your own keys go in `~/.config/dotfiles/claude-settings.json` | `dots` (it builds `~/.claude/settings.json`) |
+| Share a key Claude saved for you | `python3 scripts/agent-config.py claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
+| Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | `dots`, then the next session (a deny beats every allow) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
 | Settings: git name, profile, Cursor MCP, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
@@ -270,7 +336,7 @@ from there. Homebrew packages, Oh My Zsh, and toolchains stay installed.
 For Cursor, delete the generated files and our merged entries:
 
 1. `rm ~/.cursor/rules/claude-global.mdc ~/.cursor/rules/claude-output-style.mdc`
-2. `rm ~/.cursor/agents/code-reviewer.md ~/.cursor/agents/researcher.md ~/.cursor/.dotfiles-managed.json`
+2. `rm $(grep -l 'generated-by: dotfiles' ~/.cursor/agents/*.md) ~/.cursor/.dotfiles-managed.json`
 3. In `~/.cursor/hooks.json`, delete the 5 entries that run `cursor/hooks/guard_cursor.py`.
 4. In `~/.cursor/mcp.json`, delete `cloudflare-docs` (only there when MCP is on).
 
@@ -281,6 +347,9 @@ For Cursor, delete the generated files and our merged entries:
 
 **`~/.claude` didn't get linked.** You ran `./dotfiles` inside a Claude Code session,
 which can race Claude rewriting `~/.claude` live. Re-run `dots` from a plain shell.
+
+**Linux: a step failed at `apt` or Homebrew.** Run `dots` again after fixing the line above it.
+The Homebrew installer needs `sudo` and a user that is not root.
 
 **Icons look like boxes.** The Nerd Font is wired into **both** terminals automatically:
 Ghostty via its config, Apple Terminal via `scripts/install.d/75-terminal-appearance.sh`

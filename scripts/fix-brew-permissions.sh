@@ -13,6 +13,12 @@
 # ============================================================================
 set -euo pipefail
 
+if [[ "$(uname -s)" != Darwin ]]; then
+  echo "This script is for macOS. On Linux, Homebrew belongs to your user:" >&2
+  echo "  sudo chown -R \"\$USER\" /home/linuxbrew/.linuxbrew" >&2
+  exit 1
+fi
+
 # Resolve the Homebrew prefix (Apple Silicon or Intel).
 if command -v brew >/dev/null 2>&1; then
   PREFIX="$(brew --prefix)"

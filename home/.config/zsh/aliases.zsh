@@ -85,8 +85,13 @@ alias mkdir='mkdir -p'
 alias reload='exec zsh'
 alias dot='cd "$DOTFILES"'
 alias path='echo -e ${PATH//:/\\n}'
-alias ports='lsof -iTCP -sTCP:LISTEN -n -P'
-alias localip='ipconfig getifaddr en0'
+if [[ $OSTYPE == darwin* ]]; then
+  alias ports='lsof -iTCP -sTCP:LISTEN -n -P'
+  alias localip='ipconfig getifaddr en0'
+else
+  alias ports='ss -tlnp'
+  alias localip="hostname -I | awk '{print \$1}'"
+fi
 alias myip='curl -s ifconfig.me; echo'
 
 # ---- dotfiles (workflow: edit source -> it's live; `dots` for new files) --

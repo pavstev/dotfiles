@@ -36,7 +36,8 @@ new files, package installs, and machine setup only take effect after running
 | `settings.example` | every setting with a note and its default. This Mac's copy is `~/.config/dotfiles/settings` (see "Settings"). |
 | `scripts/settings.sh` | the settings menu: `dots settings` (also `dots private`) and the first run. |
 | `scripts/setup-lib.sh` | shared step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`) and `dotfiles_profile`. |
-| `bootstrap.sh` | fresh-Mac one-liner. |
+| `scripts/test-linux.sh` | runs `./dotfiles` twice in a fresh Debian or Ubuntu container (podman or docker) and checks the result. |
+| `bootstrap.sh` | fresh-machine one-liner (Mac, Debian, Ubuntu). |
 
 ## Sync & update
 
@@ -79,12 +80,38 @@ the mapping table in `docs/cursor-port.md`.
 - Rules in every folder (also outside `$HOME`): run `cursor-rules`, then paste in Cursor
   Settings > Rules > User Rules. `dots` then skips the file rule and warns when to paste again.
 - Never edit the generated files under `~/.cursor`. The next `dots` overwrites them.
-- Unit tests: `python3 scripts/test_agent_config.py`, `python3 cursor/hooks/test_guard_cursor.py`
-  and `python3 claude/hooks/test_guard.py`. They must also pass on `/usr/bin/python3` (3.9).
+- Unit tests: `python3 scripts/test_agent_config.py`, `python3 cursor/hooks/test_guard_cursor.py`,
+  `python3 claude/hooks/test_guard.py` and every `claude/skills/*/scripts/test_*.py` (pre-commit
+  runs those). They must also pass on `/usr/bin/python3` (3.9).
+- `bash scripts/test-dotfiles.sh` runs `./dotfiles` in a temp HOME with a temp repo and origin:
+  first run, owner profile saved, owner rules linked and unlinked, a second run that changes
+  nothing, the restart after a pull. About 2 seconds, nothing installs.
 - Test in a temp HOME: `HOME=$(mktemp -d) DOTFILES_STEPS=60-cursor ./dotfiles`.
   `DOTFILES_STEPS` takes install.d step names without `.sh`; empty runs all steps.
   It filters only the install.d steps: the pull, git identity prompt, links and
   skill sync still run.
+
+## Linux
+
+`./dotfiles` also runs on Debian 13 and Ubuntu 24.04 (a normal user with `sudo`). The Mac is the
+reference: a Mac run must behave as before. The rules for any change:
+
+- **Ask the OS with the helpers** `is_macos`, `is_linux` and `only_macos <what>` in
+  `scripts/setup-lib.sh`. Never test `uname` inline in a step. Python uses `sys.platform`.
+- **A Mac-only step** starts with `only_macos "<what>"`. On Linux it prints `<what>: macOS only,
+  skipping`. A Linux-only step starts with `is_linux || exit 0` and prints nothing on a Mac.
+- **Tools** come from Homebrew on Linux (`/home/linuxbrew/.linuxbrew`), from the same Brewfile.
+  `brewfile_for_os` hands `brew bundle` a temp copy without `cask`, `mas`, `tap`, `vscode` and
+  `brew "mas"` lines. apt installs only `LINUX_PREREQS` (step `05-linux-prereqs`). Do not add `apt install`
+  of tools: the apt names and versions differ between Debian and Ubuntu.
+- **Paths:** `brew_env` knows the Linux prefixes. Editor settings keep their Mac path under
+  `home/Library/Application Support/` and link to `~/.config/{Code,Cursor}/User` on Linux.
+- **No GNU-only or BSD-only flags** in scripts that run on both (`sed -i`, `stat`, `date -j`, `readlink -f`).
+- **Test it:** `bash scripts/test-linux.sh debian:13` and `ubuntu:24.04`. Both must exit 0, and the
+  second `./dotfiles` run must change nothing. Needs podman or docker on the host that runs it
+  (tested with rootless podman on a Linux host). `--keep` leaves the container, `--reuse` runs
+  your new edits in it again.
+- The unit tests must pass on Linux python too, so tests may not assume Mac paths or `pbcopy`.
 
 ## Profiles
 
@@ -102,6 +129,12 @@ personal; private rules live outside it.
   git) are linked as `~/.claude/rules/owner.md` (Claude Code loads user rules in every
   project) and added to the Cursor global rule. Without the file, `dots` warns.
 - **shared:** no overlay. Claude plugins in `claude/settings.json` are shared as is.
+- **Claude settings** on every profile: `dots` builds `~/.claude/settings.json` (a real
+  file, not a link) from `claude/settings.json` plus the private layer
+  `~/.config/dotfiles/claude-settings.json`. What Claude changed in the live file since
+  the last build moves into the layer first (`scripts/agent-config.py claude-settings
+  build`). `claude-settings promote <key>` moves a key from the layer to the repo base.
+  Owner-only keys (a default permission mode, a skipped warning) live in the layer.
 - **Cursor MCP servers** (`cursor/mcp.json`) are opt-in on every profile: turn them on
   in `dots settings` (`CURSOR_MCP="on"`), or `DOTFILES_MCP=on` for one run.
 - `DOTFILES_PROFILE=owner` alone is not saved. Check the owner rules:
@@ -129,6 +162,7 @@ with the cursor on Done.
 | `PRIVATE_PROJECTS`, `PRIVATE_WORDS` | words the git hooks keep out of commits (see "Conventions") |
 
 - The private rules stay free text in `~/.config/dotfiles/owner.md`. The menu edits them.
+- Claude settings of this Mac: `~/.config/dotfiles/claude-settings.json` (see "Profiles").
 - Secrets never go in the settings. They stay in the ignored `~/.config/zsh/local.zsh`.
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `scripts/agent-config.py`,
   and `home/.config/zsh/settings.zsh`. `~/.zshrc` sources that file after `local.zsh`,
@@ -152,6 +186,8 @@ with the cursor on Done.
   holds one. The pre-push hook checks every commit a push adds the same way (cherry-pick,
   rebase and `--no-verify` skip the commit hooks). It also stops a push that brings a
   second history (another first commit), such as an old private history.
+- **Mac and Linux:** one code path where possible; each OS-only branch sits behind `is_macos` or
+  `is_linux` (see "Linux"). The Mac output stays the same.
 - **Idempotent & safe:** setup steps detect what's installed and skip it, back up
   pre-existing config before override, and warn-and-continue on failure. Keep new steps
   that way (source `scripts/setup-lib.sh`).

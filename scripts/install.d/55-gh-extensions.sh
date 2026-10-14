@@ -9,7 +9,9 @@ brew_env
 
 have gh || { warn "gh not found — skipping extensions."; exit 0; }
 
-if gh extension list 2>/dev/null | grep -q "dlvhdr/gh-dash"; then
+# `gh extension list` wants a login on some systems, so the extension folder counts too.
+if gh extension list 2>/dev/null | grep -q "dlvhdr/gh-dash" \
+   || [[ -d "${XDG_DATA_HOME:-$HOME/.local/share}/gh/extensions/gh-dash" ]]; then
   skip "gh-dash extension"
 else
   info "Installing gh-dash extension…"

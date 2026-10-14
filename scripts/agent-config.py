@@ -3,10 +3,17 @@
 
   agent-config.py cursor --profile owner|shared [--dry-run]
   agent-config.py user-rules [--profile owner|shared] [--copy]   # for Cursor User Rules
+  agent-config.py claude-settings build [--dry-run]       # ~/.claude/settings.json
+  agent-config.py claude-settings promote <dotted.key>    # private layer -> repo base
 
 `cursor` writes generated files under ~/.cursor (rules, agents) and merges keys into
 the JSON files Cursor also writes itself (hooks.json, mcp.json, cli-config.json).
-It never writes under ~/.claude. Design and gap table: docs/cursor-port.md.
+`cursor` never writes under ~/.claude. Design and gap table: docs/cursor-port.md.
+
+`claude-settings build` writes ~/.claude/settings.json: the repo base
+(claude/settings.json) with the private layer (~/.config/dotfiles/claude-settings.json)
+on top. A change Claude made to the live file since the last build moves into the
+private layer first, so nothing is lost and nothing reaches the public repo.
 The owner profile adds the private ~/.config/dotfiles/owner.md to the rules.
 
 Ownership: a generated Markdown file holds MARK. A file without it is the user's and
@@ -14,12 +21,14 @@ is left alone. JSON merges keep the user's values (except the attribution switch
 and back the file up to <file>.bak-<timestamp> before a change.
 """
 import argparse
+import copy
 import datetime
 import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import sys
 import tempfile
@@ -496,6 +505,16 @@ def cmd_cursor(args):
     return 1 if failed else 0
 
 
+def clipboard_command():
+    """The command that copies stdin to the clipboard: pbcopy on a Mac, else wl-copy, xclip or xsel."""
+    if sys.platform == "darwin":
+        return ["pbcopy"]
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+        if shutil.which(cmd[0]):
+            return cmd
+    return None
+
+
 def cmd_user_rules(args):
     """Print the rules for Cursor's User Rules box, or copy them and switch off the file copy.
 
@@ -509,7 +528,12 @@ def cmd_user_rules(args):
         return 0
     import subprocess
 
-    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+    copy = clipboard_command()
+    if not copy:
+        warn("no clipboard tool found (install wl-clipboard or xclip). Printing the rules instead.")
+        sys.stdout.write(text)
+        return 1
+    subprocess.run(copy, input=text.encode(), check=True)
     atomic_write(home / USER_RULES_MARK, sha(text) + "\n")
     for f in ("claude-global.mdc", "claude-output-style.mdc"):
         remove_generated(home / ".cursor" / "rules" / f, "the rules move to Cursor User Rules")
@@ -517,6 +541,187 @@ def cmd_user_rules(args):
     info("Now: Cursor > Cursor Settings > Rules > User Rules > paste > save.")
     info(f"To go back to the file copy: rm {tilde(home / USER_RULES_MARK)} && dots")
     return 0
+
+
+# --- Claude settings: repo base + private layer -> ~/.claude/settings.json ----
+LAYER = CONF / "claude-settings.json"  # private, never in the repo; any profile
+LAST = CONF / "claude-settings.last.json"  # what the last build wrote, to see Claude's changes
+LIVE = Path(".claude") / "settings.json"
+# Lists that merge as a union (base first). Every other list is replaced whole.
+UNION = {("permissions", "allow"), ("permissions", "deny"), ("permissions", "ask"),
+         ("permissions", "additionalDirectories")}
+
+
+def merge(base, layer, path=()):
+    """base with layer on top. A None in the layer removes the key."""
+    out = copy.deepcopy(base)
+    for k, v in layer.items():
+        p = path + (k,)
+        if v is None:
+            out.pop(k, None)
+        elif isinstance(out.get(k), dict) and isinstance(v, dict):
+            out[k] = merge(out[k], v, p)
+        elif p in UNION and isinstance(out.get(k), list) and isinstance(v, list):
+            out[k] = out[k] + [x for x in v if x not in out[k]]
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def drift(last, live, path=()):
+    """What changed from last to live, as a layer patch, plus notes (kind, path, n)."""
+    patch, notes = {}, []
+    for k, v in live.items():
+        p = path + (k,)
+        old = last.get(k)
+        if k not in last:
+            patch[k] = copy.deepcopy(v)
+            notes.append(("set", p, 0))
+        elif isinstance(old, dict) and isinstance(v, dict):
+            sub, n = drift(old, v, p)
+            if sub:
+                patch[k] = sub
+            notes += n
+        elif p in UNION and isinstance(old, list) and isinstance(v, list):
+            added = [x for x in v if x not in old]
+            removed = [x for x in old if x not in v]
+            if added:
+                patch[k] = added
+                notes.append(("add", p, len(added)))
+            if removed:
+                notes.append(("removed", p, len(removed)))
+        elif old != v:
+            patch[k] = copy.deepcopy(v)
+            notes.append(("set", p, 0))
+    for k in last:
+        if k not in live:
+            patch[k] = None
+            notes.append(("unset", path + (k,), 0))
+    return patch, notes
+
+
+def apply_patch(layer, patch, path=()):
+    """Store a drift patch in the layer. None stays as a removal."""
+    out = copy.deepcopy(layer)
+    for k, v in patch.items():
+        p = path + (k,)
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = apply_patch(out[k], v, p)
+        elif p in UNION and isinstance(v, list) and isinstance(out.get(k), list):
+            out[k] = out[k] + [x for x in v if x not in out[k]]
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def dump(obj):
+    return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+
+
+def claude_settings_build(home):
+    base_f, layer_f, last_f, live_f = CLAUDE / "settings.json", home / LAYER, home / LAST, home / LIVE
+    base = load_json(base_f)
+    layer = load_json(layer_f)
+    if base is None or layer is None:
+        bad = base_f if base is None else layer_f
+        warn(f"{tilde(bad)} is not valid JSON. Fix it; ~/.claude/settings.json left as it is.")
+        return 1
+    was_link = live_f.is_symlink()
+    notes = []
+    if live_f.exists() and not was_link:
+        live = load_json(live_f)
+        if live is None:
+            warn(f"{tilde(live_f)} is not valid JSON (Claude may be writing it). Run dots again.")
+            return 1
+        last = load_json(last_f) if last_f.exists() else None
+        if last is None:  # no record of the last build: compare with what it would be
+            last = merge(base, layer)
+        patch, notes = drift(last, live)
+        if patch:
+            layer = apply_patch(layer, patch)
+            if DRY:
+                info(f"would keep {len(notes)} change(s) in {tilde(layer_f)}")
+            else:
+                atomic_write(layer_f, dump(layer), 0o600)
+    for kind, p, n in notes:
+        key = ".".join(p)
+        if kind == "removed":
+            warn(f"Claude removed {n} item(s) from {key}, but the repo or your private layer has them. "
+                 f"Remove them there to make it stick.")
+        else:
+            what = {"set": "changed", "add": f"+{n} item(s)", "unset": "removed"}[kind]
+            info(f"kept in your private layer: {key} ({what})")
+    text = dump(merge(base, layer))
+    if not was_link and live_f.exists() and live_f.read_text() == text:
+        skip(tilde(live_f))
+    elif DRY:
+        info(f"would write {tilde(live_f)}")
+        return 0
+    else:
+        if was_link:
+            info(f"{tilde(live_f)} was a link into the repo; it is now a built file")
+            live_f.unlink()
+        atomic_write(live_f, text, 0o644)
+        ok(f"built {tilde(live_f)} (repo base + private layer)")
+    if not DRY and (not last_f.exists() or last_f.read_text() != text):
+        atomic_write(last_f, text, 0o600)
+    return 0
+
+
+def get_path(obj, path):
+    for k in path:
+        if not isinstance(obj, dict) or k not in obj:
+            raise KeyError(".".join(path))
+        obj = obj[k]
+    return obj
+
+
+def drop_path(obj, path):
+    """Remove path from obj and prune the dicts it leaves empty."""
+    if len(path) == 1:
+        obj.pop(path[0], None)
+        return
+    sub = obj.get(path[0])
+    if isinstance(sub, dict):
+        drop_path(sub, path[1:])
+        if not sub:
+            obj.pop(path[0])
+
+
+def claude_settings_promote(home, dotted):
+    path = tuple(dotted.split("."))
+    base_f, layer_f = CLAUDE / "settings.json", home / LAYER
+    base, layer = load_json(base_f), load_json(layer_f)
+    if base is None or layer is None:
+        warn("the repo base or the private layer is not valid JSON; nothing moved")
+        return 1
+    try:
+        value = get_path(layer, path)
+    except KeyError:
+        warn(f"{dotted} is not in {tilde(layer_f)}")
+        return 1
+    patch = value
+    for k in reversed(path):
+        patch = {k: patch}
+    new_base = merge(base, patch)
+    drop_path(layer, path)
+    if DRY:
+        info(f"would move {dotted} to {tilde(base_f)}")
+        return 0
+    atomic_write(base_f, dump(new_base))
+    atomic_write(layer_f, dump(layer), 0o600)
+    ok(f"moved {dotted} to {tilde(base_f)}. Commit it to share it.")
+    return claude_settings_build(home)
+
+
+def cmd_claude_settings(args):
+    home = Path.home()
+    if args.action == "promote":
+        if not args.key:
+            warn("promote needs a key, e.g. permissions.allow")
+            return 2
+        return claude_settings_promote(home, args.key)
+    return claude_settings_build(home)
 
 
 def default_profile():
@@ -539,9 +744,14 @@ def main(argv=None):
     u.add_argument("--profile", choices=PROFILES, default=default_profile())
     u.add_argument("--copy", action="store_true", help="copy to the clipboard and drop the file copy")
     u.add_argument("--dry-run", action="store_true")
+    cs = sub.add_parser("claude-settings", help="build ~/.claude/settings.json from the repo base and the private layer")
+    cs.add_argument("action", choices=("build", "promote"))
+    cs.add_argument("key", nargs="?", help="promote: the dotted key to move to the repo, e.g. permissions.allow")
+    cs.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     DRY = args.dry_run
-    return {"cursor": cmd_cursor, "user-rules": cmd_user_rules}[args.cmd](args)
+    return {"cursor": cmd_cursor, "user-rules": cmd_user_rules,
+            "claude-settings": cmd_claude_settings}[args.cmd](args)
 
 
 if __name__ == "__main__":
