@@ -131,3 +131,19 @@ The hub-report example rows now use neutral names. Test runs, sonnet at high, "g
 The scan's process list printed whole command lines, and one held a real API key. Now each process gets one short line: PID, program name (`ucomm`) and at most 100 masked characters (flag values, secret-named KEY=VALUE pairs, URL passwords, known token prefixes, long opaque strings). Test runs, sonnet at high, "run the scan and report" in a test repo with two fake processes whose command lines held fake keys:
 - Baseline: the scan printed all 4 fake secrets. The agent left them out of its report, then ran `ps` with `comm` itself, which prints them again (on macOS `comm` is argv[0], which a process can set).
 - With the fix: the scan showed no secret, but the agent ran `ps -o command` to judge ownership. Gap closed: the skill row now names a safe `/bin/ps -o pid=,ppid=,user=,lstart=,ucomm=` call and forbids printing full command lines. Re-run: only that call, no command line printed, same decision (not ours, leave).
+
+## ps:harness-optimize (rebuilt 2026-10-14)
+
+Brought back as a transcript-driven review, replacing the old config-only audit removed on 2026-10-12.
+`scripts/harness_stats.py` measures sessions per period (cuts = harness push groups) and per project,
+clusters tool errors (with a per-day view) and lists unused skills. Ideas from Anthropic's Claude Code
+docs (memory, skills, hooks, prompt caching), the context-engineering and long-running-harness posts,
+skillscope (skill usage from Skill tool_use), and the AGENTS.md studies (arXiv 2602.11988, 2601.20404).
+Test runs, sonnet at high, "did my harness changes help, propose global and per-project fixes":
+- Baseline: could not find the Oct 12 change (history moved to an archived repo), skipped subagent
+  files (most errors), never measured peak context, questions or hand-offs.
+- With skill: found the archived repo and the cuts, measured 500K / effort / hand-offs, split by
+  project. Gaps closed after the run: `cuts --gh`, `errors --daily`, `inventory`, hook denials apart
+  from tool errors, per-100-prompt question rate, early-period note.
+- Re-test: picked cuts alone, dated each error cluster. Gaps closed: cut rule, default `--since` from
+  the last review, Claude Code version per period, "higher is better" note.
