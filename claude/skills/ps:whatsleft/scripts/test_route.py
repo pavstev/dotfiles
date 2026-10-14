@@ -108,6 +108,35 @@ class RouteTest(unittest.TestCase):
         rows[0]["done"] = True
         self.assertEqual(route.route(rows)["ask"], ["e1"])
 
+    def test_wait_chain_is_order_free(self):
+        # c waits on b, b waits on a: only a is asked, in any row order
+        a = {"id": "a", "kind": "decision", "text": "merge or PR"}
+        b = {"id": "b", "kind": "decision", "text": "branch name", "after": ["a"]}
+        c = {"id": "c", "kind": "decision", "text": "PR title", "after": ["b"]}
+        for rows in ([a, b, c], [c, b, a], [b, c, a]):
+            res = route.route([dict(r) for r in rows])
+            self.assertEqual(res["ask"], ["a"])
+            self.assertEqual(routes(res), {"a": "ASK", "b": "WAIT", "c": "WAIT"})
+        # a DO row behind a waiting DO row waits too
+        rows = [{"id": "d2", "kind": "work", "text": "deploy", "after": ["d1"]},
+                {"id": "d1", "kind": "work", "text": "test", "after": ["q"]},
+                {"id": "q", "kind": "decision", "text": "which env"}]
+        self.assertEqual(routes(route.route(rows)), {"d2": "WAIT", "d1": "WAIT", "q": "ASK"})
+
+    def test_cycle_is_bad_input(self):
+        rows = [{"id": "a", "kind": "work", "text": "t", "after": ["b"]},
+                {"id": "b", "kind": "work", "text": "u", "after": ["a"]}]
+        with self.assertRaises(route.BadInput):
+            route.route(rows)
+        with self.assertRaises(route.BadInput):
+            route.route([{"id": "a", "kind": "work", "text": "t", "after": [["b"]]}])
+
+    def test_semicolon_in_text_keeps_the_handoff_line(self):
+        rows = [{"id": "d1", "kind": "decision", "text": "keep a; or drop b"},
+                {"id": "d2", "kind": "decision", "text": "merge or PR"}]
+        line = [l for l in route.render(route.route(rows)).splitlines() if "whatsleft:" in l][0]
+        self.assertEqual(line.split("whatsleft: ")[1].split("; "), ["d1 keep a, or drop b", "d2 merge or PR"])
+
     def test_skip_closes_a_row(self):
         rows = [{"id": "o1", "kind": "optional", "text": "README line", "skip": True},
                 {"id": "m1", "kind": "work", "text": "release notes", "after": ["o1"]}]
@@ -143,6 +172,20 @@ class RouteTest(unittest.TestCase):
                 code = route.main([path])
             self.assertEqual(code, 0)
             self.assertIn("NEXT 2 ps:askme: whatsleft: m3 ", buf.getvalue())
+            for bad in (["--cap", "0", path], ["--cap", "-1", path]):
+                with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                    route.main(bad)  # argparse exits 2 on a bad option value
+                self.assertEqual(cm.exception.code, 2)
+        finally:
+            os.remove(path)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(route.main([os.path.join(tempfile.gettempdir(), "no-such-rows.json")]), 2)
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump([{"id": 5, "kind": "work", "text": "t"}, {"id": "x", "kind": [1], "text": "t"}], f)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(route.main([path]), 2)  # wrong types are bad input, not a crash
         finally:
             os.remove(path)
 

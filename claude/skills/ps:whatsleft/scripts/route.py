@@ -56,10 +56,10 @@ def validate(rows):
         if not r.get("text"):
             raise BadInput("%s: text missing" % rid)
         kind = r.get("kind")
-        if kind not in KINDS:
+        if not isinstance(kind, str) or kind not in KINDS:
             raise BadInput("%s: kind %r not in %s" % (rid, kind, sorted(KINDS)))
         risk = r.get("risk")
-        if risk is not None and risk not in RISKS:
+        if risk is not None and (not isinstance(risk, str) or risk not in RISKS):
             raise BadInput("%s: risk %r not in %s" % (rid, risk, sorted(RISKS)))
         if risk is not None and kind != "work":
             raise BadInput("%s: risk only goes on kind work" % rid)
@@ -68,14 +68,29 @@ def validate(rows):
         if kind == "no-tool" and not str(r.get("tried", "")).strip():
             raise BadInput("%s: no-tool needs 'tried': name the tool you tried first" % rid)
         after = r.get("after", [])
-        if not isinstance(after, list):
-            raise BadInput("%s: after must be a list" % rid)
+        if not isinstance(after, list) or not all(isinstance(d, str) for d in after):
+            raise BadInput("%s: after must be a list of ids" % rid)
     for r in rows:
         for dep in r.get("after", []):
             if dep not in ids:
                 raise BadInput("%s: after names unknown id %s" % (r["id"], dep))
             if dep == r["id"]:
                 raise BadInput("%s: waits on itself" % r["id"])
+    deps = {r["id"]: r.get("after", []) for r in rows}
+    state = {}  # id -> 1 visiting, 2 done
+
+    def visit(rid, path):
+        if state.get(rid) == 2:
+            return
+        if state.get(rid) == 1:
+            raise BadInput("after forms a cycle: %s" % " -> ".join(path + [rid]))
+        state[rid] = 1
+        for dep in deps[rid]:
+            visit(dep, path + [rid])
+        state[rid] = 2
+
+    for r in rows:
+        visit(r["id"], [])
 
 
 def first_route(r, kill):
@@ -117,13 +132,20 @@ def route(rows, kill=False, cap=CAP):
     # A DO row waits on any row not DONE or SKIP. A question that needs the
     # answer to another question is asked next round (askme: dependent
     # questions go alone).
+    # Repeat until nothing changes, so the result does not depend on row order
+    # (c after b after a: b waits on a, so c waits on b).
     closed = ("DONE", "SKIP")
-    for r in rows:
-        deps = [out[d] for d in r.get("after", [])]
-        if out[r["id"]] == "DO" and any(d not in closed for d in deps):
-            out[r["id"]] = "WAIT"
-        elif out[r["id"]] == "ASK" and "ASK" in deps:
-            out[r["id"]] = "WAIT"
+    changed = True
+    while changed:
+        changed = False
+        for r in rows:
+            deps = [out[d] for d in r.get("after", [])]
+            if out[r["id"]] == "DO" and any(d not in closed for d in deps):
+                out[r["id"]] = "WAIT"
+                changed = True
+            elif out[r["id"]] == "ASK" and ("ASK" in deps or "WAIT" in deps):
+                out[r["id"]] = "WAIT"
+                changed = True
     ask = sorted((r for r in rows if out[r["id"]] == "ASK"),
                  key=lambda r: priority(r))  # sorted() is stable: input order breaks ties
     asked, defaulted = ask[:cap], ask[cap:]
@@ -157,8 +179,8 @@ def render(res):
     lines.append("")
     lines.append("NEXT 1 do now: %s" % (", ".join(res["do"]) or "nothing"))
     if res["ask"]:
-        lines.append("NEXT 2 ps:askme: whatsleft: " + "; ".join(
-            "%s %s" % (i, res["_by_id"][i]["text"]) for i in res["ask"]))
+        lines.append("NEXT 2 ps:askme: whatsleft: " + "; ".join(  # "; " splits rows, so none in text
+            "%s %s" % (i, str(res["_by_id"][i]["text"]).replace(";", ",")) for i in res["ask"]))
     else:
         lines.append("NEXT 2 ps:askme: nothing to ask")
     if res["default"]:
@@ -170,17 +192,28 @@ def render(res):
     return "\n".join(lines)
 
 
+def positive_int(v):
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return n
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("file", nargs="?", help="rows JSON (default: stdin)")
     ap.add_argument("--kill", action="store_true", help="`kill dead tasks`: STOP tasks are DO")
-    ap.add_argument("--cap", type=int, default=CAP, help="max questions (default 4)")
+    ap.add_argument("--cap", type=positive_int, default=CAP, help="max questions (default 4)")
     ap.add_argument("--json", action="store_true", help="print JSON")
     a = ap.parse_args(argv)
     try:
-        raw = open(a.file, encoding="utf-8").read() if a.file else sys.stdin.read()
+        if a.file:
+            with open(a.file, encoding="utf-8") as f:
+                raw = f.read()
+        else:
+            raw = sys.stdin.read()
         res = route(json.loads(raw), kill=a.kill, cap=a.cap)
-    except (BadInput, ValueError) as e:
+    except (BadInput, ValueError, TypeError, OSError) as e:
         print("route.py: bad input: %s" % e)
         return 2
     if a.json:
