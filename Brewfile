@@ -45,6 +45,7 @@ brew "gh"                      # GitHub CLI  (+ gh-dash extension → `gh dash`)
 brew "direnv"          # per-directory env
 brew "mise"            # node/python/etc version manager
 brew "just"            # command runner (modern make)
+brew "tmux"            # detached terminals (ps:spawn starts Remote Control sessions in one)
 brew "jq"              # JSON processor
 brew "yq"              # YAML/JSON/XML processor
 brew "xh"              # fast HTTPie-style HTTP client

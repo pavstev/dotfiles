@@ -13,6 +13,14 @@ if git diff --cached --name-only 2>/dev/null | grep -q '^claude/skills/'; then
     printf '\n\033[1;31m✖ pre-commit: claude/skills/check.py failed — fix the skill or run it for details.\033[0m\n\n'
     exit 1
   fi
+  # Script tests bundled with a skill (claude/skills/*/scripts/test_*.py).
+  for t in claude/skills/*/scripts/test_*.py; do
+    [[ -f "$t" ]] || continue
+    if ! python3 "$t" >/dev/null 2>&1; then
+      printf '\n\033[1;31m✖ pre-commit: %s failed — run it for details.\033[0m\n\n' "$t"
+      exit 1
+    fi
+  done
 fi
 
 # --- Private words (private-words.sh): block a staged file name or an added

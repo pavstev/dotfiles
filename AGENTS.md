@@ -80,8 +80,9 @@ the mapping table in `docs/cursor-port.md`.
 - Rules in every folder (also outside `$HOME`): run `cursor-rules`, then paste in Cursor
   Settings > Rules > User Rules. `dots` then skips the file rule and warns when to paste again.
 - Never edit the generated files under `~/.cursor`. The next `dots` overwrites them.
-- Unit tests: `python3 scripts/test_agent_config.py`, `python3 cursor/hooks/test_guard_cursor.py`
-  and `python3 claude/hooks/test_guard.py`. They must also pass on `/usr/bin/python3` (3.9).
+- Unit tests: `python3 scripts/test_agent_config.py`, `python3 cursor/hooks/test_guard_cursor.py`,
+  `python3 claude/hooks/test_guard.py` and every `claude/skills/*/scripts/test_*.py` (pre-commit
+  runs those). They must also pass on `/usr/bin/python3` (3.9).
 - Test in a temp HOME: `HOME=$(mktemp -d) DOTFILES_STEPS=60-cursor ./dotfiles`.
   `DOTFILES_STEPS` takes install.d step names without `.sh`; empty runs all steps.
   It filters only the install.d steps: the pull, git identity prompt, links and
