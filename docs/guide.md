@@ -260,6 +260,7 @@ dotfiles/
 │   ├── settings.sh           # the settings menu: first run and `dots settings`
 │   ├── agent-config.py       # generates and merges the Cursor files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
+│   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
 │   │                         #   05 linux-prereqs (Linux only)
 │   │                         #   → 10 homebrew

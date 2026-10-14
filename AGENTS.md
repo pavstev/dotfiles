@@ -83,6 +83,9 @@ the mapping table in `docs/cursor-port.md`.
 - Unit tests: `python3 scripts/test_agent_config.py`, `python3 cursor/hooks/test_guard_cursor.py`,
   `python3 claude/hooks/test_guard.py` and every `claude/skills/*/scripts/test_*.py` (pre-commit
   runs those). They must also pass on `/usr/bin/python3` (3.9).
+- `bash scripts/test-dotfiles.sh` runs `./dotfiles` in a temp HOME with a temp repo and origin:
+  first run, owner profile saved, owner rules linked and unlinked, a second run that changes
+  nothing, the restart after a pull. About 2 seconds, nothing installs.
 - Test in a temp HOME: `HOME=$(mktemp -d) DOTFILES_STEPS=60-cursor ./dotfiles`.
   `DOTFILES_STEPS` takes install.d step names without `.sh`; empty runs all steps.
   It filters only the install.d steps: the pull, git identity prompt, links and
