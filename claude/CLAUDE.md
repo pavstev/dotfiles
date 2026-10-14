@@ -79,3 +79,17 @@ The user's time is the cost that counts.
 16. Runs over an hour keep a `PROGRESS.md` ledger and resume from it after compaction or restart.
 17. "Archive this" means: commit, push, scan once, archive; no new verification.
 18. In a worktree, run each git command alone from the worktree root: no `cd … && git` chains. A worktree-isolated agent refuses anything more complex.
+
+## Agents
+
+Dispatch these by name (`subagent_type`) instead of general-purpose with a pasted role. A project
+agent with the same job wins in its repo (for example its own `implementer`).
+
+| Job | Agent |
+|---|---|
+| build one plan task with tests, commit | `task-implementer` |
+| review one plan task against its spec, or its fix round | `task-reviewer` |
+| review a diff, a commit or the whole branch (final review: pass opus + max) | `code-reviewer` |
+| one research question with sources, notes to a file | `researcher` |
+| read-only sweep of a repo from one angle into one file | `repo-scanner` |
+| check a page or extension flow in a browser, pass or fail | `ui-verifier` |

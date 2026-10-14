@@ -336,7 +336,7 @@ from there. Homebrew packages, Oh My Zsh, and toolchains stay installed.
 For Cursor, delete the generated files and our merged entries:
 
 1. `rm ~/.cursor/rules/claude-global.mdc ~/.cursor/rules/claude-output-style.mdc`
-2. `rm ~/.cursor/agents/code-reviewer.md ~/.cursor/agents/researcher.md ~/.cursor/.dotfiles-managed.json`
+2. `rm $(grep -l 'generated-by: dotfiles' ~/.cursor/agents/*.md) ~/.cursor/.dotfiles-managed.json`
 3. In `~/.cursor/hooks.json`, delete the 5 entries that run `cursor/hooks/guard_cursor.py`.
 4. In `~/.cursor/mcp.json`, delete `cloudflare-docs` (only there when MCP is on).
 
