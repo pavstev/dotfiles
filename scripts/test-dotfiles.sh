@@ -47,6 +47,8 @@ R="$T/repo"
 H="$T/home"
 SETTINGS="$H/.config/dotfiles/settings"
 RULE="$H/.claude/rules/owner.md"
+LIVE="$H/.claude/settings.json"
+LAYER="$H/.config/dotfiles/claude-settings.json"
 OWNER="$H/.config/dotfiles/owner.md"
 
 # run <log> [env...]: ./dotfiles in the temp HOME, no terminal, no steps.
@@ -57,7 +59,7 @@ run() {
 # fingerprint: every link under the temp HOME and the saved settings.
 fingerprint() {
   { find "$H" -type l 2>/dev/null | sort | while IFS= read -r l; do printf '%s -> %s\n' "$l" "$(readlink "$l")"; done
-    cat "$SETTINGS" "$H/.gitconfig.local" 2>/dev/null
+    cat "$SETTINGS" "$H/.gitconfig.local" "$LIVE" "$LAYER" 2>/dev/null
   } | cksum
 }
 
@@ -70,6 +72,11 @@ grep -q '^GIT_NAME="Test User"' "$SETTINGS" 2>/dev/null && pass "git name saved"
 grep -q '^PROFILE="[a-z]' "$SETTINGS" 2>/dev/null && bad "PROFILE saved without private rules" || pass "no private rules: PROFILE stays empty"
 [[ ! -e "$RULE" && ! -L "$RULE" ]] && pass "no owner rules link" || bad "owner rules linked on the shared profile"
 grep -q 'profile: shared' "$T/run1.log" && pass "profile is shared" || bad "profile not shared"
+# Claude settings: a built file, the repo base only while there is no private layer.
+[[ -f "$LIVE" && ! -L "$LIVE" ]] && pass "settings.json is a built file" || bad "settings.json is a link or missing"
+python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' \
+  "$LIVE" "$R/claude/settings.json" && pass "settings.json equals the repo base" || bad "settings.json differs from the base"
+[[ ! -e "$LAYER" ]] && pass "no private layer yet" || bad "a private layer appeared on its own"
 
 # 3. Private rules appear: the owner profile is saved and the rules link.
 : >"$T/stdin"
@@ -84,6 +91,16 @@ run run3.log
 after="$(fingerprint)"
 [[ "$before" == "$after" ]] && pass "second run changes nothing" || bad "second run changed links or settings"
 grep -qE 'linked |backed up' "$T/run3.log" && bad "second run linked or backed up something" || pass "second run links nothing new"
+
+# 4b. Claude changes its settings: the change is kept in the private layer.
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["testKeptKey"]=True; open(p,"w").write(json.dumps(d, indent=4))' "$LIVE"
+run run3b.log
+grep -q 'kept in your private layer: testKeptKey' "$T/run3b.log" && pass "Claude's change reported" || bad "Claude's change not reported"
+grep -q '"testKeptKey": true' "$LAYER" 2>/dev/null && pass "Claude's change kept in the private layer" || bad "Claude's change lost"
+grep -q '"testKeptKey": true' "$LIVE" && pass "built file still has it" || bad "built file lost it"
+[[ -z "$(git -C "$R" status --porcelain)" ]] && pass "repo stays clean" || bad "repo has changes"
+run run3c.log
+grep -q 'kept' "$T/run3c.log" && bad "kept again on the next run" || pass "next run keeps nothing new"
 
 # 5. Back to shared: the owner rules link goes, the rules file stays.
 printf 'PROFILE="shared"\n' >>"$SETTINGS"

@@ -71,7 +71,7 @@ The repo owns your global Claude setup and symlinks each piece into `~/.claude`
 
 ```
 claude/
-├── settings.json   → ~/.claude/settings.json     curated, shared
+├── settings.json   ⇒ ~/.claude/settings.json     built by dots (see below), shared base
 ├── CLAUDE.md       → ~/.claude/CLAUDE.md          global instructions
 ├── statusline.sh   → ~/.claude/statusline.sh      copper-themed status line
 ├── skills/         → ~/.claude/skills  (per-skill; Cursor reads it)
@@ -79,6 +79,19 @@ claude/
 ├── hooks/          → ~/.claude/hooks
 └── output-styles/  → ~/.claude/output-styles
 ```
+
+`settings.json` is the one piece that is built, not linked, because Claude writes it
+itself. `dots` writes `~/.claude/settings.json` from `claude/settings.json` (the shared
+base) with your private layer `~/.config/dotfiles/claude-settings.json` on top (mode 600,
+never in git, on any profile). Objects merge, your values win, and `permissions.allow`,
+`deny` and `ask` add up. A key set to `null` in the layer removes it.
+
+Before it builds, `dots` compares the live file with what it wrote last time
+(`~/.config/dotfiles/claude-settings.last.json`). Each key Claude or you changed since
+then moves into the private layer, and `dots` prints its name (never its value). So
+nothing is lost, the repo stays clean, and the next run prints nothing new. A rewrite that
+only changes the layout counts as no change. To share a kept key with everyone, run
+`python3 scripts/agent-config.py claude-settings promote <key>` and commit.
 
 **Skills are the headline.** One source (`claude/skills`), synced everywhere by
 [`skill-sync.sh`](../claude/skill-sync.sh): write once, use in every agent. Skills use the
@@ -288,7 +301,9 @@ dotfiles/
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
 | bat / lazygit / btop / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
-| Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | next session (a deny beats every allow) |
+| Claude settings (`claude/settings.json`) | the repo base for everyone; your own keys go in `~/.config/dotfiles/claude-settings.json` | `dots` (it builds `~/.claude/settings.json`) |
+| Share a key Claude saved for you | `python3 scripts/agent-config.py claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
+| Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | `dots`, then the next session (a deny beats every allow) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
 | Settings: git name, profile, Cursor MCP, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |

@@ -129,6 +129,12 @@ personal; private rules live outside it.
   git) are linked as `~/.claude/rules/owner.md` (Claude Code loads user rules in every
   project) and added to the Cursor global rule. Without the file, `dots` warns.
 - **shared:** no overlay. Claude plugins in `claude/settings.json` are shared as is.
+- **Claude settings** on every profile: `dots` builds `~/.claude/settings.json` (a real
+  file, not a link) from `claude/settings.json` plus the private layer
+  `~/.config/dotfiles/claude-settings.json`. What Claude changed in the live file since
+  the last build moves into the layer first (`scripts/agent-config.py claude-settings
+  build`). `claude-settings promote <key>` moves a key from the layer to the repo base.
+  Owner-only keys (a default permission mode, a skipped warning) live in the layer.
 - **Cursor MCP servers** (`cursor/mcp.json`) are opt-in on every profile: turn them on
   in `dots settings` (`CURSOR_MCP="on"`), or `DOTFILES_MCP=on` for one run.
 - `DOTFILES_PROFILE=owner` alone is not saved. Check the owner rules:
@@ -156,6 +162,7 @@ with the cursor on Done.
 | `PRIVATE_PROJECTS`, `PRIVATE_WORDS` | words the git hooks keep out of commits (see "Conventions") |
 
 - The private rules stay free text in `~/.config/dotfiles/owner.md`. The menu edits them.
+- Claude settings of this Mac: `~/.config/dotfiles/claude-settings.json` (see "Profiles").
 - Secrets never go in the settings. They stay in the ignored `~/.config/zsh/local.zsh`.
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `scripts/agent-config.py`,
   and `home/.config/zsh/settings.zsh`. `~/.zshrc` sources that file after `local.zsh`,

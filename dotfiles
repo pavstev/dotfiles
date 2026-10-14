@@ -163,9 +163,14 @@ if [[ -d "$CLAUDE_SRC" ]]; then
   for d in agents hooks output-styles; do
     link_item "$CLAUDE_SRC/$d" "$CLAUDE_DST/$d"
   done
-  for f in CLAUDE.md settings.json statusline.sh; do
+  for f in CLAUDE.md statusline.sh; do
     link_item "$CLAUDE_SRC/$f" "$CLAUDE_DST/$f"
   done
+  # settings.json is built, not linked: the repo base plus the private layer
+  # (~/.config/dotfiles/claude-settings.json). Claude writes this file itself; what
+  # it changed since the last build moves into the private layer first.
+  python3 "$REPO/scripts/agent-config.py" claude-settings build \
+    || warn "couldn't build ~/.claude/settings.json, so it stays as it was"
   # The owner's private rules (never in the repo) load as a Claude user rule.
   rule="$CLAUDE_DST/rules/owner.md"
   if [[ "$PROFILE" == owner && -f "$OWNER_MD" ]]; then

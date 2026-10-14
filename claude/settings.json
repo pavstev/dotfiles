@@ -5,14 +5,25 @@
   "effortLevel": "high",
   "autoCompactWindow": 500000,
   "modelSettings": {
-    "claude-opus-5-5": { "effortLevel": "high" },
-    "claude-sonnet-5-5": { "effortLevel": "high" },
-    "claude-fable-5-1": { "effortLevel": "high" }
+    "claude-opus-5-5": {
+      "effortLevel": "high"
+    },
+    "claude-sonnet-5-5": {
+      "effortLevel": "high"
+    },
+    "claude-fable-5-1": {
+      "effortLevel": "high"
+    }
   },
   "subagentPromptCacheTtl": "1h",
-  "env": { "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet" },
+  "env": {
+    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
+  },
   "includeCoAuthoredBy": false,
-  "attribution": { "commit": "", "pr": "" },
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "permissions": {
     "allow": [
       "Bash(git status:*)",
@@ -52,11 +63,27 @@
   },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion",
-        "hooks": [ { "type": "command", "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py pretool", "timeout": 10 } ] }
+      {
+        "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py pretool",
+            "timeout": 10
+          }
+        ]
+      }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py prompt", "timeout": 10 } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py prompt",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
   "enabledPlugins": {
@@ -108,6 +135,5 @@
   "skipWorkflowUsageWarning": true,
   "theme": "dark",
   "inputNeededNotifEnabled": true,
-  "agentPushNotifEnabled": true,
-  "skipDangerousModePermissionPrompt": true
+  "agentPushNotifEnabled": true
 }
