@@ -33,6 +33,7 @@ cheap. Deny = message on stderr + exit 2. Tests: `python3 claude/hooks/test_guar
 | G3 | UserPromptSubmit; PreToolUse `Agent` | at 300K+ nudge `/ps:handoff` (1st prompt, then every 5th); deny spawning above 500K |
 | G4 | PreToolUse `AskUserQuestion` | one call per human turn |
 | G5 | PreToolUse `SubagentHandback`; SubagentStop | a subagent's hand-back may not exceed its cap by more than 10 percent; at most 2 denies per agent, then it passes |
+| G6 | Stop; PreToolUse `archive_session` | a hand-off file written this turn (`*/handoffs/*.md`) must be in the reply as a file link plus the `Read <path> and do it.` block (one deny); no archive of this session in the same turn |
 
 Context size comes from the last assistant `usage` in the transcript (read from the end
 of the file, so big transcripts are cheap). Nudge counters live in

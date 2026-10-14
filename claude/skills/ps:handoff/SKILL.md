@@ -27,7 +27,9 @@ Work alone, no subagents. Finish in 10 minutes.
 
 ## Reply shape
 
-The reply is one fenced block that holds only the paste line, then a short "Start with" section outside the block. Never put `cd`, `claude --model ...`, `opencode ...` or any launch command in the block: the owner starts the session in the app.
+The reply starts with a markdown link to the brief (the file name as text, its path as the target), then one fenced block that holds only the paste line, then a short "Start with" section outside the block. Never archive in the same turn as the reply: the user must see it first. A Stop hook (guard G6) checks both. Never put `cd`, `claude --model ...`, `opencode ...` or any launch command in the block: the owner starts the session in the app.
+
+Brief: <markdown link: file name, target path>
 
 ```
 Read <path> and do it.
@@ -43,4 +45,4 @@ The paste line points at the file and never holds the brief. Another machine can
 ## Done when
 
 - The file exists, has all nine template sections, and is at most 150 lines.
-- The reply is the one-line block plus the Start with section, nothing longer.
+- The reply is the file link, the one-line block and the Start with section, nothing longer.

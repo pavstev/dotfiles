@@ -479,6 +479,54 @@ class GuardTest(unittest.TestCase):
         data.update(kw)
         return self.run_guard("scratch", data)
 
+    # --- G6 hand-off ---
+    HO = "/repo/.agents/handoffs/2026-10-14-x.md"
+
+    def write_ho(self, tid="w1", path=None):
+        return assistant(1000, [{"type": "tool_use", "id": tid, "name": "Write",
+                                 "input": {"file_path": path or self.HO, "content": "# Task"}}])
+
+    def say(self, text):
+        return assistant(1000, [{"type": "text", "text": text}])
+
+    def good_reply(self):
+        return self.say(f"Done. [2026-10-14-x.md](.agents/handoffs/2026-10-14-x.md)\n```\nRead {self.HO} and do it.\n```")
+
+    def stop_run(self, recs, **extra):
+        data = {"hook_event_name": "Stop", "session_id": "s", "transcript_path": self.transcript(recs)}
+        data.update(extra)
+        return self.run_guard("stop", data)
+
+    def archive(self, recs, sid="self"):
+        return self.run_guard("pretool", {"hook_event_name": "PreToolUse", "session_id": "s",
+                                          "tool_name": "mcp__ccd_session_mgmt__archive_session",
+                                          "tool_input": {"session_id": sid},
+                                          "transcript_path": self.transcript(recs)})
+
+    def test_g6_stop_needs_link_and_block(self):
+        base = [human("hand off"), self.write_ho(), tool_result("w1")]
+        self.assertDeny(self.stop_run(base + [self.say("The hand-off is written.")]), "Read " + self.HO)
+        self.assertDeny(self.stop_run(base + [self.say(f"Read {self.HO} and do it.")]), "file link")
+        self.assertAllow(self.stop_run(base + [self.good_reply()]))
+        # last_assistant_message counts when the transcript is not flushed yet
+        self.assertAllow(self.stop_run(base, last_assistant_message=self.good_reply()["message"]["content"][0]["text"]))
+
+    def test_g6_stop_one_deny_and_scope(self):
+        base = [human("hand off"), self.write_ho(), tool_result("w1"), self.say("written")]
+        self.assertAllow(self.stop_run(base, stop_hook_active=True))
+        self.assertAllow(self.stop_run([human("x"), self.say("no hand-off here")]))
+        # written in an earlier turn: the user already got it
+        self.assertAllow(self.stop_run(base + [human("thanks"), self.say("ok")]))
+        # a Write elsewhere is not a hand-off
+        self.assertAllow(self.stop_run([human("x"), self.write_ho(path="/repo/notes.md"), self.say("ok")]))
+
+    def test_g6_archive_same_turn_denied(self):
+        base = [human("hand off and archive"), self.write_ho(), tool_result("w1"), self.good_reply()]
+        self.assertDeny(self.archive(base), "Do not archive yet")
+        self.assertAllow(self.archive(base + [human("ok, archive")]))
+        self.assertAllow(self.archive(base, sid="other-session"))
+        self.assertAllow(self.archive([human("archive this"), self.say("done")]))
+
     def test_scratch_allowed_paths(self):
         for p in ("/tmp/x.py", "/private/tmp/a/b.sh", "/var/folders/ab/cd/T/x.js",
                   "/private/var/folders/ab/cd/T/x.js", os.path.join(self.dir, "s.py"),

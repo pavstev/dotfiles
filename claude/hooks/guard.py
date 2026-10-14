@@ -6,10 +6,13 @@ Usage (wired in settings.json):
   python3 ~/.claude/hooks/guard.py prompt        # UserPromptSubmit
   python3 ~/.claude/hooks/guard.py subagentstop  # SubagentStop
   python3 ~/.claude/hooks/guard.py scratch       # agent frontmatter hook, PreToolUse Write|Edit|NotebookEdit
+  python3 ~/.claude/hooks/guard.py stop          # Stop
 
 Guards: G1 Agent needs model+effort+deadline+hand-back cap, G2 no polling at big context,
 G3 context ceiling (nudge at 300K, deny Agent at 500K), G4 one AskUserQuestion per turn,
-G5 subagent hand-back over its cap. Mode scratch: writes only under temp or scratchpad folders.
+G5 subagent hand-back over its cap, G6 a hand-off written this turn must reach the user (Stop:
+the reply holds the file link and the paste block; PreToolUse archive_session: not in the same
+turn). Mode scratch: writes only under temp or scratchpad folders.
 
 Deny = message on stderr + exit 2. Allow = exit 0 silently.
 Fail-open: any exception, bad input or unknown mode exits 0 with no output.
@@ -85,6 +88,18 @@ MSG_POLL = (
     "notify_when_idle, or one final report."
 )
 MSG_ASK = "guard: one AskUserQuestion per turn; put all questions in one call."
+MSG_HANDOFF_REPLY = (
+    "guard: you wrote the hand-off {path} this turn, but your reply does not give it to the user. "
+    "End with the file link [{name}]({path}) and a fenced block that holds only: "
+    "Read {path} and do it."
+)
+MSG_HANDOFF_ARCHIVE = (
+    "guard: you wrote the hand-off {path} this turn. Do not archive yet: give the link "
+    "[{name}]({path}) and the block `Read {path} and do it.`, end the turn, and archive "
+    "after the user answers."
+)
+ARCHIVE_TOOL = "mcp__ccd_session_mgmt__archive_session"
+_HANDOFF_PATH = re.compile(r"/handoffs/[^/]+\.md$")
 
 
 # --- transcript reading -----------------------------------------------------
@@ -482,6 +497,65 @@ def g5_handback(data, ctx):
     return check_handback(data, ti.get("message") if isinstance(ti, dict) else None)
 
 
+def handoff_this_turn(path):
+    """(handoff path, assistant text written after it) for the newest hand-off Write since the
+    last human prompt, or (None, "")."""
+    texts = []  # newest first
+    for line in reverse_lines(path):
+        rec = _loads(line)
+        if not rec:
+            continue
+        if is_human_prompt(rec):
+            break
+        if rec.get("type") != "assistant":
+            continue
+        msg = rec.get("message")
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for b in reversed(content):
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "text" and isinstance(b.get("text"), str):
+                texts.append(b["text"])
+            elif b.get("type") == "tool_use" and b.get("name") == "Write":
+                fp = (b.get("input") or {}).get("file_path")
+                if isinstance(fp, str) and _HANDOFF_PATH.search(fp):
+                    return fp, "\n".join(reversed(texts))
+    return None, ""
+
+
+def handoff_given(fp, text):
+    """The reply holds the paste line and a markdown link to the file."""
+    name = os.path.basename(fp)
+    if f"Read {fp} and do it." not in text:
+        return False
+    return any(target.endswith(name) for target in re.findall(r"\]\(([^)\s]+)\)", text))
+
+
+def g6_archive(data, ctx):
+    if data.get("tool_name") != ARCHIVE_TOOL or not ctx.path:
+        return
+    ti = data.get("tool_input") if isinstance(data.get("tool_input"), dict) else {}
+    if ti.get("session_id") not in (None, "self"):
+        return
+    fp, _ = handoff_this_turn(ctx.path)
+    if fp:
+        return MSG_HANDOFF_ARCHIVE.format(path=fp, name=os.path.basename(fp))
+
+
+def stop(data):
+    """G6 at Stop: a hand-off written this turn must be in the final reply. One deny only."""
+    if data.get("stop_hook_active") or not data.get("transcript_path"):
+        return
+    fp, text = handoff_this_turn(data["transcript_path"])
+    last = data.get("last_assistant_message")
+    if isinstance(last, str) and last not in text:
+        text = text + "\n" + last
+    if fp and not handoff_given(fp, text):
+        return MSG_HANDOFF_REPLY.format(path=fp, name=os.path.basename(fp))
+
+
 def subagentstop(data):
     if data.get("stop_hook_active"):
         return
@@ -514,7 +588,7 @@ def scratch(data):
 
 def pretool(data):
     ctx = Ctx(data)
-    for guard in (g3_pretool, g1_agent, g2_polling, g4_ask, g5_handback):
+    for guard in (g3_pretool, g1_agent, g2_polling, g4_ask, g5_handback, g6_archive):
         msg = guard(data, ctx)
         if msg:
             return msg
@@ -558,13 +632,13 @@ def prompt(data):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
-    if mode not in ("pretool", "prompt", "subagentstop", "scratch"):
+    if mode not in ("pretool", "prompt", "subagentstop", "scratch", "stop"):
         return 0
     data = json.loads(sys.stdin.read())
     if not isinstance(data, dict):
         return 0
-    if mode in ("pretool", "subagentstop", "scratch"):
-        msg = {"pretool": pretool, "subagentstop": subagentstop, "scratch": scratch}[mode](data)
+    if mode in ("pretool", "subagentstop", "scratch", "stop"):
+        msg = {"pretool": pretool, "subagentstop": subagentstop, "scratch": scratch, "stop": stop}[mode](data)
         if msg:
             sys.stderr.write(msg + "\n")
             return 2
