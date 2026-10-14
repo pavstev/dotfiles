@@ -75,6 +75,7 @@ exists (saved as `PROFILE` in the settings), else `shared`.
 | Pylance | Not on Open VSX. Cursor ships its own Python language server. |
 | Custom agents (`~/.cursor/agents`) | Neither the CLI nor the app (3.24.12) offers them to the Task tool. The app watches the folder and caches 2 agents, but a live app chat (2026-10-13) got `Invalid enum value. Expected 'generalPurpose' \| 'explore' \| 'cursor-guide' \| 'ci-investigator' \| 'bugbot' \| 'security-review' \| 'best-of-n-runner', received 'code-reviewer'`. The model then ran `generalPurpose` with the agent's prompt. Agents in the open project's own `.cursor/agents` do work: a live CLI run with `code-reviewer.md` there got `subagent_type: code-reviewer` accepted (2026-10-13). So copy an agent into a project's `.cursor/agents` to use it there. |
 | Read deny vs the shell | Deny rules stop the Read tool (`Read(**/.env)` denied live), but `cat .env` through the shell still works. Claude Code has the same gap. |
+| Agent frontmatter hooks | `scripts/agent-config.py` copies only `name`, `description` and `readonly` to `~/.cursor/agents`, so the ui-verifier's `guard.py scratch` write hook does not reach Cursor. Guard G5 (hand-back cap) has no Cursor mirror either: Cursor showed no over-cap hand-back yet (2026-10-14). |
 | Cursor login | Cursor has no login file to ship. The first guided run offers `agent login` and opens Cursor.app to sign in there. |
 
 ## Decisions

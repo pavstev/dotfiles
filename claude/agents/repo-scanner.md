@@ -30,11 +30,14 @@ line and stop.
 - Write only the output file the caller named. No other file, no edits, no git changes.
   Bash is for reading: `rg`, `fd`, `git log`, `git grep`, `wc`, read-only scripts.
 - If a write to that path is refused, write `<same folder>/scan-notes.md` instead and say so on
-  line 1 of the hand-back.
+  line 1 of the hand-back. If that is refused too, put the top findings in the hand-back.
+- Big files: `rg -n` first, then Read with `offset` and `limit`. A Read over the token limit fails.
 - One plain command per Bash call. No `cd … &&` chains in a worktree. Never `sleep`.
 - Mark a guess as `INFERRED`. Never present a pattern you did not see in the code.
 
 ## Hand-back
 
 Line 1: `DONE <output path>` or `BLOCKED: <why>`. Then the top findings, one line each with
-`file:line`, and the counts. Hard cap: 2,000 characters. Everything else goes in the file.
+`file:line`, and the counts. Hard cap: 2,000 characters, or the caller's cap when it names one.
+Count before you hand back: a hook sends an over-cap hand-back back to you. Everything else goes
+in the file.

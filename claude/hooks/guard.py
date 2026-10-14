@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Claude Code guard hook (PreToolUse + UserPromptSubmit). Python 3 stdlib only.
+"""Claude Code guard hook (PreToolUse, UserPromptSubmit, SubagentStop). Python 3 stdlib only.
 
 Usage (wired in settings.json):
-  python3 ~/.claude/hooks/guard.py pretool   # matcher Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion
-  python3 ~/.claude/hooks/guard.py prompt    # UserPromptSubmit
+  python3 ~/.claude/hooks/guard.py pretool       # matcher Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback
+  python3 ~/.claude/hooks/guard.py prompt        # UserPromptSubmit
+  python3 ~/.claude/hooks/guard.py subagentstop  # SubagentStop
+  python3 ~/.claude/hooks/guard.py scratch       # agent frontmatter hook, PreToolUse Write|Edit|NotebookEdit
 
-Guards: G1 Agent needs model+effort, G2 no polling at big context,
-G3 context ceiling (nudge at 300K, deny Agent at 500K), G4 one AskUserQuestion per turn.
+Guards: G1 Agent needs model+effort+deadline+hand-back cap, G2 no polling at big context,
+G3 context ceiling (nudge at 300K, deny Agent at 500K), G4 one AskUserQuestion per turn,
+G5 subagent hand-back over its cap. Mode scratch: writes only under temp or scratchpad folders.
 
 Deny = message on stderr + exit 2. Allow = exit 0 silently.
 Fail-open: any exception, bad input or unknown mode exits 0 with no output.
@@ -24,6 +27,38 @@ NUDGE_EVERY = 5
 MAX_EFFORT_WORDS = ("plan", "synthesis", "architecture", "final review")
 _MAX_WORD = re.compile(r"\b(?:plan|synthesis|architecture|final\b.{0,30}\breview)\b")
 
+# G1 brief check: the prompt must name a deadline and a hand-back cap.
+DEADLINE_RE = re.compile(
+    r"deadline|time ?(?:box|limit)|stop at|\d+ ?-?(?:m|mins?|minutes?|h|hrs?|hours?)\b", re.I
+)
+CAP_RE = re.compile(
+    r"hand[ -]?back|at most \d[\d,]*|\d[\d,]* ?(?:chars|characters|words|lines)\b|under \d[\d,]*"
+    r"|max(?:imum)? \d[\d,]*|one line|≤ ?\d[\d,]*",
+    re.I,
+)
+
+# G5 hand-back cap.
+HANDBACK_SLACK = 1.10
+HANDBACK_MAX_DENIES = 2
+HANDBACK_DEFAULT_CAP = 4000
+HANDBACK_CAPS = {
+    "task-implementer": 3000,
+    "task-reviewer": 3000,
+    "code-reviewer": 4000,
+    "researcher": 3000,
+    "repo-scanner": 2000,
+    "ui-verifier": 3000,
+}
+_CAP_NUM = re.compile(r"(\d[\d,]*) ?(?:chars|characters)\b", re.I)
+_CAP_HANDBACK = re.compile(r"hand[ -]?backs?\b", re.I)
+_CAP_STRONG = re.compile(r"final message|reply|response|respond|output", re.I)
+_CAP_WEAK = re.compile(r"answer|return|report|summary", re.I)
+_CAP_BOUND = re.compile(r"(?:≤|<=|at most|under|max(?:imum)?|stay|keep|limit|no more than|within)\W*$", re.I)
+_SENTENCE_END = re.compile(r"\.\s|\n")
+PROMPT_SCAN_LINES = 200
+SCRATCH_ROOTS = ("/tmp", "/private/tmp", "/var/folders", "/private/var/folders")
+SCRATCH_DIRS = {".agents", ".superpowers"}  # git-ignored note folders where callers ask for reports
+
 MSG_AGENT = (
     'guard: Agent call needs "model" and "effort" (sonnet + high for build/review/'
     "research; opus or fable for plan and final review)."
@@ -31,6 +66,19 @@ MSG_AGENT = (
 MSG_MAX = (
     'guard: effort "max" is only for plan / synthesis / architecture / final review; '
     'use "high", or say which of those this is in the description.'
+)
+MSG_BRIEF = (
+    "guard: Agent prompt needs {missing}. Add `Deadline: 25 min.` and "
+    "`Hand back at most 4,000 chars; write the rest to a file.`"
+)
+MSG_HANDBACK = (
+    "guard: hand-back is {n} chars; the cap is {cap}. Write the full text to a file (the path "
+    "the caller named, or the scratchpad), then hand back at most {cap} chars: status on line 1, "
+    "key results, the file path. No Write tool: cut to the top findings."
+)
+MSG_SCRATCH = (
+    "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, "
+    ".agents/ or .superpowers/."
 )
 MSG_POLL = (
     "guard: no polling loops at big context; use Monitor / SendMessage "
@@ -264,6 +312,15 @@ def g1_agent(data, ctx):
         text = f"{ti.get('description') or ''} {ti.get('prompt') or ''}".lower()
         if not _MAX_WORD.search(text):
             return MSG_MAX
+    prompt_text = ti.get("prompt")
+    prompt_text = prompt_text if isinstance(prompt_text, str) else ""
+    missing = []
+    if not DEADLINE_RE.search(prompt_text):
+        missing.append("a deadline")
+    if not CAP_RE.search(prompt_text):
+        missing.append("a hand-back cap")
+    if missing:
+        return MSG_BRIEF.format(missing=" and ".join(missing))
 
 
 def g2_polling(data, ctx):
@@ -298,9 +355,166 @@ def g4_ask(data, ctx):
         return MSG_ASK
 
 
+def _text_of(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        parts = [p for p in parts if isinstance(p, str)]
+        return "\n".join(parts) if parts else None
+    return None
+
+
+def subagent_prompt(path):
+    """Text of the first user record in a subagent transcript (read from the start, 200 lines max)."""
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as f:
+            for i, line in enumerate(f):
+                if i >= PROMPT_SCAN_LINES:
+                    break
+                if b'"user"' not in line:
+                    continue
+                rec = _loads(line)
+                if not rec or rec.get("type") != "user":
+                    continue
+                msg = rec.get("message")
+                text = _text_of(msg.get("content") if isinstance(msg, dict) else None)
+                if text:
+                    return text
+    except Exception:
+        pass
+    return None
+
+
+def subagent_transcript(data):
+    atp = data.get("agent_transcript_path")
+    if isinstance(atp, str) and atp:
+        return atp
+    tp = data.get("transcript_path")
+    if not isinstance(tp, str) or not tp:
+        return None
+    if "/subagents/" in tp:
+        return tp
+    aid = data.get("agent_id")
+    if not aid:
+        return None
+    base = tp[: -len(".jsonl")] if tp.endswith(".jsonl") else tp
+    return "%s/subagents/agent-%s.jsonl" % (base, aid)
+
+
+def prompt_cap(prompt_text):
+    """Smallest N (>= 200) of 'N chars' that the prompt ties to the reply, or None.
+
+    The tie word must sit in the same sentence: up to 80 chars before the number or 40 after.
+    A "hand back" tie wins, then strong ties (final message, reply, output ...), then weak ones
+    (return, summary ...), so spec text like "return at most 500 characters" or "a hard cap of 2,500
+    chars on the final message" in a file the agent edits does not beat the caller's hand-back cap.
+    Last comes a bare bound right before the number ("Stay ≤ 4,000 chars.").
+    """
+    handback, strong, weak, bound = [], [], [], []
+    text = prompt_text or ""
+    for m in _CAP_NUM.finditer(text):
+        try:
+            n = int(m.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if n < 200:
+            continue
+        before = text[max(0, m.start() - 80) : m.start()]
+        before = _SENTENCE_END.split(before)[-1]
+        after = _SENTENCE_END.split(text[m.end() : m.end() + 40])[0]
+        window = before + " " + after
+        if _CAP_HANDBACK.search(window):
+            handback.append(n)
+        elif _CAP_STRONG.search(window):
+            strong.append(n)
+        elif _CAP_WEAK.search(window):
+            weak.append(n)
+        elif _CAP_BOUND.search(before[-25:]):
+            bound.append(n)  # "Stay ≤ 4,000 chars." with no reply word
+    pick = handback or strong or weak or bound
+    return min(pick) if pick else None
+
+
+def handback_cap(data):
+    cap = prompt_cap(subagent_prompt(subagent_transcript(data)))
+    if cap:
+        return cap
+    return HANDBACK_CAPS.get(data.get("agent_type"), HANDBACK_DEFAULT_CAP)
+
+
+def _state_dir():
+    return os.path.join(os.environ.get("TMPDIR") or "/tmp", "claude-guard")
+
+
+def check_handback(data, text):
+    """G5: deny a hand-back over cap x 1.10, at most twice per agent; None = allow."""
+    if not isinstance(text, str) or not text:
+        return
+    cap = handback_cap(data)
+    if len(text) <= cap * HANDBACK_SLACK:
+        return
+    key = re.sub(r"[^A-Za-z0-9_.-]", "_", str(data.get("agent_id") or data.get("session_id") or "unknown"))
+    state_file = os.path.join(_state_dir(), "handback-%s.json" % key)
+    denies = 0
+    try:
+        with open(state_file) as f:
+            denies = int(json.load(f).get("denies", 0))
+    except Exception:
+        pass
+    if denies >= HANDBACK_MAX_DENIES:
+        return
+    try:
+        os.makedirs(_state_dir(), exist_ok=True)
+        with open(state_file, "w") as f:
+            json.dump({"denies": denies + 1}, f)
+    except Exception:
+        return  # no counter, no deny: a deny without one could repeat forever
+    return MSG_HANDBACK.format(n=len(text), cap=cap)
+
+
+def g5_handback(data, ctx):
+    if data.get("tool_name") != "SubagentHandback":
+        return
+    ti = data.get("tool_input")
+    return check_handback(data, ti.get("message") if isinstance(ti, dict) else None)
+
+
+def subagentstop(data):
+    if data.get("stop_hook_active"):
+        return
+    return check_handback(data, data.get("last_assistant_message"))
+
+
+def scratch(data):
+    """Allow a write only under a temp or scratchpad folder; None = allow."""
+    ti = data.get("tool_input")
+    ti = ti if isinstance(ti, dict) else {}
+    path = ti.get("file_path") or ti.get("notebook_path")
+    if not isinstance(path, str) or not path:
+        return
+    path = os.path.expanduser(path)
+    cwd = data.get("cwd")
+    if not os.path.isabs(path) and isinstance(cwd, str) and cwd:
+        path = os.path.join(cwd, path)
+    real = os.path.realpath(path)
+    roots = list(SCRATCH_ROOTS)
+    if os.environ.get("TMPDIR"):
+        roots.append(os.environ["TMPDIR"])
+    for root in roots:
+        for r in {root.rstrip("/") or "/", os.path.realpath(root)}:
+            if real == r or real.startswith(r.rstrip("/") + "/"):
+                return
+    if "/scratchpad/" in real or set(real.split("/")) & SCRATCH_DIRS:
+        return
+    return MSG_SCRATCH
+
+
 def pretool(data):
     ctx = Ctx(data)
-    for guard in (g3_pretool, g1_agent, g2_polling, g4_ask):
+    for guard in (g3_pretool, g1_agent, g2_polling, g4_ask, g5_handback):
         msg = guard(data, ctx)
         if msg:
             return msg
@@ -310,7 +524,7 @@ def prompt(data):
     """G3 nudge: print JSON for stdout (or None); counter state lives in TMPDIR."""
     ctx = Ctx(data)
     sid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(data.get("session_id") or "unknown"))
-    state_dir = os.path.join(os.environ.get("TMPDIR") or "/tmp", "claude-guard")
+    state_dir = _state_dir()
     state_file = os.path.join(state_dir, sid + ".json")
     count = 0
     try:
@@ -344,13 +558,13 @@ def prompt(data):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
-    if mode not in ("pretool", "prompt"):
+    if mode not in ("pretool", "prompt", "subagentstop", "scratch"):
         return 0
     data = json.loads(sys.stdin.read())
     if not isinstance(data, dict):
         return 0
-    if mode == "pretool":
-        msg = pretool(data)
+    if mode in ("pretool", "subagentstop", "scratch"):
+        msg = {"pretool": pretool, "subagentstop": subagentstop, "scratch": scratch}[mode](data)
         if msg:
             sys.stderr.write(msg + "\n")
             return 2

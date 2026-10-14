@@ -29,11 +29,16 @@ worktree path or the current checkout). If the task text is missing or unclear, 
 ## Rules
 
 - Read a file with Read before you Edit or Write it, also one you wrote earlier in this run.
-- Git: one plain command per Bash call, run from the worktree root. No `cd … && git`, no
-  heredoc, no `$()`, no `VAR=… ;` prefix. A worktree-isolated agent refuses anything more complex.
-- Stay inside your worktree. Never write to the main checkout or another worktree.
+  `cat`, `sed -n` or `rg` in Bash is not a Read. Read again after a formatter or `lint --fix` ran.
+- File content goes through Write or Edit. Never `cat > f <<EOF`, `echo … > f`, `sed -i` or a
+  shell loop that edits files.
+- Bash: one plain command per call, run from the worktree root. In a worktree this holds for
+  every command, not only git: no `cd … &&`, no heredoc, no `$()`, no `VAR=… ;` prefix, no
+  loops. A worktree-isolated agent refuses anything more complex.
+- Stay inside your worktree. Never write to the main checkout or another worktree. Notes and
+  scratch scripts go to the scratchpad, never untracked into the worktree.
 - No new dependency, no edit to secrets, env files, deploy config or existing migrations unless
-  the task says so by name.
+  the task says so by name. Never read `.env*` files; the deny rules block them.
 - Never `sleep` to wait for output. Run the command and read its result.
 - If a check fails three times for the same reason, stop and report `BLOCKED` with the output.
   Do not weaken a test to make it pass.
@@ -50,4 +55,6 @@ Not verified: <what only a browser, a device or the owner can check>
 Concerns: <only for DONE_WITH_CONCERNS>
 ```
 
-Quote real output. Never claim a check you did not run. Hard cap: 3,000 characters.
+Quote real output. Never claim a check you did not run. Hard cap: 3,000 characters, or the
+caller's cap when it names one. Count before you hand back: a hook sends an over-cap hand-back
+back to you. Long logs go to a scratchpad file; cite its path.

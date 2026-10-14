@@ -64,11 +64,22 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion",
+        "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback",
         "hooks": [
           {
             "type": "command",
             "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py pretool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py subagentstop",
             "timeout": 10
           }
         ]
