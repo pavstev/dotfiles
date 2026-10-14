@@ -5,12 +5,12 @@
 # ============================================================================
 DOTFILES="${DOTFILES:-$HOME/dotfiles}"
 
-# ---- Homebrew (Apple Silicon or Intel) ------------------------------------
-if [[ -x /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-elif [[ -x /usr/local/bin/brew ]]; then
-  eval "$(/usr/local/bin/brew shellenv)"
-fi
+# ---- Homebrew (Apple Silicon, Intel, or Linux) ----------------------------
+for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew \
+             /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+  if [[ -x $_brew ]]; then eval "$($_brew shellenv)"; break; fi
+done
+unset _brew
 
 # ---- Oh My Zsh -------------------------------------------------------------
 export ZSH="$HOME/.oh-my-zsh"
@@ -97,7 +97,17 @@ bindkey '^ ' autosuggest-accept       # Ctrl-Space to accept a suggestion
 # ---- Environment -----------------------------------------------------------
 export EDITOR="nano"
 export VISUAL="$EDITOR"
-export LANG="en_US.UTF-8"
+# ~/.gitconfig sets `code --wait` as the git editor. On Linux without VS Code, use $EDITOR.
+[[ $OSTYPE == linux* ]] && ! command -v code >/dev/null && export GIT_EDITOR="$EDITOR"
+if [[ $OSTYPE == linux* && $LANG == *.[Uu][Tt][Ff]-8 ]]; then
+  :   # Linux already set a UTF-8 locale: keep it
+else
+  export LANG="en_US.UTF-8"
+  # A fresh Linux install often lacks the en_US locale: use C.UTF-8 then, or tools warn.
+  if [[ $OSTYPE == linux* ]] && ! locale -a 2>/dev/null | grep -qix 'en_US.utf-\?8'; then
+    export LANG="C.UTF-8"
+  fi
+fi
 export CLICOLOR=1
 export PAGER="less"
 export LESS="-R"

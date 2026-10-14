@@ -66,7 +66,7 @@ The user's time is the cost that counts.
 3. Hand-offs live in files: a prompt for another session goes to a file plus a one-line code block `Read <path> and do it.` (`/ps:handoff`). No `cd` or launch command in the block; folder, model and effort go in a short list under it.
 4. Small change (≤ 3 files, "quickly", "just", "directly"): no skill cascade, no AskUserQuestion, read ≤ 5 files, edit, one check, push.
 5. Decided means go: when Claude writes "I pick X", it proceeds in the same turn; stop only for irreversible or paid actions.
-6. Never poll from inside a session: no "report every N minutes", no watchdog turns; use Monitor or `notify_when_idle` and one final report. The one exception is the 30-min resume loop of `/ps:autopilot`.
+6. Never poll from inside a session: no "report every N minutes", no watchdog turns, no `sleep N; tail` to wait for output; use Monitor or `notify_when_idle` and one final report. The one exception is the 30-min resume loop of `/ps:autopilot`.
 7. Every Agent prompt carries a model, an effort, a deadline, and "hand back ≤ 4,000 chars; write the rest to a file and cite it".
 8. Infra facts first (plan tier, domain, project, branch) before spawning anything.
 9. A blocked action is named with its rule and a one-line command the user can run; the task is not handed back.
@@ -78,3 +78,18 @@ The user's time is the cost that counts.
 15. Writing: no em dashes, no taglines, short plain sentences.
 16. Runs over an hour keep a `PROGRESS.md` ledger and resume from it after compaction or restart.
 17. "Archive this" means: commit, push, scan once, archive; no new verification.
+18. In a worktree, run each git command alone from the worktree root: no `cd … && git` chains. A worktree-isolated agent refuses anything more complex.
+
+## Agents
+
+Dispatch these by name (`subagent_type`) instead of general-purpose with a pasted role. A project
+agent with the same job wins in its repo (for example its own `implementer`).
+
+| Job | Agent |
+|---|---|
+| build one plan task with tests, commit | `task-implementer` |
+| review one plan task against its spec, or its fix round | `task-reviewer` |
+| review a diff, a commit or the whole branch (final review: pass opus + max) | `code-reviewer` |
+| one research question with sources, notes to a file | `researcher` |
+| read-only sweep of a repo from one angle into one file | `repo-scanner` |
+| check a page or extension flow in a browser, pass or fail | `ui-verifier` |

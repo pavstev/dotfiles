@@ -44,7 +44,11 @@ STATE_SUBDIR = "cursor-guard"
 MAX_STATE_FILES = 200  # keep the newest this many conversation records
 MAX_STATE_AGE = 7 * 24 * 3600  # drop records older than a week
 MODES = ("prompt", "subagent", "compact", "response")
-APP_DB = os.path.expanduser("~/Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+APP_DB = os.path.expanduser(
+    "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb"
+    if sys.platform == "darwin"
+    else "~/.config/Cursor/User/globalStorage/state.vscdb"
+)
 SUBAGENT_TOOLS = ("Task", "Subagent", "mcp_task")  # preToolUse names for a subagent spawn
 
 # Token field names in afterAgentResponse are UNCONFIRMED; these are tried in order.

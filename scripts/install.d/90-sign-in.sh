@@ -37,7 +37,7 @@ fi
 for i in "${!labels[@]}"; do
   info "${labels[$i]}: ${cmds[$i]}"
   ${cmds[$i]} || warn "${cmds[$i]} did not finish. Run it again later."
-  if [[ "${cmds[$i]}" == "agent login" && -d /Applications/Cursor.app ]]; then
+  if is_macos && [[ "${cmds[$i]}" == "agent login" && -d /Applications/Cursor.app ]]; then
     open -a Cursor && info "sign in inside the Cursor app too"
   fi
 done

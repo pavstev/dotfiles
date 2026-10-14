@@ -7,8 +7,7 @@ Markdown), optionally bundled with `scripts/` and reference files.
 ## How it's wired
 
 This directory is the single source of truth. `../skill-sync.sh` (run by `./dotfiles`,
-or by hand) adds a **per-skill symlink** into `~/.claude/skills`, and into
-`~/.codex/skills` when Codex is installed. Cursor reads `~/.claude/skills` itself. It never
+or by hand) adds a **per-skill symlink** into `~/.claude/skills`. Cursor reads `~/.claude/skills` itself. It never
 touches skills it does not own. A skill added here shows up in every agent on every
 machine after `dots`.
 

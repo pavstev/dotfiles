@@ -1,5 +1,5 @@
 # ============================================================================
-#  skill — manage Claude/Cursor/Codex skills backed by the dotfiles repo
+#  skill — manage Claude/Cursor skills backed by the dotfiles repo
 #  Source: $DOTFILES/home/.config/zsh/skill.zsh  (symlinked from this repo)
 #  Edits here are live immediately — no apply step.
 # ============================================================================
@@ -335,7 +335,12 @@ _skill_create() {
 
   cp -r "$src/_template" "$dest"
   # Pre-fill the name field
-  sed -i '' "s/^name: .*/name: $name/" "$dest/SKILL.md" 2>/dev/null || true
+  # (no `sed -i`: its flags differ between macOS and Linux)
+  if sed "s/^name: .*/name: $name/" "$dest/SKILL.md" >"$dest/SKILL.md.tmp" 2>/dev/null; then
+    mv "$dest/SKILL.md.tmp" "$dest/SKILL.md"
+  else
+    rm -f "$dest/SKILL.md.tmp"
+  fi
 
   printf '%s scaffolded %s\n' "$(_sk_ok '✓')" "$(_sk_h "$name")"
   printf '  edit: %s\n\n' "$(_sk_dim "$dest/SKILL.md")"
@@ -394,7 +399,7 @@ _skill_status() {
 # ----- skill help ------------------------------------------------------------
 
 _skill_help() {
-  printf '\n%s  manage Claude/Cursor/Codex skills\n\n' "$(_sk_h 'skill')"
+  printf '\n%s  manage Claude/Cursor skills\n\n' "$(_sk_h 'skill')"
   printf '  %s  %-24s  %s\n' "$(_sk_h 'skill')" "$(_sk_dim 'install <name>')"     "install from GitHub (searches topic: ai-skill)"
   printf '  %s  %-24s  %s\n' "$(_sk_h 'skill')" "$(_sk_dim 'install owner/repo')" "install directly from a GitHub repo"
   printf '  %s  %-24s  %s\n' "$(_sk_h 'skill')" "$(_sk_dim 'list')"              "list installed skills and active status"

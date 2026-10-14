@@ -114,7 +114,7 @@ whatsleft now leads with the deliverable, prints an ETA line and a Tasks table w
 
 ## desktop-commander in the ps: skills (2026-10-12)
 
-Fit check: desktop-commander wins in 3 skills. autopilot gets `start_process` + `interact_with_process` for commands that ask questions (a prompt hangs the Bash tool). whatsleft and mic-drop get `list_sessions` + `force_terminate`, because its processes are invisible to the scan and to TaskStop. No change elsewhere: `list_processes` returns 266 K chars with no filter (bag-mode keeps `top`); `read_file`, `edit_block`, `start_search` add nothing over Read, Edit and Grep; sessions, handoff, pick, askme, iamrich and captain-research have no process or terminal job. Every use names a fallback, since Cursor and Codex read the same skills. Test runs, sonnet at high:
+Fit check: desktop-commander wins in 3 skills. autopilot gets `start_process` + `interact_with_process` for commands that ask questions (a prompt hangs the Bash tool). whatsleft and mic-drop get `list_sessions` + `force_terminate`, because its processes are invisible to the scan and to TaskStop. No change elsewhere: `list_processes` returns 266 K chars with no filter (bag-mode keeps `top`); `read_file`, `edit_block`, `start_search` add nothing over Read, Edit and Grep; sessions, handoff, pick, askme, iamrich and captain-research have no process or terminal job. Every use names a fallback, since Cursor reads the same skills. Test runs, sonnet at high:
 - autopilot baseline, brief with an interactive `migrate.sh`: Bash runs hung on the prompt, about 8 min lost, one wrong answer before a home-made pty driver. With skill: `start_process`, read each prompt, answered with `interact_with_process`, done in 1 min, right answers first time. Gap closed after the run: the ToolSearch query now names the tools, `+desktop-commander` alone did not load `start_process`.
 - whatsleft baseline, "/ps:whatsleft kill dead tasks" with two desktop-commander servers running: the scan did not see them, nothing stopped. With skill: `list_sessions`, both rows in Tasks, both stopped with `force_terminate`. Gap closed after the run: only PIDs this session's own `start_process` returned count as ours.
 - mic-drop baseline, "clean up background tasks" with the same servers: found and killed them, but after 7 `ps` and `lsof` calls. With skill: one `list_sessions`, one `force_terminate`, the background `sleep` stopped with TaskStop. Gap closed: the archive sweep is scoped to PIDs this session started.
@@ -131,3 +131,32 @@ The hub-report example rows now use neutral names. Test runs, sonnet at high, "g
 The scan's process list printed whole command lines, and one held a real API key. Now each process gets one short line: PID, program name (`ucomm`) and at most 100 masked characters (flag values, secret-named KEY=VALUE pairs, URL passwords, known token prefixes, long opaque strings). Test runs, sonnet at high, "run the scan and report" in a test repo with two fake processes whose command lines held fake keys:
 - Baseline: the scan printed all 4 fake secrets. The agent left them out of its report, then ran `ps` with `comm` itself, which prints them again (on macOS `comm` is argv[0], which a process can set).
 - With the fix: the scan showed no secret, but the agent ran `ps -o command` to judge ownership. Gap closed: the skill row now names a safe `/bin/ps -o pid=,ppid=,user=,lstart=,ucomm=` call and forbids printing full command lines. Re-run: only that call, no command line printed, same decision (not ours, leave).
+
+## ps:harness-optimize (rebuilt 2026-10-14)
+
+Brought back as a transcript-driven review, replacing the old config-only audit removed on 2026-10-12.
+`scripts/harness_stats.py` measures sessions per period (cuts = harness push groups) and per project,
+clusters tool errors (with a per-day view) and lists unused skills. Ideas from Anthropic's Claude Code
+docs (memory, skills, hooks, prompt caching), the context-engineering and long-running-harness posts,
+skillscope (skill usage from Skill tool_use), and the AGENTS.md studies (arXiv 2602.11988, 2601.20404).
+Test runs, sonnet at high, "did my harness changes help, propose global and per-project fixes":
+- Baseline: could not find the Oct 12 change (history moved to an archived repo), skipped subagent
+  files (most errors), never measured peak context, questions or hand-offs.
+- With skill: found the archived repo and the cuts, measured 500K / effort / hand-offs, split by
+  project. Gaps closed after the run: `cuts --gh`, `errors --daily`, `inventory`, hook denials apart
+  from tool errors, per-100-prompt question rate, early-period note.
+- Re-test: picked cuts alone, dated each error cluster. Gaps closed: cut rule, default `--since` from
+  the last review, Claude Code version per period, "higher is better" note.
+
+## ps:whatsleft does its own rows, ps:askme asks the rest (2026-10-14)
+
+whatsleft no longer waits for "go". It routes every row through `scripts/route.py` (DO, ASK, YOU, WAIT, KEEP, DONE; the costly questions first, capped at 4), does the DO rows, hands the ASK rows to askme's new hand-off mode, and runs `ps:mic-drop` when nothing is left to ask. The same steps name the Cursor tools (`AskQuestion`, `kill <pid>`). `test_route.py` also checks that the three skills keep pointing at each other; pre-commit runs every `scripts/test_*.py` under `claude/skills/`. Test runs, sonnet at high, one scenario (CSV export, tests, deploy, env var behind an AWS login, idle dev server), in Claude Code and in Cursor:
+- Baseline: both did read-only checks only, put every decision in a text table, used no question tool, and left lint, tests and the dev server for "go". Both sent the env var to the user without trying a CLI or the browser. Cursor could not resolve `${CLAUDE_SKILL_DIR}`.
+- With skill: both wrote the test, ran lint and tests, committed, asked one question round, and held the push behind the missing production value. Gaps closed after the run: read the user's rules before asking (main vs PR), `prod-config` counts as risky, a push waits on its prerequisites, STOP tasks are a question unless `kill dead tasks`, labels carry the meaning when the tool has no descriptions. Routing then moved into `route.py`, so these rules no longer depend on the agent's reading.
+- With route.py: 5 real route.py rounds, 4 questions in one call, then ps:mic-drop came back clean. Gaps closed after the run: a question that needs another question's answer waits a round, `skip` closes a row (not `done`), an unchecked value is never the recommended option, the short update comes before mic-drop (it may archive the chat).
+
+## ps:spawn (2026-10-14)
+
+Starts a new session from a Remote Control session: `claude --remote-control <name> --name <name> --permission-mode bypassPermissions "$(cat prompt)"` in a detached tmux on its own socket (`-L claude-spawn`), started from an env without the parent's `CLAUDE*`, `ANTHROPIC_*` and `MCP_*` vars. Every check (tmux, claude.ai login, folder trust, bypass warning accepted, name free) runs before the start; success is the `claude.ai/code/session_…` link on screen. Sources: code.claude.com docs (remote-control, cli-reference, permission-modes, settings), the Claude Code 2.1.296 `--help`, and its binary for the flag accepting the warning writes (`skipDangerousModePermissionPrompt` in user settings). Not used: `claude remote-control` server mode (no prompt), `claude --bg` (no Remote Control, issue 70546), the desktop deep link (pre-fills only). Real runs on this Mac: a start in 2 s at the first try in `acceptEdits` and `auto`, multi-line prompt, bypass stopped at the check with exit 3. Test runs, sonnet at high:
+- Baseline: a plain tmux command with single-quoted prompt, fixed `sleep` waits, 2-3 screen checks, and `tmux send-keys` to accept the bypass warning in the new session.
+- With skill: prompt copied to a file, one `--dry-run` call, exit 3 on the bypass check, one question, `--mode` fallback. Gaps closed after the run: the reply names the mode that really ran, the fallback is `auto` (`acceptEdits` stalls on shell commands), a folder check when the prompt names files not in it, a "starting" line for the phone.

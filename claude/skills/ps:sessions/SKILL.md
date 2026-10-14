@@ -22,6 +22,7 @@ Work with the user's other Claude Code sessions. One rule matters most: never po
 | Remote Control on or off | `mcp__ccd_session_mgmt__set_remote_control` (`session_id`, `enabled`) |
 | Interrupt a turn | `mcp__ccd_session_mgmt__stop_session` (`session_id`) |
 | Archive | `mcp__ccd_session_mgmt__archive_session` (`session_id`, `reason`) |
+| Start a new session with a prompt, Remote Control on | `ps:spawn` skill |
 
 `ListAgents` finds agents and sessions to address with `SendMessage`. Its row says busy or idle.
 

@@ -76,7 +76,11 @@ Session: archived / kept (pinned) / kept (not clean)
 ## Archive
 
 1. `mcp__ccd_session_mgmt__get_session` with `"self"`. Read `pinned`. Pinned → do NOT archive. Say "pinned, so I kept it".
-2. Sweep: `TaskStop` every background task, monitor and dev server this session started; `force_terminate` every desktop-commander PID it started. Remove merged agent worktrees.
+2. Sweep, right before the archive call. The app refuses to archive while any agent run, queued message or background task is live. Stop all of these:
+   - `TaskStop` every background task, background agent, monitor and dev server this session started.
+   - `CronList`, then `CronDelete` every cron. A pending wakeup: `ScheduleWakeup` with `stop: true`.
+   - `force_terminate` every desktop-commander PID it started.
+   - Remove merged agent worktrees.
 3. Archive when ALL are true. Do not wait for the user to ask.
    - The last scan printed `VERDICT: CLEAN`.
    - Every check under `RUN` passed in this session and CI is green, unless the user said "archive this".
@@ -85,7 +89,8 @@ Session: archived / kept (pinned) / kept (not clean)
    Any of them false → do NOT archive. Say "kept (not clean)" and why.
 4. Remote Control on (`get_session` shows it) → `mcp__ccd_session_mgmt__set_remote_control` off, before the next step.
 5. Send the report text FIRST, in the same message. Then call `mcp__ccd_session_mgmt__archive_session` with `"self"`. The conversation ends at that call.
-6. No `ccd_session_mgmt` tools (terminal CLI) → say "archive it by hand".
+6. Refused with "still has live work" → the report already said "archived", so fix it in one line. Run the sweep once more and call archive once more. Refused again → say "Session: kept (not clean)" and put "archive it from the sidebar" under "You do". Never loop.
+7. No `ccd_session_mgmt` tools (terminal CLI) → say "archive it by hand".
 
 ## Rules
 

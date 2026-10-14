@@ -1,6 +1,8 @@
 # Brewfile — `brew bundle --file=Brewfile` installs only what's missing.
 # Applied by scripts/install.d/20-brew-bundle.sh, run every time `./dotfiles` runs.
 # Per-machine extras go in Brewfile.local (gitignored) — see Brewfile.local.example.
+# On Linux the same step drops the tap, cask, mas and vscode lines (Mac only) and installs the rest
+# with Homebrew on Linux. Keep each of those lines on one line starting with its keyword.
 
 # ---- Taps ------------------------------------------------------------------
 tap "nikitabobko/tap"     # AeroSpace tiling window manager
@@ -43,6 +45,7 @@ brew "gh"                      # GitHub CLI  (+ gh-dash extension → `gh dash`)
 brew "direnv"          # per-directory env
 brew "mise"            # node/python/etc version manager
 brew "just"            # command runner (modern make)
+brew "tmux"            # detached terminals (ps:spawn starts Remote Control sessions in one)
 brew "jq"              # JSON processor
 brew "yq"              # YAML/JSON/XML processor
 brew "xh"              # fast HTTPie-style HTTP client

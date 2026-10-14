@@ -1098,7 +1098,7 @@ class CmdUserRulesTest(Base):
         self.assertTrue(gf.exists())
         mine = self.cdir / "rules" / "claude-output-style.mdc"
         mine.write_text("user's own\n")
-        with mock.patch("subprocess.run") as run:  # pbcopy is the only thing faked
+        with mock.patch("subprocess.run") as run, mock.patch.object(AC, "clipboard_command", return_value=["pbcopy"]):
             rc, out, _ = call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
         self.assertEqual(rc, 0)
         args, kwargs = run.call_args
@@ -1110,8 +1110,25 @@ class CmdUserRulesTest(Base):
         self.assertEqual(mine.read_text(), "user's own\n")  # not ours, kept
         self.assertIn("copied the rules", out)
 
+    def test_clipboard_command_picks_the_tool_for_the_platform(self):
+        with mock.patch.object(sys, "platform", "darwin"):
+            self.assertEqual(AC.clipboard_command(), ["pbcopy"])
+        with mock.patch.object(sys, "platform", "linux"):
+            with mock.patch("shutil.which", side_effect=lambda c: "/usr/bin/" + c if c == "xclip" else None):
+                self.assertEqual(AC.clipboard_command(), ["xclip", "-selection", "clipboard"])
+            with mock.patch("shutil.which", return_value=None):
+                self.assertIsNone(AC.clipboard_command())
+
+    def test_copy_without_a_clipboard_tool_prints_the_rules_and_fails(self):
+        with mock.patch.object(AC, "clipboard_command", return_value=None), mock.patch("subprocess.run") as run:
+            rc, out, _ = call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
+        self.assertEqual(rc, 1)
+        run.assert_not_called()
+        self.assertIn("## ", out)
+        self.assertFalse((self.home / AC.USER_RULES_MARK).exists())
+
     def test_after_copy_cursor_rules_skips_then_warns_on_change(self):
-        with mock.patch("subprocess.run"):
+        with mock.patch("subprocess.run"), mock.patch.object(AC, "clipboard_command", return_value=["pbcopy"]):
             call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
         _, out, err = call(AC.cursor_rules, self.home, "shared")
         self.assertIn("already set up", out)
@@ -1122,11 +1139,146 @@ class CmdUserRulesTest(Base):
         self.assertFalse((self.cdir / "rules" / "claude-global.mdc").exists())
 
     def test_full_cursor_run_after_copy_creates_no_rule_files(self):
-        with mock.patch("subprocess.run"):
+        with mock.patch("subprocess.run"), mock.patch.object(AC, "clipboard_command", return_value=["pbcopy"]):
             call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
         call(AC.main, ["cursor"])
         self.assertFalse((self.cdir / "rules" / "claude-global.mdc").exists())
         self.assertTrue((self.cdir / "hooks.json").exists())
+
+
+# --- Claude settings: repo base + private layer --------------------------------
+class ClaudeSettingsTest(Base):
+    BASE = {"model": "opus", "permissions": {"allow": ["Bash(git status:*)"], "deny": []},
+            "hooks": {"Stop": []}, "theme": "dark"}
+
+    def setUp(self):
+        super().setUp()
+        self.settings(**self.BASE)
+        self.live = self.home / AC.LIVE
+        self.layer_f = self.home / AC.LAYER
+
+    def build(self):
+        return call(AC.claude_settings_build, self.home)
+
+    def test_merge_rules(self):
+        m = AC.merge({"a": 1, "p": {"x": 1}, "permissions": {"allow": ["A"]}, "l": [1]},
+                     {"a": None, "p": {"y": 2}, "permissions": {"allow": ["B", "A"]}, "l": [2], "n": 3})
+        self.assertEqual(m, {"p": {"x": 1, "y": 2}, "permissions": {"allow": ["A", "B"]}, "l": [2], "n": 3})
+
+    def test_first_build_writes_a_real_file(self):
+        code, out, _ = self.build()
+        self.assertEqual(code, 0)
+        self.assertFalse(self.live.is_symlink())
+        self.assertEqual(rj(self.live), self.BASE)
+        self.assertIn("built", out)
+        self.assertEqual(oct(stat.S_IMODE((self.home / AC.LAST).stat().st_mode)), oct(0o600))
+
+    def test_layer_goes_on_top(self):
+        wj(self.layer_f, {"model": "sonnet", "permissions": {"allow": ["Bash(ls:*)"]}, "theme": None})
+        self.build()
+        got = rj(self.live)
+        self.assertEqual(got["model"], "sonnet")
+        self.assertEqual(got["permissions"]["allow"], ["Bash(git status:*)", "Bash(ls:*)"])
+        self.assertNotIn("theme", got)
+
+    def test_second_run_changes_nothing(self):
+        self.build()
+        before = self.live.read_text()
+        code, out, err = self.build()
+        self.assertEqual((code, self.live.read_text()), (0, before))
+        self.assertNotIn("kept", out + err)
+        self.assertFalse(self.layer_f.exists())
+
+    def test_claude_change_is_kept_in_the_layer(self):
+        self.build()
+        live = rj(self.live)
+        live["skipDangerousModePermissionPrompt"] = True
+        live["permissions"]["allow"].append("WebFetch")
+        live["model"] = "fable"
+        del live["theme"]
+        self.live.write_text(json.dumps(live, indent=4))  # Claude's own layout
+        code, out, _ = self.build()
+        self.assertEqual(code, 0)
+        layer = rj(self.layer_f)
+        self.assertEqual(layer, {"skipDangerousModePermissionPrompt": True, "model": "fable",
+                                 "permissions": {"allow": ["WebFetch"]}, "theme": None})
+        self.assertEqual(oct(stat.S_IMODE(self.layer_f.stat().st_mode)), oct(0o600))
+        self.assertIn("kept in your private layer: permissions.allow (+1 item(s))", out)
+        self.assertNotIn("WebFetch", out)  # values never printed
+        got = rj(self.live)
+        self.assertTrue(got["skipDangerousModePermissionPrompt"])
+        self.assertNotIn("theme", got)
+        _, out2, _ = self.build()
+        self.assertNotIn("kept", out2)
+
+    def test_layout_only_rewrite_is_no_drift(self):
+        self.build()
+        self.live.write_text(json.dumps(rj(self.live), indent=4, sort_keys=True))
+        _, out, _ = self.build()
+        self.assertNotIn("kept", out)
+        self.assertFalse(self.layer_f.exists())
+
+    def test_upstream_change_flows_through(self):
+        self.build()
+        self.settings(**dict(self.BASE, model="haiku"))
+        self.build()
+        self.assertEqual(rj(self.live)["model"], "haiku")
+        self.assertFalse(self.layer_f.exists())
+
+    def test_link_is_replaced_without_drift(self):
+        self.live.parent.mkdir(parents=True)
+        os.symlink(str(self.claude / "settings.json"), str(self.live))
+        _, out, _ = self.build()
+        self.assertFalse(self.live.is_symlink())
+        self.assertIn("was a link into the repo", out)
+        self.assertEqual(rj(self.claude / "settings.json"), self.BASE)  # repo file untouched
+
+    def test_bad_json_touches_nothing(self):
+        self.build()
+        before = self.live.read_text()
+        self.layer_f.write_text("{nope")
+        code, _, err = self.build()
+        self.assertEqual((code, self.live.read_text()), (1, before))
+        self.assertIn("not valid JSON", err)
+        self.layer_f.unlink()
+        self.live.write_text("{half")
+        code, _, err = self.build()
+        self.assertEqual(code, 1)
+        self.assertEqual(self.live.read_text(), "{half")
+
+    def test_removed_union_item_warns(self):
+        self.build()
+        live = rj(self.live)
+        live["permissions"]["allow"] = []
+        self.live.write_text(json.dumps(live))
+        _, _, err = self.build()
+        self.assertIn("Claude removed 1 item(s) from permissions.allow", err)
+        self.assertEqual(rj(self.live)["permissions"]["allow"], ["Bash(git status:*)"])
+
+    def test_promote_moves_a_key_to_the_repo(self):
+        wj(self.layer_f, {"permissions": {"allow": ["WebFetch"]}, "statusLine": {"type": "command"}})
+        self.build()
+        code, out, _ = call(AC.claude_settings_promote, self.home, "permissions.allow")
+        self.assertEqual(code, 0)
+        self.assertEqual(rj(self.claude / "settings.json")["permissions"]["allow"],
+                         ["Bash(git status:*)", "WebFetch"])
+        self.assertEqual(rj(self.layer_f), {"statusLine": {"type": "command"}})
+        self.assertIn("Commit it to share it", out)
+        self.assertEqual(rj(self.live)["permissions"]["allow"], ["Bash(git status:*)", "WebFetch"])
+        code, _, err = call(AC.claude_settings_promote, self.home, "nope.key")
+        self.assertEqual(code, 1)
+
+    def test_dry_run_writes_nothing(self):
+        with mock.patch.object(AC, "DRY", True):
+            _, out, _ = self.build()
+        self.assertFalse(self.live.exists())
+        self.assertIn("would write", out)
+
+    def test_cli(self):
+        code, _, _ = call(AC.main, ["claude-settings", "build"])
+        self.assertEqual(code, 0)
+        code, _, err = call(AC.main, ["claude-settings", "promote"])
+        self.assertEqual(code, 2)
 
 
 class MainTest(Base):

@@ -12,6 +12,8 @@
 #
 #  Provides: info · ok · warn · skip · step  (logging)
 #            have <cmd>                       (is a command on PATH?)
+#            is_macos · is_linux · only_macos (which OS; skip a Mac-only step)
+#            linux_prereqs · brewfile_for_os  (Linux: apt packages, Brewfile without Mac lines)
 #            brew_env · ensure_brew           (load or install Homebrew)
 #            at_terminal · fancy · banner     (guided setup with gum menus)
 #            ask_text · ask_email · ask_value · ask_one · ask_menu · ask_long · spin
@@ -42,27 +44,94 @@ step() { printf '\n%s▸ %s%s\n' "$_c_a" "$*" "$_c_0"; }
 # have <cmd> — true if <cmd> resolves on PATH. The basis of "skip if installed".
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# is_macos / is_linux: which OS this is. Every Linux or Mac-only branch uses these.
+is_macos() { [[ "$(uname -s)" == Darwin ]]; }
+is_linux() { [[ "$(uname -s)" == Linux ]]; }
+
+# only_macos <what>: in a step, stop here with a clear line when this is not a Mac.
+only_macos() { is_macos || { info "$1: macOS only, skipping"; exit 0; }; }
+
 # brew_env — make `brew` (and brew-installed tools) available to a script that
-# runs in a bare, non-interactive environment. No-op if brew is absent.
+# runs in a bare, non-interactive environment. No-op if brew is absent. Homebrew
+# lives in /opt/homebrew (Apple Silicon), /usr/local (Intel Mac) or
+# /home/linuxbrew/.linuxbrew (Linux; ~/.linuxbrew without root).
 brew_env() {
-  if   [[ -x /opt/homebrew/bin/brew ]]; then eval "$(/opt/homebrew/bin/brew shellenv)"
-  elif [[ -x /usr/local/bin/brew   ]]; then eval "$(/usr/local/bin/brew shellenv)"
+  local b
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew \
+           /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+    if [[ -x "$b" ]]; then eval "$("$b" shellenv)"; return 0; fi
+  done
+}
+
+# Debian and Ubuntu packages that Homebrew on Linux and the dotfiles scripts need.
+LINUX_PREREQS=(build-essential ca-certificates curl file git procps python3 zsh)
+
+# linux_prereqs_missing: the packages from LINUX_PREREQS that are not installed.
+linux_prereqs_missing() {
+  local p
+  for p in "${LINUX_PREREQS[@]}"; do
+    dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q 'install ok installed' || printf '%s\n' "$p"
+  done
+}
+
+# linux_prereqs: install what linux_prereqs_missing lists, with apt. Quiet when
+# nothing is missing. Exit 0 = all there. Debian and Ubuntu only.
+linux_prereqs() {
+  is_linux || return 0
+  local missing sudo_cmd=""
+  have apt-get || {
+    warn "no apt-get here, so install these yourself: ${LINUX_PREREQS[*]}"
+    return 1
+  }
+  missing="$(linux_prereqs_missing | tr '\n' ' ')"
+  [[ -z "${missing// /}" ]] && return 0
+  if [[ "$(id -u)" -ne 0 ]]; then
+    have sudo || { warn "sudo is missing. As root, run: apt-get install -y $missing"; return 1; }
+    sudo_cmd="sudo"
+    if at_terminal && ! sudo -n true 2>/dev/null; then info "apt needs your password once."; fi
+  fi
+  info "installing with apt: $missing"
+  local log; log="$(mktemp "${TMPDIR:-/tmp}/dots-apt.XXXXXX")"
+  # shellcheck disable=SC2086  # $missing is a list of package names
+  if $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >"$log" 2>&1 &&
+     $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing >>"$log" 2>&1; then
+    rm -f "$log"
+    ok "apt packages installed"
+  else
+    warn "apt could not install: $missing"
+    tail -5 "$log" >&2
+    rm -f "$log"
+    return 1
   fi
 }
 
 # ensure_brew: install Homebrew when it is missing, then load it. At a terminal
-# it asks for the Mac password first (the installer needs sudo). Exit 0 = brew works.
+# it asks for the password first (the installer needs sudo). Exit 0 = brew works.
+# On Linux the apt prerequisites go in first.
 ensure_brew() {
   brew_env
   have brew && return 0
+  linux_prereqs || warn "going on without the apt packages. The Homebrew installer may complain."
   if at_terminal; then
-    info "Homebrew needs your Mac password once."
+    if is_macos; then info "Homebrew needs your Mac password once."; else info "Homebrew needs your password once."; fi
     sudo -v || return 1
   fi
   NONINTERACTIVE=1 /bin/bash -c \
     "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
   brew_env
   have brew
+}
+
+# brewfile_for_os <file>: the Brewfile to give brew bundle. On a Mac, the file itself.
+# On Linux, a temp copy without the lines Linux cannot use: cask, mas, tap, vscode
+# (casks and the App Store are macOS only; extensions are installed by the steps that
+# know the editor). The caller deletes the temp file.
+brewfile_for_os() {
+  local f="$1" t
+  if is_macos; then printf '%s\n' "$f"; return 0; fi
+  t="$(mktemp "${TMPDIR:-/tmp}/Brewfile.XXXXXX")" || return 1
+  grep -vE '^[[:space:]]*(cask|mas|tap|vscode)[[:space:]]|^[[:space:]]*brew[[:space:]]+"mas"' "$f" >"$t"
+  printf '%s\n' "$t"
 }
 
 # ---- Guided prompts ---------------------------------------------------------

@@ -1,6 +1,6 @@
 ---
 name: ps:askme
-description: Use when the user runs /ps:askme, appends /ps:askme to a request, or explicitly asks to be grilled, interviewed, or questioned about a request, plan, or design before any work starts.
+description: Use when the user runs /ps:askme, appends /ps:askme to a request, or explicitly asks to be grilled, interviewed, or questioned about a request, plan, or design before any work starts, or when ps:whatsleft hands over the open rows the agent cannot do alone.
 argument-hint: "[request to stress-test — empty = your last message]"
 ---
 
@@ -13,6 +13,7 @@ This is a conversation that adapts, not a fixed questionnaire: every question sh
 </purpose>
 
 <request>
+Arguments that start with `whatsleft:` mean hand-off mode (below).
 The request is the text passed with this command (shown as ARGUMENTS, or after the command name).
 If nothing was passed, it is my most recent message before the command.
 If neither gives you a request, ask me what to stress-test.
@@ -20,16 +21,26 @@ If neither gives you a request, ask me what to stress-test.
 
 <light_mode>
 When /ps:askme is appended to a request or used mid-task: recon fast, no decision map, no status line.
-Ask only blockers (data model, public interface, costly rework), all in one `AskUserQuestion` call, 2-4 options each, recommendation first.
+Ask only blockers (data model, public interface, costly rework), all in one question-tool call (see `<asking>`), 2-4 options each, recommendation first.
 Take defaults for the rest and name them in one line. After the answers, start work.
 </light_mode>
 
+<handoff_mode>
+[ps:whatsleft](../ps:whatsleft/SKILL.md) calls this mode after it did its own rows. The rows after `whatsleft:` are the ASK rows its `route.py` picked: decisions, values, optional work, risky work and STOP tasks. Rows only the user can do (login, secret, payment) never come here; they stay in the 🧑 table.
+1. Settle what you can first. A row a read-only check or a tool you have can answer is not a question. Do it or drop it.
+2. Ask the rest in one call, in the order given (route.py already put the costly ones first and capped them).
+3. Each option says who acts and what happens, e.g. "Open a PR, I do it (Recommended)" or "Skip, it stays in the README list". Optional row: do it or skip it, with your pick first. A `value` row: an option holds a value only when a tool showed it (say where). An unchecked guess is never "(Recommended)": recommend "Leave it open, I ask again later"; the free-text answer takes the real value.
+4. After the answers, do the work they unlock in the same turn. No decision record, no final question.
+5. Go back to ps:whatsleft step 12: mark the rows `done`, `skip` or `asked: true` and run `route.py` again. Nothing left to ask → it says `ps:mic-drop`, and you run it.
+</handoff_mode>
+
 <asking>
-Ask with your structured question tool: `AskUserQuestion` in Claude Code, `question` in OpenCode.
-If neither exists, ask in plain text with lettered options and wait for my reply.
+Ask with your structured question tool: `AskUserQuestion` in Claude Code, `AskQuestion` in Cursor, `question` in OpenCode.
+If none exists, ask in plain text with lettered options and wait for my reply.
 
 - Give 2–4 technically distinct options per question. Build them from this project's real context (its stack, existing patterns, the files you read), not textbook defaults.
 - Keep labels short. In each description, state what the option means and its concrete trade-off, e.g. "ships today, but every request scans the full table".
+  No description field (Cursor `AskQuestion` takes labels only)? Put the meaning in the label, still short.
 - Put your recommendation first, with "(Recommended)" at the end of its label.
 - Use multi-select only when options can combine. In Claude Code, use `preview` to compare code, schemas, or layouts side by side.
 - The tool adds a free-text answer automatically, so every option you write is a real choice.
@@ -84,4 +95,4 @@ Stop when either:
 2. Ask one final question: implement now, revise a decision, or save the record as a spec file and stop. Implement only after I choose.
 </exit>
 
-Light mode: ask now. Otherwise begin with recon, then show the map and ask the first question.
+Hand-off and light mode: ask now. Otherwise begin with recon, then show the map and ask the first question.
