@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import sys
 import tempfile
@@ -496,6 +497,16 @@ def cmd_cursor(args):
     return 1 if failed else 0
 
 
+def clipboard_command():
+    """The command that copies stdin to the clipboard: pbcopy on a Mac, else wl-copy, xclip or xsel."""
+    if sys.platform == "darwin":
+        return ["pbcopy"]
+    for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+        if shutil.which(cmd[0]):
+            return cmd
+    return None
+
+
 def cmd_user_rules(args):
     """Print the rules for Cursor's User Rules box, or copy them and switch off the file copy.
 
@@ -509,7 +520,12 @@ def cmd_user_rules(args):
         return 0
     import subprocess
 
-    subprocess.run(["pbcopy"], input=text.encode(), check=True)
+    copy = clipboard_command()
+    if not copy:
+        warn("no clipboard tool found (install wl-clipboard or xclip). Printing the rules instead.")
+        sys.stdout.write(text)
+        return 1
+    subprocess.run(copy, input=text.encode(), check=True)
     atomic_write(home / USER_RULES_MARK, sha(text) + "\n")
     for f in ("claude-global.mdc", "claude-output-style.mdc"):
         remove_generated(home / ".cursor" / "rules" / f, "the rules move to Cursor User Rules")

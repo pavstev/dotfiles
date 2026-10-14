@@ -5,9 +5,7 @@
 set -uo pipefail
 . "$REPO/scripts/setup-lib.sh"
 
-if [[ "$(uname)" != "Darwin" ]]; then
-  exit 0   # Non-macOS: nothing to do.
-fi
+only_macos "Touch ID for sudo"
 
 step "Touch ID for sudo"
 

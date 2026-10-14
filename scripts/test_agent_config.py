@@ -1098,7 +1098,7 @@ class CmdUserRulesTest(Base):
         self.assertTrue(gf.exists())
         mine = self.cdir / "rules" / "claude-output-style.mdc"
         mine.write_text("user's own\n")
-        with mock.patch("subprocess.run") as run:  # pbcopy is the only thing faked
+        with mock.patch("subprocess.run") as run, mock.patch.object(AC, "clipboard_command", return_value=["pbcopy"]):
             rc, out, _ = call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
         self.assertEqual(rc, 0)
         args, kwargs = run.call_args
@@ -1110,8 +1110,25 @@ class CmdUserRulesTest(Base):
         self.assertEqual(mine.read_text(), "user's own\n")  # not ours, kept
         self.assertIn("copied the rules", out)
 
+    def test_clipboard_command_picks_the_tool_for_the_platform(self):
+        with mock.patch.object(sys, "platform", "darwin"):
+            self.assertEqual(AC.clipboard_command(), ["pbcopy"])
+        with mock.patch.object(sys, "platform", "linux"):
+            with mock.patch("shutil.which", side_effect=lambda c: "/usr/bin/" + c if c == "xclip" else None):
+                self.assertEqual(AC.clipboard_command(), ["xclip", "-selection", "clipboard"])
+            with mock.patch("shutil.which", return_value=None):
+                self.assertIsNone(AC.clipboard_command())
+
+    def test_copy_without_a_clipboard_tool_prints_the_rules_and_fails(self):
+        with mock.patch.object(AC, "clipboard_command", return_value=None), mock.patch("subprocess.run") as run:
+            rc, out, _ = call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
+        self.assertEqual(rc, 1)
+        run.assert_not_called()
+        self.assertIn("## ", out)
+        self.assertFalse((self.home / AC.USER_RULES_MARK).exists())
+
     def test_after_copy_cursor_rules_skips_then_warns_on_change(self):
-        with mock.patch("subprocess.run"):
+        with mock.patch("subprocess.run"), mock.patch.object(AC, "clipboard_command", return_value=["pbcopy"]):
             call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
         _, out, err = call(AC.cursor_rules, self.home, "shared")
         self.assertIn("already set up", out)
@@ -1122,7 +1139,7 @@ class CmdUserRulesTest(Base):
         self.assertFalse((self.cdir / "rules" / "claude-global.mdc").exists())
 
     def test_full_cursor_run_after_copy_creates_no_rule_files(self):
-        with mock.patch("subprocess.run"):
+        with mock.patch("subprocess.run"), mock.patch.object(AC, "clipboard_command", return_value=["pbcopy"]):
             call(AC.main, ["user-rules", "--profile", "shared", "--copy"])
         call(AC.main, ["cursor"])
         self.assertFalse((self.cdir / "rules" / "claude-global.mdc").exists())

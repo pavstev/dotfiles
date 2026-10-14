@@ -20,7 +20,8 @@ CURSOR_MCP=""
 JAVA_HOME=""
 
 # Setup steps that dots always skips, split by spaces. The names are the files in
-# scripts/install.d without .sh, for example: 70-macos-defaults
+# scripts/install.d without .sh, for example: 70-macos-defaults (on Linux the macOS-only
+# steps 70, 72 and 75 skip on their own)
 SKIP_STEPS=""
 
 # Words the repo's git hooks keep out of every commit, split by spaces. Your git

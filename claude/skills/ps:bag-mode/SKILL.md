@@ -8,6 +8,8 @@ allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/scripts/bag-check.sh *) Bash(python3 ${
 
 Check if the Mac is safe to carry while Claude keeps working. Estimate how long the session still needs. Find the heavy tasks, cut the load.
 
+Mac only. Run `uname -s` first. If it does not print `Darwin`, tell the user "bag-mode is for a Mac laptop, so it cannot check this machine", and stop. Run no other step.
+
 ## Steps
 
 1. Get the ETA (see "Estimate the ETA" below).

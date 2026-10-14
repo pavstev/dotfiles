@@ -53,7 +53,7 @@ exists (saved as `PROFILE` in the settings), else `shared`.
 | `statusLine` -> `statusline.sh` | `cli-config.json` `statusLine` (CLI only) | merge, same script |
 | `enabledPlugins` (cloudflare) | Cursor imports Claude plugins | native compat |
 | MCP | `~/.cursor/mcp.json` from `cursor/mcp.json` (`cloudflare-docs`) | merge; on every profile only with `CURSOR_MCP="on"` (`dots settings`) or `DOTFILES_MCP=on` |
-| editor settings, keybindings | `~/Library/Application Support/Cursor/User/*` | link (unchanged) |
+| editor settings, keybindings | `~/Library/Application Support/Cursor/User/*` (Mac), `~/.config/Cursor/User/*` (Linux) | link (unchanged) |
 | Brewfile `vscode` extensions | Cursor extensions | `cursor --install-extension` loop |
 
 ## Gaps

@@ -36,7 +36,8 @@ new files, package installs, and machine setup only take effect after running
 | `settings.example` | every setting with a note and its default. This Mac's copy is `~/.config/dotfiles/settings` (see "Settings"). |
 | `scripts/settings.sh` | the settings menu: `dots settings` (also `dots private`) and the first run. |
 | `scripts/setup-lib.sh` | shared step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`) and `dotfiles_profile`. |
-| `bootstrap.sh` | fresh-Mac one-liner. |
+| `scripts/test-linux.sh` | runs `./dotfiles` twice in a fresh Debian or Ubuntu container (podman or docker) and checks the result. |
+| `bootstrap.sh` | fresh-machine one-liner (Mac, Debian, Ubuntu). |
 
 ## Sync & update
 
@@ -85,6 +86,28 @@ the mapping table in `docs/cursor-port.md`.
   `DOTFILES_STEPS` takes install.d step names without `.sh`; empty runs all steps.
   It filters only the install.d steps: the pull, git identity prompt, links and
   skill sync still run.
+
+## Linux
+
+`./dotfiles` also runs on Debian 13 and Ubuntu 24.04 (a normal user with `sudo`). The Mac is the
+reference: a Mac run must behave as before. The rules for any change:
+
+- **Ask the OS with the helpers** `is_macos`, `is_linux` and `only_macos <what>` in
+  `scripts/setup-lib.sh`. Never test `uname` inline in a step. Python uses `sys.platform`.
+- **A Mac-only step** starts with `only_macos "<what>"`. On Linux it prints `<what>: macOS only,
+  skipping`. A Linux-only step starts with `is_linux || exit 0` and prints nothing on a Mac.
+- **Tools** come from Homebrew on Linux (`/home/linuxbrew/.linuxbrew`), from the same Brewfile.
+  `brewfile_for_os` hands `brew bundle` a temp copy without `cask`, `mas`, `tap`, `vscode` and
+  `brew "mas"` lines. apt installs only `LINUX_PREREQS` (step `05-linux-prereqs`). Do not add `apt install`
+  of tools: the apt names and versions differ between Debian and Ubuntu.
+- **Paths:** `brew_env` knows the Linux prefixes. Editor settings keep their Mac path under
+  `home/Library/Application Support/` and link to `~/.config/{Code,Cursor}/User` on Linux.
+- **No GNU-only or BSD-only flags** in scripts that run on both (`sed -i`, `stat`, `date -j`, `readlink -f`).
+- **Test it:** `bash scripts/test-linux.sh debian:13` and `ubuntu:24.04`. Both must exit 0, and the
+  second `./dotfiles` run must change nothing. Needs podman or docker on the host that runs it
+  (tested with rootless podman on a Linux host). `--keep` leaves the container, `--reuse` runs
+  your new edits in it again.
+- The unit tests must pass on Linux python too, so tests may not assume Mac paths or `pbcopy`.
 
 ## Profiles
 
@@ -152,6 +175,8 @@ with the cursor on Done.
   holds one. The pre-push hook checks every commit a push adds the same way (cherry-pick,
   rebase and `--no-verify` skip the commit hooks). It also stops a push that brings a
   second history (another first commit), such as an old private history.
+- **Mac and Linux:** one code path where possible; each OS-only branch sits behind `is_macos` or
+  `is_linux` (see "Linux"). The Mac output stays the same.
 - **Idempotent & safe:** setup steps detect what's installed and skip it, back up
   pre-existing config before override, and warn-and-continue on failure. Keep new steps
   that way (source `scripts/setup-lib.sh`).

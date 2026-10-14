@@ -8,6 +8,7 @@
 # Tolerant: if Automation permission isn't granted yet it warns and moves on.
 set -uo pipefail
 . "$REPO/scripts/setup-lib.sh"
+only_macos "Apple Terminal appearance"
 
 FONT_PS="FiraCodeNFM-Reg"   # FiraCode Nerd Font Mono — Regular
 FONT_SIZE=12                # compact

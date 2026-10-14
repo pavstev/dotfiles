@@ -335,7 +335,12 @@ _skill_create() {
 
   cp -r "$src/_template" "$dest"
   # Pre-fill the name field
-  sed -i '' "s/^name: .*/name: $name/" "$dest/SKILL.md" 2>/dev/null || true
+  # (no `sed -i`: its flags differ between macOS and Linux)
+  if sed "s/^name: .*/name: $name/" "$dest/SKILL.md" >"$dest/SKILL.md.tmp" 2>/dev/null; then
+    mv "$dest/SKILL.md.tmp" "$dest/SKILL.md"
+  else
+    rm -f "$dest/SKILL.md.tmp"
+  fi
 
   printf '%s scaffolded %s\n' "$(_sk_ok '✓')" "$(_sk_h "$name")"
   printf '  edit: %s\n\n' "$(_sk_dim "$dest/SKILL.md")"
