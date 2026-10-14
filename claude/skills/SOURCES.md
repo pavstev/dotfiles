@@ -114,7 +114,7 @@ whatsleft now leads with the deliverable, prints an ETA line and a Tasks table w
 
 ## desktop-commander in the ps: skills (2026-10-12)
 
-Fit check: desktop-commander wins in 3 skills. autopilot gets `start_process` + `interact_with_process` for commands that ask questions (a prompt hangs the Bash tool). whatsleft and mic-drop get `list_sessions` + `force_terminate`, because its processes are invisible to the scan and to TaskStop. No change elsewhere: `list_processes` returns 266 K chars with no filter (bag-mode keeps `top`); `read_file`, `edit_block`, `start_search` add nothing over Read, Edit and Grep; sessions, handoff, pick, askme, iamrich and captain-research have no process or terminal job. Every use names a fallback, since Cursor and Codex read the same skills. Test runs, sonnet at high:
+Fit check: desktop-commander wins in 3 skills. autopilot gets `start_process` + `interact_with_process` for commands that ask questions (a prompt hangs the Bash tool). whatsleft and mic-drop get `list_sessions` + `force_terminate`, because its processes are invisible to the scan and to TaskStop. No change elsewhere: `list_processes` returns 266 K chars with no filter (bag-mode keeps `top`); `read_file`, `edit_block`, `start_search` add nothing over Read, Edit and Grep; sessions, handoff, pick, askme, iamrich and captain-research have no process or terminal job. Every use names a fallback, since Cursor reads the same skills. Test runs, sonnet at high:
 - autopilot baseline, brief with an interactive `migrate.sh`: Bash runs hung on the prompt, about 8 min lost, one wrong answer before a home-made pty driver. With skill: `start_process`, read each prompt, answered with `interact_with_process`, done in 1 min, right answers first time. Gap closed after the run: the ToolSearch query now names the tools, `+desktop-commander` alone did not load `start_process`.
 - whatsleft baseline, "/ps:whatsleft kill dead tasks" with two desktop-commander servers running: the scan did not see them, nothing stopped. With skill: `list_sessions`, both rows in Tasks, both stopped with `force_terminate`. Gap closed after the run: only PIDs this session's own `start_process` returned count as ours.
 - mic-drop baseline, "clean up background tasks" with the same servers: found and killed them, but after 7 `ps` and `lsof` calls. With skill: one `list_sessions`, one `force_terminate`, the background `sleep` stopped with TaskStop. Gap closed: the archive sweep is scoped to PIDs this session started.
@@ -131,3 +131,19 @@ The hub-report example rows now use neutral names. Test runs, sonnet at high, "g
 The scan's process list printed whole command lines, and one held a real API key. Now each process gets one short line: PID, program name (`ucomm`) and at most 100 masked characters (flag values, secret-named KEY=VALUE pairs, URL passwords, known token prefixes, long opaque strings). Test runs, sonnet at high, "run the scan and report" in a test repo with two fake processes whose command lines held fake keys:
 - Baseline: the scan printed all 4 fake secrets. The agent left them out of its report, then ran `ps` with `comm` itself, which prints them again (on macOS `comm` is argv[0], which a process can set).
 - With the fix: the scan showed no secret, but the agent ran `ps -o command` to judge ownership. Gap closed: the skill row now names a safe `/bin/ps -o pid=,ppid=,user=,lstart=,ucomm=` call and forbids printing full command lines. Re-run: only that call, no command line printed, same decision (not ours, leave).
+
+## ps:harness-optimize (rebuilt 2026-10-14)
+
+Brought back as a transcript-driven review, replacing the old config-only audit removed on 2026-10-12.
+`scripts/harness_stats.py` measures sessions per period (cuts = harness push groups) and per project,
+clusters tool errors (with a per-day view) and lists unused skills. Ideas from Anthropic's Claude Code
+docs (memory, skills, hooks, prompt caching), the context-engineering and long-running-harness posts,
+skillscope (skill usage from Skill tool_use), and the AGENTS.md studies (arXiv 2602.11988, 2601.20404).
+Test runs, sonnet at high, "did my harness changes help, propose global and per-project fixes":
+- Baseline: could not find the Oct 12 change (history moved to an archived repo), skipped subagent
+  files (most errors), never measured peak context, questions or hand-offs.
+- With skill: found the archived repo and the cuts, measured 500K / effort / hand-offs, split by
+  project. Gaps closed after the run: `cuts --gh`, `errors --daily`, `inventory`, hook denials apart
+  from tool errors, per-100-prompt question rate, early-period note.
+- Re-test: picked cuts alone, dated each error cluster. Gaps closed: cut rule, default `--since` from
+  the last review, Claude Code version per period, "higher is better" note.

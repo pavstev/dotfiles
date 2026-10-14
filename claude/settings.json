@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "cleanupPeriodDays": 60,
+  "cleanupPeriodDays": 365,
   "autoCompactWindow": 500000,
   "modelSettings": {
     "claude-opus-5-5": { "effortLevel": "high" },
@@ -31,7 +31,16 @@
     "deny": [
       "Read(./.env)",
       "Read(./.env.*)",
-      "Read(./secrets/**)"
+      "Read(./secrets/**)",
+      "SuggestPluginInstall",
+      "SearchPlugins",
+      "SuggestSkills",
+      "mcp__Claude_Code_iOS_Simulator__*",
+      "mcp__45831831-e75c-46d3-a3ed-84c1cb884d7b__*",
+      "mcp__a16997c4-316a-4f39-816e-0b9b5ac48d05__*",
+      "mcp__claude_ai_Google_Drive__*",
+      "mcp__claude_ai_PDF_Viewer__*",
+      "mcp__plugin_pdf-viewer_pdf__*"
     ]
   },
   "statusLine": {
@@ -52,7 +61,16 @@
     "cloudflare@cloudflare": true,
     "data@synced": false,
     "brightdata-plugin@synced": false,
-    "cowork-plugin-management@synced": false
+    "cowork-plugin-management@synced": false,
+    "cowork-plugin-management@inline": false,
+    "productivity@synced": false,
+    "productivity@inline": false,
+    "pdf-viewer@synced": false,
+    "pdf-viewer@inline": false,
+    "jev@synced": false,
+    "jev@inline": false,
+    "adversarial-review@synced": false,
+    "adversarial-review@inline": false
   },
   "skillOverrides": {
     "anthropic-skills:spark": "user-invocable-only",

@@ -27,11 +27,11 @@ Each sub-question must be:
 
 Write the list out for the user before delegating. Number them. This is the plan; if it is wrong, the user stops you here for free.
 
-If the topic genuinely has a dependency chain, run it as ordered waves: wave 1 parallel, then wave 2 parallel using wave 1's answers. Never serialize what can run together.
+If the topic genuinely has a dependency chain, run it as ordered waves: wave 1 parallel, then wave 2 parallel using wave 1's answers. Never serialize what can run together, up to the cap of 5 in Phase 2.
 
 ## Phase 2 — Sub-agent delegation
 
-Spawn one `researcher` per sub-question, **all in a single message** so they run concurrently.
+Spawn one `researcher` per sub-question, **all in a single message** so they run concurrently. **At most 5 at once.** With 6 or 7 sub-questions, send 5 first and the rest as a second wave after the first returns. Every later wave obeys the same cap.
 
 Every research agent gets `subagent_type: researcher`, `model: sonnet`, `effort: high`, and a deadline in its prompt ("answer within 5 min"). Never `general-purpose`. The Captain itself runs at `max` only for the final synthesis.
 
@@ -40,6 +40,7 @@ Each prompt must be self-contained:
 - The context the agent needs (it cannot see this conversation).
 - What "answered" looks like.
 - Any source constraint (recency window, official docs only, this repo only).
+- The search order: "Use the built-in WebSearch and WebFetch first. Use a search connector (an `mcp__*__web_search` tool) only if they fail. After one rate-limit error from a tool, switch tool or report the gap; never retry in a loop."
 
 Do NOT read pages or `WebFetch` in the main context to "check quickly". That is the point of this skill.
 

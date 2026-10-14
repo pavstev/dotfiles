@@ -74,7 +74,7 @@ claude/
 ├── settings.json   → ~/.claude/settings.json     curated, shared
 ├── CLAUDE.md       → ~/.claude/CLAUDE.md          global instructions
 ├── statusline.sh   → ~/.claude/statusline.sh      copper-themed status line
-├── skills/         → ~/.claude/skills  (per-skill; +per-skill into Codex; Cursor reads it)
+├── skills/         → ~/.claude/skills  (per-skill; Cursor reads it)
 ├── agents/         → ~/.claude/agents
 ├── hooks/          → ~/.claude/hooks
 └── output-styles/  → ~/.claude/output-styles
@@ -83,9 +83,9 @@ claude/
 **Skills are the headline.** One source (`claude/skills`), synced everywhere by
 [`skill-sync.sh`](../claude/skill-sync.sh): write once, use in every agent. Skills use the
 portable [SKILL.md](https://cursor.com/docs/skills) format, so the same folder works in
-Claude Code **and Cursor** **and Codex** (`~/.codex/skills`):
+Claude Code **and Cursor**:
 
-- **Claude / Codex** get skills **added per-item, non-destructively**: your own skills
+- **Claude** gets skills **added per-item, non-destructively**: your own skills
   there are never moved or overwritten (on a name clash, *yours* wins); `_template` and
   loose docs are skipped. Removing them is just deleting the symlinks.
 - **Cursor** reads `~/.claude/skills` natively, so nothing is linked into
@@ -142,7 +142,7 @@ Cursor.app so you can sign in there too.
   runs `dots` (`./dotfiles`) whenever it wants to catch up: pull, relink, reprovision.
   Nothing runs in the background. If you want automatic pulls, wire your own cron or
   login hook to call `dots`.
-- **Agent-aware**: [`AGENTS.md`](../AGENTS.md) (read by Cursor & Codex) and the repo's
+- **Agent-aware**: [`AGENTS.md`](../AGENTS.md) (read by Cursor) and the repo's
   [`CLAUDE.md`](../CLAUDE.md) (which imports it) teach any AI agent how to operate this repo,
   so Claude or Cursor on a fresh machine knows the workflow without being told.
 
@@ -182,7 +182,7 @@ fullscreen · `⌥⇧ ;` service mode (reload / reset).
 ```
 dotfiles/
 ├── assets/logo.svg           # the mark above
-├── AGENTS.md  CLAUDE.md      # how AI agents (Cursor/Codex/Claude) operate this repo
+├── AGENTS.md  CLAUDE.md      # how AI agents (Claude/Cursor) operate this repo
 ├── bootstrap.sh              # fresh-Mac one-liner
 ├── dotfiles                  # the one command: pull + link + provision
 ├── Brewfile                  # every package + VS Code extensions (Brewfile.local for extras)
@@ -237,6 +237,7 @@ dotfiles/
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
 | bat / lazygit / btop / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
+| Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | next session (a deny beats every allow) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
 | Settings: git name, profile, Cursor MCP, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
