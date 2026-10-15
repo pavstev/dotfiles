@@ -7,6 +7,7 @@
   python3 harness_stats.py errors  [--in FILE] [--project NAME] [--top 12] [--daily]
   python3 harness_stats.py skills  [--in FILE]
   python3 harness_stats.py inventory [--in FILE] [--top 8]
+  python3 harness_stats.py agents  [--in FILE] [--cut ISO ...]
 
 collect reads ~/.claude/projects/*/*.jsonl (main sessions), their subagents/*.jsonl and
 .meta.json, and the desktop app's session records (title, archived). It writes one JSON
@@ -18,8 +19,8 @@ version), model, first_ctx,
 peak_ctx (tokens), active_min, wall_min, stats {calls, out, fresh_in, cache_read, prompts,
 interrupts, corrections, tool_errors, hook_denials, compactions, api_errors, from_handoff},
 tools, skills, bash (command heads), errors (normalized text -> count, subagents included),
-agent_calls [{model, effort, bg, plen}], sub {n, calls, fresh_in, cache_read, out, tool_errors,
-models, effort}. A guard or hook deny counts as hook_denials, not tool_errors.
+agent_calls [{type, model, effort, bg, plen}], sub {n, calls, fresh_in, cache_read, out, tool_errors,
+models, effort, spawns [[agent type, start ctx], ...]}. A guard or hook deny counts as hook_denials, not tool_errors.
 """
 import argparse
 import collections
@@ -125,7 +126,7 @@ def scan(path, is_sub=False):
                 if n == "Skill":
                     skills[inp.get("skill", "?")] += 1
                 elif n in ("Agent", "Task"):
-                    agents.append({"model": inp.get("model"), "effort": inp.get("effort"),
+                    agents.append({"type": inp.get("subagent_type") or "general-purpose", "model": inp.get("model"), "effort": inp.get("effort"),
                                    "bg": inp.get("run_in_background"), "plen": len(inp.get("prompt") or "")})
                 elif n == "Bash":
                     cmd = re.sub(r"^(cd [^&;]+(&&|;)\s*)+", "", (inp.get("command") or "").strip()).split()
@@ -186,7 +187,7 @@ def cmd_collect(a):
             continue
         folder = os.path.basename(os.path.dirname(f))
         sub = {"n": 0, "calls": 0, "fresh_in": 0, "cache_read": 0, "out": 0, "tool_errors": 0,
-               "models": collections.Counter(), "effort": collections.Counter()}
+               "models": collections.Counter(), "effort": collections.Counter(), "spawns": []}
         errors = collections.Counter(s["errors"])
         for sf in glob.glob(os.path.join(os.path.dirname(f), sid, "subagents", "*.jsonl")):
             ss = scan(sf, is_sub=True)
@@ -194,12 +195,15 @@ def cmd_collect(a):
             for k in ("calls", "fresh_in", "cache_read", "out", "tool_errors"):
                 sub[k] += ss["r"][k]
             errors.update(ss["errors"])
+            md = {}
             try:
                 md = json.load(open(sf[:-6] + ".meta.json"))
                 sub["models"][md.get("model") or "inherit"] += 1
                 sub["effort"][md.get("effort") or "unset"] += 1
             except (OSError, ValueError):
                 pass
+            if ss["first_ctx"]:
+                sub["spawns"].append([md.get("agentType") or "?", ss["first_ctx"]])
         m = meta.get(sid, {})
         rows.append({
             "sid": sid, "project": project_name(folder), "folder": folder,
@@ -287,6 +291,8 @@ def summarize(rows):
         ("subagents/session", round(sum(r["sub"]["n"] for r in rows) / n, 1)),
         ("subagent share of calls %", round(100 * sub_calls / ((sub_calls + g("calls")) or 1))),
         ("agent calls w/ effort %", round(100 * sum(1 for c in agents if c["effort"]) / (len(agents) or 1))),
+        ("general-purpose spawns %", round(100 * sum(1 for c in agents if c.get("type") == "general-purpose")
+                                           / (len([c for c in agents if c.get("type")]) or 1))),
         ("wait calls (Monitor, Cron, Wakeup)", sum(r["tools"].get(t, 0) for r in rows for t in POLL_TOOLS)),
         ("from hand-off", g("from_handoff")),
         ("Claude Code versions", "%s..%s" % (min(vs), max(vs)) if (vs := [r.get("cli") for r in rows if r.get("cli")]) else "?"),
@@ -311,17 +317,50 @@ def cmd_report(a):
             groups[r["project"]].append(r)
         groups = collections.OrderedDict(sorted(groups.items(), key=lambda kv: -len(kv[1]))[:a.top])
     else:
-        cuts = sorted(ts(c) for c in a.cut)
-        groups = collections.OrderedDict(("P%d" % i, []) for i in range(len(cuts) + 1))
-        for r in rows:
-            i = sum(1 for c in cuts if ts(r["start"]) >= c)
-            groups["P%d" % i].append(r)
+        cuts, groups = periods(rows, a.cut)
         print("Periods: P0 < " + " <= ".join("P%d %s" % (i + 1, c.isoformat()) for i, c in enumerate(cuts)) + "\n")
     table(groups)
     print("\nHigher is better: cache hit %, agent calls w/ effort %, from hand-off. Lower is better for the rest.")
     small = [k for k, v in groups.items() if len(v) < 20]
     if small:
         print("\nEarly (under 20 sessions): %s. Read their numbers as a hint, not a result." % ", ".join(small))
+
+
+def periods(rows, cut):
+    cuts = sorted(ts(c) for c in cut)
+    groups = collections.OrderedDict(("P%d" % i, []) for i in range(len(cuts) + 1))
+    for r in rows:
+        groups["P%d" % sum(1 for c in cuts if ts(r["start"]) >= c)].append(r)
+    return cuts, groups
+
+
+def cmd_agents(a):
+    """Dispatch watch: subagent spawns per agent type and period, with share and start context."""
+    cuts, groups = periods(load(a), a.cut)
+    data = collections.OrderedDict()
+    for k, rows in groups.items():
+        by = collections.defaultdict(list)
+        for r in rows:
+            for typ, ctx in (r.get("sub") or {}).get("spawns", []):
+                by[typ].append(ctx)
+        data[k] = by
+    types = sorted({t for by in data.values() for t in by}, key=lambda t: -sum(len(by.get(t, [])) for by in data.values()))
+    print("Periods: P0 < " + " <= ".join("P%d %s" % (i + 1, c.isoformat()) for i, c in enumerate(cuts)) + "\n")
+    print("| agent type | " + " | ".join("%s spawns (share) | %s start K" % (k, k) for k in data) + " |")
+    print("|---|" + "---|---|" * len(data))
+    for t in types[:a.top]:
+        cells = []
+        for k, by in data.items():
+            total = sum(len(v) for v in by.values()) or 1
+            xs = by.get(t, [])
+            cells.append("%d (%d%%) | %s" % (len(xs), round(100 * len(xs) / total), round(med(xs) / 1000) if xs else "-"))
+        print("| %s | %s |" % (t, " | ".join(cells)))
+    print("\nSessions: " + ", ".join("%s %d" % (k, len(v)) for k, v in groups.items()))
+    print("Start K = median first-turn context of the spawn. Watch: general-purpose share should fall and")
+    print("task-implementer / worker should rise after a dispatch change. Agents with a tools: list start near 15K.")
+    small = [k for k, v in groups.items() if len(v) < 20]
+    if small:
+        print("Early (under 20 sessions): %s. Read their numbers as a hint, not a result." % ", ".join(small))
 
 
 def cmd_errors(a):
@@ -413,19 +452,20 @@ def main(argv=None):
     c.add_argument("--gh", help="OWNER/REPO on GitHub, read with gh api (for an archived older history)")
     c.add_argument("--since", default="3 weeks ago")
     c.add_argument("--path", default="claude")
-    for name in ("report", "errors", "skills", "inventory"):
+    for name in ("report", "errors", "skills", "inventory", "agents"):
         c = sp.add_parser(name)
         c.add_argument("--in", dest="inp", default=DEFAULT_OUT)
         c.add_argument("--top", type=int, default=12)
-        if name == "report":
+        if name in ("report", "agents"):
             c.add_argument("--cut", nargs="*", default=[])
+        if name == "report":
             c.add_argument("--by", choices=("period", "project"), default="period")
         if name == "errors":
             c.add_argument("--project")
             c.add_argument("--daily", action="store_true", help="cluster x day table: when did it start or stop")
     a = p.parse_args(argv)
     {"collect": cmd_collect, "cuts": cmd_cuts, "report": cmd_report, "errors": cmd_errors, "skills": cmd_skills,
-     "inventory": cmd_inventory}[a.cmd](a)
+     "inventory": cmd_inventory, "agents": cmd_agents}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ Escalation to the human is the LAST resort, not the first. A question reaches th
 
 ## Phase 1 — Scope breakdown
 
-Split the topic into **3 to 7** sub-questions.
+Split the topic into at most **7** sub-questions.
 
 Each sub-question must be:
 - **Independent.** Answerable without any other sub-question's answer. If B needs A's output, that is two phases, not two parallel agents.
@@ -28,6 +28,23 @@ Each sub-question must be:
 Write the list out for the user before delegating. Number them. This is the plan; if it is wrong, the user stops you here for free.
 
 If the topic genuinely has a dependency chain, run it as ordered waves: wave 1 parallel, then wave 2 parallel using wave 1's answers. Never serialize what can run together, up to the cap of 5 in Phase 2.
+
+## Fan-out gate (before Phase 2)
+
+Each `researcher` costs a full agent run, and a fan-out costs about 15 times one chat. Merge
+first: sub-questions that one search or one source page answers are one sub-question. Then
+answer four questions:
+
+1. Is there more than one researcher can do well in one run? One run handles up to 3 narrow
+   facts (a version, a flag, a date), even from different sites. Split only for a 4th fact, or
+   for a sub-question that needs its own deep dig (a comparison, many pages, a spike).
+2. Must the run pause for the user between waves?
+3. Must it recover mid-run (a long run that may die)?
+4. Must each step leave a record beyond the research file?
+
+Only a yes to 1 buys parallel researchers, one per sub-question. All no: send ONE `researcher`
+with every sub-question in its prompt. Phase 3 still checks its answer. Say in the plan which
+way the gate went and why.
 
 ## Phase 2 — Sub-agent delegation
 

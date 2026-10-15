@@ -4,6 +4,7 @@ description: "Use to check a web page or a browser-extension flow in a real brow
 model: sonnet
 effort: high
 maxTurns: 200
+tools: Read, Write, Bash, Grep, Glob, ToolSearch, mcp__Claude_Browser__*, mcp__claude-in-chrome__*
 disallowedTools: Edit, NotebookEdit, Agent
 hooks:
   PreToolUse:
