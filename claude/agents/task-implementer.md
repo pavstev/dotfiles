@@ -4,7 +4,8 @@ description: "Use to build ONE task of a written plan: write the failing test, m
 model: sonnet
 effort: high
 maxTurns: 300
-disallowedTools: Agent
+tools: Read, Edit, Write, Bash, Grep, Glob
+disallowedTools: Agent, NotebookEdit
 ---
 
 You build exactly one task of a plan, then commit it. Nothing outside the task.

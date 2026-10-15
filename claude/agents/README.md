@@ -10,12 +10,12 @@ Run `dots` on other machines. `scripts/agent-config.py` copies them to `~/.curso
 
 | Agent | Job | Tools | Model / effort |
 |---|---|---|---|
-| `task-implementer` | build one plan task: failing test, code, checks, commit | all but Agent | sonnet / high |
+| `task-implementer` | build one plan task: failing test, code, checks, commit | Read, Edit, Write, Bash, Grep, Glob | sonnet / high |
 | `task-reviewer` | review one plan task against its spec, then quality; re-review a fix round | Read, Grep, Glob, Bash | sonnet / high |
 | `code-reviewer` | review a diff, a commit or a whole branch; the final review gets opus + max per call | Read, Grep, Glob, Bash | sonnet / high |
 | `researcher` | one research question with sources; full notes to one named file | web, Read, Grep, Glob, Write | sonnet / high |
 | `repo-scanner` | read-only sweep of a repo from one angle into one file | Read, Grep, Glob, Bash, Write | sonnet / high |
-| `ui-verifier` | check a page or extension flow in a browser, pass or fail with evidence | all but Edit, Agent; Write only to scratch (frontmatter hook) | sonnet / high |
+| `ui-verifier` | check a page or extension flow in a browser, pass or fail with evidence | Read, Write, Bash, Grep, Glob, ToolSearch, both browser MCP servers (`mcp__<server>__*`); Write only to scratch (frontmatter hook) | sonnet / high |
 | `worker` | any other edit, command or file job; the lean stand-in for general-purpose | Read, Edit, Write, Bash, Grep, Glob | sonnet / high |
 
 `claude/CLAUDE.md` "Agents" holds the routing table. Opus 5.x rarely picks an agent from its
