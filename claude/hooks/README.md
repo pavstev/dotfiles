@@ -37,6 +37,8 @@ A deny wins over a warning. Tests: `python3 claude/hooks/test_guard.py`.
 | G5 | PreToolUse `SubagentHandback`; SubagentStop | a subagent's hand-back may not exceed its cap by more than 10 percent; at most 2 denies per agent, then it passes |
 | W1 | PreToolUse `Agent` | warn, never deny: a `general-purpose` or `claude` spawn (or no `subagent_type`) gets a note to use `worker`, `Explore` or a named agent |
 | W2 | PreToolUse `Agent` | warn: a final or whole-branch review (in the description, or early in a reviewer's prompt) off opus or fable, or a `task-reviewer` on opus for a per-task review |
+| W3 | PreToolUse browser tools (`mcp__Claude_Browser__*`, `mcp__claude-in-chrome__*`) | warn in a main window: at the 6th browser call of a turn (then every 20th), route checks to `ui-verifier` |
+| W4 | PreToolUse `Agent` | warn: past 15 spawns or 1.5M subagent tokens in a session (the sum of `totalTokens` the Agent results report), a budget note on every 5th spawn |
 | G6 | Stop; PreToolUse `archive_session` | a hand-off file written this turn (`*/handoffs/*.md`) must be in the reply as a file link plus the `Read <path> and do it.` block (one deny); no archive of this session in the same turn |
 
 Context size comes from the last assistant `usage` in the transcript (read from the end

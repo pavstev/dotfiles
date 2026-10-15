@@ -2,7 +2,7 @@
 """Claude Code guard hook (PreToolUse, UserPromptSubmit, SubagentStop). Python 3 stdlib only.
 
 Usage (wired in settings.json):
-  python3 ~/.claude/hooks/guard.py pretool       # matcher Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback
+  python3 ~/.claude/hooks/guard.py pretool       # matcher Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|archive_session|browser tools
   python3 ~/.claude/hooks/guard.py prompt        # UserPromptSubmit
   python3 ~/.claude/hooks/guard.py subagentstop  # SubagentStop
   python3 ~/.claude/hooks/guard.py scratch       # agent frontmatter hook, PreToolUse Write|Edit|NotebookEdit
@@ -14,7 +14,7 @@ G5 subagent hand-back over its cap, G6 a hand-off written this turn must reach t
 the reply holds the file link and the paste block; PreToolUse archive_session: not in the same
 turn). Mode scratch: writes only under temp or scratchpad folders.
 Warnings (allow, add a note): W1 a general-purpose spawn, W2 a final review off opus or a
-per-task review on opus.
+per-task review on opus, W3 many browser calls in a main window, W4 a spawn or token budget.
 
 Deny = message on stderr + exit 2. Allow = exit 0 silently.
 Warn = exit 0 with hookSpecificOutput.additionalContext JSON on stdout.
@@ -117,6 +117,23 @@ MSG_TASK_MODEL = (
     "opus is for the final and whole-branch review only."
 )
 REVIEW_AGENTS = {"code-reviewer", "task-reviewer"}
+BROWSER_PREFIXES = ("mcp__Claude_Browser__", "mcp__claude-in-chrome__")
+BROWSER_WARN_AT = 5  # earlier browser calls this turn before the first note
+BROWSER_WARN_EVERY = 20
+MSG_BROWSER = (
+    "guard (warn): {n} browser calls in this window this turn. Page dumps and screenshots fill the "
+    "main context. For a check (layout, console, a click-through flow, a live URL), dispatch "
+    "`ui-verifier`; it hands back pass or fail with evidence. Keep going here only when the user "
+    "asked you to drive the browser for them."
+)
+SPAWN_CAP = 15  # Agent spawns per session before the budget note
+TOKEN_CAP = 1_500_000  # sum of the totalTokens the Agent results report
+BUDGET_EVERY = 5
+MSG_BUDGET = (
+    "guard (warn): budget. This session has spawned {n} agents ({tok}K subagent tokens; caps {cap} "
+    "agents, {tcap}K). Before more: call mcp__ccd_session_mgmt__get_usage, run the fan-out gate "
+    "(parallel parts? pause? recovery? record? all no means no fan-out), and batch small tasks."
+)
 STRONG_MODELS = ("opus", "fable")
 _FINAL_REVIEW = re.compile(r"\bfinal\b.{0,30}\breview|\bwhole[- ]branch\b|\bbranch[- ]review\b", re.I)
 ARCHIVE_TOOL = "mcp__ccd_session_mgmt__archive_session"
@@ -636,6 +653,86 @@ def w2_review_model(data, ctx):
         return MSG_TASK_MODEL.format(model=model)
 
 
+def browser_calls_this_turn(path, tool_use_id):
+    """Browser tool_use blocks since the last human prompt, not counting the current call."""
+    n = 0
+    for line in reverse_lines(path):
+        if b'"user"' not in line and b"mcp__C" not in line and b"mcp__c" not in line:
+            continue
+        rec = _loads(line)
+        if not rec:
+            continue
+        if is_human_prompt(rec):
+            break
+        if rec.get("type") != "assistant":
+            continue
+        content = (rec.get("message") or {}).get("content") if isinstance(rec.get("message"), dict) else None
+        for b in content if isinstance(content, list) else []:
+            if (
+                isinstance(b, dict)
+                and b.get("type") == "tool_use"
+                and str(b.get("name") or "").startswith(BROWSER_PREFIXES)
+                and b.get("id") != tool_use_id
+            ):
+                n += 1
+    return n
+
+
+def w3_browser(data, ctx):
+    """W3: many browser calls in a main window this turn: route checks to ui-verifier."""
+    if not str(data.get("tool_name") or "").startswith(BROWSER_PREFIXES):
+        return
+    if data.get("agent_id") or not ctx.path or "/subagents/" in ctx.path:
+        return  # a subagent (ui-verifier) is where browser work belongs
+    n = browser_calls_this_turn(ctx.path, data.get("tool_use_id"))
+    if n == BROWSER_WARN_AT or (n > BROWSER_WARN_AT and (n - BROWSER_WARN_AT) % BROWSER_WARN_EVERY == 0):
+        return MSG_BROWSER.format(n=n + 1)
+
+
+def session_spawns(path):
+    """(Agent tool_use blocks so far, sum of totalTokens the finished Agent results report)."""
+    spawns, tokens = 0, 0
+    with open(path, "rb") as f:
+        for line in f:
+            if b'"Agent"' in line:
+                msg = (_loads(line) or {}).get("message")
+                content = msg.get("content") if isinstance(msg, dict) else None
+                for b in content if isinstance(content, list) else []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "Agent":
+                        spawns += 1
+            if b'"totalTokens"' in line and b'"toolUseResult"' in line:
+                rec = _loads(line)
+                tur = (rec or {}).get("toolUseResult")
+                if isinstance(tur, dict) and _num(tur.get("totalTokens")):
+                    tokens += int(tur["totalTokens"])
+    return spawns, tokens
+
+
+def w4_budget(data, ctx):
+    """W4: past the spawn or token cap, a budget note on every 5th spawn."""
+    if data.get("tool_name") != "Agent" or not ctx.path:
+        return
+    spawns, tokens = session_spawns(ctx.path)
+    prior = spawns
+    if data.get("tool_use_id"):
+        prior = max(0, spawns - 1) if _has_tool_use(ctx.path, data.get("tool_use_id")) else spawns
+    over = prior >= SPAWN_CAP or tokens >= TOKEN_CAP
+    if over and prior % BUDGET_EVERY == 0:
+        return MSG_BUDGET.format(n=prior, tok=tokens // 1000, cap=SPAWN_CAP, tcap=TOKEN_CAP // 1000)
+
+
+def _has_tool_use(path, tool_use_id):
+    """The current call is already in the transcript (written before the hook runs)."""
+    needle = ('"id":"%s"' % tool_use_id).encode()
+    needle2 = ('"id": "%s"' % tool_use_id).encode()
+    for i, line in enumerate(reverse_lines(path)):
+        if needle in line or needle2 in line:
+            return True
+        if i > 50:
+            return False
+    return False
+
+
 def pretool(data):
     ctx = Ctx(data)
     for guard in (g3_pretool, g1_agent, g2_polling, g4_ask, g5_handback, g6_archive):
@@ -644,7 +741,7 @@ def pretool(data):
             return msg
 
 
-WARNERS = (w1_general, w2_review_model)
+WARNERS = (w1_general, w2_review_model, w3_browser, w4_budget)
 
 
 def pretool_warn(data):

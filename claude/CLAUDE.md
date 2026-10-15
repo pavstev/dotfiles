@@ -97,3 +97,5 @@ agent with the same job wins in its repo (for example its own `implementer`).
 
 `general-purpose` starts about 45K tokens heavier than `worker` (no `tools:` list). The guard
 warns on each general-purpose spawn; use it only when a job needs tools no agent above has.
+Browser checks (layout, console, a flow, a live URL) go to `ui-verifier`; drive the browser in
+this window only when the user wants to watch or for a dashboard (rule 1).

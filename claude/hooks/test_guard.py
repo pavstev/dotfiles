@@ -124,6 +124,58 @@ class GuardTest(unittest.TestCase):
         # "final review" deep in an implementer brief is not a review call
         self.assertAllow(call("task-implementer", "sonnet", "Build task 3", BRIEF + " A final review follows."))
 
+    # --- W3 browser calls in a main window ---
+    def browser_turn(self, n, older=0, name="mcp__Claude_Browser__get_page_text"):
+        recs = [human("old")]
+        recs += [assistant(1000, [{"type": "tool_use", "id": "o%d" % i, "name": name, "input": {}}]) for i in range(older)]
+        recs.append(human("check the page"))
+        recs += [assistant(1000, [{"type": "tool_use", "id": "b%d" % i, "name": name, "input": {}}]) for i in range(n)]
+        return self.transcript(recs)
+
+    def browser_call(self, path, **kw):
+        data = {"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "mcp__Claude_Browser__navigate",
+                "tool_input": {"url": "https://example.com"}, "tool_use_id": "now", "transcript_path": path}
+        data.update(kw)
+        return self.run_guard("pretool", data)
+
+    def test_w3_browser(self):
+        self.assertAllow(self.browser_call(self.browser_turn(4)))
+        self.assertWarn(self.browser_call(self.browser_turn(5)), "`ui-verifier`")
+        self.assertAllow(self.browser_call(self.browser_turn(6)))
+        self.assertWarn(self.browser_call(self.browser_turn(25)), "26 browser calls")
+        self.assertAllow(self.browser_call(self.browser_turn(2, older=10)))  # last turn does not count
+        self.assertWarn(self.browser_call(self.browser_turn(5, name="mcp__claude-in-chrome__computer")))
+        self.assertAllow(self.browser_call(self.browser_turn(5), agent_id="a1"))  # inside ui-verifier
+        self.assertAllow(self.browser_call(None))
+
+    # --- W4 budget ---
+    def spawn_session(self, n, tokens_each=0):
+        recs = [human()]
+        for i in range(n):
+            recs.append(assistant(1000, [{"type": "tool_use", "id": "a%d" % i, "name": "Agent", "input": {}}]))
+            res = tool_result("a%d" % i)
+            if tokens_each:
+                res["toolUseResult"] = {"totalTokens": tokens_each, "agentType": "worker"}
+            recs.append(res)
+        return self.transcript(recs)
+
+    def spawn(self, path, tid="new"):
+        data = {"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Agent", "tool_use_id": tid,
+                "transcript_path": path,
+                "tool_input": {"subagent_type": "worker", "model": "sonnet", "effort": "high", "prompt": BRIEF}}
+        return self.run_guard("pretool", data)
+
+    def test_w4_budget(self):
+        self.assertAllow(self.spawn(self.spawn_session(14)))
+        self.assertWarn(self.spawn(self.spawn_session(15)), "spawned 15 agents")
+        self.assertAllow(self.spawn(self.spawn_session(16)))
+        self.assertWarn(self.spawn(self.spawn_session(20)), "get_usage")
+        self.assertWarn(self.spawn(self.spawn_session(5, tokens_each=400_000)), "2000K subagent tokens")
+        self.assertAllow(self.spawn(self.spawn_session(6, tokens_each=400_000)))
+        self.assertAllow(self.spawn(self.spawn_session(5, tokens_each=100_000)))
+        # the current call already written to the transcript is not counted twice
+        self.assertWarn(self.spawn(self.spawn_session(16), tid="a15"), "spawned 15 agents")
+
     def test_w1_deny_wins(self):
         res = self.pre("Agent", {"subagent_type": "general-purpose", "prompt": BRIEF})
         self.assertDeny(res, 'needs "model" and "effort"')
