@@ -93,3 +93,7 @@ agent with the same job wins in its repo (for example its own `implementer`).
 | one research question with sources, notes to a file | `researcher` |
 | read-only sweep of a repo from one angle into one file | `repo-scanner` |
 | check a page or extension flow in a browser, pass or fail | `ui-verifier` |
+| any other edit, command or file job | `worker` |
+
+`general-purpose` starts about 45K tokens heavier than `worker` (no `tools:` list). The guard
+warns on each general-purpose spawn; use it only when a job needs tools no agent above has.

@@ -13,8 +13,10 @@ G3 context ceiling (nudge at 300K, deny Agent at 500K), G4 one AskUserQuestion p
 G5 subagent hand-back over its cap, G6 a hand-off written this turn must reach the user (Stop:
 the reply holds the file link and the paste block; PreToolUse archive_session: not in the same
 turn). Mode scratch: writes only under temp or scratchpad folders.
+Warnings (allow, add a note): W1 a general-purpose spawn.
 
 Deny = message on stderr + exit 2. Allow = exit 0 silently.
+Warn = exit 0 with hookSpecificOutput.additionalContext JSON on stdout.
 Fail-open: any exception, bad input or unknown mode exits 0 with no output.
 """
 import json
@@ -98,6 +100,13 @@ MSG_HANDOFF_ARCHIVE = (
     "[{name}]({path}) and the block `Read {path} and do it.`, end the turn, and archive "
     "after the user answers."
 )
+MSG_GENERAL = (
+    "guard (warn): a {kind} subagent starts with about 60K tokens of context; `worker` starts "
+    "near 15-20K. Next time use `worker` for an edit or command job, `Explore` for a read-only "
+    "search, or the named agent for the job (task-implementer, task-reviewer, code-reviewer, "
+    "researcher, repo-scanner, ui-verifier). This spawn is allowed."
+)
+HEAVY_AGENTS = {"general-purpose", "claude"}  # no tools: list, so they load every tool and skill
 ARCHIVE_TOOL = "mcp__ccd_session_mgmt__archive_session"
 _HANDOFF_PATH = re.compile(r"/handoffs/[^/]+\.md$")
 
@@ -586,12 +595,42 @@ def scratch(data):
     return MSG_SCRATCH
 
 
+def w1_general(data, ctx):
+    """W1: warn on a heavy general-purpose spawn; the owner chose warn, never deny."""
+    if data.get("tool_name") != "Agent":
+        return
+    ti = data.get("tool_input") or {}
+    kind = ti.get("subagent_type") or "general-purpose"
+    if kind in HEAVY_AGENTS:
+        return MSG_GENERAL.format(kind=kind)
+
+
 def pretool(data):
     ctx = Ctx(data)
     for guard in (g3_pretool, g1_agent, g2_polling, g4_ask, g5_handback, g6_archive):
         msg = guard(data, ctx)
         if msg:
             return msg
+
+
+WARNERS = (w1_general,)
+
+
+def pretool_warn(data):
+    """Warnings for an allowed call: a JSON line for stdout (additionalContext), or None."""
+    ctx = Ctx(data)
+    notes = []
+    for warner in WARNERS:
+        try:
+            msg = warner(data, ctx)
+        except Exception:
+            msg = None
+        if msg:
+            notes.append(msg)
+    if notes:
+        return json.dumps(
+            {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": "\n".join(notes)}}
+        )
 
 
 def prompt(data):
@@ -642,6 +681,10 @@ def main():
         if msg:
             sys.stderr.write(msg + "\n")
             return 2
+        if mode == "pretool":
+            out = pretool_warn(data)
+            if out:
+                sys.stdout.write(out + "\n")
     else:
         out = prompt(data)
         if out:

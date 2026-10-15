@@ -24,7 +24,9 @@ See `format-after-edit.sh` for a sample.
 ## guard.py
 
 `guard.py` (Python 3, stdlib only, fail-open: any error exits 0 silently) keeps sessions
-cheap. Deny = message on stderr + exit 2. Tests: `python3 claude/hooks/test_guard.py`.
+cheap. Deny = message on stderr + exit 2. Warn (the W rows) = exit 0 with
+`hookSpecificOutput.additionalContext` on stdout, so the call runs and the model reads the note.
+A deny wins over a warning. Tests: `python3 claude/hooks/test_guard.py`.
 
 | Guard | Event | Rule |
 |-------|-------|------|
@@ -33,6 +35,7 @@ cheap. Deny = message on stderr + exit 2. Tests: `python3 claude/hooks/test_guar
 | G3 | UserPromptSubmit; PreToolUse `Agent` | at 300K+ nudge `/ps:handoff` (1st prompt, then every 5th); deny spawning above 500K |
 | G4 | PreToolUse `AskUserQuestion` | one call per human turn |
 | G5 | PreToolUse `SubagentHandback`; SubagentStop | a subagent's hand-back may not exceed its cap by more than 10 percent; at most 2 denies per agent, then it passes |
+| W1 | PreToolUse `Agent` | warn, never deny: a `general-purpose` or `claude` spawn (or no `subagent_type`) gets a note to use `worker`, `Explore` or a named agent |
 | G6 | Stop; PreToolUse `archive_session` | a hand-off file written this turn (`*/handoffs/*.md`) must be in the reply as a file link plus the `Read <path> and do it.` block (one deny); no archive of this session in the same turn |
 
 Context size comes from the last assistant `usage` in the transcript (read from the end

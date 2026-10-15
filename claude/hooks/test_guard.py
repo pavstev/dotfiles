@@ -74,6 +74,8 @@ class GuardTest(unittest.TestCase):
 
     def pre(self, tool, tool_input, ctx=0, extra=None, **kw):
         path = self.transcript([human(), assistant(ctx)]) if ctx else None
+        if tool == "Agent" and isinstance(tool_input, dict) and "subagent_type" not in tool_input:
+            tool_input = dict(tool_input, subagent_type="worker")  # no W1 warning in deny/allow tests
         data = {"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": tool, "tool_input": tool_input}
         if path:
             data["transcript_path"] = path
@@ -89,6 +91,27 @@ class GuardTest(unittest.TestCase):
 
     def assertAllow(self, res):
         self.assertEqual(res, (0, "", ""), res)
+
+    def assertWarn(self, res, text=""):
+        self.assertEqual(res[0], 0, res)
+        self.assertEqual(res[2], "", res)
+        out = json.loads(res[1])["hookSpecificOutput"]
+        self.assertEqual(out["hookEventName"], "PreToolUse")
+        self.assertIn(text, out["additionalContext"])
+        return out["additionalContext"]
+
+    # --- W1 general-purpose warning ---
+    def test_w1_warns_on_general_purpose(self):
+        base = {"model": "sonnet", "effort": "high", "prompt": BRIEF}
+        self.assertWarn(self.pre("Agent", dict(base, subagent_type="general-purpose")), "`worker`")
+        self.assertWarn(self.pre("Agent", dict(base, subagent_type=None)), "general-purpose subagent")
+        self.assertWarn(self.pre("Agent", dict(base, subagent_type="claude")), "a claude subagent")
+        for kind in ("worker", "task-implementer", "Explore", "code-reviewer"):
+            self.assertAllow(self.pre("Agent", dict(base, subagent_type=kind)))
+
+    def test_w1_deny_wins(self):
+        res = self.pre("Agent", {"subagent_type": "general-purpose", "prompt": BRIEF})
+        self.assertDeny(res, 'needs "model" and "effort"')
 
     # --- G1 ---
     def test_g1_missing_effort_or_model(self):
@@ -586,7 +609,7 @@ class GuardTest(unittest.TestCase):
         self.assertAllow(self.run_guard("pretool", {"tool_name": "Read", "tool_input": {}}))
 
     def test_missing_transcript_means_zero_context(self):
-        d = {"tool_name": "Agent", "tool_input": {"model": "m", "effort": "high", "prompt": BRIEF},
+        d = {"tool_name": "Agent", "tool_input": {"model": "m", "effort": "high", "prompt": BRIEF, "subagent_type": "worker"},
              "transcript_path": "/no/such"}
         self.assertAllow(self.run_guard("pretool", d))
         d = {"tool_name": "ScheduleWakeup", "tool_input": {"delaySeconds": 60}, "transcript_path": "/no/such"}
