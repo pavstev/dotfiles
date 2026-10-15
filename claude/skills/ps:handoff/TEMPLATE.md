@@ -21,6 +21,13 @@ Fill every section. Delete none. Write for a reader with no memory of this sessi
 - Open: <what is not>
 - Pitfalls: <tool missing, flaky test, secret not to touch>
 
+## State
+- Ledger: <path the next session updates after each phase, or "none">
+- Status: <one line: where the work stands>
+- Last commit: <short sha and subject, or "none">
+- Next step: <the one action to take first>
+- Open decisions: <each with the default to take, or "none">
+
 ## Goal
 <2 to 5 lines. The end state, not the steps.>
 
@@ -30,7 +37,9 @@ Fill every section. Delete none. Write for a reader with no memory of this sessi
 
 ## Phases
 1. <phase> | model: <sonnet / opus> | effort: <high> | <minutes>
+   reads: <files or State fields this phase needs> | writes: <files, commits or State fields it changes>
 2. <phase> | model: <...> | effort: <...> | <minutes>
+   reads: <...> | writes: <...>
 
 ## Done when
 - <check someone can run>: <expected result>
