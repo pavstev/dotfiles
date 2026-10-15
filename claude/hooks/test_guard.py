@@ -121,6 +121,10 @@ class GuardTest(unittest.TestCase):
         self.assertAllow(call("code-reviewer", "sonnet", "Review commit abc"))
         self.assertAllow(call("task-reviewer", "sonnet", "Review task 3"))
         self.assertWarn(call("task-reviewer", "opus", "Review task 3"), "per-task reviews stay on sonnet")
+        # ps:review-panel runs its non-judge angles on sonnet on purpose
+        for desc in ("panel: simplify", "panel: design", "Re-review blocking findings"):
+            self.assertAllow(call("code-reviewer", "sonnet", desc, "Final review of main..HEAD, angle. " + BRIEF))
+        self.assertAllow(call("worker", "sonnet", "panel: verify", "Final review checks. " + BRIEF))
         # "final review" deep in an implementer brief is not a review call
         self.assertAllow(call("task-implementer", "sonnet", "Build task 3", BRIEF + " A final review follows."))
 
@@ -173,6 +177,15 @@ class GuardTest(unittest.TestCase):
         self.assertWarn(self.spawn(self.spawn_session(5, tokens_each=400_000)), "2000K subagent tokens")
         self.assertAllow(self.spawn(self.spawn_session(6, tokens_each=400_000)))
         self.assertAllow(self.spawn(self.spawn_session(5, tokens_each=100_000)))
+        # background agents report in task-notification attachments, once per task id
+        path = self.spawn_session(5)
+        with open(path, "a") as f:
+            for tid in ("t1", "t1", "t2"):
+                f.write(json.dumps({"type": "attachment", "attachment": {
+                    "type": "queued_command", "commandMode": "task-notification",
+                    "prompt": "<task-notification> <task-id>%s</task-id>" % tid,
+                    "usage": {"totalTokens": 800_000}}}) + "\n")
+        self.assertWarn(self.spawn(path), "1600K subagent tokens")
         # the current call already written to the transcript is not counted twice
         self.assertWarn(self.spawn(self.spawn_session(16), tid="a15"), "spawned 15 agents")
 

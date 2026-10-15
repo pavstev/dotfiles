@@ -54,6 +54,7 @@ HANDBACK_CAPS = {
     "researcher": 3000,
     "repo-scanner": 2000,
     "ui-verifier": 3000,
+    "worker": 3000,
 }
 _CAP_NUM = re.compile(r"(\d[\d,]*) ?(?:chars|characters)\b", re.I)
 _CAP_HANDBACK = re.compile(r"hand[ -]?backs?\b", re.I)
@@ -135,6 +136,7 @@ MSG_BUDGET = (
     "(parallel parts? pause? recovery? record? all no means no fan-out), and batch small tasks."
 )
 STRONG_MODELS = ("opus", "fable")
+_PANEL_ANGLE = re.compile(r"\b(?:panel|angle|re-?review)\b", re.I)  # ps:review-panel sonnet angles
 _FINAL_REVIEW = re.compile(r"\bfinal\b.{0,30}\breview|\bwhole[- ]branch\b|\bbranch[- ]review\b", re.I)
 ARCHIVE_TOOL = "mcp__ccd_session_mgmt__archive_session"
 _HANDOFF_PATH = re.compile(r"/handoffs/[^/]+\.md$")
@@ -647,7 +649,7 @@ def w2_review_model(data, ctx):
     head = str(ti.get("prompt") or "")[:400]
     final = bool(_FINAL_REVIEW.search(desc)) or (kind in REVIEW_AGENTS and bool(_FINAL_REVIEW.search(head)))
     strong = any(m in model.lower() for m in STRONG_MODELS)
-    if final and not strong:
+    if final and not strong and not _PANEL_ANGLE.search(desc):
         return MSG_FINAL_MODEL.format(model=model)
     if kind == "task-reviewer" and strong and not final:
         return MSG_TASK_MODEL.format(model=model)
@@ -690,8 +692,12 @@ def w3_browser(data, ctx):
 
 
 def session_spawns(path):
-    """(Agent tool_use blocks so far, sum of totalTokens the finished Agent results report)."""
-    spawns, tokens = 0, 0
+    """(Agent tool_use blocks so far, sum of totalTokens the finished Agent results report).
+
+    A foreground agent reports in its tool result (toolUseResult.totalTokens); a background one in a
+    task-notification attachment (attachment.usage.totalTokens), counted once per task id.
+    """
+    spawns, tokens, tasks = 0, 0, set()
     with open(path, "rb") as f:
         for line in f:
             if b'"Agent"' in line:
@@ -705,6 +711,15 @@ def session_spawns(path):
                 tur = (rec or {}).get("toolUseResult")
                 if isinstance(tur, dict) and _num(tur.get("totalTokens")):
                     tokens += int(tur["totalTokens"])
+            if b'"totalTokens"' in line and b"task-notification" in line:
+                att = (_loads(line) or {}).get("attachment")
+                usage = att.get("usage") if isinstance(att, dict) else None
+                if isinstance(usage, dict) and _num(usage.get("totalTokens")):
+                    m = re.search(r"<task-id>([^<]+)</task-id>", str(att.get("prompt") or ""))
+                    key = m.group(1) if m else att.get("delivery_id") or len(tasks)
+                    if key not in tasks:
+                        tasks.add(key)
+                        tokens += int(usage["totalTokens"])
     return spawns, tokens
 
 

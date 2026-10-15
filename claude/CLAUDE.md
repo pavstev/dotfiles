@@ -39,7 +39,8 @@ The user's time is the cost that counts.
 - **One commit per helper part**, not per step. Builds that run on commit cost minutes.
 - **No idle helpers.** Give each helper the tools its job needs (a data job can write its file);
   make shared inputs before the builders start.
-- **Decide in one round, early.** Ask every real question together; pick defaults for the rest.
+- **Decide in one round, early.** Ask every real question together; pick sensible defaults for
+  the rest, and say which.
 
 ## Working rules
 
@@ -54,7 +55,7 @@ The user's time is the cost that counts.
 9. A blocked action is named with its rule and a one-line command the user can run; the task is not handed back.
 10. Questions go through AskUserQuestion: 2–4 options, recommendation first, one call per turn, no "what next?" closers, never re-ask, never ask to push when told to push. When a brief says "do not ask", decide and log it.
 11. After a push, say which deployment carries the commit before calling anything live; test the real domain only after that.
-12. Time asks get one number and a range, said before starting and after each phase; past estimates ran 2–3× short.
+12. Say the clock unasked: one number and a range before starting and after each phase (time asks too); past estimates ran 2–3× short.
 13. Finishing: work lands on main in one commit unless the user says PR; when asked, squash the session's commits and `push --force-with-lease`.
 14. Steps for the user: a flat numbered list, one click or one command per line.
 15. Writing: no em dashes, no taglines, short plain sentences.

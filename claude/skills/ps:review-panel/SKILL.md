@@ -36,6 +36,7 @@ partial results.
 One risky area that dominates the change (a payment webhook, an auth flow) may get a fifth agent:
 `code-reviewer`, sonnet, high, that area only. Never more than 5.
 
+Each call's description is `panel: <angle>` (the guard then leaves the sonnet angles on sonnet).
 Each brief holds: the repo path, the range, the angle and its lens, the check commands, and:
 
 ```
@@ -75,7 +76,7 @@ Spent: <n> agents (<n> opus)
 ## Fix round
 
 One fix round, then a re-review of the blocking findings only: one `code-reviewer`, sonnet, high,
-with the findings and the fix range. Not the full panel again. Anything still open goes to the user.
+description `re-review: <slug>`, with the findings and the fix range. Not the full panel again. Anything still open goes to the user.
 
 ## Mistakes
 
