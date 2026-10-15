@@ -78,7 +78,7 @@ The user's time is the cost that counts.
 15. Writing: no em dashes, no taglines, short plain sentences.
 16. Runs over an hour keep a `PROGRESS.md` ledger and resume from it after compaction or restart.
 17. "Archive this" means: commit, push, scan once, archive; no new verification.
-18. In a worktree, run each git command alone from the worktree root: no `cd … && git` chains. A worktree-isolated agent refuses anything more complex.
+18. In a worktree, every Bash call is one plain command from the worktree root: no `cd … &&`, chains, heredocs or `$()`; file content goes through Write or Edit. A worktree-isolated session refuses anything more complex.
 
 ## Agents
 

@@ -74,9 +74,13 @@ Replay on real past calls (2026-10-14, every transcript on this Mac):
 - Scratch mode: 148 real writes by browser-check subagents. 133 scratch or report-folder writes
   pass; the 15 denied ones are code and docs edits (`src/lib/*.ts`, `README.md`, a test file).
 
-Not built: a Bash rewrite of `cd <worktree> && git ...`. Of 478 worktree refusals only 1 had that
-shape; the harness check runs after PreToolUse hooks and cannot be bypassed, and agents recover on
-the next call. The agent prompts carry the fix instead.
+Not built: a Bash fixer for worktree refusals. Re-measured 2026-10-15 over 7 days: 417 refusals,
+86 percent in subagents (59 percent in one repo's own agents). 392 of 404 refusal streaks end on
+the next call, so a hook deny in place of the harness refusal saves nothing. None of the 417 has
+the one shape a hook could rewrite without changing what runs (`cd <root> && <one command>`): they
+are heredoc scripts, pipes and chains. The harness check runs after PreToolUse hooks and is a safety
+check, so the hook does not try to get around it. The rule text carries the fix instead:
+`claude/CLAUDE.md` rule 18 and the `worker` and `task-implementer` bodies.
 
 ### Scratch mode
 
