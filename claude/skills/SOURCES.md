@@ -160,3 +160,21 @@ whatsleft no longer waits for "go". It routes every row through `scripts/route.p
 Starts a new session from a Remote Control session: `claude --remote-control <name> --name <name> --permission-mode bypassPermissions "$(cat prompt)"` in a detached tmux on its own socket (`-L claude-spawn`), started from an env without the parent's `CLAUDE*`, `ANTHROPIC_*` and `MCP_*` vars. Every check (tmux, claude.ai login, folder trust, bypass warning accepted, name free) runs before the start; success is the `claude.ai/code/session_…` link on screen. Sources: code.claude.com docs (remote-control, cli-reference, permission-modes, settings), the Claude Code 2.1.296 `--help`, and its binary for the flag accepting the warning writes (`skipDangerousModePermissionPrompt` in user settings). Not used: `claude remote-control` server mode (no prompt), `claude --bg` (no Remote Control, issue 70546), the desktop deep link (pre-fills only). Real runs on this Mac: a start in 2 s at the first try in `acceptEdits` and `auto`, multi-line prompt, bypass stopped at the check with exit 3. Test runs, sonnet at high:
 - Baseline: a plain tmux command with single-quoted prompt, fixed `sleep` waits, 2-3 screen checks, and `tmux send-keys` to accept the bypass warning in the new session.
 - With skill: prompt copied to a file, one `--dry-run` call, exit 3 on the bypass check, one question, `--mode` fallback. Gaps closed after the run: the reply names the mode that really ran, the fallback is `auto` (`acceptEdits` stalls on shell commands), a folder check when the prompt names files not in it, a "starting" line for the phone.
+
+## Token build: fan-out gate, hand-off State, dispatch watch, ps:review-panel (2026-10-15)
+
+Four talks on "graph engineering" (work as a graph of nodes and edges): fan out only for
+independent parts (a multi-agent run costs about 15x a chat), a 4-question test before a graph
+(parallel work, a pause for a person, mid-run recovery, a record of each step), named state with
+per-node reads and writes, the judge node on the strong model, and fan-in at a barrier. Dry runs,
+sonnet at high, the same scenario before and after each edit:
+- ps:captain-research gate: a two-fact question went from 3 researchers to 1; a 25-fact hosting
+  comparison still sends 5. Gap closed after the run: "different sources" alone does not split.
+- ps:iamrich gate: a 3-file change went from 6 agents to 4 (no per-batch review with one batch);
+  editing briefs carry the Read-before-Edit and `Bash` lines; no general-purpose.
+- ps:handoff State block: the read-only first phase folded into the build phase; resume fields filled.
+- ps:harness-optimize `agents`: the baseline had to write a one-off script; with it, one command.
+  Gap closed after the run: session counts and the early-period note in the table.
+- ps:review-panel (new): baseline split angles by area, ran no tests, asked read-only reviewers for
+  notes files, had no confidence filter. With the skill: lens angles (correctness on opus, verify,
+  simplify, design), one barrier, merge rules; a 60-line diff gets one opus reviewer instead.
