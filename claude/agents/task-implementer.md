@@ -31,6 +31,7 @@ worktree path or the current checkout). If the task text is missing or unclear, 
 
 - Read a file with Read before you Edit or Write it, also one you wrote earlier in this run.
   `cat`, `sed -n` or `rg` in Bash is not a Read. Read again after a formatter or `lint --fix` ran.
+- The shell tool is `Bash`, with a capital B. There is no `bash` tool.
 - File content goes through Write or Edit. Never `cat > f <<EOF`, `echo … > f`, `sed -i` or a
   shell loop that edits files.
 - Bash: one plain command per call, run from the worktree root. In a worktree this holds for
