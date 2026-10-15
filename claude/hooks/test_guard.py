@@ -109,6 +109,21 @@ class GuardTest(unittest.TestCase):
         for kind in ("worker", "task-implementer", "Explore", "code-reviewer"):
             self.assertAllow(self.pre("Agent", dict(base, subagent_type=kind)))
 
+    def test_w2_review_model(self):
+        def call(kind, model, desc, prompt=BRIEF):
+            return self.pre("Agent", {"subagent_type": kind, "model": model, "effort": "high",
+                                      "description": desc, "prompt": prompt})
+        self.assertWarn(call("code-reviewer", "sonnet", "Final whole-branch review"), "on opus")
+        self.assertWarn(call("code-reviewer", "sonnet", "review", "Final review of main..HEAD. " + BRIEF), "sonnet")
+        self.assertWarn(call("worker", "sonnet", "final review of the branch"), "final reviews run on opus")
+        self.assertAllow(call("code-reviewer", "opus", "Final whole-branch review"))
+        self.assertAllow(call("code-reviewer", "claude-fable-5-1", "Branch review"))
+        self.assertAllow(call("code-reviewer", "sonnet", "Review commit abc"))
+        self.assertAllow(call("task-reviewer", "sonnet", "Review task 3"))
+        self.assertWarn(call("task-reviewer", "opus", "Review task 3"), "per-task reviews stay on sonnet")
+        # "final review" deep in an implementer brief is not a review call
+        self.assertAllow(call("task-implementer", "sonnet", "Build task 3", BRIEF + " A final review follows."))
+
     def test_w1_deny_wins(self):
         res = self.pre("Agent", {"subagent_type": "general-purpose", "prompt": BRIEF})
         self.assertDeny(res, 'needs "model" and "effort"')

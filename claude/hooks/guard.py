@@ -13,7 +13,8 @@ G3 context ceiling (nudge at 300K, deny Agent at 500K), G4 one AskUserQuestion p
 G5 subagent hand-back over its cap, G6 a hand-off written this turn must reach the user (Stop:
 the reply holds the file link and the paste block; PreToolUse archive_session: not in the same
 turn). Mode scratch: writes only under temp or scratchpad folders.
-Warnings (allow, add a note): W1 a general-purpose spawn.
+Warnings (allow, add a note): W1 a general-purpose spawn, W2 a final review off opus or a
+per-task review on opus.
 
 Deny = message on stderr + exit 2. Allow = exit 0 silently.
 Warn = exit 0 with hookSpecificOutput.additionalContext JSON on stdout.
@@ -107,6 +108,17 @@ MSG_GENERAL = (
     "researcher, repo-scanner, ui-verifier). This spawn is allowed."
 )
 HEAVY_AGENTS = {"general-purpose", "claude"}  # no tools: list, so they load every tool and skill
+MSG_FINAL_MODEL = (
+    "guard (warn): this looks like a final or whole-branch review on {model}. The owner's rule: "
+    "final reviews run on opus (effort max); a cheap judge gives false findings and extra fix rounds."
+)
+MSG_TASK_MODEL = (
+    "guard (warn): a per-task review on {model}. The owner's rule: per-task reviews stay on sonnet; "
+    "opus is for the final and whole-branch review only."
+)
+REVIEW_AGENTS = {"code-reviewer", "task-reviewer"}
+STRONG_MODELS = ("opus", "fable")
+_FINAL_REVIEW = re.compile(r"\bfinal\b.{0,30}\breview|\bwhole[- ]branch\b|\bbranch[- ]review\b", re.I)
 ARCHIVE_TOOL = "mcp__ccd_session_mgmt__archive_session"
 _HANDOFF_PATH = re.compile(r"/handoffs/[^/]+\.md$")
 
@@ -605,6 +617,25 @@ def w1_general(data, ctx):
         return MSG_GENERAL.format(kind=kind)
 
 
+def w2_review_model(data, ctx):
+    """W2: final reviews on opus, per-task reviews on sonnet."""
+    if data.get("tool_name") != "Agent":
+        return
+    ti = data.get("tool_input") or {}
+    kind = ti.get("subagent_type") or ""
+    model = str(ti.get("model") or "")
+    if not model:
+        return  # G1 denies first
+    desc = str(ti.get("description") or "")
+    head = str(ti.get("prompt") or "")[:400]
+    final = bool(_FINAL_REVIEW.search(desc)) or (kind in REVIEW_AGENTS and bool(_FINAL_REVIEW.search(head)))
+    strong = any(m in model.lower() for m in STRONG_MODELS)
+    if final and not strong:
+        return MSG_FINAL_MODEL.format(model=model)
+    if kind == "task-reviewer" and strong and not final:
+        return MSG_TASK_MODEL.format(model=model)
+
+
 def pretool(data):
     ctx = Ctx(data)
     for guard in (g3_pretool, g1_agent, g2_polling, g4_ask, g5_handback, g6_archive):
@@ -613,7 +644,7 @@ def pretool(data):
             return msg
 
 
-WARNERS = (w1_general,)
+WARNERS = (w1_general, w2_review_model)
 
 
 def pretool_warn(data):
