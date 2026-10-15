@@ -64,7 +64,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session",
+        "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session|mcp__Claude_Browser__.*|mcp__claude-in-chrome__.*",
         "hooks": [
           {
             "type": "command",

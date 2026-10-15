@@ -30,13 +30,16 @@ small changes with evidence. The numbers come from the script, never from eyebal
    row of the periods. One that already stopped needs only a guard.
    Read 2 or 3 raw examples of each cluster you act on:
    `rg -l -F '<cluster text>' ~/.claude/projects --glob '!*<this session id>*'`. A regex hit is not proof.
-5. **Read the harness you judge.** `harness_stats.py inventory` gives each project's CLAUDE.md lines,
+5. **Agent dispatch.** `harness_stats.py agents --cut <ISO>` lists subagent spawns per agent type and
+   period, with share and median start context. Watch the general-purpose share (it should fall after
+   a dispatch change) and any type that starts near 50K or more (it has no `tools:` list).
+6. **Read the harness you judge.** `harness_stats.py inventory` gives each project's CLAUDE.md lines,
    rules (path-scoped / all), agents, skills and hooks. Then read the global `~/.claude/CLAUDE.md`,
    `~/.claude/settings.json` and the files behind each proposal.
-6. **Skills.** `harness_stats.py skills` lists calls per skill and installed skills never called.
-7. **Write the review** to `~/.claude/research/<YYYY-MM-DD>-harness-review.md` in the shape below, and
+7. **Skills.** `harness_stats.py skills` lists calls per skill and installed skills never called.
+8. **Write the review** to `~/.claude/research/<YYYY-MM-DD>-harness-review.md` in the shape below, and
    keep the previous reviews: the next run compares against them.
-8. **Apply nothing yet.** Show the proposals. Apply only the ones the user picks, one commit each,
+9. **Apply nothing yet.** Show the proposals. Apply only the ones the user picks, one commit each,
    in the repo that owns the file. Skill edits follow the skill TDD rule.
 
 ## Where a fix belongs

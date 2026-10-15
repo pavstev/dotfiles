@@ -22,6 +22,8 @@ Work alone, no subagents. Finish in 10 minutes.
    - Up to 150 lines. Absolute paths. No "as discussed" and no pointer to this chat.
    - Every fact says how it was checked. Date it.
    - Every phase names a model and an effort. Cheap work gets `sonnet`. Plans and final review get `opus`.
+   - `## State` holds the named fields a resume needs. The next session updates them, or the ledger it names, after each phase.
+   - Every phase names what it reads and what it writes. A later phase reads what an earlier one wrote, not the whole "Read first" list again. A phase that only reads is not a phase: fold it into the next one.
    - `## Report` caps the answer at 3,000 chars and sends the rest to a file.
 5. **Reply** in the shape below. Nothing else.
 
@@ -44,5 +46,5 @@ The paste line points at the file and never holds the brief. Another machine can
 
 ## Done when
 
-- The file exists, has all nine template sections, and is at most 150 lines.
+- The file exists, has all ten template sections, and is at most 150 lines.
 - The reply is the file link, the one-line block and the Start with section, nothing longer.

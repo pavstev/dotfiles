@@ -24,7 +24,9 @@ See `format-after-edit.sh` for a sample.
 ## guard.py
 
 `guard.py` (Python 3, stdlib only, fail-open: any error exits 0 silently) keeps sessions
-cheap. Deny = message on stderr + exit 2. Tests: `python3 claude/hooks/test_guard.py`.
+cheap. Deny = message on stderr + exit 2. Warn (the W rows) = exit 0 with
+`hookSpecificOutput.additionalContext` on stdout, so the call runs and the model reads the note.
+A deny wins over a warning. Tests: `python3 claude/hooks/test_guard.py`.
 
 | Guard | Event | Rule |
 |-------|-------|------|
@@ -33,6 +35,10 @@ cheap. Deny = message on stderr + exit 2. Tests: `python3 claude/hooks/test_guar
 | G3 | UserPromptSubmit; PreToolUse `Agent` | at 300K+ nudge `/ps:handoff` (1st prompt, then every 5th); deny spawning above 500K |
 | G4 | PreToolUse `AskUserQuestion` | one call per human turn |
 | G5 | PreToolUse `SubagentHandback`; SubagentStop | a subagent's hand-back may not exceed its cap by more than 10 percent; at most 2 denies per agent, then it passes |
+| W1 | PreToolUse `Agent` | warn, never deny: a `general-purpose` or `claude` spawn (or no `subagent_type`) gets a note to use `worker`, `Explore` or a named agent |
+| W2 | PreToolUse `Agent` | warn: a final or whole-branch review (in the description, or early in a reviewer's prompt) off opus or fable, or a `task-reviewer` on opus for a per-task review; a description naming a panel angle or a re-review is left alone |
+| W3 | PreToolUse browser tools (`mcp__Claude_Browser__*`, `mcp__claude-in-chrome__*`) | warn in a main window: at the 6th browser call of a turn (then every 20th), route checks to `ui-verifier` |
+| W4 | PreToolUse `Agent` | warn: past 15 spawns or 1.5M subagent tokens in a session (the `totalTokens` of each Agent result, and of each background task notification once), a budget note on every 5th spawn |
 | G6 | Stop; PreToolUse `archive_session` | a hand-off file written this turn (`*/handoffs/*.md`) must be in the reply as a file link plus the `Read <path> and do it.` block (one deny); no archive of this session in the same turn |
 
 Context size comes from the last assistant `usage` in the transcript (read from the end
@@ -47,7 +53,7 @@ ones (answer, return, report, summary), so "return at most 500 characters" in a 
 Last comes a bare bound right before the number, as in "Stay ≤ 4,000 chars.".
 If the counter file cannot be written, G5 allows, so a deny never repeats without end. Without
 one, the cap is the default of the agent type (task-implementer, task-reviewer, researcher and
-ui-verifier 3,000; repo-scanner 2,000; code-reviewer and anything else 4,000). The prompt is the
+ui-verifier and worker 3,000; repo-scanner 2,000; code-reviewer and anything else 4,000). The prompt is the
 first user record of the subagent transcript (`agent_transcript_path`, or
 `<session>/subagents/agent-<agent_id>.jsonl`). A deny makes the subagent write its text to a file and
 hand back a shorter one. SubagentStop skips the check when `stop_hook_active` is true. Deny counters
@@ -70,9 +76,13 @@ Replay on real past calls (2026-10-14, every transcript on this Mac):
 - Scratch mode: 148 real writes by browser-check subagents. 133 scratch or report-folder writes
   pass; the 15 denied ones are code and docs edits (`src/lib/*.ts`, `README.md`, a test file).
 
-Not built: a Bash rewrite of `cd <worktree> && git ...`. Of 478 worktree refusals only 1 had that
-shape; the harness check runs after PreToolUse hooks and cannot be bypassed, and agents recover on
-the next call. The agent prompts carry the fix instead.
+Not built: a Bash fixer for worktree refusals. Re-measured 2026-10-15 over 7 days: 417 refusals,
+86 percent in subagents (59 percent in one repo's own agents). 392 of 404 refusal streaks end on
+the next call, so a hook deny in place of the harness refusal saves nothing. None of the 417 has
+the one shape a hook could rewrite without changing what runs (`cd <root> && <one command>`): they
+are heredoc scripts, pipes and chains. The harness check runs after PreToolUse hooks and is a safety
+check, so the hook does not try to get around it. The rule text carries the fix instead:
+`claude/CLAUDE.md` rule 18 and the `worker` and `task-implementer` bodies.
 
 ### Scratch mode
 

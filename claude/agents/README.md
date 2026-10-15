@@ -10,12 +10,13 @@ Run `dots` on other machines. `scripts/agent-config.py` copies them to `~/.curso
 
 | Agent | Job | Tools | Model / effort |
 |---|---|---|---|
-| `task-implementer` | build one plan task: failing test, code, checks, commit | all but Agent | sonnet / high |
+| `task-implementer` | build one plan task: failing test, code, checks, commit | Read, Edit, Write, Bash, Grep, Glob | sonnet / high |
 | `task-reviewer` | review one plan task against its spec, then quality; re-review a fix round | Read, Grep, Glob, Bash | sonnet / high |
 | `code-reviewer` | review a diff, a commit or a whole branch; the final review gets opus + max per call | Read, Grep, Glob, Bash | sonnet / high |
 | `researcher` | one research question with sources; full notes to one named file | web, Read, Grep, Glob, Write | sonnet / high |
 | `repo-scanner` | read-only sweep of a repo from one angle into one file | Read, Grep, Glob, Bash, Write | sonnet / high |
-| `ui-verifier` | check a page or extension flow in a browser, pass or fail with evidence | all but Edit, Agent; Write only to scratch (frontmatter hook) | sonnet / high |
+| `ui-verifier` | check a page or extension flow in a browser, pass or fail with evidence | Read, Write, Bash, Grep, Glob, ToolSearch, both browser MCP servers (`mcp__<server>__*`); Write only to scratch (frontmatter hook) | sonnet / high |
+| `worker` | any other edit, command or file job; the lean stand-in for general-purpose | Read, Edit, Write, Bash, Grep, Glob | sonnet / high |
 
 `claude/CLAUDE.md` "Agents" holds the routing table. Opus 5.x rarely picks an agent from its
 description alone (anthropics/claude-code#82456), so the table names them. A project agent with the
@@ -26,7 +27,9 @@ same name wins in its repo, which is why these use `task-` names.
 - Always `name:`. Quote the `description` (a bare `: ` in it drops the file silently). Start it with
   "Use to" or "Use for", say when, and say what it is not for.
 - Pin `model:` and `effort:`. An unpinned agent inherits the caller's effort. Set `maxTurns`.
-- Give only the tools the job needs. A read-only agent also gets `disallowedTools: Write, Edit,
+- Give only the tools the job needs, as a `tools:` list. An agent without one loads every tool and
+  skill: a fresh spawn measured 14.6K start tokens for `worker` against 46K for general-purpose
+  (2026-10-15, `claude -p`; interactive sessions add MCP tools, 59-72K over 7 days). A read-only agent also gets `disallowedTools: Write, Edit,
   NotebookEdit, Agent`; prose like "never modify files" is not a tool limit. Workers never get Agent.
 - Bash in a read-only agent is for reading: `git diff`, tests, `rg`. Say so in the body.
 - The body ends with a hand-back shape: a status word on line 1 (`DONE`, `APPROVED`, `PASS`,

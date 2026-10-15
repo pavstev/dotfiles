@@ -74,6 +74,8 @@ class GuardTest(unittest.TestCase):
 
     def pre(self, tool, tool_input, ctx=0, extra=None, **kw):
         path = self.transcript([human(), assistant(ctx)]) if ctx else None
+        if tool == "Agent" and isinstance(tool_input, dict) and "subagent_type" not in tool_input:
+            tool_input = dict(tool_input, subagent_type="worker")  # no W1 warning in deny/allow tests
         data = {"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": tool, "tool_input": tool_input}
         if path:
             data["transcript_path"] = path
@@ -89,6 +91,107 @@ class GuardTest(unittest.TestCase):
 
     def assertAllow(self, res):
         self.assertEqual(res, (0, "", ""), res)
+
+    def assertWarn(self, res, text=""):
+        self.assertEqual(res[0], 0, res)
+        self.assertEqual(res[2], "", res)
+        out = json.loads(res[1])["hookSpecificOutput"]
+        self.assertEqual(out["hookEventName"], "PreToolUse")
+        self.assertIn(text, out["additionalContext"])
+        return out["additionalContext"]
+
+    # --- W1 general-purpose warning ---
+    def test_w1_warns_on_general_purpose(self):
+        base = {"model": "sonnet", "effort": "high", "prompt": BRIEF}
+        self.assertWarn(self.pre("Agent", dict(base, subagent_type="general-purpose")), "`worker`")
+        self.assertWarn(self.pre("Agent", dict(base, subagent_type=None)), "general-purpose subagent")
+        self.assertWarn(self.pre("Agent", dict(base, subagent_type="claude")), "a claude subagent")
+        for kind in ("worker", "task-implementer", "Explore", "code-reviewer"):
+            self.assertAllow(self.pre("Agent", dict(base, subagent_type=kind)))
+
+    def test_w2_review_model(self):
+        def call(kind, model, desc, prompt=BRIEF):
+            return self.pre("Agent", {"subagent_type": kind, "model": model, "effort": "high",
+                                      "description": desc, "prompt": prompt})
+        self.assertWarn(call("code-reviewer", "sonnet", "Final whole-branch review"), "on opus")
+        self.assertWarn(call("code-reviewer", "sonnet", "review", "Final review of main..HEAD. " + BRIEF), "sonnet")
+        self.assertWarn(call("worker", "sonnet", "final review of the branch"), "final reviews run on opus")
+        self.assertAllow(call("code-reviewer", "opus", "Final whole-branch review"))
+        self.assertAllow(call("code-reviewer", "claude-fable-5-1", "Branch review"))
+        self.assertAllow(call("code-reviewer", "sonnet", "Review commit abc"))
+        self.assertAllow(call("task-reviewer", "sonnet", "Review task 3"))
+        self.assertWarn(call("task-reviewer", "opus", "Review task 3"), "per-task reviews stay on sonnet")
+        # ps:review-panel runs its non-judge angles on sonnet on purpose
+        for desc in ("panel: simplify", "panel: design", "Re-review blocking findings"):
+            self.assertAllow(call("code-reviewer", "sonnet", desc, "Final review of main..HEAD, angle. " + BRIEF))
+        self.assertAllow(call("worker", "sonnet", "panel: verify", "Final review checks. " + BRIEF))
+        # "final review" deep in an implementer brief is not a review call
+        self.assertAllow(call("task-implementer", "sonnet", "Build task 3", BRIEF + " A final review follows."))
+
+    # --- W3 browser calls in a main window ---
+    def browser_turn(self, n, older=0, name="mcp__Claude_Browser__get_page_text"):
+        recs = [human("old")]
+        recs += [assistant(1000, [{"type": "tool_use", "id": "o%d" % i, "name": name, "input": {}}]) for i in range(older)]
+        recs.append(human("check the page"))
+        recs += [assistant(1000, [{"type": "tool_use", "id": "b%d" % i, "name": name, "input": {}}]) for i in range(n)]
+        return self.transcript(recs)
+
+    def browser_call(self, path, **kw):
+        data = {"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "mcp__Claude_Browser__navigate",
+                "tool_input": {"url": "https://example.com"}, "tool_use_id": "now", "transcript_path": path}
+        data.update(kw)
+        return self.run_guard("pretool", data)
+
+    def test_w3_browser(self):
+        self.assertAllow(self.browser_call(self.browser_turn(4)))
+        self.assertWarn(self.browser_call(self.browser_turn(5)), "`ui-verifier`")
+        self.assertAllow(self.browser_call(self.browser_turn(6)))
+        self.assertWarn(self.browser_call(self.browser_turn(25)), "26 browser calls")
+        self.assertAllow(self.browser_call(self.browser_turn(2, older=10)))  # last turn does not count
+        self.assertWarn(self.browser_call(self.browser_turn(5, name="mcp__claude-in-chrome__computer")))
+        self.assertAllow(self.browser_call(self.browser_turn(5), agent_id="a1"))  # inside ui-verifier
+        self.assertAllow(self.browser_call(None))
+
+    # --- W4 budget ---
+    def spawn_session(self, n, tokens_each=0):
+        recs = [human()]
+        for i in range(n):
+            recs.append(assistant(1000, [{"type": "tool_use", "id": "a%d" % i, "name": "Agent", "input": {}}]))
+            res = tool_result("a%d" % i)
+            if tokens_each:
+                res["toolUseResult"] = {"totalTokens": tokens_each, "agentType": "worker"}
+            recs.append(res)
+        return self.transcript(recs)
+
+    def spawn(self, path, tid="new"):
+        data = {"hook_event_name": "PreToolUse", "session_id": "s", "tool_name": "Agent", "tool_use_id": tid,
+                "transcript_path": path,
+                "tool_input": {"subagent_type": "worker", "model": "sonnet", "effort": "high", "prompt": BRIEF}}
+        return self.run_guard("pretool", data)
+
+    def test_w4_budget(self):
+        self.assertAllow(self.spawn(self.spawn_session(14)))
+        self.assertWarn(self.spawn(self.spawn_session(15)), "spawned 15 agents")
+        self.assertAllow(self.spawn(self.spawn_session(16)))
+        self.assertWarn(self.spawn(self.spawn_session(20)), "get_usage")
+        self.assertWarn(self.spawn(self.spawn_session(5, tokens_each=400_000)), "2000K subagent tokens")
+        self.assertAllow(self.spawn(self.spawn_session(6, tokens_each=400_000)))
+        self.assertAllow(self.spawn(self.spawn_session(5, tokens_each=100_000)))
+        # background agents report in task-notification attachments, once per task id
+        path = self.spawn_session(5)
+        with open(path, "a") as f:
+            for tid in ("t1", "t1", "t2"):
+                f.write(json.dumps({"type": "attachment", "attachment": {
+                    "type": "queued_command", "commandMode": "task-notification",
+                    "prompt": "<task-notification> <task-id>%s</task-id>" % tid,
+                    "usage": {"totalTokens": 800_000}}}) + "\n")
+        self.assertWarn(self.spawn(path), "1600K subagent tokens")
+        # the current call already written to the transcript is not counted twice
+        self.assertWarn(self.spawn(self.spawn_session(16), tid="a15"), "spawned 15 agents")
+
+    def test_w1_deny_wins(self):
+        res = self.pre("Agent", {"subagent_type": "general-purpose", "prompt": BRIEF})
+        self.assertDeny(res, 'needs "model" and "effort"')
 
     # --- G1 ---
     def test_g1_missing_effort_or_model(self):
@@ -586,7 +689,7 @@ class GuardTest(unittest.TestCase):
         self.assertAllow(self.run_guard("pretool", {"tool_name": "Read", "tool_input": {}}))
 
     def test_missing_transcript_means_zero_context(self):
-        d = {"tool_name": "Agent", "tool_input": {"model": "m", "effort": "high", "prompt": BRIEF},
+        d = {"tool_name": "Agent", "tool_input": {"model": "m", "effort": "high", "prompt": BRIEF, "subagent_type": "worker"},
              "transcript_path": "/no/such"}
         self.assertAllow(self.run_guard("pretool", d))
         d = {"tool_name": "ScheduleWakeup", "tool_input": {"delaySeconds": 60}, "transcript_path": "/no/such"}
