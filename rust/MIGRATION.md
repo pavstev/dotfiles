@@ -1,0 +1,61 @@
+# Migration notes: dotfiles Python tooling -> Rust
+
+Status as of 2026-10-16. Goal: Windows machines need no Python.
+
+## State
+
+Every Python tool now has a Rust binary in `rust/agent-config/src/bin/` (or `main.rs`):
+
+| Python | Rust binary | Checked how |
+|---|---|---|
+| `scripts/agent-config.py` | `agent-config` | `tools/parity_cases.py` 39/42 (the 3 are `--help` wording), `tools/parity_scenarios.py` 6/6 |
+| `claude/hooks/guard.py` | `guard` | the 52 cases of `test_guard.py`, run against the binary: 52/52 |
+| `cursor/hooks/guard_cursor.py` | `guard_cursor` | the 23 cases of `test_guard_cursor.py`, run against the binary: 23/23 |
+| `ps:spawn/scripts/spawn.py` | `spawn` | 420 differential cases with a fake `tmux`/`claude`: 0 diffs |
+| `ps:whatsleft/scripts/route.py` | `route` | 1616 differential cases: 2 diffs (inputs where Python itself crashes) |
+| `ps:harness-optimize/scripts/harness_stats.py` | `harness_stats` | byte-identical `collect` on 266 real sessions, 17 reader commands |
+| `ps:whatsleft/scripts/whatsleft-scan.py` | `whatsleft_scan` | 205 runs, 0 diffs |
+| `ps:whatsleft/scripts/hurry-scan.py` | `hurry_scan` | 82 runs, 0 diffs |
+
+`scripts/agent-config` is the entry point. It runs the Rust build (made on first use when
+`cargo` works, rebuilt when `lib.rs`, `main.rs` or `Cargo.toml` change) and falls back to
+`agent-config.py`. `AGENT_CONFIG_IMPL=python|rust` forces one. `dotfiles` and
+`scripts/install.d/60-cursor.sh` call the shim.
+
+## Known gaps (accepted)
+
+- The Python files stay. They are the reference for the tests and the fallback when there is no
+  `cargo`. Delete them only after the hooks and skills call the Rust binaries.
+- `claude/settings.json` still wires the Python `guard.py`, and the skills still call their
+  `.py` scripts. Moving them to the Rust binaries is a separate, reversible step.
+- Where Python crashes with a traceback (null JSON where a number is expected, a lone surrogate,
+  a non-UTF-8 prompt file) Rust prints a short error or a safe value instead.
+- `--help` and usage text come from clap, not argparse.
+- `guard_cursor` reads Cursor's context size by running the `sqlite3` command line tool (read-only,
+  1 s timeout). Without that tool (a plain Debian or Ubuntu) it reads 0 and never denies on app
+  context; the transcript path still works. Python uses its built-in sqlite3 module.
+- Local-time code in the scans uses `localtime_r` on unix and UTC on Windows.
+- Rust is not tested on Linux or Windows. The x1 box (Debian 13) has `cargo` but no C linker,
+  so it runs the Python fallback. Needs `build-essential` to test the Rust path there.
+
+## How to run the checks
+
+```sh
+cargo build --release --manifest-path rust/agent-config/Cargo.toml
+cargo test  --release --manifest-path rust/agent-config/Cargo.toml
+python3 scripts/test_agent_config.py                      # 192 Python reference tests
+python3 rust/agent-config/tools/parity_cases.py           # needs the release binary
+python3 rust/agent-config/tools/parity_scenarios.py       # needs the release binary
+python3 rust/agent-config/tools/run_hook_tests.py         # old guard tests vs the Rust hooks (52 + 23)
+bash scripts/test-dotfiles.sh
+```
+
+`run_hook_tests.py` copies the two Python hook tests to a temp folder and swaps the
+interpreter-and-script call for the Rust binary.
+
+## Trap for the next session
+
+`claude-settings promote` writes into the repo. The Python version finds the repo from
+`__file__`, so it ignores `DOTFILES_REPO`. To test promote you must copy `claude/`, `cursor/`
+and `scripts/` into a temp repo and run the Python script from inside that copy, as
+`tools/parity_scenarios.py` does. Otherwise promote edits the real `claude/settings.json`.

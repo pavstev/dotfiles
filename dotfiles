@@ -29,7 +29,7 @@ case "${1:-}" in
   settings|private)
     ASK_SETTINGS=1
     # Only the Cursor step runs then, to pick up the new settings. Opencode needs no
-    # step: agent-config.py opencode runs below, on every run, and reads the same file.
+    # step: agent-config opencode runs below, on every run, and reads the same file.
     if [[ -z "${DOTFILES_STEPS+set}" ]]; then export DOTFILES_STEPS=60-cursor; OWN_STEPS=1; fi ;;
   *) printf 'usage: dots [settings]\n' >&2; exit 2 ;;
 esac
@@ -176,7 +176,7 @@ if [[ -d "$CLAUDE_SRC" ]]; then
   # settings.json is built, not linked: the repo base plus the private layer
   # (~/.config/dotfiles/claude-settings.json). Claude writes this file itself; what
   # it changed since the last build moves into the private layer first.
-  python3 "$REPO/scripts/agent-config.py" claude-settings build \
+  "$REPO/scripts/agent-config" claude-settings build \
     || warn "couldn't build ~/.claude/settings.json, so it stays as it was"
   # The owner's private rules (never in the repo) load as a Claude user rule.
   rule="$CLAUDE_DST/rules/owner.md"
@@ -207,11 +207,11 @@ step "Linking Opencode config -> ~/.config/opencode"
 # rules file, the agents mirrored from claude/agents, the copper theme, and
 # permissions and opt-in MCP servers merged into ~/.config/opencode/opencode.jsonc.
 # They are generated/merged, never linked, so the user's own values win.
-if [[ -x "$REPO/scripts/agent-config.py" ]]; then
-  python3 "$REPO/scripts/agent-config.py" opencode --profile "$PROFILE" \
-    || warn "agent-config.py opencode reported an issue, see above"
+if [[ -x "$REPO/scripts/agent-config" ]]; then
+  "$REPO/scripts/agent-config" opencode --profile "$PROFILE" \
+    || warn "agent-config opencode reported an issue, see above"
 else
-  warn "scripts/agent-config.py missing or not executable — skipping Opencode config"
+  warn "scripts/agent-config missing or not executable — skipping Opencode config"
 fi
 
 if [[ -d "$REPO/scripts/install.d" ]]; then

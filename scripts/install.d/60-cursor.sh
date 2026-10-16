@@ -3,7 +3,7 @@
 # Cursor is present. See docs/cursor-port.md.
 #   1. the `agent` / `cursor-agent` CLI, via Cursor's official installer, if missing
 #   2. the Brewfile `vscode` extensions, into Cursor (brew bundle only feeds VS Code)
-#   3. generated rules and agents, merged hooks / MCP / CLI config (agent-config.py)
+#   3. generated rules and agents, merged hooks / MCP / CLI config (agent-config)
 set -uo pipefail
 . "$REPO/scripts/setup-lib.sh"
 brew_env
@@ -48,5 +48,5 @@ else
 fi
 
 # 3. Rules, agents, hooks, MCP, CLI config.
-python3 "$REPO/scripts/agent-config.py" cursor --profile "$(dotfiles_profile)" \
-  || warn "agent-config.py cursor reported an issue, see above"
+"$REPO/scripts/agent-config" cursor --profile "$(dotfiles_profile)" \
+  || warn "agent-config cursor reported an issue, see above"

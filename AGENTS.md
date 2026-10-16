@@ -26,7 +26,8 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `scripts/setup-lib.sh` | step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`), `dotfiles_profile`, `setting`. |
 | `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). |
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`) and `hooks/guard_cursor.py` (+ test), the hook adapter for guard G3. |
-| `scripts/agent-config.py` | stdlib generator: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
+| `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when `lib.rs`, `main.rs` or `Cargo.toml` change); falls back to `agent-config.py` when `cargo` is missing. `AGENT_CONFIG_IMPL=python` or `rust` forces one. |
+| `scripts/agent-config.py` | the Python reference, same CLI: stdlib generator: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
 | `docs/guide.md`, `docs/cursor-port.md`, `docs/opencode-port.md` | the user guide; the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
 | `Brewfile` | every package (per-machine extras in the ignored `Brewfile.local`). |
 | `settings.example`, `scripts/settings.sh` | every setting with a note and default; the `dots settings` menu. |
@@ -59,7 +60,7 @@ dir of its own). New skill: copy `claude/skills/_template/`, keep folder name ==
 
 `claude/` is the source for Cursor too: edit it, then run `dots`. Step `60-cursor` runs only when
 Cursor is present: it installs the CLI, the Brewfile `vscode` extensions, and runs
-`scripts/agent-config.py cursor`. What Cursor gets: `docs/guide.md` "Cursor" and
+`scripts/agent-config cursor`. What Cursor gets: `docs/guide.md` "Cursor" and
 `docs/cursor-port.md`.
 
 - Generated Markdown carries a `generated-by: dotfiles` marker. A file without it is the user's.
@@ -72,7 +73,7 @@ Cursor is present: it installs the CLI, the Brewfile `vscode` extensions, and ru
 
 Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source.
 Edit `claude/`, then run `dots`. Step `scripts/install.d/58-opencode.sh` verifies the
-`opencode` CLI (installed by the Brewfile), and `agent-config.py opencode` — wired into
+`opencode` CLI (installed by the Brewfile), and `agent-config opencode` — wired into
 `./dotfiles` itself, so it also runs for `dots settings` — generates what Opencode needs:
 
 - **Skills (shared, no extra step):** Opencode reads `~/.claude/skills` natively, and
@@ -138,10 +139,11 @@ reference: a Mac run must behave as before.
   Mac-only.
 - **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
   usual tools when they are on PATH.
-- **Opencode config:** `agent-config.py opencode` generates agents, permissions and MCP under
+- **Opencode config:** `agent-config opencode` generates agents, permissions and MCP under
   `~/.config/opencode` and uses `clip` for the clipboard — identical output on all three OSes.
-- **Python:** `agent-config.py` and Claude settings need `python3`; on Windows install it (e.g. via
-  WinGet or the Python installer) or those two generated config steps warn and skip.
+- **Python:** not needed when `cargo` is installed: `scripts/agent-config` builds and runs the Rust
+  version. Without `cargo` it needs `python3` (WinGet or the Python installer) or the generated
+  config steps warn and skip.
 
 ## Profiles
 
@@ -156,7 +158,7 @@ reference: a Mac run must behave as before.
 - **shared:** no overlay; plugins in `claude/settings.json` are shared as is.
 - **Claude settings**, every profile: `dots` builds `~/.claude/settings.json` (a real file) from
   `claude/settings.json` plus the private layer `~/.config/dotfiles/claude-settings.json`; live
-  changes move into the layer first (`scripts/agent-config.py claude-settings build`).
+  changes move into the layer first (`scripts/agent-config claude-settings build`).
   `claude-settings promote <key>` moves a key to the repo base. Owner-only keys stay in the layer.
 - **Cursor MCP servers** (`cursor/mcp.json`) are opt-in: `CURSOR_MCP="on"`, or `DOTFILES_MCP=on` once.
 - **Opencode MCP servers** (the same `cursor/mcp.json`) are opt-in: `OPENCODE_MCP="on"`, or

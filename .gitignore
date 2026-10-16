@@ -27,3 +27,6 @@ __pycache__/
 
 # Generated per-machine Opencode project config (mirrors ~/.config/opencode)
 .opencode/
+
+# Rust build output (rust/agent-config/target, ~400 MB)
+target/

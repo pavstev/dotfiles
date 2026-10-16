@@ -67,8 +67,9 @@ What is different from a Mac:
 - VS Code and Cursor settings link to `%APPDATA%\{Code,Cursor}\User\`, where the apps read them.
 - Three steps are macOS only and skip with one line: macOS defaults, Touch ID for sudo, Apple
   Terminal appearance. The Claude desktop app offer, AeroSpace and the Nerd Font are Mac-only too.
-- `agent-config.py` needs `python3` to generate Opencode/Claude/Cursor config; install Python on
-  Windows (e.g. via WinGet) or those steps warn and skip.
+- `scripts/agent-config` generates the Opencode/Claude/Cursor config. It runs the Rust build in
+  `rust/agent-config` (built on first use when `cargo` is installed), so Python is not needed
+  there. With no `cargo` it falls back to `python3` (install it via WinGet) or the steps warn and skip.
 
 ## Check that it works
 
