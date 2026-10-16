@@ -1237,6 +1237,86 @@ class OpencodeConfigTest(Base):
         self.assertIn("would", out)
 
 
+class OpencodeTuiTest(Base):
+    path = property(lambda self: self.home / ".config" / "opencode" / "tui.json")
+
+    def run_opencode(self, extra_args=None):
+        args = ["opencode", "--profile", "shared"]
+        if extra_args:
+            args += extra_args
+        return call(AC.main, args)
+
+    def test_writes_copper_theme(self):
+        rc, out, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        data = json.loads(self.path.read_text())
+        self.assertEqual(data["theme"]["name"], "copper")
+        self.assertEqual(data["theme"]["accent"], "#b06a4a")
+        self.assertEqual(data["generated-by"], AC.MARK)
+        self.assertEqual(data["source"], "claude/")
+
+    def test_user_owned_tui_is_left_alone(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text("my tui\n")
+        _, _, err = self.run_opencode()
+        self.assertEqual(self.path.read_text(), "my tui\n")
+        self.assertIn("not ours", err)
+
+    def test_rerun_skips_our_tui(self):
+        self.run_opencode()
+        before = self.path.read_text()
+        _, out, _ = self.run_opencode()
+        self.assertEqual(self.path.read_text(), before)
+        self.assertIn("already set up", out)
+
+
+class OpencodeProjectsTest(Base):
+    def run_opencode(self, extra_args=None):
+        args = ["opencode", "--profile", "shared"]
+        if extra_args:
+            args += extra_args
+        return call(AC.main, args)
+
+    def test_creates_project_opencode_and_agent_links(self):
+        p1 = Path(tempfile.mkdtemp()) / "proj1"
+        p1.mkdir(parents=True)
+        p2 = Path(tempfile.mkdtemp()) / "proj2"
+        p2.mkdir(parents=True)
+        (self.claude / "agents").mkdir()
+        (self.claude / "agents" / "a.md").write_text("---\nname: a\n---\nb\n")
+        self._seed_global_agent()
+        rc, out, err = self.run_opencode(["--projects", f"{p1} {p2}"])
+        self.assertEqual(rc, 0, err)
+        cfg1 = p1 / ".opencode" / "opencode.jsonc"
+        self.assertTrue(cfg1.is_symlink())
+        self.assertEqual(os.path.realpath(cfg1), os.path.realpath(self.home / ".config" / "opencode" / "opencode.jsonc"))
+        ag = p1 / ".opencode" / "agents" / "a.md"
+        self.assertTrue(ag.is_symlink())
+        self.assertEqual(os.path.realpath(ag), os.path.realpath(self.home / ".config" / "opencode" / "agents" / "a.md"))
+        self.assertTrue((p2 / ".opencode" / "opencode.jsonc").is_symlink())
+        self.assertTrue((p2 / ".opencode" / "agents" / "a.md").is_symlink())
+
+    def test_does_not_clobber_existing_project_config_or_agent(self):
+        p = Path(tempfile.mkdtemp()) / "proj"
+        p.mkdir(parents=True)
+        (p / ".opencode").mkdir(parents=True)
+        (p / ".opencode" / "opencode.jsonc").write_text("mine\n")
+        (p / ".opencode" / "agents").mkdir()
+        (p / ".opencode" / "agents" / "a.md").write_text("project agent\n")
+        (self.claude / "agents").mkdir()
+        (self.claude / "agents" / "a.md").write_text("---\nname: a\n---\nb\n")
+        self._seed_global_agent()
+        rc, _, _ = self.run_opencode(["--projects", str(p)])
+        self.assertEqual(rc, 0)
+        self.assertEqual((p / ".opencode" / "opencode.jsonc").read_text(), "mine\n")
+        self.assertEqual((p / ".opencode" / "agents" / "a.md").read_text(), "project agent\n")
+
+    def _seed_global_agent(self):
+        ga = self.home / ".config" / "opencode" / "agents"
+        ga.mkdir(parents=True, exist_ok=True)
+        (ga / "a.md").write_text("---\nname: a\n---\nb\n")
+
+
 class CmdOpencodeTest(Base):
     def test_full_run_creates_agents_and_config_and_never_writes_claude_dir(self):
         self.perms(allow=["Bash(ls:*)"])

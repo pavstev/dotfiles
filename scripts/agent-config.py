@@ -630,13 +630,91 @@ def cmd_opencode(args):
     home = Path.home()
     info(f"Opencode config from {tilde(CLAUDE)} (profile: {args.profile})")
     failed = 0
-    for part in (lambda: opencode_agents(home), lambda: opencode_config(home)):
+    projects = args.projects.split() if args.projects else None
+    for part in (lambda: opencode_agents(home), lambda: opencode_config(home),
+                 lambda: opencode_tui(home), lambda: opencode_projects(home, projects)):
         try:
             part()
         except Exception as e:  # one bad file must not stop the other parts
             warn(f"skipped a part: {type(e).__name__}: {e}")
             failed += 1
     return 1 if failed else 0
+
+
+def opencode_tui(home):
+    """Copper-on-stone TUI settings for Opencode: ~/.config/opencode/tui.json.
+
+    Written only when missing or when it is our own generated file; a user-owned
+    tui.json is left alone. Keys Opencode does not understand are ignored by it.
+    """
+    path = home / OPENCODE / "tui.json"
+    theme = {
+        "name": "copper",
+        "background": "#2a2523",
+        "surface": "#3a3330",
+        "accent": "#b06a4a",
+        "accentDim": "#8a5337",
+        "text": "#e8e0d8",
+        "textMuted": "#9d8c80",
+        "border": "#5c4f47",
+        "success": "#6a9a6a",
+        "warn": "#b08d4a",
+        "error": "#b05a4a",
+    }
+    text = json.dumps({"theme": theme, "generated-by": MARK, "source": "claude/"}, indent=2) + "\n"
+    if path.exists() and MARK not in path.read_text(errors="replace"):
+        warn(f"{tilde(path)} exists and is not ours, left untouched")
+        return
+    write_generated(path, text)
+
+
+def opencode_projects(home, projects=None):
+    """Mirror the global Opencode config into per-project .opencode/ dirs.
+
+    `projects`: list of absolute paths (from --projects). When None, read
+    OPENCODE_PROJECTS from settings (dots settings) or DOTFILES_PROJECTS env.
+    For each project:
+      - .opencode/opencode.jsonc  symlinked to the global opencode.jsonc
+        (project inherits every global key; deep-merged over global, so identical)
+      - .opencode/agents/<name>.md symlinked to each generated global agent,
+        added only when the project does not already have that agent name.
+    Existing project files and agents are never clobbered.
+    """
+    if projects is None:
+        v = os.environ.get("DOTFILES_PROJECTS", "").strip() or setting(home, "OPENCODE_PROJECTS").strip()
+        projects = [p for p in v.split() if p]
+    if not projects:
+        return
+    global_cfg = home / OPENCODE / "opencode.jsonc"
+    global_agents = home / OPENCODE / "agents"
+    for proj in projects:
+        proj = Path(proj)
+        if not proj.is_absolute():
+            warn(f"skipping non-absolute Opencode project path: {proj}")
+            continue
+        popencode = proj / ".opencode"
+        popencode.mkdir(parents=True, exist_ok=True)
+        # opencode.jsonc: symlink to the global one (project config == global config).
+        pcfg = popencode / "opencode.jsonc"
+        if not pcfg.exists():
+            try:
+                pcfg.symlink_to(global_cfg)
+                ok(f"linked {pcfg} → {global_cfg}")
+            except OSError as e:
+                warn(f"couldn't link {pcfg}: {e}")
+        # agents: copy each global agent name the project lacks.
+        if global_agents.is_dir():
+            pagents = popencode / "agents"
+            pagents.mkdir(parents=True, exist_ok=True)
+            for src in sorted(global_agents.glob("*.md")):
+                dst = pagents / src.name
+                if dst.exists():
+                    continue  # project's own agent of the same name wins
+                try:
+                    dst.symlink_to(src)
+                    ok(f"linked {dst} → {src}")
+                except OSError as e:
+                    warn(f"couldn't link {dst}: {e}")
 
 
 def clipboard_command():
@@ -885,6 +963,7 @@ def main(argv=None):
     o = sub.add_parser("opencode", help="generate and merge Opencode config under ~/.config/opencode")
     o.add_argument("--profile", choices=PROFILES, default="shared")
     o.add_argument("--dry-run", action="store_true")
+    o.add_argument("--projects", help="comma/space-separated absolute project paths to mirror the global config into")
     args = p.parse_args(argv)
     DRY = args.dry_run
     return {"cursor": cmd_cursor, "user-rules": cmd_user_rules,

@@ -52,8 +52,10 @@ A project agent with the same name (in `.opencode/agents/`) still wins in its re
 |-------------|---------------|--------|
 | `permissions.allow/deny` (claude/settings.json) | `opencode.jsonc` `permission.bash/read/edit/tool` | translated: `Bash(x:*)` → `bash "x *"`, `Read` → `read`, `Edit`/`Write` → `edit`, `Suggest*` → `tool deny`; user's keys win |
 | `includeCoAuthoredBy: false`, `attribution` | not set | Opencode attributes commits as the user by default; nothing to force off |
-| MCP (`cursor/mcp.json`, cloudflare-docs) | `opencode.jsonc` `mcp.servers` | merged as `type: remote`; opt-in on every profile (`OPENCODE_MCP="on"` or `DOTFILES_MCP=on`) |
+| MCP (`cursor/mcp.json`, cloudflare-docs) | `opencode.jsonc` `mcp.<name>` | merged as `type: remote`; opt-in on every profile (`OPENCODE_MCP="on"` or `DOTFILES_MCP=on`) |
 | `statusLine` → `statusline.sh` | none | Opencode has no status line |
+| Copper theme (Ghostty/starship/etc.) | `~/.config/opencode/tui.json` `theme` | generated copper-on-stone theme; a user-owned tui.json is left alone |
+| Per-project config | `project/.opencode/opencode.jsonc` → symlink to global; `project/.opencode/agents/*.md` → symlinks to global agents | set `OPENCODE_PROJECTS` (space-separated absolute paths) via `dots settings` or `DOTFILES_PROJECTS` env; existing project files/agents never clobbered |
 
 ## Gaps
 
@@ -80,3 +82,4 @@ A project agent with the same name (in `.opencode/agents/`) still wins in its re
 |---------|-------|---------|
 | `OPENCODE_MCP` | `~/.config/dotfiles/settings` (`dots settings`) | Opencode MCP servers from dots: on/off; `DOTFILES_MCP=on` wins for one run |
 | `DOTFILES_MCP` | env | turns MCP on for Cursor and Opencode at once |
+| `OPENCODE_PROJECTS` | `~/.config/dotfiles/settings` (`dots settings`) | absolute project paths whose `.opencode/` mirrors the global Opencode config; `DOTFILES_PROJECTS` env wins for one run |

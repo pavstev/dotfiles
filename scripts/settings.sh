@@ -294,6 +294,16 @@ edit_projects() {
     "acme-app side-project" "private projects"
 }
 
+# edit_opencode_projects: absolute paths whose .opencode/ mirrors the global Opencode config.
+edit_opencode_projects() {
+  local v
+  v="$(ask_value "📂 Opencode project paths, split by spaces (absolute folders whose .opencode/ mirrors dots)" \
+      "$(setting OPENCODE_PROJECTS)" "/Users/pavstev/work/website /Users/pavstev/powertools")" || return 0
+  v="$(printf '%s' "$v" | tr ',' ' ' | tr -s ' ')"
+  v="${v# }"; v="${v% }"
+  set_setting OPENCODE_PROJECTS "$v" && ok "Opencode projects: ${v:-none}"
+}
+
 edit_words_extra() {
   edit_words PRIVATE_WORDS "🚫 More private words, split by spaces. Your git name and email count already." \
     "client-name nickname" "private words"
@@ -350,6 +360,14 @@ opencode_mcp_value() {
   esac
 }
 
+# opencode_projects_value: the configured project paths, or "none".
+opencode_projects_value() {
+  local v
+  v="$(setting OPENCODE_PROJECTS)"
+  if [[ -z "$v" ]]; then printf 'none'
+  else printf '%s' "$v"; fi
+}
+
 # lines_of <file>: "1 line" or "N lines".
 lines_of() {
   local n
@@ -365,7 +383,7 @@ step "Settings (they stay on this Mac, never in git)"
 info "File: ~/.config/dotfiles/settings. Each change saves at once."
 done_row="✅ Done"
 keys=(edit_git_name edit_git_email edit_profile edit_mcp edit_opencode_mcp edit_java edit_steps edit_projects
-  edit_words_extra edit_rules)
+  edit_opencode_projects edit_words_extra edit_rules)
 start="" last=""
 if [[ -n "${DOTFILES_FIRST_RUN:-}" ]]; then start="$done_row"; fi
 while :; do
@@ -378,6 +396,7 @@ while :; do
     "$(row "☕ " "Java" "$(java_value)")"
     "$(row "⏩ " "Steps to skip" "$(value_or "$(setting SKIP_STEPS)" "none")")"
     "$(row "📁 " "Private projects" "$(value_or "$(setting PRIVATE_PROJECTS)" "none")")"
+    "$(row "📂 " "Opencode projects" "$(opencode_projects_value)")"
     "$(row "🚫 " "Private words" "$(value_or "$(setting PRIVATE_WORDS)" "none")")"
     "$(row "🔒 " "Private rules" "$(rules_value)")"
   )
