@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  scripts/agent-config — one entry point for the config generator.
+#
+#  Runs the Rust build (rust/agent-config) when there is one, so a machine
+#  needs no Python. The build is made on first use when cargo works, and made
+#  again when lib.rs, main.rs, Cargo.toml or Cargo.lock are newer than the
+#  binary. With no usable binary it falls back to scripts/agent-config.py
+#  (python3). A stale binary is still used when the rebuild fails and there is
+#  no python3.
+#
+#    scripts/agent-config cursor --profile owner
+#    AGENT_CONFIG_IMPL=python scripts/agent-config opencode   # force Python
+#    AGENT_CONFIG_IMPL=rust   scripts/agent-config opencode   # force Rust
+# ============================================================================
+set -u
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+# shellcheck source=setup-lib.sh
+. "$HERE/setup-lib.sh"
+
+CRATE="$REPO/rust/agent-config"
+TARGET="$CRATE/target"
+EXE=agent-config
+is_windows && EXE=agent-config.exe
+BIN="$TARGET/release/$EXE"
+IMPL="${AGENT_CONFIG_IMPL:-auto}"
+
+stale() {
+  [[ ! -x "$BIN" ]] && return 0
+  [[ -n "$(find "$CRATE/src/lib.rs" "$CRATE/src/main.rs" "$CRATE/Cargo.toml" "$CRATE/Cargo.lock" "$CRATE/themes" \
+    -newer "$BIN" -type f 2>/dev/null | head -1)" ]]
+}
+
+# build: make the binary in the crate's own target dir, with the lock file as it is.
+# RUSTUP_AUTO_INSTALL=0: with no toolchain on this HOME (a temp HOME, a bare box)
+# fail now, never download one. On success the binary is touched, because cargo
+# leaves it alone when only an unrelated bin or file changed.
+build() {
+  have cargo || return 1
+  echo "agent-config: building the Rust binary (first run takes a minute)" >&2
+  RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$TARGET" \
+    --manifest-path "$CRATE/Cargo.toml" --bin agent-config >&2 || return 1
+  [[ -x "$BIN" ]] || return 1
+  touch "$BIN"
+}
+
+run_rust() {
+  export DOTFILES_REPO="$REPO"
+  exec "$BIN" "$@"
+}
+
+run_python() {
+  have python3 || { echo "agent-config: need the Rust build (cargo) or python3" >&2; exit 1; }
+  exec python3 "$HERE/agent-config.py" "$@"
+}
+
+[[ "$IMPL" == python ]] && run_python "$@"
+
+if [[ -d "$CRATE" ]]; then
+  if ! stale || build; then run_rust "$@"; fi
+  if [[ -x "$BIN" ]] && ! have python3; then
+    echo "agent-config: rebuild failed, running the older Rust binary" >&2
+    run_rust "$@"
+  fi
+fi
+
+if [[ "$IMPL" == rust ]]; then
+  echo "agent-config: AGENT_CONFIG_IMPL=rust but the Rust binary is not available" >&2
+  exit 1
+fi
+run_python "$@"

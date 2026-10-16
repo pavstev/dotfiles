@@ -147,5 +147,8 @@ fi
 # ---- Aliases (modular) -----------------------------------------------------
 [[ -f "$HOME/.config/zsh/aliases.zsh" ]] && source "$HOME/.config/zsh/aliases.zsh"
 
+# ---- Claude route toggle (claude-free / claude-official / claude-status) ---
+[[ -f "$HOME/.config/zsh/claude-route.zsh" ]] && source "$HOME/.config/zsh/claude-route.zsh"
+
 # ---- skill CLI (install/list/remove/create/status) -------------------------
 [[ -f "$HOME/.config/zsh/skill.zsh" ]] && source "$HOME/.config/zsh/skill.zsh"

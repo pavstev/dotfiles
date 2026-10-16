@@ -1,0 +1,50 @@
+[package]
+name = "agent-config"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+dirs = "6"
+sha2 = "0.10"
+tempfile = "3"
+walkdir = "2"
+regex = "1"
+
+[[bin]]
+name = "agent-config"
+path = "src/main.rs"
+
+[[bin]]
+name = "guard_cursor"
+path = "src/bin/guard_cursor.rs"
+
+[[bin]]
+name = "guard"
+path = "src/bin/guard.rs"
+
+[[bin]]
+name = "spawn"
+path = "src/bin/spawn.rs"
+
+[[bin]]
+name = "route"
+path = "src/bin/route.rs"
+
+[[bin]]
+name = "harness_stats"
+path = "src/bin/harness_stats.rs"
+
+[[bin]]
+name = "whatsleft_scan"
+path = "src/bin/whatsleft_scan.rs"
+
+[[bin]]
+name = "hurry_scan"
+path = "src/bin/hurry_scan.rs"
+
+[[bench]]
+name = "manual"
+harness = false
