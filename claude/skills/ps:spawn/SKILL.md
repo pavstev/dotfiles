@@ -26,7 +26,7 @@ One script call starts a new session in a detached tmux, with `claude --remote-c
 | 4 | the session stopped, or showed a dialog | Give the FAIL line and the screen lines. The script already stopped it |
 | 5 | no link in time, the session still runs | Give the WATCH and STOP lines. Do not start another |
 
-Bypass warning not accepted (exit 3): ask with `AskUserQuestion` (Cursor: `AskQuestion`), one question:
+Bypass warning not accepted (exit 3): ask with `AskUserQuestion` (Cursor: `AskQuestion`, OpenCode: `question`), one question:
 - "Start now in auto mode (Recommended)": run step 4 again with `--mode auto`. A safety check approves most commands; it asks the phone only for risky ones. This is the one allowed second run.
 - "I accept bypass first": the user runs `claude --permission-mode bypassPermissions` once in a terminal, accepts, types `/exit`, then says go.
 

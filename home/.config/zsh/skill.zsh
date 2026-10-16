@@ -1,5 +1,5 @@
 # ============================================================================
-#  skill — manage Claude/Cursor skills backed by the dotfiles repo
+#  skill — manage Claude/Cursor/Opencode skills backed by the dotfiles repo
 #  Source: $DOTFILES/home/.config/zsh/skill.zsh  (symlinked from this repo)
 #  Edits here are live immediately — no apply step.
 # ============================================================================
@@ -399,7 +399,7 @@ _skill_status() {
 # ----- skill help ------------------------------------------------------------
 
 _skill_help() {
-  printf '\n%s  manage Claude/Cursor skills\n\n' "$(_sk_h 'skill')"
+  printf '\n%s  manage Claude/Cursor/Opencode skills\n\n' "$(_sk_h 'skill')"
   printf '  %s  %-24s  %s\n' "$(_sk_h 'skill')" "$(_sk_dim 'install <name>')"     "install from GitHub (searches topic: ai-skill)"
   printf '  %s  %-24s  %s\n' "$(_sk_h 'skill')" "$(_sk_dim 'install owner/repo')" "install directly from a GitHub repo"
   printf '  %s  %-24s  %s\n' "$(_sk_h 'skill')" "$(_sk_dim 'list')"              "list installed skills and active status"

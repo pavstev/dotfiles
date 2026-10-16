@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 90-sign-in.sh: the sign-ins the tools need (GitHub, Claude Code, Cursor).
+# 90-sign-in.sh: the sign-ins the tools need (GitHub, Claude Code, Opencode, Cursor).
 # On the first run at a terminal: a menu, then each picked login runs here.
 # Later runs, or no terminal: one line that says what is left.
 set -uo pipefail
@@ -14,6 +14,9 @@ if have gh && ! gh auth status >/dev/null 2>&1; then
 fi
 if have claude && ! claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
   labels+=("✳️  Claude Code"); cmds+=("claude auth login")
+fi
+if have opencode && opencode auth list 2>/dev/null | grep -qi 'no authenticated'; then
+  labels+=("🌿 Opencode"); cmds+=("opencode auth login")
 fi
 if have agent && ! agent status 2>/dev/null | grep -qi 'logged in as'; then
   labels+=("🖱️  Cursor"); cmds+=("agent login")

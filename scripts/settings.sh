@@ -297,8 +297,8 @@ edit_projects() {
 # edit_opencode_projects: absolute paths whose .opencode/ mirrors the global Opencode config.
 edit_opencode_projects() {
   local v
-  v="$(ask_value "📂 Opencode project paths, split by spaces (absolute folders whose .opencode/ mirrors dots)" \
-      "$(setting OPENCODE_PROJECTS)" "/Users/pavstev/work/website /Users/pavstev/powertools")" || return 0
+  v="$(ask_value "📂 Opencode project paths, split by spaces (folders whose .opencode/ mirrors dots; ~ works)" \
+      "$(setting OPENCODE_PROJECTS)" "~/code/my-app ~/code/another-one")" || return 0
   v="$(printf '%s' "$v" | tr ',' ' ' | tr -s ' ')"
   v="${v# }"; v="${v% }"
   set_setting OPENCODE_PROJECTS "$v" && ok "Opencode projects: ${v:-none}"
@@ -309,10 +309,10 @@ edit_words_extra() {
     "client-name nickname" "private words"
 }
 
-# edit_rules: the private rules, free text for Claude and Cursor. Empty removes them.
+# edit_rules: the private rules, free text for Claude, Cursor and Opencode. Empty removes them.
 edit_rules() {
   local text
-  if ! text="$(ask_long "🔒 Private rules for Claude and Cursor (Markdown). They stay on this Mac." \
+  if ! text="$(ask_long "🔒 Private rules for Claude, Cursor and Opencode (Markdown). They stay on this Mac." \
       "$(cat "$OWNER_MD" 2>/dev/null)")"; then
     info "private rules: not changed"
   elif [[ -z "${text//[[:space:]]/}" ]]; then

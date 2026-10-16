@@ -1,13 +1,16 @@
 # Opencode port
 
-One source, two terminal agents. `claude/` stays the source of truth. Claude Code gets it by
-symlink, exactly as before. Opencode (the `opencode` CLI and the Opencode app) gets it three
-ways: native compat (Opencode reads `~/.claude/skills` itself), generated files under
-`~/.config/opencode`, and key-level JSON merges into `~/.config/opencode/opencode.jsonc`.
+One source, three harnesses. `claude/` stays the source of truth. Claude Code gets it by
+symlink, exactly as before. Opencode (the `opencode` CLI and the Opencode app) gets it four
+ways: native compat (Opencode reads `~/.claude/skills` and falls back to
+`~/.claude/CLAUDE.md`), generated files under `~/.config/opencode`, and key-level JSON merges
+into the files Opencode also writes itself (`opencode.jsonc`, `tui.json`).
 
-Checked against Opencode v2 (dev.opencode.ai/docs). Sources: the Opencode docs on
-[config](https://dev.opencode.ai/docs/config), [agents](https://dev.opencode.ai/docs/agents),
-[skills](https://dev.opencode.ai/docs/skills) and [permissions](https://dev.opencode.ai/docs/config).
+Checked against Opencode v2.0.25. Sources: the Opencode docs on
+[config](https://opencode.ai/docs/config), [agents](https://opencode.ai/docs/agents),
+[rules](https://opencode.ai/docs/rules), [themes](https://opencode.ai/docs/themes),
+[skills](https://opencode.ai/docs/skills) and the JSON schemas at
+`https://opencode.ai/config.json` and `https://opencode.ai/tui.json`.
 
 ## How it runs
 
@@ -15,7 +18,10 @@ Checked against Opencode v2 (dev.opencode.ai/docs). Sources: the Opencode docs o
   (step `58-opencode.sh` verifies it and skips when present).
 - `./dotfiles` picks a profile (`scripts/setup-lib.sh` `dotfiles_profile`), links `~/.claude`,
   runs `claude/skill-sync.sh`, then step `agent-config.py opencode` (wired into `dotfiles`
-  right after skill sync).
+  right after skill sync). That step is not in `install.d`, so it runs on every `dots`,
+  including `dots settings`.
+- Step `90-sign-in.sh` offers `opencode auth login` on the first run when
+  `opencode auth list` says `No authenticated integrations`.
 - On Windows there is no Homebrew; step `15-winget.sh` installs the `opencode` CLI via
   `winget install Anomaly.OpenCode` when `winget` is available (warns and continues otherwise).
 - `scripts/agent-config.py` (Python 3 stdlib) generates every Opencode file. It never writes
@@ -27,11 +33,27 @@ Checked against Opencode v2 (dev.opencode.ai/docs). Sources: the Opencode docs o
 Opencode auto-loads skills from `~/.claude/skills` (global compat source), and
 `claude/skill-sync.sh` already links every `claude/skills/<name>` into `~/.claude/skills`.
 So all `ps:*` skills (and any future skill) work in Opencode, in every project, at once — no
-separate Opencode skills folder is needed.
+separate Opencode skills folder is needed (`~/.config/opencode` has no skills dir at all).
 
 | Claude item | Opencode item | Method |
 |-------------|---------------|--------|
 | `skills/ps:*` | `~/.config/opencode` reads `~/.claude/skills/ps:*` | native compat; `skill-sync.sh` links per-skill |
+
+The colon in `ps:*` is outside the agentskills.io spec, and Opencode loads them anyway
+(`skill: allow` is merged into `opencode.jsonc`).
+
+## Rules — generated
+
+| Claude item | Opencode item | Method |
+|-------------|---------------|--------|
+| `CLAUDE.md` | `~/.config/opencode/AGENTS.md` | generate: the marker comment, an Opencode tool-name note, the rules, the owner overlay and the active output style |
+| `~/.claude/CLAUDE.md` | same file, as fallback | native compat; `~/.config/opencode/AGENTS.md` wins when both exist |
+| `~/.claude/rules/owner.md` | inside `AGENTS.md` (mode 0600) | generate; this is what carries the private rules into Opencode, since Claude loads that file separately |
+| `outputStyle` + `output-styles/<name>.md` | `# Reply style: <name>` inside `AGENTS.md` | generate from the active style |
+| project `CLAUDE.md` / `AGENTS.md` | same files | native (Opencode reads both, `AGENTS.md` first) |
+
+A `~/.config/opencode/AGENTS.md` without the marker is the user's: it is left alone and
+`dots` says where to put personal rules instead (`~/.config/dotfiles/owner.md`).
 
 ## Agents
 
@@ -53,38 +75,72 @@ A project agent with the same name (in `.opencode/agents/`) still wins in its re
 | Claude item | Opencode item | Method |
 |-------------|---------------|--------|
 | `permissions.allow/deny` (claude/settings.json) | `opencode.jsonc` `permission.bash/read/edit/tool` | translated: `Bash(x:*)` → `bash "x *"`, `Read` → `read`, `Edit`/`Write` → `edit`, `Suggest*` → `tool deny`; user's keys win |
+| stale rules | `~/.config/opencode/.dotfiles-managed.json` | sidecar: a rule dropped from `claude/settings.json` is removed on the next run, unless the user changed its effect |
+| `permission.ask` | `permission.ask: {"*": "allow"}` | added so `/ps:askme` asks without a prompt; the settings menu decides |
 | `includeCoAuthoredBy: false`, `attribution` | not set | Opencode attributes commits as the user by default; nothing to force off |
 | MCP (`cursor/mcp.json`, cloudflare-docs) | `opencode.jsonc` `mcp.<name>` | merged as `type: remote`; opt-in on every profile (`OPENCODE_MCP="on"` or `DOTFILES_MCP=on`) |
 | `statusLine` → `statusline.sh` | none | Opencode has no status line |
-| Copper theme (Ghostty/starship/etc.) | `~/.config/opencode/tui.json` `theme` | generated copper-on-stone theme; a user-owned tui.json is left alone |
-| Per-project config | `project/.opencode/opencode.jsonc` → symlink to global; `project/.opencode/agents/*.md` → symlinks to global agents | set `OPENCODE_PROJECTS` (space-separated absolute paths) via `dots settings` or `DOTFILES_PROJECTS` env; existing project files/agents never clobbered |
+| Copper theme (Ghostty/starship/etc.) | `~/.config/opencode/themes/copper.json` + `tui.json` `"theme": "copper"` | generate the theme file from the repo palette, then set the name; a tui.json that already names another theme is the user's and only gets reported |
+| Per-project config | `project/.opencode/opencode.jsonc` → symlink to global; `project/.opencode/agents/*.md` → symlinks to global agents | set `OPENCODE_PROJECTS` (space-separated paths, `~` allowed) via `dots settings` or `DOTFILES_PROJECTS` env; existing project files/agents never clobbered |
+
+Two schema facts that decide the theme layout: `tui.json` takes `theme` as a **name**
+(`"type": "string"`) and sets `additionalProperties: false`, so no marker key fits there and
+the palette has to live in its own `themes/<name>.json` file. A `permission` object is
+deprecated in the v2 schema in favour of the `permissions` ruleset array, but is still
+accepted and is what this repo writes.
+
+The theme loader reads **every** colour key and refuses the whole theme when one is missing
+(`Failed to load theme: copper`, 2026-10-16). The shipped themes in opencode 2.0.25 use 49
+keys; the docs example lists `syntaxBracket`, which no shipped theme has, and omits
+`syntaxNumber` and `syntaxType`, which all of them have. `COPPER_THEME` in
+`scripts/agent-config.py` follows the shipped themes, and a test pins that key set.
 
 ## Gaps
 
 | Claude feature | Why Opencode cannot match it |
 |----------------|------------------------------|
 | Guard hooks (G1–G6, W1–W4 in `claude/hooks/guard.py`) | Opencode has no hook system; the guard's model+effort/deadline, polling, context-ceiling, one-question, hand-back-cap, and scratch rules don't run there |
-| Output styles (`outputStyle`, `output-styles/`) | No output-style feature |
+| Output styles (`outputStyle`, `output-styles/`) | No output-style feature. The active style is appended to `AGENTS.md` as text; switching means editing `outputStyle` and running `dots`. |
 | `claude/` hooks directory | Opencode runs no hooks |
-| `~/.claude/CLAUDE.md` global instructions | Opencode has no global-instructions file; agents carry their own prompts |
-| Claude AI connectors (Linear, Sentry, Gmail…) | Tied to the claude.ai account; not portable |
 | `mode: primary` agents | All ported agents are `subagent`; there's no ported primary agent to set as `default_agent` |
+| Claude AI connectors (Linear, Sentry, Gmail…) | Tied to the claude.ai account; not portable |
+| Claude Code plugins (`enabledPlugins`) | Opencode reads Claude skills and prompts, not plugins |
 
 ## Decisions
 
 - Agents are `mode: subagent` and inherit the session model, so a wrong `provider/model-id` can never break an Opencode session. The Claude `model:` pin is documented here but not carried.
-- `skill: allow` is set on every ported agent so `/ps:*` skills load; `edit: deny` only on agents whose Claude frontmatter lists no write tools.
+- `skill: allow` is set on every ported agent and in `opencode.jsonc` so `/ps:*` skills load; `edit: deny` only on agents whose Claude frontmatter lists no write tools.
+- `AGENTS.md` is generated, not linked: Opencode rewrites nothing there, but a hand-written
+  file would hide both the owner rules and the output style, and the fallback to
+  `~/.claude/CLAUDE.md` alone carries neither.
 - `DOTFILES_MCP=on` (one env var) turns MCP on for both Cursor and Opencode; `CURSOR_MCP` and `OPENCODE_MCP` control each app separately.
 - `opencode.jsonc` is merged, never linked: Opencode rewrites it. Strict JSON only — a JSONC file with comments is left untouched with a warning.
+- `themes/copper.json` is ours by name and rewritten from the palette in `agent-config.py`
+  (the same colours as Ghostty and the status line). Change the palette there, not in the file.
+  Verified in a real TUI: the copper background and accent are on screen.
 - `DOTFILES_STEPS=58-opencode ./dotfiles` runs only the Opencode step, for temp-HOME tests.
+  The config generation itself needs no step: it is part of `./dotfiles`.
 
 ## Settings
 
 | Setting | Where | Meaning |
 |---------|-------|---------|
 | `OPENCODE_MCP` | `~/.config/dotfiles/settings` (`dots settings`) | Opencode MCP servers from dots: on/off; `DOTFILES_MCP=on` wins for one run |
+| `OPENCODE_PROJECTS` | `~/.config/dotfiles/settings` (`dots settings`) | project paths (`~` allowed) whose `.opencode/` mirrors the global Opencode config; `DOTFILES_PROJECTS` env wins for one run |
 | `DOTFILES_MCP` | env | turns MCP on for Cursor and Opencode at once |
-| `OPENCODE_PROJECTS` | `~/.config/dotfiles/settings` (`dots settings`) | absolute project paths whose `.opencode/` mirrors the global Opencode config; `DOTFILES_PROJECTS` env wins for one run |
+| `PROFILE` | `~/.config/dotfiles/settings` (`dots settings`) | `owner` also puts the private rules in `~/.config/opencode/AGENTS.md` |
+
+## Removing it
+
+```sh
+rm ~/.config/opencode/AGENTS.md ~/.config/opencode/.dotfiles-managed.json   # generated, ours
+rm ~/.config/opencode/themes/copper.json                                    # our theme
+```
+
+In `opencode.jsonc`, delete the keys under `permission` that came from
+`claude/settings.json` and the `mcp` entries from `cursor/mcp.json` (only there when MCP is
+on). Nothing is backed up for `themes/`; every `opencode.jsonc` change made by `dots`
+leaves a `opencode.jsonc.bak-<timestamp>` next to it.
 
 ## Windows
 

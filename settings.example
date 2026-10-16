@@ -19,9 +19,10 @@ CURSOR_MCP=""
 # MCP servers are opt-in on every profile. DOTFILES_MCP=on turns this on too.
 OPENCODE_MCP=""
 
-# Absolute project paths whose .opencode/ should mirror the global Opencode
-# config (agents linked from ~/.config/opencode/agents, opencode.jsonc linked to
-# the global one). Split by spaces. Empty: no project configs are created.
+# Project paths whose .opencode/ should mirror the global Opencode config (agents
+# linked from ~/.config/opencode/agents, opencode.jsonc linked to the global one).
+# Absolute paths; a leading ~ means your home folder. Split by spaces.
+# DOTFILES_PROJECTS does the same for one run. Empty: no project configs are created.
 OPENCODE_PROJECTS=""
 
 # The Java folder that new shells use as JAVA_HOME (the folder with bin/java).

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Build agent config for other harnesses from claude/. Python 3 stdlib only.
 
-  agent-config.py cursor --profile owner|shared [--dry-run]
+  agent-config.py cursor   --profile owner|shared [--dry-run]
+  agent-config.py opencode --profile owner|shared [--dry-run] [--projects <paths>]
   agent-config.py user-rules [--profile owner|shared] [--copy]   # for Cursor User Rules
   agent-config.py claude-settings build [--dry-run]       # ~/.claude/settings.json
   agent-config.py claude-settings promote <dotted.key>    # private layer -> repo base
 
 `cursor` writes generated files under ~/.cursor (rules, agents) and merges keys into
 the JSON files Cursor also writes itself (hooks.json, mcp.json, cli-config.json).
-`cursor` never writes under ~/.claude. Design and gap table: docs/cursor-port.md.
+`opencode` writes generated files under ~/.config/opencode (AGENTS.md, agents,
+the copper theme) and merges keys into the JSON files Opencode also writes itself
+(opencode.jsonc, tui.json). Neither ever writes under ~/.claude.
+Design and gap tables: docs/cursor-port.md, docs/opencode-port.md.
 
 `claude-settings build` writes ~/.claude/settings.json: the repo base
 (claude/settings.json) with the private layer (~/.config/dotfiles/claude-settings.json)
@@ -508,6 +512,37 @@ def cmd_cursor(args):
 # --- Opencode parts -----------------------------------------------------------
 
 OPENCODE = Path(".config") / "opencode"  # ~/.config/opencode, per-machine generated config
+OPENCODE_NOTE = (
+    "> In OpenCode, read \"Claude\" as \"the agent\". Claude Code tool names map to OpenCode:\n"
+    "> Agent = Task (subagent), AskUserQuestion = `question`, `/ps:*` skills work the same.\n"
+    "> Rules about Claude-only features apply where OpenCode has an equivalent.\n\n"
+)
+
+
+def opencode_rules(home, profile):
+    """~/.config/opencode/AGENTS.md: the global rules, the owner overlay and the reply style.
+
+    OpenCode reads this file as its global instructions and only falls back to
+    ~/.claude/CLAUDE.md when it is missing. Generating it is what carries the owner
+    overlay and the output style into OpenCode: CLAUDE.md alone has neither.
+    """
+    path = home / OPENCODE / "AGENTS.md"
+    if path.is_symlink() or (path.exists() and MARK not in path.read_text(errors="replace")):
+        warn(f"{tilde(path)} is not ours ({tilde(path)} has no {MARK} marker), left untouched. "
+             "Move your own text into ~/.config/dotfiles/owner.md (dots settings) and it lands here too.")
+        return
+    srcs, mode = ["claude/CLAUDE.md"], None
+    if owner_overlay(home, profile):
+        srcs.append(f"~/{OWNER_MD}")
+        mode = 0o600  # owner.md is private, so this copy is private too
+    elif profile == "owner":
+        warn(f"no ~/{OWNER_MD}, so the OpenCode rules have no owner-only rules. Add them with: dots settings")
+    text = stamp(*srcs) + OPENCODE_NOTE + rules_text(home, profile)
+    style = output_style()
+    if style:
+        name, _, sbody = style
+        text = text.rstrip("\n") + f"\n\n# Reply style: {name}\n\n" + sbody
+    write_generated(path, text, mode)
 
 
 def opencode_mcp_wanted(home):
@@ -606,10 +641,20 @@ def opencode_config(home):
             want.setdefault(cat, {})[pat] = eff
     want["skill"] = {"*": "allow"}  # /ps:* skills load everywhere
     want["ask"] = {"*": "allow"}  # questions: one per human turn, answered in the settings menu
+    # The sidecar holds the rules we added last run, so a rule dropped from
+    # claude/settings.json goes away here too (the user's own keys stay).
+    side = home / OPENCODE / MANAGED
+    managed = load_json(side)
+    managed = managed if isinstance(managed, dict) else {}
     for cat, ours in want.items():
         have = perms.setdefault(cat, {})
         if not isinstance(have, dict):
             have = perms[cat] = {}
+        was = managed.get(cat) or {}
+        if isinstance(was, dict):
+            for pat, eff in was.items():
+                if pat not in ours and have.get(pat) == eff:  # ours, and now stale
+                    del have[pat]
         for pat, eff in ours.items():
             if pat not in have:
                 have[pat] = eff
@@ -624,6 +669,8 @@ def opencode_config(home):
                 continue
             mcp[name] = {"type": "remote", "url": cfg.get("url"), "enabled": True} if cfg.get("url") else cfg
     save_json(path, old, new)
+    if not DRY and not path.is_symlink() and load_json(path) == new and managed != want:
+        atomic_write(side, json.dumps(want, indent=2) + "\n")
 
 
 def cmd_opencode(args):
@@ -632,7 +679,8 @@ def cmd_opencode(args):
     failed = 0
     projects = args.projects.split() if args.projects else None
     for part in (lambda: opencode_agents(home), lambda: opencode_config(home),
-                 lambda: opencode_tui(home), lambda: opencode_projects(home, projects)):
+                 lambda: opencode_rules(home, args.profile), lambda: opencode_theme(home),
+                 lambda: opencode_projects(home, projects)):
         try:
             part()
         except Exception as e:  # one bad file must not stop the other parts
@@ -641,39 +689,111 @@ def cmd_opencode(args):
     return 1 if failed else 0
 
 
-def opencode_tui(home):
-    """Copper-on-stone TUI settings for Opencode: ~/.config/opencode/tui.json.
+# The repo's warm copper-on-stone palette (home/.config/ghostty/config, claude/statusline.sh),
+# in the key names Opencode themes use. Refine it, never swap it.
+# Every key below is required: the theme loader reads them all and refuses to start a
+# theme that is missing one (`syntaxNumber` and `syntaxType` are in the shipped themes but
+# not in the docs example; `syntaxBracket` is in the docs example but in no shipped theme).
+COPPER_THEME = {
+    "primary": "#E0825F",
+    "secondary": "#C089AD",
+    "accent": "#E8BC77",
+    "error": "#D97066",
+    "warning": "#DBA85C",
+    "success": "#87B083",
+    "info": "#7FA6CC",
+    "text": "#EDE8E3",
+    "textMuted": "#A8A29E",
+    "background": "#1C1917",
+    "backgroundPanel": "#292524",
+    "backgroundElement": "#3D3835",
+    "border": "#57514C",
+    "borderActive": "#E0825F",
+    "borderSubtle": "#44403C",
+    "diffAdded": "#97C293",
+    "diffRemoved": "#D97066",
+    "diffContext": "#A8A29E",
+    "diffHunkHeader": "#7FA6CC",
+    "diffHighlightAdded": "#87B083",
+    "diffHighlightRemoved": "#D97066",
+    "diffAddedBg": "#292524",
+    "diffContextBg": "#292524",
+    "diffRemovedBg": "#292524",
+    "diffLineNumber": "#57514C",
+    "diffAddedLineNumberBg": "#292524",
+    "diffRemovedLineNumberBg": "#292524",
+    "syntaxComment": "#A8A29E",
+    "syntaxKeyword": "#E0825F",
+    "syntaxFunction": "#E8BC77",
+    "syntaxVariable": "#EDE8E3",
+    "syntaxString": "#97C293",
+    "syntaxNumber": "#DBA85C",
+    "syntaxType": "#D09EC0",
+    "syntaxOperator": "#C089AD",
+    "syntaxPunctuation": "#A8A29E",
+    "markdownText": "#EDE8E3",
+    "markdownHeading": "#E0825F",
+    "markdownLink": "#7FA6CC",
+    "markdownLinkText": "#C089AD",
+    "markdownCode": "#97C293",
+    "markdownCodeBlock": "#D7CFC6",
+    "markdownBlockQuote": "#A8A29E",
+    "markdownListItem": "#EDE8E3",
+    "markdownListEnumeration": "#E0825F",
+    "markdownImage": "#74C6C3",
+    "markdownImageText": "#A8A29E",
+    "markdownEmph": "#E8BC77",
+    "markdownStrong": "#DBA85C",
+    "markdownHorizontalRule": "#44403C",
+}
 
-    Written only when missing or when it is our own generated file; a user-owned
-    tui.json is left alone. Keys Opencode does not understand are ignored by it.
+
+def opencode_theme(home):
+    """The copper theme for Opencode: ~/.config/opencode/themes/copper.json.
+
+    Opencode themes are JSON files in a themes/ dir, and tui.json names the one to use
+    (`{"theme": "tokyonight"}`, a name, and additionalProperties is false). So the theme
+    is written as its own file and tui.json only carries the name. A tui.json that already
+    names another theme is the user's, and then we only say so.
     """
+    themes = home / OPENCODE / "themes"
+    text = json.dumps({"$schema": "https://opencode.ai/theme.json", "theme": COPPER_THEME}, indent=2) + "\n"
+    path = themes / "copper.json"
+    if path.exists() and path.read_text() == text:
+        skip(tilde(path))
+    elif DRY:
+        info(f"would write {tilde(path)}")
+    else:
+        atomic_write(path, text)
+        ok(f"wrote {tilde(path)}")
+
     path = home / OPENCODE / "tui.json"
-    theme = {
-        "name": "copper",
-        "background": "#2a2523",
-        "surface": "#3a3330",
-        "accent": "#b06a4a",
-        "accentDim": "#8a5337",
-        "text": "#e8e0d8",
-        "textMuted": "#9d8c80",
-        "border": "#5c4f47",
-        "success": "#6a9a6a",
-        "warn": "#b08d4a",
-        "error": "#b05a4a",
-    }
-    text = json.dumps({"theme": theme, "generated-by": MARK, "source": "claude/"}, indent=2) + "\n"
-    if path.exists() and MARK not in path.read_text(errors="replace"):
-        warn(f"{tilde(path)} exists and is not ours, left untouched")
+    old = load_json(path)
+    if old is None:
+        if path.exists():
+            warn(f"{tilde(path)} is not valid JSON, left untouched")
+            return
+        old = {}
+    legacy = old.get("_dotfiles")  # our own file, from an older layout
+    legacy = isinstance(legacy, dict) and legacy.get("generated") is True
+    theme = old.get("theme")
+    if theme is not None and theme != "copper" and not legacy:
+        info(f"{tilde(path)} uses your Opencode theme ({theme}); "
+             f"the copper one is in {tilde(themes / 'copper.json')}")
         return
-    write_generated(path, text)
+    # keep every other key of the file; drop the markers of the older layouts
+    new = {k: v for k, v in old.items() if k not in ("_dotfiles", "theme", "generated-by", "source")}
+    new.setdefault("$schema", "https://opencode.ai/tui.json")
+    new["theme"] = "copper"
+    save_json(path, old, new)
 
 
 def opencode_projects(home, projects=None):
     """Mirror the global Opencode config into per-project .opencode/ dirs.
 
-    `projects`: list of absolute paths (from --projects). When None, read
-    OPENCODE_PROJECTS from settings (dots settings) or DOTFILES_PROJECTS env.
-    For each project:
+    `projects`: list of paths (from --projects); a leading ~ means the home folder.
+    When None, read OPENCODE_PROJECTS from settings (dots settings) or
+    DOTFILES_PROJECTS env. For each project:
       - .opencode/opencode.jsonc  symlinked to the global opencode.jsonc
         (project inherits every global key; deep-merged over global, so identical)
       - .opencode/agents/<name>.md symlinked to each generated global agent,
@@ -688,7 +808,7 @@ def opencode_projects(home, projects=None):
     global_cfg = home / OPENCODE / "opencode.jsonc"
     global_agents = home / OPENCODE / "agents"
     for proj in projects:
-        proj = Path(proj)
+        proj = Path(proj).expanduser()
         if not proj.is_absolute():
             warn(f"skipping non-absolute Opencode project path: {proj}")
             continue

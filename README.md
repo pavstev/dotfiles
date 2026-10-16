@@ -4,7 +4,7 @@
 
 # dotfiles
 
-**One command sets up a Mac, Debian or Ubuntu for coding with Claude Code and Cursor.**
+**One command sets up a Mac, Debian or Ubuntu for coding with Claude Code, Cursor and Opencode.**
 
 </div>
 
@@ -24,7 +24,7 @@
      keep the defaults.
    - ✨ an optional extra: the Claude desktop app
 5. Wait. The first run takes about 20 to 40 minutes.
-6. 🔑 Pick what to sign in to: GitHub, Claude Code, Cursor. A browser opens for each one.
+6. 🔑 Pick what to sign in to: GitHub, Claude Code, Opencode, Cursor. A browser opens for each one.
 7. Open a new Terminal window.
 
 ## Set up Linux
@@ -73,6 +73,7 @@ What is different from a Mac:
 ## Check that it works
 
 - **Claude Code:** run `claude`, then type `/ps:`. You see the `ps:` skills.
+- **Opencode:** run `opencode`, then type `/ps:`. You see the same skills.
 - **Cursor:** open Cursor, open the chat, then type `/ps:`. You see the same skills.
 - **Git:** run `git config user.name`. You see your name.
 
@@ -88,7 +89,7 @@ What is different from a Mac:
 
 - [Full guide](docs/guide.md): what is inside, shortcuts, how to change things, uninstall, fixes.
 - [AGENTS.md](AGENTS.md): how AI agents work on this repo, and the `owner` and `shared` profiles.
-- [Cursor details](docs/cursor-port.md).
+- [Cursor details](docs/cursor-port.md) and [Opencode details](docs/opencode-port.md).
 - On a fork: change `DOTFILES_REPO` at the top of [`bootstrap.sh`](bootstrap.sh) and the URL in step 2.
 
 ## License

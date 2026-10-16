@@ -24,7 +24,7 @@ changes. The old tools get eaten by faster, prettier ones. The terminal goes **b
   `<file>.bak-<timestamp>` before its link goes in, so adopting these defaults on a
   machine that's already set up never costs you your old setup.
 - 🧳 **Portable**: Apple Silicon + Intel Macs, and Debian 13 and Ubuntu 24.04; machine-specific bits live in gitignored local files.
-- 🤖 **AI-ready**: Claude Code skills, agents, hooks, and settings live here and follow you everywhere.
+- 🤖 **AI-ready**: Claude Code skills, agents, hooks, and settings live here and follow you everywhere — Cursor and Opencode read the same source.
 - 🎨 **Coherent**: one warm copper-on-stone palette across Ghostty, Starship, fzf, delta, atuin, and the prompt.
 
 ## Daily workflow
@@ -74,7 +74,7 @@ claude/
 ├── settings.json   ⇒ ~/.claude/settings.json     built by dots (see below), shared base
 ├── CLAUDE.md       → ~/.claude/CLAUDE.md          global instructions
 ├── statusline.sh   → ~/.claude/statusline.sh      copper-themed status line
-├── skills/         → ~/.claude/skills  (per-skill; Cursor reads it)
+├── skills/         → ~/.claude/skills  (per-skill; Cursor and Opencode read it)
 ├── agents/         → ~/.claude/agents
 ├── hooks/          → ~/.claude/hooks
 └── output-styles/  → ~/.claude/output-styles
@@ -96,13 +96,14 @@ only changes the layout counts as no change. To share a kept key with everyone, 
 **Skills are the headline.** One source (`claude/skills`), synced everywhere by
 [`skill-sync.sh`](../claude/skill-sync.sh): write once, use in every agent. Skills use the
 portable [SKILL.md](https://cursor.com/docs/skills) format, so the same folder works in
-Claude Code **and Cursor**:
+Claude Code, **Cursor** and **Opencode**:
 
 - **Claude** gets skills **added per-item, non-destructively**: your own skills
   there are never moved or overwritten (on a name clash, *yours* wins); `_template` and
   loose docs are skipped. Removing them is just deleting the symlinks.
-- **Cursor** reads `~/.claude/skills` natively, so nothing is linked into
-  `~/.cursor/skills`. The script never touches that folder.
+- **Cursor** and **Opencode** read `~/.claude/skills` natively, so nothing is linked into
+  `~/.cursor/skills` (there is no `~/.config/opencode/skills` at all). The script never
+  touches either folder.
 
 Ships the `ps:*` workflow skills (provenance and test notes in
 [`SOURCES.md`](../claude/skills/SOURCES.md)); grow your own from
@@ -147,23 +148,35 @@ Cursor.app so you can sign in there too.
 
 Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source.
 Edit `claude/`, then run `dots`. Step `scripts/install.d/58-opencode.sh` verifies the
-`opencode` CLI (installed by the Brewfile). `agent-config.py opencode` generates what
-Opencode needs:
+`opencode` CLI (installed by the Brewfile), and `agent-config.py opencode` — wired into
+`./dotfiles` itself, not into a step, so `dots settings` picks up a changed setting —
+generates what Opencode needs:
 
 1. **Native:** skills from `~/.claude/skills` — every `ps:*` skill works in Opencode,
-   in every project, because Opencode reads `~/.claude/skills` itself.
-2. **Generated:** `~/.config/opencode/agents/*.md` (from `claude/agents`), each a
-   `mode: subagent` agent with `permission.skill: allow` (read-only agents also get
-   `permission.edit: deny`). These carry a `generated-by: dotfiles` marker; a file
-   without it is yours and is left alone.
+   in every project, because Opencode reads `~/.claude/skills` itself. Project
+   `AGENTS.md` and `CLAUDE.md` load there too.
+2. **Generated:** `~/.config/opencode/AGENTS.md` (the global rules from `CLAUDE.md`, plus
+   the owner's private rules and the active output style) and `~/.config/opencode/agents/*.md`
+   (from `claude/agents`), each a `mode: subagent` agent with `permission.skill: allow`
+   (read-only agents also get `permission.edit: deny`). These carry a `generated-by: dotfiles`
+   marker; a file without it is yours and is left alone. The copper theme goes to
+   `~/.config/opencode/themes/copper.json` and `tui.json` names it — a `tui.json` that already
+   names another theme is yours, and only gets reported.
 3. **Merged key by key:** `~/.config/opencode/opencode.jsonc` — `permission` (translated
-   from `claude/settings.json`; your keys win) and `mcp.servers` (from `cursor/mcp.json`,
-   opt-in on every profile: turn on Opencode MCP in `dots settings`, or `DOTFILES_MCP=on`).
+   from `claude/settings.json`; your keys win, and a rule dropped from the repo is dropped
+   here too) and `mcp` (from `cursor/mcp.json`, opt-in on every profile: turn on Opencode MCP
+   in `dots settings`, or `DOTFILES_MCP=on`).
+4. **Per project:** paths in `OPENCODE_PROJECTS` (`~` allowed) each get a `.opencode/` that
+   symlinks the global config and agents. What the project already has wins, always.
 
-What Opencode does *not* get: Claude's guard hooks, output styles, `CLAUDE.md` global
-instructions, and connectors — Opencode has no hook system or global-instructions file.
-The full mapping and gap table is in [`docs/opencode-port.md`](opencode-port.md).
-The first run offers `opencode` sign-in (`opencode auth login`).
+`AGENTS.md` is the one worth explaining: Opencode reads it as its global instructions and only
+falls back to `~/.claude/CLAUDE.md` when it is missing. Generating it is what carries the owner
+rules and the output style into Opencode, since `CLAUDE.md` alone has neither.
+
+What Opencode does *not* get: Claude's guard hooks and output-style switching, and the
+claude.ai connectors — Opencode has no hook system. The full mapping and gap table is in
+[`docs/opencode-port.md`](opencode-port.md). The first run offers `opencode auth login`
+(`opencode auth list` says so until one is saved).
 
 ## Multi-machine
 
@@ -177,9 +190,9 @@ The first run offers `opencode` sign-in (`opencode auth login`).
   runs `dots` (`./dotfiles`) whenever it wants to catch up: pull, relink, reprovision.
   Nothing runs in the background. If you want automatic pulls, wire your own cron or
   login hook to call `dots`.
-- **Agent-aware**: [`AGENTS.md`](../AGENTS.md) (read by Cursor) and the repo's
+- **Agent-aware**: [`AGENTS.md`](../AGENTS.md) (read by Cursor and Opencode) and the repo's
   [`CLAUDE.md`](../CLAUDE.md) (which imports it) teach any AI agent how to operate this repo,
-  so Claude or Cursor on a fresh machine knows the workflow without being told.
+  so Claude, Cursor or Opencode on a fresh machine knows the workflow without being told.
 
 ## Linux
 
@@ -285,7 +298,7 @@ fullscreen · `⌥⇧ ;` service mode (reload / reset).
 ```
 dotfiles/
 ├── assets/logo.svg           # the mark above
-├── AGENTS.md  CLAUDE.md      # how AI agents (Claude/Cursor) operate this repo
+├── AGENTS.md  CLAUDE.md      # how AI agents (Claude/Cursor/Opencode) operate this repo
 ├── bootstrap.sh              # fresh-machine one-liner (Mac, Debian, Ubuntu)
 ├── dotfiles                  # the one command: pull + link + provision
 ├── Brewfile                  # every package + VS Code extensions (Brewfile.local for extras)
@@ -297,6 +310,7 @@ dotfiles/
 │   └── hooks/guard_cursor.py # Cursor hook adapter for guard G3 (+ test)
 ├── docs/guide.md            # this guide
 ├── docs/cursor-port.md       # Cursor port: profiles, mapping, gap table
+├── docs/opencode-port.md    # Opencode port: rules, agents, permissions, gaps
 ├── home/                     # mirrors $HOME 1:1; only paths in `dotfiles`'s link list are touched
 │   ├── .zshrc  .gitconfig    # identity lives in ~/.gitconfig.local (gitignored, not here)
 │   └── .config/
@@ -314,7 +328,7 @@ dotfiles/
 │   ├── setup-lib.sh          # shared step helpers (step/info/ok/warn/skip/have/brew_env/link_item),
 │   │                         #   gum prompts (banner/ask_text/ask_one/ask_long) and dotfiles_profile
 │   ├── settings.sh           # the settings menu: first run and `dots settings`
-│   ├── agent-config.py       # generates and merges the Cursor files
+│   ├── agent-config.py       # generates and merges the Cursor and Opencode files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
 │   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
@@ -348,8 +362,9 @@ dotfiles/
 | Share a key Claude saved for you | `python3 scripts/agent-config.py claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
 | Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | `dots`, then the next session (a deny beats every allow) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
+| Opencode rules, agents, permissions, theme | `claude/` (shared source); the palette lives in `scripts/agent-config.py` | `dots` (regenerates `~/.config/opencode`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
-| Settings: git name, profile, Cursor MCP, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
+| Settings: git name, profile, Cursor MCP, Opencode MCP, Opencode projects, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
 
 ## Updating
 
@@ -382,6 +397,15 @@ For Cursor, delete the generated files and our merged entries:
 2. `rm $(grep -l 'generated-by: dotfiles' ~/.cursor/agents/*.md) ~/.cursor/.dotfiles-managed.json`
 3. In `~/.cursor/hooks.json`, delete the 5 entries that run `cursor/hooks/guard_cursor.py`.
 4. In `~/.cursor/mcp.json`, delete `cloudflare-docs` (only there when MCP is on).
+
+For Opencode:
+
+1. `rm ~/.config/opencode/AGENTS.md $(grep -l 'generated-by: dotfiles' ~/.config/opencode/agents/*.md) ~/.config/opencode/.dotfiles-managed.json`
+2. `rm ~/.config/opencode/themes/copper.json` and drop `"theme"` from `tui.json`.
+3. In `~/.config/opencode/opencode.jsonc`, delete the `permission` keys that came from
+   `claude/settings.json` and the `mcp` entries from `cursor/mcp.json`. Each change `dots`
+   made there left a `opencode.jsonc.bak-<timestamp>` next to it.
+4. In every project listed in `OPENCODE_PROJECTS`: `rm -r .opencode` (symlinks only).
 
 ## Troubleshooting
 

@@ -10,7 +10,8 @@
 #
 #  No daemon. Just run it again whenever you want to sync.
 #  One option: `dots settings` (or `dots private`) opens the settings menu
-#  (scripts/settings.sh), then refreshes the links and the Cursor rule.
+#  (scripts/settings.sh), then refreshes the links, the Cursor rule and the
+#  Opencode config.
 # ============================================================================
 set -uo pipefail
 
@@ -27,7 +28,8 @@ case "${1:-}" in
   "") ;;
   settings|private)
     ASK_SETTINGS=1
-    # Only the Cursor step runs then, to pick up the new settings.
+    # Only the Cursor step runs then, to pick up the new settings. Opencode needs no
+    # step: agent-config.py opencode runs below, on every run, and reads the same file.
     if [[ -z "${DOTFILES_STEPS+set}" ]]; then export DOTFILES_STEPS=60-cursor; OWN_STEPS=1; fi ;;
   *) printf 'usage: dots [settings]\n' >&2; exit 2 ;;
 esac
@@ -75,7 +77,7 @@ if [[ ! -f "$DOTFILES_SETTINGS" ]]; then
   elif is_windows; then machine="Windows machine"
   else machine="Linux machine"
   fi
-  banner "🦴 dotfiles" "This sets up your $machine for Claude Code and Cursor." \
+  banner "🦴 dotfiles" "This sets up your $machine for Claude Code, Cursor and Opencode." \
     "A few questions first, then about 20 to 40 minutes of installs." \
     "Use ↑ ↓ to move and Enter to pick."
 fi
@@ -192,7 +194,7 @@ else
   warn "$CLAUDE_SRC missing — skipping Claude config link"
 fi
 
-step "Claude/Cursor skills"
+step "Claude/Cursor/Opencode skills"
 if [[ -x "$REPO/claude/skill-sync.sh" ]]; then
   "$REPO/claude/skill-sync.sh" || warn "skill-sync.sh reported an issue — skills may be unlinked"
 else
@@ -201,10 +203,10 @@ fi
 
 step "Linking Opencode config -> ~/.config/opencode"
 # Opencode reads ~/.claude/skills natively (skill-sync above links them), so every
-# ps:* skill already works in Opencode, in every project. What remains: the agents
-# mirrored from claude/agents, plus permissions and opt-in MCP servers merged into
-# ~/.config/opencode/opencode.jsonc. Both are generated/merged, never linked, so the
-# user's own opencode.jsonc values win.
+# ps:* skill already works in Opencode, in every project. What remains: the global
+# rules file, the agents mirrored from claude/agents, the copper theme, and
+# permissions and opt-in MCP servers merged into ~/.config/opencode/opencode.jsonc.
+# They are generated/merged, never linked, so the user's own values win.
 if [[ -x "$REPO/scripts/agent-config.py" ]]; then
   python3 "$REPO/scripts/agent-config.py" opencode --profile "$PROFILE" \
     || warn "agent-config.py opencode reported an issue, see above"
@@ -240,6 +242,7 @@ elif [[ -n "$FIRST_RUN" ]]; then
   is_macos && new_shell="Open a new Terminal window." || new_shell="Open a new terminal, or run: exec zsh"
   banner "✅ All set" "$new_shell" \
     "Claude Code: run claude, then type /ps: to see the skills." \
+    "Opencode: run opencode, then type /ps: to see the same skills." \
     "Cursor: open the chat, then type /ps: to see the same skills."
 fi
 ok "dotfiles: done"

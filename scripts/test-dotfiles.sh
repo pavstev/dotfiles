@@ -50,6 +50,7 @@ RULE="$H/.claude/rules/owner.md"
 LIVE="$H/.claude/settings.json"
 LAYER="$H/.config/dotfiles/claude-settings.json"
 OWNER="$H/.config/dotfiles/owner.md"
+OC="$H/.config/opencode"
 
 # run <log> [env...]: ./dotfiles in the temp HOME, no terminal, no steps.
 run() {
@@ -59,7 +60,8 @@ run() {
 # fingerprint: every link under the temp HOME and the saved settings.
 fingerprint() {
   { find "$H" -type l 2>/dev/null | sort | while IFS= read -r l; do printf '%s -> %s\n' "$l" "$(readlink "$l")"; done
-    cat "$SETTINGS" "$H/.gitconfig.local" "$LIVE" "$LAYER" 2>/dev/null
+    cat "$SETTINGS" "$H/.gitconfig.local" "$LIVE" "$LAYER" \
+        "$OC/AGENTS.md" "$OC/tui.json" "$OC/themes/copper.json" "$OC/.dotfiles-managed.json" 2>/dev/null
   } | cksum
 }
 
@@ -77,6 +79,11 @@ grep -q 'profile: shared' "$T/run1.log" && pass "profile is shared" || bad "prof
 python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' \
   "$LIVE" "$R/claude/settings.json" && pass "settings.json equals the repo base" || bad "settings.json differs from the base"
 [[ ! -e "$LAYER" ]] && pass "no private layer yet" || bad "a private layer appeared on its own"
+# Opencode: the rules, the agents and the copper theme are generated on every run.
+grep -q 'generated-by: dotfiles' "$OC/AGENTS.md" 2>/dev/null && pass "Opencode AGENTS.md generated" || bad "Opencode AGENTS.md missing"
+[ -d "$OC/agents" ] && pass "Opencode agents dir" || bad "Opencode agents dir missing"
+[ -f "$OC/themes/copper.json" ] && pass "Opencode copper theme" || bad "Opencode copper theme missing"
+grep -q '"theme": "copper"' "$OC/tui.json" 2>/dev/null && pass "tui.json names the copper theme" || bad "tui.json does not name the copper theme"
 
 # 3. Private rules appear: the owner profile is saved and the rules link.
 : >"$T/stdin"
@@ -84,6 +91,7 @@ printf '# Owner rules\n' >"$OWNER"
 if run run2.log; then pass "owner run exits 0"; else bad "owner run exit $?"; fi
 grep -q '^PROFILE="owner"' "$SETTINGS" && pass "owner profile saved" || bad "owner profile not saved"
 [[ "$(readlink "$RULE")" == "$OWNER" ]] && pass "owner rules linked" || bad "owner rules not linked"
+grep -q 'Owner rules' "$OC/AGENTS.md" 2>/dev/null && pass "owner rules reach Opencode" || bad "owner rules missing from Opencode AGENTS.md"
 
 # 4. Same again: nothing changes.
 before="$(fingerprint)"
