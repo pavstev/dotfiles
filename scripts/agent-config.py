@@ -718,9 +718,12 @@ def opencode_projects(home, projects=None):
 
 
 def clipboard_command():
-    """The command that copies stdin to the clipboard: pbcopy on a Mac, else wl-copy, xclip or xsel."""
+    """The command that copies stdin to the clipboard: pbcopy on a Mac, clip on
+    Windows, else wl-copy, xclip or xsel."""
     if sys.platform == "darwin":
         return ["pbcopy"]
+    if sys.platform == "win32":
+        return ["clip"]
     for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
         if shutil.which(cmd[0]):
             return cmd

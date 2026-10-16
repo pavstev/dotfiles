@@ -44,17 +44,31 @@ that can run `sudo`.
 4. Answer the questions, as in steps 4 to 6 of the Mac setup.
 5. Open a new terminal, or run `exec zsh`.
 
+## Set up Windows
+
+This works in Git Bash (MSYS/MINGW). You need `git`, `curl` and `python3` on PATH
+(install them via WinGet if missing).
+
+1. Open a Git Bash terminal.
+2. Paste this line, then press Enter:
+
+   ```sh
+   bash -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
+   ```
+
+3. Answer the questions (git name/email, then the settings menu). Pick ✅ Done to keep the defaults.
+4. Wait. The first run installs Opencode via WinGet and links your config files.
+5. Open a new Git Bash window, or run: `exec zsh`
+
 What is different from a Mac:
 
-- The tools come from Homebrew on Linux, in `/home/linuxbrew/.linuxbrew`. `apt` only adds the
-  build tools and `zsh`.
+- No Homebrew on Windows. Opencode comes from WinGet (`winget install Anomaly.OpenCode`); the
+  other Brewfile tools are not installed — add the ones you want manually.
+- VS Code and Cursor settings link to `%APPDATA%\{Code,Cursor}\User\`, where the apps read them.
 - Three steps are macOS only and skip with one line: macOS defaults, Touch ID for sudo, Apple
-  Terminal appearance.
-- The desktop apps are not installed (Ghostty, VS Code, Cursor, Raycast, OrbStack, AeroSpace,
-  the font). Install the ones you want. The config for VS Code and Cursor links to
-  `~/.config/Code/User` and `~/.config/Cursor/User`, and the extensions install when the
-  `code` or `cursor` command exists.
-- Your login shell does not change. To use zsh everywhere, run `chsh -s "$(command -v zsh)"`.
+  Terminal appearance. The Claude desktop app offer, AeroSpace and the Nerd Font are Mac-only too.
+- `agent-config.py` needs `python3` to generate Opencode/Claude/Cursor config; install Python on
+  Windows (e.g. via WinGet) or those steps warn and skip.
 
 ## Check that it works
 

@@ -71,7 +71,10 @@ step "Git identity"
 FIRST_RUN=""
 if [[ ! -f "$DOTFILES_SETTINGS" ]]; then
   FIRST_RUN=1
-  is_macos && machine="Mac" || machine="Linux machine"
+  if is_macos; then machine="Mac"
+  elif is_windows; then machine="Windows machine"
+  else machine="Linux machine"
+  fi
   banner "🦴 dotfiles" "This sets up your $machine for Claude Code and Cursor." \
     "A few questions first, then about 20 to 40 minutes of installs." \
     "Use ↑ ↓ to move and Enter to pick."
@@ -145,7 +148,9 @@ done
 
 # VS Code and Cursor settings: the repo keeps them under their Mac path in home/.
 # The same files link to where each OS looks for them.
-if is_macos; then editor_cfg="Library/Application Support"; else editor_cfg=".config"; fi
+if is_macos; then editor_cfg="Library/Application Support"
+elif is_windows; then editor_cfg="AppData/Roaming"
+else editor_cfg=".config"; fi
 for app in Code Cursor; do
   for f in settings.json keybindings.json; do
     link_item "$REPO/home/Library/Application Support/$app/User/$f" "$HOME/$editor_cfg/$app/User/$f"

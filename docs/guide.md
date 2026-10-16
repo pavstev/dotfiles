@@ -228,6 +228,27 @@ script, and the four Python test files. `--keep` leaves the container for a look
 It runs without a terminal, so the gum menus, the password prompts and the sign-in step are
 not covered. A run takes about 10 minutes.
 
+## Windows
+
+`./dotfiles` runs on Windows in Git Bash (MSYS/MINGW). Windows is detected with `is_windows`
+(`scripts/setup-lib.sh`); WSL counts as Linux and follows the Linux path.
+
+- **Packages:** no Homebrew on Windows. Step `10-homebrew` skips, and step `15-winget` installs
+  Opencode (`winget install Anomaly.OpenCode`) when `winget` is available, warning and continuing
+  otherwise. Other Brewfile tools are not installed on Windows — install the ones you want manually.
+- **Links:** everything links under `$HOME` (Git Bash maps `$HOME` to `%USERPROFILE%`), so
+  `.zshrc`, `.gitconfig`, `.config/*`, `.claude` and `.config/opencode` work as on Mac and Linux.
+  VS Code and Cursor settings link to `%APPDATA%\{Code,Cursor}\User\` on Windows (`AppData/Roaming`),
+  where the apps read them.
+- **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
+  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Nerd Font are Mac-only.
+- **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
+  usual tools when they are on PATH.
+- **Opencode config:** `agent-config.py opencode` generates agents, permissions and MCP under
+  `~/.config/opencode` and uses `clip` for the clipboard — identical output on all three OSes.
+- **Python:** `agent-config.py` and Claude settings need `python3`; install it on Windows (e.g. via
+  WinGet) or those generated config steps warn and skip.
+
 ## Secrets
 
 This repo is **public**, so plaintext secrets never enter it:

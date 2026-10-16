@@ -16,6 +16,8 @@ Checked against Opencode v2 (dev.opencode.ai/docs). Sources: the Opencode docs o
 - `./dotfiles` picks a profile (`scripts/setup-lib.sh` `dotfiles_profile`), links `~/.claude`,
   runs `claude/skill-sync.sh`, then step `agent-config.py opencode` (wired into `dotfiles`
   right after skill sync).
+- On Windows there is no Homebrew; step `15-winget.sh` installs the `opencode` CLI via
+  `winget install Anomaly.OpenCode` when `winget` is available (warns and continues otherwise).
 - `scripts/agent-config.py` (Python 3 stdlib) generates every Opencode file. It never writes
   under `~/.claude`. Generated Markdown carries `generated-by: dotfiles`; JSON merges keep the
   user's values and back up before a change.
@@ -83,3 +85,9 @@ A project agent with the same name (in `.opencode/agents/`) still wins in its re
 | `OPENCODE_MCP` | `~/.config/dotfiles/settings` (`dots settings`) | Opencode MCP servers from dots: on/off; `DOTFILES_MCP=on` wins for one run |
 | `DOTFILES_MCP` | env | turns MCP on for Cursor and Opencode at once |
 | `OPENCODE_PROJECTS` | `~/.config/dotfiles/settings` (`dots settings`) | absolute project paths whose `.opencode/` mirrors the global Opencode config; `DOTFILES_PROJECTS` env wins for one run |
+
+## Windows
+
+Opencode works the same on Windows (Git Bash). The CLI comes from WinGet (`Anomaly.OpenCode`, step
+`15-winget.sh`) instead of Homebrew, and the clipboard uses `clip.exe`. Config is generated into
+`~/.config/opencode` identically to Mac and Linux. No settings are Windows-specific.

@@ -92,9 +92,10 @@ Opencode does not get Claude's guard hooks, output styles, `CLAUDE.md`, or conne
 `./dotfiles` also runs on Debian 13 and Ubuntu 24.04 (a normal user with `sudo`). The Mac is the
 reference: a Mac run must behave as before.
 
-- Ask the OS with `is_macos`, `is_linux` and `only_macos <what>` from `scripts/setup-lib.sh`, never
-  inline `uname`. Python uses `sys.platform`. A Mac-only step starts with `only_macos "<what>"`; a
-  Linux-only step with `is_linux || exit 0`.
+- Ask the OS with `is_macos`, `is_linux`, `is_windows` and `only_macos <what>` from
+  `scripts/setup-lib.sh`, never inline `uname`. Python uses `sys.platform`. A Mac-only step
+  starts with `only_macos "<what>"`; a Linux-only step with `is_linux || exit 0`; a
+  Windows-only step with `is_windows || exit 0`.
 - Tools come from Homebrew on Linux (`/home/linuxbrew/.linuxbrew`), same Brewfile:
   `brewfile_for_os` drops `cask`, `mas`, `tap`, `vscode` and `brew "mas"` lines. apt installs only
   `LINUX_PREREQS` (step `05-linux-prereqs`); never add `apt install` of tools.
@@ -103,6 +104,29 @@ reference: a Mac run must behave as before.
 - No GNU-only or BSD-only flags in shared scripts (`sed -i`, `stat`, `date -j`, `readlink -f`).
 - Test: `bash scripts/test-linux.sh debian:13` and `ubuntu:24.04` exit 0 and the second run changes
   nothing. Needs podman or docker. `--keep` leaves the container, `--reuse` reruns your edits.
+
+## Windows
+
+`./dotfiles` also runs on Windows in Git Bash (MSYS/MINGW). Windows is detected with `is_windows`
+(`scripts/setup-lib.sh`); WSL counts as Linux and gets Homebrew on Linux like any other Linux machine.
+
+- **Packages:** there is no Homebrew on Windows. Step `10-homebrew` skips, and step `15-winget`
+  installs Opencode (`winget install Anomaly.OpenCode`) when `winget` is available; it warns and
+  continues otherwise. The other Brewfile tools are not installed on Windows — install the ones you
+  want manually.
+- **Links:** everything in `dotfiles`'s link list links under `$HOME` (Git Bash maps `$HOME` to
+  `%USERPROFILE%`), so `.zshrc`, `.gitconfig`, `.config/*`, `.claude` and `.config/opencode` work as
+  on Mac and Linux. VS Code and Cursor settings link to `%APPDATA%\{Code,Cursor}\User\` on Windows
+  (`AppData/Roaming`), where the apps read them.
+- **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
+  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Nerd Font are
+  Mac-only.
+- **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
+  usual tools when they are on PATH.
+- **Opencode config:** `agent-config.py opencode` generates agents, permissions and MCP under
+  `~/.config/opencode` and uses `clip` for the clipboard — identical output on all three OSes.
+- **Python:** `agent-config.py` and Claude settings need `python3`; on Windows install it (e.g. via
+  WinGet or the Python installer) or those two generated config steps warn and skip.
 
 ## Profiles
 
