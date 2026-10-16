@@ -1079,6 +1079,182 @@ class CmdCursorTest(Base):
         self.assertTrue((self.cdir / "rules" / "claude-global.mdc").exists())
 
 
+class OpencodeAgentsTest(Base):
+    @property
+    def odir(self):
+        return self.home / ".config" / "opencode"
+
+    def agent(self, fname, text):
+        d = self.claude / "agents"
+        d.mkdir(exist_ok=True)
+        (d / fname).write_text(text)
+
+    def test_converts_frontmatter(self):
+        self.agent("rev.md", "---\nname: reviewer\ndescription: reviews\ntools: Read, Grep, Bash, Write\nmodel: sonnet\neffort: high\n---\n\nBody\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        out = (self.odir / "agents" / "reviewer.md").read_text()
+        self.assertTrue(out.startswith("---\ndescription: reviews\nmode: subagent\npermission:\n  skill: allow\n---"))
+        self.assertIn(AC.MARK, out)
+        self.assertNotIn("model", out.split("---")[1])
+        self.assertNotIn("effort", out)
+        self.assertNotIn("edit: deny", out)
+        self.assertTrue(out.endswith("Body\n"))
+
+    def test_readonly_agent_gets_edit_deny(self):
+        self.agent("cr.md", "---\nname: code-reviewer\ndescription: reviews\ntools: Read, Grep, Glob, Bash\ndisallowedTools: Write, Edit, NotebookEdit, Agent\n---\n\nBody\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertIn("permission:\n  edit: deny\n  skill: allow", (self.odir / "agents" / "code-reviewer.md").read_text())
+
+    def test_write_capable_agent_does_not_deny_edit(self):
+        self.agent("ti.md", "---\nname: task-implementer\ndescription: builds\ntools: Read, Edit, Write, Bash, Grep, Glob\n---\n\nBody\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("edit: deny", (self.odir / "agents" / "task-implementer.md").read_text())
+
+    def test_name_from_file_stem_and_readme_skipped(self):
+        self.agent("stem-name.md", "no frontmatter\n")
+        self.agent("README.md", "# readme\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in (self.odir / "agents").iterdir()), ["stem-name.md"])
+
+    def test_stale_generated_agent_removed_user_agent_kept(self):
+        self.agent("a.md", "---\nname: a\n---\nb\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        mine = self.odir / "agents" / "mine.md"
+        mine.parent.mkdir(parents=True, exist_ok=True)
+        mine.write_text("my agent\n")
+        (self.claude / "agents" / "a.md").unlink()
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.odir / "agents" / "a.md").exists())
+        self.assertEqual(mine.read_text(), "my agent\n")
+
+    def test_user_agent_with_same_name_is_not_overwritten(self):
+        self.agent("a.md", "---\nname: a\n---\nb\n")
+        (self.odir / "agents").mkdir(parents=True)
+        (self.odir / "agents" / "a.md").write_text("mine\n")
+        _, _, err = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual((self.odir / "agents" / "a.md").read_text(), "mine\n")
+        self.assertIn("not ours", err)
+
+    def test_no_agents_dir_is_fine(self):
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.odir / "agents").exists())
+
+
+class OpencodeConfigTest(Base):
+    path = property(lambda self: self.home / ".config" / "opencode" / "opencode.jsonc")
+
+    def ours(self, servers):
+        wj(self.cursor_src / "mcp.json", {"mcpServers": servers})
+
+    def setting(self, value):
+        f = self.home / AC.SETTINGS
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f'OPENCODE_MCP="{value}"\n')
+
+    def run_cfg(self):
+        return call(AC.main, ["opencode", "--profile", "shared"])
+
+    def test_translated_permissions_added(self):
+        self.perms(allow=["Bash(git status:*)", "Read(./src/**)", "Edit(./notes.md)"], deny=["Read(./.env)"])
+        self.run_cfg()
+        p = rj(self.path)["permission"]
+        self.assertEqual(p["bash"], {"git status *": "allow"})
+        self.assertEqual(p["read"], {"src/**": "allow", "**/.env": "deny"})
+        self.assertEqual(p["edit"], {"notes.md": "allow"})
+
+    def test_skill_and_ask_allowed(self):
+        self.perms(allow=[], deny=[])
+        self.run_cfg()
+        p = rj(self.path)["permission"]
+        self.assertEqual(p["skill"], {"*": "allow"})
+        self.assertEqual(p["ask"], {"*": "allow"})
+
+    def test_user_keys_win_ours_added(self):
+        self.perms(allow=["Bash(git status:*)"])
+        wj(self.path, {"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}})
+        self.run_cfg()
+        p = rj(self.path)["permission"]
+        self.assertEqual(p["bash"], {"npm *": "ask", "git status *": "allow"})
+        self.assertEqual(p["read"], {"keep.me": "allow"})
+
+    def test_mcp_added_when_opt_in(self):
+        self.ours({"cloudflare-docs": {"url": "https://docs.mcp.cloudflare.com/mcp"}})
+        self.setting("on")
+        self.run_cfg()
+        s = rj(self.path)["mcp"]
+        self.assertEqual(s["cloudflare-docs"], {"type": "remote", "url": "https://docs.mcp.cloudflare.com/mcp", "enabled": True})
+
+    def test_mcp_user_entry_wins(self):
+        self.ours({"cloudflare-docs": {"url": "ours"}})
+        wj(self.path, {"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": False}}})
+        self.setting("on")
+        self.run_cfg()
+        self.assertEqual(rj(self.path)["mcp"]["cloudflare-docs"]["url"], "users")
+
+    def test_mcp_skipped_when_off(self):
+        self.ours({"cloudflare-docs": {"url": "u"}})
+        self.setting("off")
+        self.run_cfg()
+        self.assertNotIn("mcp", rj(self.path))
+
+    def test_mcp_env_wins_over_setting(self):
+        self.ours({"cloudflare-docs": {"url": "u"}})
+        self.setting("on")
+        os.environ["DOTFILES_MCP"] = "off"
+        self.run_cfg()
+        self.assertNotIn("mcp", rj(self.path))
+        os.environ["DOTFILES_MCP"] = "1"
+        self.run_cfg()
+        self.assertIn("cloudflare-docs", rj(self.path)["mcp"])
+
+    def test_mcp_merges_into_existing_mcp_block(self):
+        self.ours({"cloudflare-docs": {"url": "ours"}})
+        wj(self.path, {"mcp": {"existing": {"type": "remote", "url": "x"}}})
+        self.setting("on")
+        self.run_cfg()
+        m = rj(self.path)["mcp"]
+        self.assertEqual(m["existing"]["url"], "x")
+        self.assertEqual(m["cloudflare-docs"]["url"], "ours")
+
+    def test_invalid_json_left_untouched(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text("{oops")
+        _, _, err = self.run_cfg()
+        self.assertEqual(self.path.read_text(), "{oops")
+        self.assertIn("not valid JSON", err)
+
+    def test_dry_run_writes_nothing(self):
+        rc, out, _ = call(AC.main, ["opencode", "--profile", "shared", "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.path.exists())
+        self.assertIn("would", out)
+
+
+class CmdOpencodeTest(Base):
+    def test_full_run_creates_agents_and_config_and_never_writes_claude_dir(self):
+        self.perms(allow=["Bash(ls:*)"])
+        wj(self.cursor_src / "mcp.json", {"mcpServers": {"docs": {"url": "u"}}})
+        (self.claude / "agents").mkdir()
+        (self.claude / "agents" / "a.md").write_text("---\nname: a\n---\nb\n")
+        (self.home / AC.SETTINGS).parent.mkdir(parents=True, exist_ok=True)
+        (self.home / AC.SETTINGS).write_text('OPENCODE_MCP="on"\n')
+        rc, out, err = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertTrue((self.home / ".config" / "opencode" / "agents" / "a.md").exists())
+        self.assertTrue((self.home / ".config" / "opencode" / "opencode.jsonc").exists())
+        self.assertEqual(rj(self.home / ".config" / "opencode" / "opencode.jsonc")["mcp"]["docs"],
+                         {"type": "remote", "url": "u", "enabled": True})
+        self.assertFalse((self.home / ".claude").exists())
+
+
 class CmdUserRulesTest(Base):
     def test_print_mode_writes_text_to_stdout_only(self):
         rc, out, _ = call(AC.main, ["user-rules", "--profile", "shared"])

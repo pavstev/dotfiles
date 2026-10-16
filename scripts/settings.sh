@@ -171,6 +171,17 @@ edit_mcp() {
   esac
 }
 
+# edit_opencode_mcp: MCP servers in Opencode are opt-in on every profile.
+edit_opencode_mcp() {
+  local on="🔌 on: Cloudflare docs search in Opencode" off="⛔ off: no MCP servers from dots" now v
+  if [[ "$(opencode_mcp_value)" == on ]]; then now="$on"; else now="$off"; fi
+  v="$(ask_menu "🔌 Opencode MCP servers (opt-in)" "$now" "$on" "$off")" || return 0
+  case "$v" in
+    "$on") set_setting OPENCODE_MCP on && ok "Opencode MCP: on" ;;
+    "$off") set_setting OPENCODE_MCP off && ok "Opencode MCP: off" ;;
+  esac
+}
+
 # add_java <label> <home>: one line of the Java menu, each Java once.
 add_java() {
   local r
@@ -331,6 +342,14 @@ mcp_value() {
   esac
 }
 
+# opencode_mcp_value: on or off. DOTFILES_MCP wins over the setting.
+opencode_mcp_value() {
+  case "$(setting OPENCODE_MCP | tr '[:upper:]' '[:lower:]')" in
+    1|on|yes|true) printf 'on' ;;
+    *) printf 'off' ;;
+  esac
+}
+
 # lines_of <file>: "1 line" or "N lines".
 lines_of() {
   local n
@@ -345,7 +364,7 @@ rules_value() {
 step "Settings (they stay on this Mac, never in git)"
 info "File: ~/.config/dotfiles/settings. Each change saves at once."
 done_row="✅ Done"
-keys=(edit_git_name edit_git_email edit_profile edit_mcp edit_java edit_steps edit_projects
+keys=(edit_git_name edit_git_email edit_profile edit_mcp edit_opencode_mcp edit_java edit_steps edit_projects
   edit_words_extra edit_rules)
 start="" last=""
 if [[ -n "${DOTFILES_FIRST_RUN:-}" ]]; then start="$done_row"; fi
@@ -355,6 +374,7 @@ while :; do
     "$(row "📧 " "Git email" "$(value_or "$(setting GIT_EMAIL)" "not set")")"
     "$(row "🧩 " "Profile" "$(dotfiles_profile)")"
     "$(row "🔌 " "Cursor MCP" "$(mcp_value)")"
+    "$(row "🔌 " "Opencode MCP" "$(opencode_mcp_value)")"
     "$(row "☕ " "Java" "$(java_value)")"
     "$(row "⏩ " "Steps to skip" "$(value_or "$(setting SKIP_STEPS)" "none")")"
     "$(row "📁 " "Private projects" "$(value_or "$(setting PRIVATE_PROJECTS)" "none")")"

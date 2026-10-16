@@ -25,7 +25,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `scripts/setup-lib.sh` | step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`), `dotfiles_profile`, `setting`. |
 | `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). |
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`) and `hooks/guard_cursor.py` (+ test), the hook adapter for guard G3. |
-| `scripts/agent-config.py` | stdlib generator: `cursor` writes and merges `~/.cursor`, `user-rules` prints Cursor's User Rules text, `claude-settings` builds `~/.claude/settings.json`. |
+| `scripts/agent-config.py` | stdlib generator: `cursor` writes and merges `~/.cursor`, `opencode` writes `~/.config/opencode/agents/` and merges permissions/MCP into `~/.config/opencode/opencode.jsonc`, `user-rules` prints Cursor's User Rules text, `claude-settings` builds `~/.claude/settings.json`. |
 | `docs/guide.md`, `docs/cursor-port.md` | the user guide; the Cursor mapping and gap table. `README.md` is the start page. |
 | `Brewfile` | every package (per-machine extras in the ignored `Brewfile.local`). |
 | `settings.example`, `scripts/settings.sh` | every setting with a note and default; the `dots settings` menu. |
@@ -64,6 +64,28 @@ Cursor is present: it installs the CLI, the Brewfile `vscode` extensions, and ru
 - Never symlink `~/.cursor/cli-config.json` or `~/.cursor/mcp.json`. Cursor rewrites them.
 - Rules in every folder: run `cursor-rules`, paste in Cursor Settings > Rules > User Rules.
   `dots` then skips the file rule and warns when to paste again.
+
+## Opencode
+
+Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source.
+Edit `claude/`, then run `dots`. Step `scripts/install.d/58-opencode.sh` verifies the
+`opencode` CLI (installed by the Brewfile). `agent-config.py opencode` generates what
+Opencode needs:
+
+- **Skills (shared, no extra step):** Opencode reads `~/.claude/skills` natively, and
+  `claude/skill-sync.sh` already links every `claude/skills/<name>` there — all `ps:*`
+  skills work in Opencode, in every project.
+- **Agents:** `~/.config/opencode/agents/<name>.md` generated from `claude/agents/*.md`
+  (`mode: subagent`, `permission.skill: allow`; read-only agents also get
+  `permission.edit: deny`). The Claude `model:` pin is dropped because Opencode uses
+  `provider/model-id` — ported agents inherit the session model, so nothing breaks.
+- **Permissions + MCP:** merged into `~/.config/opencode/opencode.jsonc` — translated
+  `claude/settings.json` permissions (your keys win) and `cursor/mcp.json` servers,
+  opt-in on every profile (`OPENCODE_MCP="on"` or `DOTFILES_MCP=on`).
+
+Opencode does not get Claude's guard hooks, output styles, `CLAUDE.md`, or connectors
+(Opencode has no hook system or global-instructions file). Full mapping and gap table:
+[`docs/opencode-port.md`](docs/opencode-port.md).
 
 ## Linux
 
@@ -108,8 +130,8 @@ Mac's settings; `settings.example` lists each with a note and default. `dots set
 links and the Cursor rule. The first run (no file) asks git name and email, then shows the menu.
 
 - Names: `GIT_NAME`, `GIT_EMAIL` (written to `~/.gitconfig.local`), `PROFILE`, `CURSOR_MCP`,
-  `JAVA_HOME` (picked from the Javas found, or typed), `SKIP_STEPS`, `PRIVATE_PROJECTS`,
-  `PRIVATE_WORDS` (see "Conventions").
+  `OPENCODE_MCP`, `JAVA_HOME` (picked from the Javas found, or typed), `SKIP_STEPS`,
+  `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions").
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `scripts/agent-config.py`,
   `home/.config/zsh/settings.zsh` (sourced after `local.zsh`, so its `JAVA_HOME` wins). The last
   line of a name wins. Env vars win for one run: `DOTFILES_PROFILE`, `DOTFILES_MCP`, `DOTFILES_STEPS`.

@@ -505,6 +505,140 @@ def cmd_cursor(args):
     return 1 if failed else 0
 
 
+# --- Opencode parts -----------------------------------------------------------
+
+OPENCODE = Path(".config") / "opencode"  # ~/.config/opencode, per-machine generated config
+
+
+def opencode_mcp_wanted(home):
+    """MCP servers are opt-in on every profile: connectors are never forced on.
+
+    DOTFILES_MCP=on|off wins, then OPENCODE_MCP in the settings (dots settings).
+    """
+    v = os.environ.get("DOTFILES_MCP", "").strip().lower() or setting(home, "OPENCODE_MCP").strip().lower()
+    return v in ("1", "on", "yes", "true")
+
+
+def opencode_permission(rule, kind):
+    """Claude permission rule -> (category, pattern, effect) for Opencode, or None."""
+    m = re.fullmatch(r"(\w+)\((.*)\)", rule.strip())
+    if not m:
+        return None
+    tool, arg = m.groups()
+    if tool == "Bash":
+        if re.search(r"(:\*|\s\*)\Z", arg):  # prefix rule: "x *" matches x and "x ..."
+            cmd = re.sub(r"(:\*|\s\*)\Z", "", arg).strip()
+            return ("bash", cmd + " *", "allow") if cmd and "*" not in cmd else None
+        exe, _, rest = arg.strip().partition(" ")
+        if exe and rest.strip() and "*" not in arg:
+            return ("bash", exe + " " + rest.strip(), "allow")
+        return None
+    if tool == "Read":
+        path = arg[2:] if arg.startswith("./") else arg
+        if kind == "deny" and not path.startswith(("/", "~", "**")):
+            path = "**/" + path
+        return ("read", path, kind)
+    if tool in ("Edit", "Write"):
+        path = arg[2:] if arg.startswith("./") else arg
+        if kind == "deny" and not path.startswith(("/", "~", "**")):
+            path = "**/" + path
+        return ("edit", path, kind)
+    if tool in ("SuggestPluginInstall", "SearchPlugins", "SuggestSkills"):
+        return ("tool", tool, "deny")
+    return None
+
+
+def opencode_agents(home):
+    """Mirror claude/agents/*.md as Opencode subagents under ~/.config/opencode/agents/."""
+    dst = home / OPENCODE / "agents"
+    wanted = set()
+    for src in sorted((CLAUDE / "agents").glob("*.md")):
+        if src.name == "README.md":
+            continue
+        meta, body = split_frontmatter(src.read_text())
+        name = meta.get("name") or src.stem
+        lines = []
+        desc = meta.get("description")
+        if desc:
+            lines.append(f"description: {yaml_str(desc)}")
+        lines.append("mode: subagent")  # Opencode subagents inherit the caller's model
+        tools = {t.strip() for t in meta.get("tools", "").split(",") if t.strip()}
+        write_tools = tools & {"Write", "Edit", "MultiEdit", "NotebookEdit"}  # Bash alone is read-only
+        if not write_tools:
+            lines.append("permission:")
+            lines.append("  edit: deny")
+            lines.append("  skill: allow")
+        else:
+            lines.append("permission:")
+            lines.append("  skill: allow")
+        text = "---\n" + "\n".join(lines) + "\n---\n" + stamp(f"claude/agents/{src.name}") + body.lstrip()
+        out = dst / f"{name}.md"
+        wanted.add(out.name)
+        write_generated(out, text)
+    if dst.is_dir():
+        for f in sorted(dst.glob("*.md")):
+            if f.name not in wanted:
+                remove_generated(f)
+
+
+def opencode_config(home):
+    """Merge translated permissions and opt-in MCP servers into ~/.config/opencode/opencode.jsonc.
+
+    The user's existing keys win; we only add our translated rules and new MCP servers.
+    Strict JSON only: an Opencode JSONC file with comments is left untouched.
+    """
+    path = home / OPENCODE / "opencode.jsonc"
+    old = load_json(path)
+    if old is None:
+        if path.exists():
+            warn(f"{tilde(path)} is not valid JSON, left untouched")
+        return
+    new = json.loads(json.dumps(old))
+    perms = new.setdefault("permission", {})
+    src = (load_json(CLAUDE / "settings.json") or {}).get("permissions") or {}
+    want = {"bash": {}, "read": {}, "edit": {}, "tool": {}}
+    for kind in ("allow", "deny"):
+        for rule in src.get(kind) or []:
+            res = opencode_permission(rule, kind)
+            if not res:
+                continue
+            cat, pat, eff = res
+            want.setdefault(cat, {})[pat] = eff
+    want["skill"] = {"*": "allow"}  # /ps:* skills load everywhere
+    want["ask"] = {"*": "allow"}  # questions: one per human turn, answered in the settings menu
+    for cat, ours in want.items():
+        have = perms.setdefault(cat, {})
+        if not isinstance(have, dict):
+            have = perms[cat] = {}
+        for pat, eff in ours.items():
+            if pat not in have:
+                have[pat] = eff
+    new["permission"] = perms
+    if opencode_mcp_wanted(home):
+        mcp = new.setdefault("mcp", {})
+        if not isinstance(mcp, dict):
+            mcp = new["mcp"] = {}
+        ours = (load_json(CURSOR_SRC / "mcp.json") or {}).get("mcpServers") or {}
+        for name, cfg in ours.items():
+            if name in mcp:
+                continue
+            mcp[name] = {"type": "remote", "url": cfg.get("url"), "enabled": True} if cfg.get("url") else cfg
+    save_json(path, old, new)
+
+
+def cmd_opencode(args):
+    home = Path.home()
+    info(f"Opencode config from {tilde(CLAUDE)} (profile: {args.profile})")
+    failed = 0
+    for part in (lambda: opencode_agents(home), lambda: opencode_config(home)):
+        try:
+            part()
+        except Exception as e:  # one bad file must not stop the other parts
+            warn(f"skipped a part: {type(e).__name__}: {e}")
+            failed += 1
+    return 1 if failed else 0
+
+
 def clipboard_command():
     """The command that copies stdin to the clipboard: pbcopy on a Mac, else wl-copy, xclip or xsel."""
     if sys.platform == "darwin":
@@ -748,10 +882,13 @@ def main(argv=None):
     cs.add_argument("action", choices=("build", "promote"))
     cs.add_argument("key", nargs="?", help="promote: the dotted key to move to the repo, e.g. permissions.allow")
     cs.add_argument("--dry-run", action="store_true")
+    o = sub.add_parser("opencode", help="generate and merge Opencode config under ~/.config/opencode")
+    o.add_argument("--profile", choices=PROFILES, default="shared")
+    o.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
     DRY = args.dry_run
     return {"cursor": cmd_cursor, "user-rules": cmd_user_rules,
-            "claude-settings": cmd_claude_settings}[args.cmd](args)
+            "claude-settings": cmd_claude_settings, "opencode": cmd_opencode}[args.cmd](args)
 
 
 if __name__ == "__main__":

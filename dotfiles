@@ -194,6 +194,19 @@ else
   warn "claude/skill-sync.sh missing or not executable — skipping"
 fi
 
+step "Linking Opencode config -> ~/.config/opencode"
+# Opencode reads ~/.claude/skills natively (skill-sync above links them), so every
+# ps:* skill already works in Opencode, in every project. What remains: the agents
+# mirrored from claude/agents, plus permissions and opt-in MCP servers merged into
+# ~/.config/opencode/opencode.jsonc. Both are generated/merged, never linked, so the
+# user's own opencode.jsonc values win.
+if [[ -x "$REPO/scripts/agent-config.py" ]]; then
+  python3 "$REPO/scripts/agent-config.py" opencode --profile "$PROFILE" \
+    || warn "agent-config.py opencode reported an issue, see above"
+else
+  warn "scripts/agent-config.py missing or not executable — skipping Opencode config"
+fi
+
 if [[ -d "$REPO/scripts/install.d" ]]; then
   # DOTFILES_STEPS="60-cursor ..." runs only the named steps (for temp-HOME tests),
   # also the ones in SKIP_STEPS: the env wins for one run. Else SKIP_STEPS in the

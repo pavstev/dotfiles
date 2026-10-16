@@ -15,6 +15,10 @@ PROFILE=""
 # MCP servers are opt-in on every profile.
 CURSOR_MCP=""
 
+# Cloudflare docs search (an MCP server) in Opencode: on or off. Empty: off.
+# MCP servers are opt-in on every profile. DOTFILES_MCP=on turns this on too.
+OPENCODE_MCP=""
+
 # The Java folder that new shells use as JAVA_HOME (the folder with bin/java).
 # Empty: dots sets no JAVA_HOME.
 JAVA_HOME=""

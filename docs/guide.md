@@ -143,6 +143,28 @@ status line, claude.ai connectors). The full mapping and gap table is in
 [`docs/cursor-port.md`](cursor-port.md). The first run offers `agent login` and opens
 Cursor.app so you can sign in there too.
 
+## Opencode
+
+Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source.
+Edit `claude/`, then run `dots`. Step `scripts/install.d/58-opencode.sh` verifies the
+`opencode` CLI (installed by the Brewfile). `agent-config.py opencode` generates what
+Opencode needs:
+
+1. **Native:** skills from `~/.claude/skills` — every `ps:*` skill works in Opencode,
+   in every project, because Opencode reads `~/.claude/skills` itself.
+2. **Generated:** `~/.config/opencode/agents/*.md` (from `claude/agents`), each a
+   `mode: subagent` agent with `permission.skill: allow` (read-only agents also get
+   `permission.edit: deny`). These carry a `generated-by: dotfiles` marker; a file
+   without it is yours and is left alone.
+3. **Merged key by key:** `~/.config/opencode/opencode.jsonc` — `permission` (translated
+   from `claude/settings.json`; your keys win) and `mcp.servers` (from `cursor/mcp.json`,
+   opt-in on every profile: turn on Opencode MCP in `dots settings`, or `DOTFILES_MCP=on`).
+
+What Opencode does *not* get: Claude's guard hooks, output styles, `CLAUDE.md` global
+instructions, and connectors — Opencode has no hook system or global-instructions file.
+The full mapping and gap table is in [`docs/opencode-port.md`](opencode-port.md).
+The first run offers `opencode` sign-in (`opencode auth login`).
+
 ## Multi-machine
 
 - **Bootstrap**: the one-liner in the [README](../README.md) turns a blank Mac into this, end to end.
@@ -278,7 +300,7 @@ dotfiles/
 │   │                         #   05 linux-prereqs (Linux only)
 │   │                         #   → 10 homebrew
 │   │                         #   → 20 brew-bundle → 30 omz → 40 rust → 50 node → 55 gh
-│   │                         #   → 57 claude-code → 60 cursor → 70 macos → 72 touch-id
+│   │                         #   → 57 claude-code → 58 opencode → 60 cursor → 70 macos → 72 touch-id
 │   │                         #   → 75 terminal → 77 git-hooks → 78 linux-extras → 90 sign-in
 │   │                         #   (70, 72, 75: macOS only; 05, 78: Linux only)
 │   │                         #   (DOTFILES_STEPS="60-cursor" ./dotfiles runs only the named steps;
