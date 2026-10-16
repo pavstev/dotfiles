@@ -85,7 +85,9 @@ Opencode needs:
 
 Opencode does not get Claude's guard hooks, output styles, `CLAUDE.md`, or connectors
 (Opencode has no hook system or global-instructions file). Full mapping and gap table:
-[`docs/opencode-port.md`](docs/opencode-port.md).
+[`docs/opencode-port.md`](docs/opencode-port.md). The peer Cursor doc is
+[`docs/cursor-port.md`](docs/cursor-port.md); the full user reference is
+[`docs/guide.md`](docs/guide.md).
 
 ## Linux
 
