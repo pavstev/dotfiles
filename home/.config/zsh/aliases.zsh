@@ -98,6 +98,6 @@ alias myip='curl -s ifconfig.me; echo'
 if [[ -x "$DOTFILES/dotfiles" ]]; then
   alias dots="$DOTFILES/dotfiles"       # pull + link + provision (install & sync, one command)
   alias dotd='git -C "$DOTFILES" diff'  # preview source changes  (`dot` already cd's into $DOTFILES)
-  alias cursor-rules='python3 "$DOTFILES/scripts/agent-config.py" user-rules --copy'  # rules for every Cursor folder
+  alias cursor-rules='"$DOTFILES/scripts/agent-config" user-rules --copy'  # rules for every Cursor folder
   alias zshrc="\${EDITOR:-nano} \"\$DOTFILES/home/.config/zsh/init.zsh\""
 fi

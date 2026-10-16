@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design knobs</title>
+<style>
+  :root {
+    /* semantic shadcn/ui-style tokens (OKLCH) */
+    --ds-bg: oklch(1 0 0);
+    --ds-surface: oklch(0.985 0 0);
+    --ds-card: oklch(1 0 0);
+    --ds-ink: oklch(0.21 0 0);
+    --ds-muted: oklch(0.55 0 0);
+    --ds-muted-foreground: oklch(0.45 0 0);
+    --ds-line: oklch(0.9 0 0);
+    --ds-ring: oklch(0.7 0 0 / 0.5);
+    --ds-primary: oklch(0.55 0.17 28);
+    --ds-primary-foreground: oklch(1 0 0);
+    --ds-secondary: oklch(0.96 0 0);
+    --ds-secondary-foreground: oklch(0.22 0 0);
+    --ds-destructive: oklch(0.58 0.22 25);
+    --ds-destructive-foreground: oklch(1 0 0);
+    --ds-shadow: 0 1px 3px oklch(0 0 0 / 0.08), 0 1px 2px oklch(0 0 0 / 0.06);
+    --ds-shadow-sm: 0 1px 2px oklch(0 0 0 / 0.05);
+    --ds-radius: 12px;
+    --ds-radius-sm: calc(var(--ds-radius) * 0.6);
+    --ds-radius-lg: var(--ds-radius);
+    --ds-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --ds-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    --ds-text-sm: 0.875rem;
+    --ds-text-base: 1rem;
+    --ds-text-lg: 1.125rem;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ds-bg: oklch(0.2 0 0);
+      --ds-surface: oklch(0.25 0 0);
+      --ds-card: oklch(0.28 0 0);
+      --ds-ink: oklch(0.97 0 0);
+      --ds-muted: oklch(0.62 0 0);
+      --ds-muted-foreground: oklch(0.72 0 0);
+      --ds-line: oklch(0.35 0 0);
+      --ds-ring: oklch(0.5 0 0 / 0.5);
+      --ds-primary: oklch(0.7 0.18 28);
+      --ds-primary-foreground: oklch(0.2 0 0);
+      --ds-secondary: oklch(0.28 0 0);
+      --ds-secondary-foreground: oklch(0.95 0 0);
+      --ds-destructive: oklch(0.65 0.22 25);
+      --ds-destructive-foreground: oklch(1 0 0);
+      --ds-shadow: 0 1px 3px oklch(0 0 0 / 0.45), 0 1px 2px oklch(0 0 0 / 0.3);
+      --ds-shadow-sm: 0 1px 2px oklch(0 0 0 / 0.35);
+    }
+  }
+  :root[data-theme="dark"] { /* explicit dark */ }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--ds-bg); color: var(--ds-ink);
+    font-family: var(--ds-font); font-size: var(--ds-text-base); line-height: 1.5;
+    padding: 0 16px 116px; overflow-x: hidden;
+  }
+  main { max-width: 980px; margin: 0 auto; }
+  header { padding: 20px 0 8px; display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  h1 { font-size: 1.15rem; line-height: 1.2; margin: 0; letter-spacing: -0.01em; }
+  .chip { font: 0.7rem var(--ds-mono); background: var(--ds-surface); border:1px solid var(--ds-line); border-radius: 999px; padding: 2px 8px; color: var(--ds-muted); }
+  .sub { color: var(--ds-muted); margin: 4px 0 0; font-size: 0.9rem; }
+  h2 { font-size: 0.8rem; margin: 24px 0 10px; color: var(--ds-muted); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .panel { background: var(--ds-card); border:1px solid var(--ds-line); border-radius: var(--ds-radius); padding: 14px; box-shadow: var(--ds-shadow-sm); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+  .preview { border:1px dashed var(--ds-line); border-radius: calc(var(--ds-radius)/2); padding: 16px; min-height: 150px; overflow: hidden; background: var(--ds-surface); display:flex;flex-direction:column;gap:10px; }
+  .knobs { display: grid; gap: 8px; }
+  .knob { display: grid; gap: 4px; }
+  .knob.row { grid-template-columns: 1fr auto; grid-template-rows: auto; align-items: center; gap: 8px; }
+  .knob.toggle { grid-template-columns: 1fr auto; grid-template-rows: auto; align-items: center; gap: 8px; }
+  .knob label { font-size: 0.82rem; color: var(--ds-muted); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .knob label span:first-child { overflow-wrap: anywhere; }
+  .knob output { font: 0.78rem var(--ds-mono); color: var(--ds-ink); background: var(--ds-surface); border:1px solid var(--ds-line); border-radius: 6px; padding: 1px 8px; min-width: 46px; text-align: center; }
+  .knob input[type=range] { width: 100%; accent-color: var(--ds-primary); height: 6px; cursor: pointer; }
+  .knob input[type=color] { width: 34px; height: 30px; padding: 0; border:1px solid var(--ds-line); border-radius: 6px; background: none; cursor: pointer; }
+  .knob select, .knob input[type=text] { width: 100%; background: var(--ds-card); border:1px solid var(--ds-line); border-radius: 6px; color: var(--ds-ink); padding: 6px 8px; font-size: 0.85rem; cursor: pointer; }
+  .knob input[type=text] { width: 44px; }
+  .knob.toggle input { width: 44px; height: 24px; cursor: pointer; }
+  .contrast { font: 0.72rem var(--ds-mono); padding: 4px 8px; border-radius: 6px; background: var(--ds-surface); border:1px solid var(--ds-line); display:inline-block; }
+  .contrast.ok { color: oklch(0.45 0.15 145); border-color: oklch(0.45 0.15 145 / 0.3); background: oklch(0.45 0.15 145 / 0.08); }
+  .contrast.bad { color: oklch(0.58 0.22 25); border-color: oklch(0.58 0.22 25 / 0.3); background: oklch(0.58 0.22 25 / 0.08); }
+  button { font: inherit; cursor: pointer; border-radius: 8px; padding: 9px 13px; min-height: 40px; border:1px solid var(--ds-primary); background: transparent; color: var(--ds-primary); }
+  button.primary { background: var(--ds-primary); color: var(--ds-primary-foreground); }
+  button.secondary { border-color: var(--ds-line); color: var(--ds-ink); background: var(--ds-secondary); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; border-color: var(--ds-line); color: var(--ds-muted); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; }
+  .suggest { display:inline-flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--ds-muted); }
+  .suggest b { color: var(--ds-ink); }
+  .variants { display: grid; gap: 8px; }
+  .variant-card { border:1px solid var(--ds-line); border-radius: 8px; padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--ds-surface); cursor: pointer; }
+  .variant-card.picked { border-color: var(--ds-primary); background: oklch(from var(--ds-primary) l c h / 0.08); }
+  .variant-card:active { transform: translateY(-1px); }
+  .variant-card .info { flex:1; min-width:0; }
+  .variant-card .info .name { font-weight:600; overflow-wrap: anywhere; }
+  .variant-card .info .id { font:0.7rem var(--ds-mono); color: var(--ds-muted); }
+  .variant-card button { padding: 6px 10px; min-height: 32px; font-size: 0.8rem; white-space: nowrap; }
+  .export { display:grid; gap: 8px; }
+  .export label { font: 0.72rem var(--ds-mono); color: var(--ds-muted); }
+  .export pre { background: var(--ds-surface); border:1px solid var(--ds-line); border-radius: 8px; padding: 10px; font: 0.78rem var(--ds-mono); overflow: auto; color: var(--ds-ink); white-space: pre-wrap; word-break: break-word; }
+  .copybtn { font-size: 0.75rem; padding: 4px 10px; min-height: 28px; }
+  footer { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--ds-card); border-top:1px solid var(--ds-line); padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); box-shadow: var(--ds-shadow); }
+  .bar { max-width: 980px; margin: 0 auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .now { flex: 1 1 260px; min-width: 0; font: 0.78rem var(--ds-mono); color: var(--ds-ink); overflow-wrap: anywhere; }
+  .now small { display: block; color: var(--ds-muted); font-family: var(--ds-font); font-size: 0.7rem; margin-bottom: 2px; }
+  #fallback { display: none; width: 100%; font: 0.78rem var(--ds-mono); background: var(--ds-bg); color: var(--ds-ink); border:1px solid var(--ds-line); border-radius: 8px; padding: 8px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Design knobs</h1>
+    <span class="chip" id="chip"></span>
+  </header>
+  <p class="sub" id="sub">Turn the knobs. WCAG contrast checks live. Export CSS / Tailwind / props.</p>
+
+  <section class="panel">
+    <h2>Live preview</h2>
+    <div id="preview" class="preview"></div>
+    <div id="contrast" class="contrast"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Knobs</h2>
+    <div id="knobs" class="knobs"></div>
+    <div class="suggest" id="suggest"><b>Smart:</b> <span id="suggestText">pick a variant to load coherent values</span></div>
+  </section>
+
+  <section class="panel hidden" id="variantsBox">
+    <h2>Variants</h2>
+    <div id="variants" class="variants"></div>
+  </section>
+
+  <section class="panel hidden" id="exportBox">
+    <h2>Export</h2>
+    <div class="export">
+      <label>CSS variables</label>
+      <pre id="expCss"></pre>
+      <button class="copybtn" data-for="expCss">Copy CSS</button>
+      <label>Tailwind config</label>
+      <pre id="expTailwind"></pre>
+      <button class="copybtn" data-for="expTailwind">Copy Tailwind</button>
+      <label>Component props (JSON)</label>
+      <pre id="expProps"></pre>
+      <button class="copybtn" data-for="expProps">Copy props</button>
+    </div>
+  </section>
+</main>
+<footer>
+  <div class="bar">
+    <div class="now" id="now" aria-live="polite"><small>Current pick</small><span id="nowText">none yet</span></div>
+    <button class="primary" id="copy" type="button" disabled>Copy my pick</button>
+  </div>
+  <textarea id="fallback" rows="2" readonly aria-label="Your pick"></textarea>
+</footer>
+<script>
+// ==================== EDIT THIS BLOCK ====================
+// Smart design knobs. Tokens are shadcn/ui-style semantic OKLCH variables.
+// renderPreview(tokens) returns HTML. pickPayload(tokens) returns the object copied into the pick line.
+// Token types: range | color | select | toggle.
+//   range:  {key,label,type:"range",min,max,step,value,unit,css}
+//   color:  {key,label,type:"color",value,css}
+//   select: {key,label,type:"select",options:[{label,value}],value,css}
+//   toggle: {key,label,type:"toggle",value:true|false,css}
+const DESIGN = {
+  title: "Card",
+  subtitle: "Semantic OKLCH tokens, live WCAG contrast, multi-format export.",
+  tokens: [
+    { key: "radius",    label: "Corner radius",   type: "range", min: 0, max: 40, step: 1, value: 12, unit: "px", css: "--ds-radius" },
+    { key: "primary",   label: "Primary color",   type: "color", value: "#b4552d", css: "--ds-primary" },
+    { key: "shadow",    label: "Shadow",          type: "toggle", value: true, css: "--ds-shadow" },
+    { key: "textSize",  label: "Text size",       type: "range", min: 12, max: 24, step: 1, value: 16, unit: "px", css: "--ds-text-base" },
+    { key: "lineColor", label: "Border color",    type: "color", value: "#ddd5cb", css: "--ds-line" },
+    { key: "surface",   label: "Surface color",   type: "color", value: "#ffffff", css: "--ds-card" }
+  ],
+  variants: [
+    { id: "A1", label: "Warm earth", tokens: { radius: 12, primary: "#b4552d", shadow: true, textSize: 16, lineColor: "#ddd5cb", surface: "#ffffff" } },
+    { id: "A2", label: "Cool slate", tokens: { radius: 8,  primary: "#2563eb", shadow: false, textSize: 14, lineColor: "#cbd5e1", surface: "#f8fafc" } },
+    { id: "B1", label: "Soft violet",tokens: { radius: 24, primary: "#7c3aed", shadow: true, textSize: 15, lineColor: "#e9d5ff", surface: "#faf5ff" } }
+  ],
+  // preview: build a card + button + input that use the tokens
+  renderPreview: (t) => {
+    const shadow = (t.shadow === true || t.shadow === "true") ? "var(--ds-shadow)" : "none";
+    const size = t.textSize + "px";
+    const primary = t.primary;
+    const surface = t.surface;
+    const line = t.lineColor;
+    return '<div style="display:flex;flex-direction:column;gap:10px;">' +
+      '<div style="background:var(--ds-card);border:1px solid var(--ds-line);border-radius:var(--ds-radius);padding:16px;box-shadow:' + esc(shadow) + ';">' +
+      '  <div style="font-weight:700;font-size:' + esc(size) + ';color:var(--ds-ink);">Card title</div>' +
+      '  <div style="color:var(--ds-muted);font-size:0.88rem;margin-top:6px;">Body text uses the muted ink and chosen text size.</div>' +
+      '</div>' +
+      '<button style="display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border:1px solid var(--ds-line);border-radius:var(--ds-radius-sm);background:var(--ds-card);color:var(--ds-ink);cursor:pointer;font:inherit;font-size:0.85rem;">Outline</button>' +
+      '<button style="display:inline-flex;align-items:center;gap:6px;padding:8px 12px;border:none;border-radius:var(--ds-radius-sm);background:' + esc(primary) + ';color:var(--ds-primary-foreground);cursor:pointer;font:inherit;font-size:0.85rem;">Primary</button>' +
+      '<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border:1px solid var(--ds-line);border-radius:var(--ds-radius-sm);background:var(--ds-secondary);color:var(--ds-secondary-foreground);font-size:0.85rem;">' +
+      '  <span style="width:10px;height:10px;border-radius:50%;background:' + esc(primary) + ';display:inline-block;"></span>' +
+      '  <span style="flex:1;">Secondary badge</span>' +
+      '</div>' +
+      '<input style="width:140px;padding:6px 10px;border:1px solid var(--ds-line);border-radius:var(--ds-radius-sm);background:var(--ds-card);color:var(--ds-ink);font:inherit;font-size:0.85rem;" placeholder="Input">' +
+    '</div>';
+  },
+  // what gets copied into the pick: line
+  pickPayload: (t) => ({
+    radius: t.radius + "px",
+    primary: t.primary,
+    shadow: t.shadow === true || t.shadow === "true",
+    textSize: t.textSize + "px",
+    lineColor: t.lineColor,
+    surface: t.surface
+  })
+};
+// ==================== END OF EDIT BLOCK ====================
+
+const $ = (s) => document.querySelector(s);
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+document.title = DESIGN.title;
+$("#title").textContent = DESIGN.title;
+$("#sub").textContent = DESIGN.subtitle;
+$("#chip").textContent = DESIGN.title.toUpperCase();
+
+const state = { pick: null, tokens: {} };
+DESIGN.tokens.forEach((n) => { state.tokens[n.key] = n.value; });
+
+// ---------- color math (OKLCH approx via sRGB->OKLCH is heavy; use sRGB contrast) ----------
+function parseHex(h) {
+  h = h.replace("#", "");
+  if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+  return { r: parseInt(h.substring(0,2),16)/255, g: parseInt(h.substring(2,4),16)/255, b: parseInt(h.substring(4,6),16)/255 };
+}
+function lin(c) { return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+function luminance(c) {
+  const {r,g,b} = parseHex(c);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+function contrast(a, b) {
+  const L1 = luminance(a), L2 = luminance(b);
+  const light = Math.max(L1, L2), dark = Math.min(L1, L2);
+  return (light + 0.05) / (dark + 0.05);
+}
+function contrastBadge(ratio, text) {
+  const ok = ratio >= 4.5;
+  return '<span class="contrast ' + (ok ? "ok" : "bad") + '">' +
+    esc(text) + ' <b>WCAG AA ' + ratio.toFixed(2) + ':</b> ' + (ok ? "pass" : "fail") + '</span>';
+}
+
+// ---------- apply tokens to :root ----------
+function applyTokens() {
+  DESIGN.tokens.forEach((n) => {
+    const v = state.tokens[n.key];
+    if (!n.css) return;
+    let val = v;
+    if (n.type === "toggle") val = (v === true || v === "true") ? "var(--ds-shadow)" : "none";
+    document.documentElement.style.setProperty(n.css, val);
+  });
+  // also expose line/surface as tokens used by preview inline styles
+}
+
+// ---------- render ----------
+function paint() {
+  applyTokens();
+  $("#preview").innerHTML = DESIGN.renderPreview(state.tokens);
+  // contrast: primary on surface (card) and primary-foreground on primary
+  const primary = state.tokens.primary;
+  const surface = state.tokens.surface;
+  const c1 = contrast(primary, surface);
+  const inv = invertHex(primary);
+  const c2 = contrast(inv, primary);
+  $("#contrast").innerHTML = contrastBadge(c1, "Primary on surface") + "  " + contrastBadge(c2, "Text on primary");
+  DESIGN.tokens.forEach((n) => {
+    const out = $('[data-out="' + n.key + '"]');
+    if (out) out.textContent = state.tokens[n.key] + (n.unit || "");
+  });
+}
+function invertHex(h) {
+  const c = parseHex(h);
+  const toHex = (v) => Math.round(v * 255).toString(16).padStart(2, "0");
+  return "#" + toHex(1 - c.r) + toHex(1 - c.g) + toHex(1 - c.b);
+}
+
+// ---------- knobs ----------
+function knobHtml(n) {
+  const cur = state.tokens[n.key];
+  if (n.type === "range") {
+    return '<div class="knob"><label><span>' + esc(n.label) + '</span><output data-out="' + n.key + '">' + cur + n.unit + '</output></label>' +
+      '<input type="range" data-key="' + n.key + '" min="' + n.min + '" max="' + n.max + '" step="' + (n.step || 1) + '" value="' + cur + '"></div>';
+  }
+  if (n.type === "color") {
+    return '<div class="knob"><label><span>' + esc(n.label) + '</span><output data-out="' + n.key + '">' + cur + '</output></label>' +
+      '<input type="color" data-key="' + n.key + '" value="' + cur + '"></div>';
+  }
+  if (n.type === "select") {
+    const opts = n.options.map((o) => '<option value="' + esc(o.value) + '" ' + (o.value === cur ? "selected" : "") + '>' + esc(o.label) + '</option>').join("");
+    return '<div class="knob"><label><span>' + esc(n.label) + '</span><output data-out="' + n.key + '">' + cur + '</output></label>' +
+      '<select data-key="' + n.key + '">' + opts + '</select></div>';
+  }
+  if (n.type === "toggle") {
+    const checked = cur === true || cur === "true" ? "checked" : "";
+    return '<div class="knob toggle"><label><span>' + esc(n.label) + '</span>' +
+      '<input type="checkbox" role="switch" data-key="' + n.key + '" ' + checked + ' aria-checked="' + (checked ? "true" : "false") + '"></label></div>';
+  }
+  return "";
+}
+
+// ---------- variants ----------
+function variantCardHtml(v) {
+  const picked = state.pick === v.id;
+  const chips = DESIGN.tokens.map((n) => {
+    const val = (v.tokens && v.tokens[n.key] !== undefined) ? v.tokens[n.key] : state.tokens[n.key];
+    return '<span style="background:var(--ds-surface);border:1px solid var(--ds-line);border-radius:6px;padding:1px 6px;font:0.68rem var(--ds-mono);color:var(--ds-muted);margin-right:6px;">' +
+           esc(n.key) + ': <b>' + esc(val) + '</b></span>';
+  }).join("");
+  return '<div class="variant-card' + (picked ? ' picked' : '') + '">' +
+    '<div class="info"><div class="name">' + esc(v.label) + '</div><div class="id">' + esc(v.id) + '</div></div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:4px;">' + chips + '</div>' +
+    '<button type="button" data-pick="' + v.id + '">' + (picked ? "Picked" : "Pick") + '</button>' +
+    '</div>';
+}
+
+// ---------- state ----------
+function build() {
+  DESIGN.tokens.forEach((n) => {
+    if (!$('#knobs [data-key="' + n.key + '"]')) {
+      $('#knobs').insertAdjacentHTML('beforeend', knobHtml(n));
+    }
+  });
+  if (DESIGN.variants && DESIGN.variants.length) {
+    $('#variantsBox').classList.remove('hidden');
+    $('#variants').innerHTML = DESIGN.variants.map(variantCardHtml).join("");
+  }
+  if (!state.pick && DESIGN.variants && DESIGN.variants.length) {
+    // default to first variant
+    state.pick = DESIGN.variants[0].id;
+    loadVariant(DESIGN.variants[0]);
+  }
+  paint(); refresh();
+}
+function loadVariant(v) {
+  state.pick = v.id;
+  Object.assign(state.tokens, v.tokens || {});
+  $('#suggestText').textContent = "Loaded variant " + v.id + " — " + v.label + ". Tweak knobs, then copy.";
+  paint(); refresh();
+}
+function line() {
+  if (!state.pick) return "";
+  const v = (DESIGN.variants || []).filter((x) => x.id === state.pick)[0];
+  const tokens = Object.assign({}, state.tokens);
+  if (v && v.tokens) Object.assign(tokens, v.tokens);
+  const out = Object.assign({ label: v ? v.label : "" }, DESIGN.pickPayload(tokens));
+  return "pick: " + state.pick + " " + JSON.stringify(out);
+}
+function refresh() {
+  const l = line();
+  $("#nowText").textContent = l || "none yet";
+  $("#copy").disabled = !l;
+  $('#exportBox').classList.toggle('hidden', !l);
+  if (l) updateExports(l);
+  (DESIGN.variants || []).forEach((v) => {
+    const btn = document.querySelector('.variant-card button[data-pick="' + v.id + '"]');
+    const card = btn ? btn.parentElement : null;
+    if (state.pick === v.id) { if(card) card.classList.add("picked"); }
+    else { if(card) card.classList.remove("picked"); }
+  });
+}
+function updateExports(l) {
+  const m = l.match(/^pick: (\S+) (\{.*\})$/);
+  if (!m) return;
+  const id = m[1];
+  const payload = JSON.parse(m[2]);
+  const v = (DESIGN.variants || []).filter((x) => x.id === id)[0];
+  const tokens = Object.assign({}, state.tokens);
+  if (v && v.tokens) Object.assign(tokens, v.tokens);
+  // CSS variables
+  let css = ":root {\n";
+  DESIGN.tokens.forEach((n) => {
+    if (n.css) css += "  " + n.css + ": " + tokens[n.key] + ";\n";
+  });
+  css += "}";
+  $('#expCss').textContent = css;
+  // Tailwind
+  let tw = "module.exports = {\n  theme: {\n    extend: {\n      colors: {\n        primary: '" + tokens.primary + "',\n      },\n      borderRadius: {\n        DEFAULT: '" + tokens.radius + "',\n      },\n    },\n  },\n}";
+  $('#expTailwind').textContent = tw;
+  // props
+  $('#expProps').textContent = JSON.stringify(DESIGN.pickPayload(tokens), null, 2);
+}
+
+// ---------- events ----------
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pick]");
+  if (b) { loadVariant((DESIGN.variants||[]).filter((x)=>x.id===b.getAttribute("data-pick"))[0]); return; }
+  if (e.target.matches('.copybtn')) {
+    const id = e.target.getAttribute("data-for");
+    const pre = $(id);
+    navigator.clipboard.writeText(pre.textContent).then(()=>{
+      const old = e.target.textContent; e.target.textContent = "Copied!";
+      setTimeout(() => { e.target.textContent = old; }, 1200);
+    });
+  }
+});
+document.addEventListener("input", (e) => {
+  const t = e.target;
+  if (!t.dataset || !t.dataset.key) return;
+  const n = DESIGN.tokens.find((x) => x.key === t.dataset.key);
+  if (!n) return;
+  if (n.type === "range") state.tokens[n.key] = Number(t.value);
+  else if (n.type === "color") state.tokens[n.key] = t.value;
+  else if (n.type === "select") state.tokens[n.key] = t.value;
+  state.pick = null;
+  paint(); refresh();
+});
+document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.type === "checkbox" && t.dataset && t.dataset.key) {
+    const n = DESIGN.tokens.find((x) => x.key === t.dataset.key);
+    if (n) state.tokens[n.key] = t.checked;
+    state.pick = null;
+    paint(); refresh();
+  }
+});
+
+$("#copy").addEventListener("click", async () => {
+  const text = line(); if (!text) return;
+  const btn = $("#copy"); const fb = $("#fallback");
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch (err) { ok = false; }
+  if (!ok) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (err) { ok = false; }
+  }
+  if (ok) { btn.textContent = "Copied. Paste it in the chat"; fb.style.display = "none"; }
+  else { btn.textContent = "Copy by hand below"; fb.value = text; fb.style.display = "block"; fb.focus(); fb.select(); }
+  setTimeout(() => { btn.textContent = "Copy my pick"; }, 2500);
+});
+
+build(); refresh();
+</script>
+</body>
+</html>

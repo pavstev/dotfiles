@@ -171,6 +171,17 @@ edit_mcp() {
   esac
 }
 
+# edit_opencode_mcp: MCP servers in Opencode are opt-in on every profile.
+edit_opencode_mcp() {
+  local on="🔌 on: Cloudflare docs search in Opencode" off="⛔ off: no MCP servers from dots" now v
+  if [[ "$(opencode_mcp_value)" == on ]]; then now="$on"; else now="$off"; fi
+  v="$(ask_menu "🔌 Opencode MCP servers (opt-in)" "$now" "$on" "$off")" || return 0
+  case "$v" in
+    "$on") set_setting OPENCODE_MCP on && ok "Opencode MCP: on" ;;
+    "$off") set_setting OPENCODE_MCP off && ok "Opencode MCP: off" ;;
+  esac
+}
+
 # add_java <label> <home>: one line of the Java menu, each Java once.
 add_java() {
   local r
@@ -283,15 +294,25 @@ edit_projects() {
     "acme-app side-project" "private projects"
 }
 
+# edit_opencode_projects: absolute paths whose .opencode/ mirrors the global Opencode config.
+edit_opencode_projects() {
+  local v
+  v="$(ask_value "📂 Opencode project paths, split by spaces (folders whose .opencode/ mirrors dots; ~ works)" \
+      "$(setting OPENCODE_PROJECTS)" "~/code/my-app ~/code/another-one")" || return 0
+  v="$(printf '%s' "$v" | tr ',' ' ' | tr -s ' ')"
+  v="${v# }"; v="${v% }"
+  set_setting OPENCODE_PROJECTS "$v" && ok "Opencode projects: ${v:-none}"
+}
+
 edit_words_extra() {
   edit_words PRIVATE_WORDS "🚫 More private words, split by spaces. Your git name and email count already." \
     "client-name nickname" "private words"
 }
 
-# edit_rules: the private rules, free text for Claude and Cursor. Empty removes them.
+# edit_rules: the private rules, free text for Claude, Cursor and Opencode. Empty removes them.
 edit_rules() {
   local text
-  if ! text="$(ask_long "🔒 Private rules for Claude and Cursor (Markdown). They stay on this Mac." \
+  if ! text="$(ask_long "🔒 Private rules for Claude, Cursor and Opencode (Markdown). They stay on this Mac." \
       "$(cat "$OWNER_MD" 2>/dev/null)")"; then
     info "private rules: not changed"
   elif [[ -z "${text//[[:space:]]/}" ]]; then
@@ -331,6 +352,22 @@ mcp_value() {
   esac
 }
 
+# opencode_mcp_value: on or off. DOTFILES_MCP wins over the setting.
+opencode_mcp_value() {
+  case "$(setting OPENCODE_MCP | tr '[:upper:]' '[:lower:]')" in
+    1|on|yes|true) printf 'on' ;;
+    *) printf 'off' ;;
+  esac
+}
+
+# opencode_projects_value: the configured project paths, or "none".
+opencode_projects_value() {
+  local v
+  v="$(setting OPENCODE_PROJECTS)"
+  if [[ -z "$v" ]]; then printf 'none'
+  else printf '%s' "$v"; fi
+}
+
 # lines_of <file>: "1 line" or "N lines".
 lines_of() {
   local n
@@ -345,8 +382,8 @@ rules_value() {
 step "Settings (they stay on this Mac, never in git)"
 info "File: ~/.config/dotfiles/settings. Each change saves at once."
 done_row="✅ Done"
-keys=(edit_git_name edit_git_email edit_profile edit_mcp edit_java edit_steps edit_projects
-  edit_words_extra edit_rules)
+keys=(edit_git_name edit_git_email edit_profile edit_mcp edit_opencode_mcp edit_java edit_steps edit_projects
+  edit_opencode_projects edit_words_extra edit_rules)
 start="" last=""
 if [[ -n "${DOTFILES_FIRST_RUN:-}" ]]; then start="$done_row"; fi
 while :; do
@@ -355,9 +392,11 @@ while :; do
     "$(row "📧 " "Git email" "$(value_or "$(setting GIT_EMAIL)" "not set")")"
     "$(row "🧩 " "Profile" "$(dotfiles_profile)")"
     "$(row "🔌 " "Cursor MCP" "$(mcp_value)")"
+    "$(row "🔌 " "Opencode MCP" "$(opencode_mcp_value)")"
     "$(row "☕ " "Java" "$(java_value)")"
     "$(row "⏩ " "Steps to skip" "$(value_or "$(setting SKIP_STEPS)" "none")")"
     "$(row "📁 " "Private projects" "$(value_or "$(setting PRIVATE_PROJECTS)" "none")")"
+    "$(row "📂 " "Opencode projects" "$(opencode_projects_value)")"
     "$(row "🚫 " "Private words" "$(value_or "$(setting PRIVATE_WORDS)" "none")")"
     "$(row "🔒 " "Private rules" "$(rules_value)")"
   )

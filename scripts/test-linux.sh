@@ -210,6 +210,15 @@ check "Cursor step in a temp HOME" '
   HOME="$H" DOTFILES_STEPS=60-cursor DOTFILES_PROFILE=shared NO_COLOR=1 ./dotfiles >"$H/out.log" 2>&1 </dev/null
   ls "$H/.cursor/rules" >/dev/null 2>&1 || { tail -15 "$H/out.log"; exit 1; }'
 
+check "Opencode config in a temp HOME" '
+  cd ~/dotfiles; H="$(mktemp -d)"
+  HOME="$H" DOTFILES_STEPS=57-claude-code DOTFILES_PROFILE=shared NO_COLOR=1 ./dotfiles >"$H/out.log" 2>&1 </dev/null
+  for f in AGENTS.md agents themes/copper.json tui.json; do
+    [ -e "$H/.config/opencode/$f" ] || { echo "missing .config/opencode/$f"; tail -15 "$H/out.log"; exit 1; }
+  done
+  grep -q "\"theme\": \"copper\"" "$H/.config/opencode/tui.json" || exit 1
+  grep -q "generated-by: dotfiles" "$H/.config/opencode/AGENTS.md" || exit 1'
+
 check "guard hook tests"        'cd ~/dotfiles && python3 claude/hooks/test_guard.py'
 check "skill check"             'cd ~/dotfiles && python3 claude/skills/check.py'
 check "agent-config tests"      'cd ~/dotfiles && python3 scripts/test_agent_config.py'

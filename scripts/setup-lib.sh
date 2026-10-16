@@ -44,9 +44,27 @@ step() { printf '\n%s▸ %s%s\n' "$_c_a" "$*" "$_c_0"; }
 # have <cmd> — true if <cmd> resolves on PATH. The basis of "skip if installed".
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# is_macos / is_linux: which OS this is. Every Linux or Mac-only branch uses these.
+# is_macos / is_linux / is_windows: which OS this is. Every OS-only branch uses these.
+# WSL reports Linux via uname, so is_windows is Git Bash / MSYS / Cygwin only — WSL
+# stays Linux and gets Homebrew on Linux like any other Linux machine.
 is_macos() { [[ "$(uname -s)" == Darwin ]]; }
 is_linux() { [[ "$(uname -s)" == Linux ]]; }
+is_windows() {
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*|Windows_NT) return 0 ;;
+  esac
+  case "${OSTYPE:-}" in
+    msys*|cygwin*|win32) return 0 ;;
+  esac
+  return 1
+}
+
+# winpath <posix-path>: a Windows path (C:\Users\...) for the POSIX path, for
+# Windows apps that cannot read /c/Users-style paths. Needs cygpath (Git Bash
+# ships it); falls back to the input unchanged.
+winpath() {
+  if have cygpath; then cygpath -w -- "$1" 2>/dev/null || printf '%s\n' "$1"; else printf '%s\n' "$1"; fi
+}
 
 # only_macos <what>: in a step, stop here with a clear line when this is not a Mac.
 only_macos() { is_macos || { info "$1: macOS only, skipping"; exit 0; }; }
@@ -107,8 +125,9 @@ linux_prereqs() {
 
 # ensure_brew: install Homebrew when it is missing, then load it. At a terminal
 # it asks for the password first (the installer needs sudo). Exit 0 = brew works.
-# On Linux the apt prerequisites go in first.
+# On Linux the apt prerequisites go in first. Homebrew is not for Windows.
 ensure_brew() {
+  is_windows && { warn "Homebrew is not for Windows — WinGet installs the tools instead"; return 0; }
   brew_env
   have brew && return 0
   linux_prereqs || warn "going on without the apt packages. The Homebrew installer may complain."

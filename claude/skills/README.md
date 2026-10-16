@@ -7,9 +7,9 @@ Markdown), optionally bundled with `scripts/` and reference files.
 ## How it's wired
 
 This directory is the single source of truth. `../skill-sync.sh` (run by `./dotfiles`,
-or by hand) adds a **per-skill symlink** into `~/.claude/skills`. Cursor reads `~/.claude/skills` itself. It never
-touches skills it does not own. A skill added here shows up in every agent on every
-machine after `dots`.
+or by hand) adds a **per-skill symlink** into `~/.claude/skills`. Cursor and Opencode read
+`~/.claude/skills` themselves. It never touches skills it does not own. A skill added here
+shows up in every agent on every machine after `dots`.
 
 ```
 ~/dotfiles/claude/skills/ps:foo  ──symlink──▶  ~/.claude/skills/ps:foo
@@ -17,7 +17,7 @@ machine after `dots`.
 
 Names keep the `ps:` prefix on purpose: it namespaces them like plugin skills and
 the slash command stays `/ps:foo`. The open Agent Skills spec forbids the colon, so
-these are Claude Code + Cursor skills, not portable ones.
+these are Claude Code + Cursor + Opencode skills, not portable ones.
 
 ## Rules every skill follows
 

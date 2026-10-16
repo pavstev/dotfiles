@@ -5,15 +5,17 @@
 #                                    skills there are left untouched; ours appear
 #                                    alongside them. Re-runnable & safe.
 #   Cursor        reads ~/.claude/skills itself, so nothing is linked for it.
+#   Opencode      reads ~/.claude/skills itself, so nothing is linked for it either.
 #
 # ~/.claude/skills is a REAL directory, not a whole-dir symlink: plugins and other
 # tools may install their own skill folders there. A whole-dir link would delete
 # them on every run. If it is a symlink, link_each() leaves it alone.
 #
 # Skill discovery skips `_template`, dotfiles, and loose files (README/SOURCES).
-# Cursor reads the SKILL.md / agentskills.io format natively. The spec allows
-# only a-z, 0-9 and "-" in `name:`. Our `ps:*` names still load in Cursor, because
-# its loaders do not check the name (docs/cursor-port.md, "Gaps").
+# Cursor and Opencode read the SKILL.md / agentskills.io format natively. The spec
+# allows only a-z, 0-9 and "-" in `name:`. Our `ps:*` names still load in both,
+# because their loaders do not check the name (docs/cursor-port.md, "Gaps";
+# docs/opencode-port.md, "Skills").
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/skills" && pwd)"
@@ -73,11 +75,12 @@ link_each() { # <skills-root>
 mkdir -p "$HOME/.claude" 2>/dev/null || true
 link_each "$HOME/.claude/skills"
 
-# --- Cursor: no links --------------------------------------------------------
-# Cursor loads ~/.claude/skills natively ("Include Third-Party Plugins, Skills, and
-# Other Configs", on by default; https://cursor.com/docs/context/skills, 2026-10-13).
+# --- Cursor and Opencode: no links --------------------------------------------
+# Both load ~/.claude/skills natively (Cursor: "Include Third-Party Plugins, Skills,
+# and Other Configs", on by default, https://cursor.com/docs/context/skills,
+# 2026-10-13; Opencode: Claude Code compatibility, https://opencode.ai/docs/rules/).
 # A second copy in ~/.cursor/skills adds nothing (3.24.12 drops duplicate paths) and
-# older builds listed such skills twice (forum.cursor.com/t/150137). So this script
-# never touches ~/.cursor/skills.
+# older builds listed such skills twice (forum.cursor.com/t/150137); ~/.config/opencode
+# has no skills dir at all. So this script never touches either folder.
 
 echo "✓ skill-sync complete"
