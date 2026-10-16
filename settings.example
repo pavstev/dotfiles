@@ -15,6 +15,16 @@ PROFILE=""
 # MCP servers are opt-in on every profile.
 CURSOR_MCP=""
 
+# Cloudflare docs search (an MCP server) in Opencode: on or off. Empty: off.
+# MCP servers are opt-in on every profile. DOTFILES_MCP=on turns this on too.
+OPENCODE_MCP=""
+
+# Project paths whose .opencode/ should mirror the global Opencode config (agents
+# linked from ~/.config/opencode/agents, opencode.jsonc linked to the global one).
+# Absolute paths; a leading ~ means your home folder. Split by spaces.
+# DOTFILES_PROJECTS does the same for one run. Empty: no project configs are created.
+OPENCODE_PROJECTS=""
+
 # The Java folder that new shells use as JAVA_HOME (the folder with bin/java).
 # Empty: dots sets no JAVA_HOME.
 JAVA_HOME=""

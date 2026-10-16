@@ -9,7 +9,7 @@ allowed-tools: "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*) Skill(ps:askme) Skil
 
 Two tables, one for the agent and one for the user, plus an ETA and a table of running tasks. Every row is one simple action. Every ✅ has proof.
 
-Then the agent does its own rows, asks the user the rest through [ps:askme](../ps:askme/SKILL.md), and closes out with `ps:mic-drop` when nothing is left to ask. `scripts/route.py` decides who does what, so the answer is the same every time. The same steps hold in Claude Code and in Cursor.
+Then the agent does its own rows, asks the user the rest through [ps:askme](../ps:askme/SKILL.md), and closes out with `ps:mic-drop` when nothing is left to ask. `scripts/route.py` decides who does what, so the answer is the same every time. The same steps hold in Claude Code, in Cursor and in OpenCode.
 
 ## Args
 
@@ -19,15 +19,15 @@ Then the agent does its own rows, asks the user the rest through [ps:askme](../p
 
 ## Tools by app
 
-| Job | Claude Code | Cursor |
-|---|---|---|
-| Skill folder (`${CLAUDE_SKILL_DIR}`) | set for you | the folder of this SKILL.md |
-| Question with options | `AskUserQuestion` | `AskQuestion` |
-| Run ps:askme, ps:mic-drop | Skill tool | read its SKILL.md (`../ps:askme/`, `../ps:mic-drop/`) and follow it |
-| Stop a task | `TaskStop`; desktop-commander PID: `force_terminate` | `kill <pid>` (find it with `lsof -ti :<port>` or `pgrep -f`) |
-| Web dashboard | Claude in Chrome, else the built-in browser | its browser tool |
-| Native app | computer-use | none: 🧑 row |
-| Slash command | the user types it | the user types it, or a new chat for `/compact` |
+| Job | Claude Code | Cursor | OpenCode |
+|---|---|---|---|
+| Skill folder (`${CLAUDE_SKILL_DIR}`) | set for you | the folder of this SKILL.md | the folder of this SKILL.md |
+| Question with options | `AskUserQuestion` | `AskQuestion` | `question` |
+| Run ps:askme, ps:mic-drop | Skill tool | read its SKILL.md (`../ps:askme/`, `../ps:mic-drop/`) and follow it | same: read its SKILL.md and follow it |
+| Stop a task | `TaskStop`; desktop-commander PID: `force_terminate` | `kill <pid>` (find it with `lsof -ti :<port>` or `pgrep -f`) | `kill <pid>` (same way to find it) |
+| Web dashboard | Claude in Chrome, else the built-in browser | its browser tool | its browser tool, or a `bash` call to the CLI |
+| Native app | computer-use | none: 🧑 row | none: 🧑 row |
+| Slash command | the user types it | the user types it, or a new chat for `/compact` | the user types it |
 
 ## Steps
 

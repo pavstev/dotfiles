@@ -4,7 +4,8 @@ Custom [subagents](https://code.claude.com/docs/en/sub-agents): focused assistan
 delegates to. Each is a Markdown file with YAML frontmatter followed by the system prompt.
 
 Symlinked to `~/.claude/agents` by `./dotfiles`, so a new file here is live on this Mac at once.
-Run `dots` on other machines. `scripts/agent-config.py` copies them to `~/.cursor/agents`.
+Run `dots` on other machines. `scripts/agent-config.py` copies them to `~/.cursor/agents`
+and to `~/.config/opencode/agents`.
 
 ## The agents
 

@@ -5,6 +5,10 @@
 set -euo pipefail
 . "$REPO/scripts/setup-lib.sh"
 
+# Homebrew is macOS and Linux only. On Windows, WinGet installs the tools
+# (see scripts/install.d/15-winget.sh); this step skips there.
+is_windows && { skip "Homebrew (not on Windows — WinGet installs the tools)"; exit 0; }
+
 brew_env
 if have brew; then
   skip "Homebrew"

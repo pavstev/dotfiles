@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Build agent config for other harnesses from claude/. Python 3 stdlib only.
 
-  agent-config.py cursor --profile owner|shared [--dry-run]
+  agent-config.py cursor   --profile owner|shared [--dry-run]
+  agent-config.py opencode --profile owner|shared [--dry-run] [--projects <paths>]
   agent-config.py user-rules [--profile owner|shared] [--copy]   # for Cursor User Rules
   agent-config.py claude-settings build [--dry-run]       # ~/.claude/settings.json
   agent-config.py claude-settings promote <dotted.key>    # private layer -> repo base
 
 `cursor` writes generated files under ~/.cursor (rules, agents) and merges keys into
 the JSON files Cursor also writes itself (hooks.json, mcp.json, cli-config.json).
-`cursor` never writes under ~/.claude. Design and gap table: docs/cursor-port.md.
+`opencode` writes generated files under ~/.config/opencode (AGENTS.md, agents,
+the copper theme) and merges keys into the JSON files Opencode also writes itself
+(opencode.jsonc, tui.json). Neither ever writes under ~/.claude.
+Design and gap tables: docs/cursor-port.md, docs/opencode-port.md.
 
 `claude-settings build` writes ~/.claude/settings.json: the repo base
 (claude/settings.json) with the private layer (~/.config/dotfiles/claude-settings.json)
@@ -505,10 +509,341 @@ def cmd_cursor(args):
     return 1 if failed else 0
 
 
+# --- Opencode parts -----------------------------------------------------------
+
+OPENCODE = Path(".config") / "opencode"  # ~/.config/opencode, per-machine generated config
+OPENCODE_NOTE = (
+    "> In OpenCode, read \"Claude\" as \"the agent\". Claude Code tool names map to OpenCode:\n"
+    "> Agent = Task (subagent), AskUserQuestion = `question`, `/ps:*` skills work the same.\n"
+    "> Rules about Claude-only features apply where OpenCode has an equivalent.\n\n"
+)
+
+
+def opencode_rules(home, profile):
+    """~/.config/opencode/AGENTS.md: the global rules, the owner overlay and the reply style.
+
+    OpenCode reads this file as its global instructions and only falls back to
+    ~/.claude/CLAUDE.md when it is missing. Generating it is what carries the owner
+    overlay and the output style into OpenCode: CLAUDE.md alone has neither.
+    """
+    path = home / OPENCODE / "AGENTS.md"
+    if path.is_symlink() or (path.exists() and MARK not in path.read_text(errors="replace")):
+        warn(f"{tilde(path)} is not ours ({tilde(path)} has no {MARK} marker), left untouched. "
+             "Move your own text into ~/.config/dotfiles/owner.md (dots settings) and it lands here too.")
+        return
+    srcs, mode = ["claude/CLAUDE.md"], None
+    if owner_overlay(home, profile):
+        srcs.append(f"~/{OWNER_MD}")
+        mode = 0o600  # owner.md is private, so this copy is private too
+    elif profile == "owner":
+        warn(f"no ~/{OWNER_MD}, so the OpenCode rules have no owner-only rules. Add them with: dots settings")
+    text = stamp(*srcs) + OPENCODE_NOTE + rules_text(home, profile)
+    style = output_style()
+    if style:
+        name, _, sbody = style
+        text = text.rstrip("\n") + f"\n\n# Reply style: {name}\n\n" + sbody
+    write_generated(path, text, mode)
+
+
+def opencode_mcp_wanted(home):
+    """MCP servers are opt-in on every profile: connectors are never forced on.
+
+    DOTFILES_MCP=on|off wins, then OPENCODE_MCP in the settings (dots settings).
+    """
+    v = os.environ.get("DOTFILES_MCP", "").strip().lower() or setting(home, "OPENCODE_MCP").strip().lower()
+    return v in ("1", "on", "yes", "true")
+
+
+def opencode_permission(rule, kind):
+    """Claude permission rule -> (category, pattern, effect) for Opencode, or None."""
+    m = re.fullmatch(r"(\w+)\((.*)\)", rule.strip())
+    if not m:
+        return None
+    tool, arg = m.groups()
+    if tool == "Bash":
+        if re.search(r"(:\*|\s\*)\Z", arg):  # prefix rule: "x *" matches x and "x ..."
+            cmd = re.sub(r"(:\*|\s\*)\Z", "", arg).strip()
+            return ("bash", cmd + " *", "allow") if cmd and "*" not in cmd else None
+        exe, _, rest = arg.strip().partition(" ")
+        if exe and rest.strip() and "*" not in arg:
+            return ("bash", exe + " " + rest.strip(), "allow")
+        return None
+    if tool == "Read":
+        path = arg[2:] if arg.startswith("./") else arg
+        if kind == "deny" and not path.startswith(("/", "~", "**")):
+            path = "**/" + path
+        return ("read", path, kind)
+    if tool in ("Edit", "Write"):
+        path = arg[2:] if arg.startswith("./") else arg
+        if kind == "deny" and not path.startswith(("/", "~", "**")):
+            path = "**/" + path
+        return ("edit", path, kind)
+    if tool in ("SuggestPluginInstall", "SearchPlugins", "SuggestSkills"):
+        return ("tool", tool, "deny")
+    return None
+
+
+def opencode_agents(home):
+    """Mirror claude/agents/*.md as Opencode subagents under ~/.config/opencode/agents/."""
+    dst = home / OPENCODE / "agents"
+    wanted = set()
+    for src in sorted((CLAUDE / "agents").glob("*.md")):
+        if src.name == "README.md":
+            continue
+        meta, body = split_frontmatter(src.read_text())
+        name = meta.get("name") or src.stem
+        lines = []
+        desc = meta.get("description")
+        if desc:
+            lines.append(f"description: {yaml_str(desc)}")
+        lines.append("mode: subagent")  # Opencode subagents inherit the caller's model
+        tools = {t.strip() for t in meta.get("tools", "").split(",") if t.strip()}
+        write_tools = tools & {"Write", "Edit", "MultiEdit", "NotebookEdit"}  # Bash alone is read-only
+        if not write_tools:
+            lines.append("permission:")
+            lines.append("  edit: deny")
+            lines.append("  skill: allow")
+        else:
+            lines.append("permission:")
+            lines.append("  skill: allow")
+        text = "---\n" + "\n".join(lines) + "\n---\n" + stamp(f"claude/agents/{src.name}") + body.lstrip()
+        out = dst / f"{name}.md"
+        wanted.add(out.name)
+        write_generated(out, text)
+    if dst.is_dir():
+        for f in sorted(dst.glob("*.md")):
+            if f.name not in wanted:
+                remove_generated(f)
+
+
+def opencode_config(home):
+    """Merge translated permissions and opt-in MCP servers into ~/.config/opencode/opencode.jsonc.
+
+    The user's existing keys win; we only add our translated rules and new MCP servers.
+    Strict JSON only: an Opencode JSONC file with comments is left untouched.
+    """
+    path = home / OPENCODE / "opencode.jsonc"
+    old = load_json(path)
+    if old is None:
+        if path.exists():
+            warn(f"{tilde(path)} is not valid JSON, left untouched")
+        return
+    new = json.loads(json.dumps(old))
+    perms = new.setdefault("permission", {})
+    src = (load_json(CLAUDE / "settings.json") or {}).get("permissions") or {}
+    want = {"bash": {}, "read": {}, "edit": {}, "tool": {}}
+    for kind in ("allow", "deny"):
+        for rule in src.get(kind) or []:
+            res = opencode_permission(rule, kind)
+            if not res:
+                continue
+            cat, pat, eff = res
+            want.setdefault(cat, {})[pat] = eff
+    want["skill"] = {"*": "allow"}  # /ps:* skills load everywhere
+    want["ask"] = {"*": "allow"}  # questions: one per human turn, answered in the settings menu
+    # The sidecar holds the rules we added last run, so a rule dropped from
+    # claude/settings.json goes away here too (the user's own keys stay).
+    side = home / OPENCODE / MANAGED
+    managed = load_json(side)
+    managed = managed if isinstance(managed, dict) else {}
+    for cat, ours in want.items():
+        have = perms.setdefault(cat, {})
+        if not isinstance(have, dict):
+            have = perms[cat] = {}
+        was = managed.get(cat) or {}
+        if isinstance(was, dict):
+            for pat, eff in was.items():
+                if pat not in ours and have.get(pat) == eff:  # ours, and now stale
+                    del have[pat]
+        for pat, eff in ours.items():
+            if pat not in have:
+                have[pat] = eff
+    new["permission"] = perms
+    if opencode_mcp_wanted(home):
+        mcp = new.setdefault("mcp", {})
+        if not isinstance(mcp, dict):
+            mcp = new["mcp"] = {}
+        ours = (load_json(CURSOR_SRC / "mcp.json") or {}).get("mcpServers") or {}
+        for name, cfg in ours.items():
+            if name in mcp:
+                continue
+            mcp[name] = {"type": "remote", "url": cfg.get("url"), "enabled": True} if cfg.get("url") else cfg
+    save_json(path, old, new)
+    if not DRY and not path.is_symlink() and load_json(path) == new and managed != want:
+        atomic_write(side, json.dumps(want, indent=2) + "\n")
+
+
+def cmd_opencode(args):
+    home = Path.home()
+    info(f"Opencode config from {tilde(CLAUDE)} (profile: {args.profile})")
+    failed = 0
+    projects = args.projects.split() if args.projects else None
+    for part in (lambda: opencode_agents(home), lambda: opencode_config(home),
+                 lambda: opencode_rules(home, args.profile), lambda: opencode_theme(home),
+                 lambda: opencode_projects(home, projects)):
+        try:
+            part()
+        except Exception as e:  # one bad file must not stop the other parts
+            warn(f"skipped a part: {type(e).__name__}: {e}")
+            failed += 1
+    return 1 if failed else 0
+
+
+# The repo's warm copper-on-stone palette (home/.config/ghostty/config, claude/statusline.sh),
+# in the key names Opencode themes use. Refine it, never swap it.
+# Every key below is required: the theme loader reads them all and refuses to start a
+# theme that is missing one (`syntaxNumber` and `syntaxType` are in the shipped themes but
+# not in the docs example; `syntaxBracket` is in the docs example but in no shipped theme).
+COPPER_THEME = {
+    "primary": "#E0825F",
+    "secondary": "#C089AD",
+    "accent": "#E8BC77",
+    "error": "#D97066",
+    "warning": "#DBA85C",
+    "success": "#87B083",
+    "info": "#7FA6CC",
+    "text": "#EDE8E3",
+    "textMuted": "#A8A29E",
+    "background": "#1C1917",
+    "backgroundPanel": "#292524",
+    "backgroundElement": "#3D3835",
+    "border": "#57514C",
+    "borderActive": "#E0825F",
+    "borderSubtle": "#44403C",
+    "diffAdded": "#97C293",
+    "diffRemoved": "#D97066",
+    "diffContext": "#A8A29E",
+    "diffHunkHeader": "#7FA6CC",
+    "diffHighlightAdded": "#87B083",
+    "diffHighlightRemoved": "#D97066",
+    "diffAddedBg": "#292524",
+    "diffContextBg": "#292524",
+    "diffRemovedBg": "#292524",
+    "diffLineNumber": "#57514C",
+    "diffAddedLineNumberBg": "#292524",
+    "diffRemovedLineNumberBg": "#292524",
+    "syntaxComment": "#A8A29E",
+    "syntaxKeyword": "#E0825F",
+    "syntaxFunction": "#E8BC77",
+    "syntaxVariable": "#EDE8E3",
+    "syntaxString": "#97C293",
+    "syntaxNumber": "#DBA85C",
+    "syntaxType": "#D09EC0",
+    "syntaxOperator": "#C089AD",
+    "syntaxPunctuation": "#A8A29E",
+    "markdownText": "#EDE8E3",
+    "markdownHeading": "#E0825F",
+    "markdownLink": "#7FA6CC",
+    "markdownLinkText": "#C089AD",
+    "markdownCode": "#97C293",
+    "markdownCodeBlock": "#D7CFC6",
+    "markdownBlockQuote": "#A8A29E",
+    "markdownListItem": "#EDE8E3",
+    "markdownListEnumeration": "#E0825F",
+    "markdownImage": "#74C6C3",
+    "markdownImageText": "#A8A29E",
+    "markdownEmph": "#E8BC77",
+    "markdownStrong": "#DBA85C",
+    "markdownHorizontalRule": "#44403C",
+}
+
+
+def opencode_theme(home):
+    """The copper theme for Opencode: ~/.config/opencode/themes/copper.json.
+
+    Opencode themes are JSON files in a themes/ dir, and tui.json names the one to use
+    (`{"theme": "tokyonight"}`, a name, and additionalProperties is false). So the theme
+    is written as its own file and tui.json only carries the name. A tui.json that already
+    names another theme is the user's, and then we only say so.
+    """
+    themes = home / OPENCODE / "themes"
+    text = json.dumps({"$schema": "https://opencode.ai/theme.json", "theme": COPPER_THEME}, indent=2) + "\n"
+    path = themes / "copper.json"
+    if path.exists() and path.read_text() == text:
+        skip(tilde(path))
+    elif DRY:
+        info(f"would write {tilde(path)}")
+    else:
+        atomic_write(path, text)
+        ok(f"wrote {tilde(path)}")
+
+    path = home / OPENCODE / "tui.json"
+    old = load_json(path)
+    if old is None:
+        if path.exists():
+            warn(f"{tilde(path)} is not valid JSON, left untouched")
+            return
+        old = {}
+    legacy = old.get("_dotfiles")  # our own file, from an older layout
+    legacy = isinstance(legacy, dict) and legacy.get("generated") is True
+    theme = old.get("theme")
+    if theme is not None and theme != "copper" and not legacy:
+        info(f"{tilde(path)} uses your Opencode theme ({theme}); "
+             f"the copper one is in {tilde(themes / 'copper.json')}")
+        return
+    # keep every other key of the file; drop the markers of the older layouts
+    new = {k: v for k, v in old.items() if k not in ("_dotfiles", "theme", "generated-by", "source")}
+    new.setdefault("$schema", "https://opencode.ai/tui.json")
+    new["theme"] = "copper"
+    save_json(path, old, new)
+
+
+def opencode_projects(home, projects=None):
+    """Mirror the global Opencode config into per-project .opencode/ dirs.
+
+    `projects`: list of paths (from --projects); a leading ~ means the home folder.
+    When None, read OPENCODE_PROJECTS from settings (dots settings) or
+    DOTFILES_PROJECTS env. For each project:
+      - .opencode/opencode.jsonc  symlinked to the global opencode.jsonc
+        (project inherits every global key; deep-merged over global, so identical)
+      - .opencode/agents/<name>.md symlinked to each generated global agent,
+        added only when the project does not already have that agent name.
+    Existing project files and agents are never clobbered.
+    """
+    if projects is None:
+        v = os.environ.get("DOTFILES_PROJECTS", "").strip() or setting(home, "OPENCODE_PROJECTS").strip()
+        projects = [p for p in v.split() if p]
+    if not projects:
+        return
+    global_cfg = home / OPENCODE / "opencode.jsonc"
+    global_agents = home / OPENCODE / "agents"
+    for proj in projects:
+        proj = Path(proj).expanduser()
+        if not proj.is_absolute():
+            warn(f"skipping non-absolute Opencode project path: {proj}")
+            continue
+        popencode = proj / ".opencode"
+        popencode.mkdir(parents=True, exist_ok=True)
+        # opencode.jsonc: symlink to the global one (project config == global config).
+        pcfg = popencode / "opencode.jsonc"
+        if not pcfg.exists():
+            try:
+                pcfg.symlink_to(global_cfg)
+                ok(f"linked {pcfg} → {global_cfg}")
+            except OSError as e:
+                warn(f"couldn't link {pcfg}: {e}")
+        # agents: copy each global agent name the project lacks.
+        if global_agents.is_dir():
+            pagents = popencode / "agents"
+            pagents.mkdir(parents=True, exist_ok=True)
+            for src in sorted(global_agents.glob("*.md")):
+                dst = pagents / src.name
+                if dst.exists():
+                    continue  # project's own agent of the same name wins
+                try:
+                    dst.symlink_to(src)
+                    ok(f"linked {dst} → {src}")
+                except OSError as e:
+                    warn(f"couldn't link {dst}: {e}")
+
+
 def clipboard_command():
-    """The command that copies stdin to the clipboard: pbcopy on a Mac, else wl-copy, xclip or xsel."""
+    """The command that copies stdin to the clipboard: pbcopy on a Mac, clip on
+    Windows, else wl-copy, xclip or xsel."""
     if sys.platform == "darwin":
         return ["pbcopy"]
+    if sys.platform == "win32":
+        return ["clip"]
     for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
         if shutil.which(cmd[0]):
             return cmd
@@ -748,10 +1083,14 @@ def main(argv=None):
     cs.add_argument("action", choices=("build", "promote"))
     cs.add_argument("key", nargs="?", help="promote: the dotted key to move to the repo, e.g. permissions.allow")
     cs.add_argument("--dry-run", action="store_true")
+    o = sub.add_parser("opencode", help="generate and merge Opencode config under ~/.config/opencode")
+    o.add_argument("--profile", choices=PROFILES, default="shared")
+    o.add_argument("--dry-run", action="store_true")
+    o.add_argument("--projects", help="comma/space-separated absolute project paths to mirror the global config into")
     args = p.parse_args(argv)
     DRY = args.dry_run
     return {"cursor": cmd_cursor, "user-rules": cmd_user_rules,
-            "claude-settings": cmd_claude_settings}[args.cmd](args)
+            "claude-settings": cmd_claude_settings, "opencode": cmd_opencode}[args.cmd](args)
 
 
 if __name__ == "__main__":

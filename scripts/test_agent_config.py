@@ -1079,6 +1079,483 @@ class CmdCursorTest(Base):
         self.assertTrue((self.cdir / "rules" / "claude-global.mdc").exists())
 
 
+class OpencodeAgentsTest(Base):
+    @property
+    def odir(self):
+        return self.home / ".config" / "opencode"
+
+    def agent(self, fname, text):
+        d = self.claude / "agents"
+        d.mkdir(exist_ok=True)
+        (d / fname).write_text(text)
+
+    def test_converts_frontmatter(self):
+        self.agent("rev.md", "---\nname: reviewer\ndescription: reviews\ntools: Read, Grep, Bash, Write\nmodel: sonnet\neffort: high\n---\n\nBody\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        out = (self.odir / "agents" / "reviewer.md").read_text()
+        self.assertTrue(out.startswith("---\ndescription: reviews\nmode: subagent\npermission:\n  skill: allow\n---"))
+        self.assertIn(AC.MARK, out)
+        self.assertNotIn("model", out.split("---")[1])
+        self.assertNotIn("effort", out)
+        self.assertNotIn("edit: deny", out)
+        self.assertTrue(out.endswith("Body\n"))
+
+    def test_readonly_agent_gets_edit_deny(self):
+        self.agent("cr.md", "---\nname: code-reviewer\ndescription: reviews\ntools: Read, Grep, Glob, Bash\ndisallowedTools: Write, Edit, NotebookEdit, Agent\n---\n\nBody\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertIn("permission:\n  edit: deny\n  skill: allow", (self.odir / "agents" / "code-reviewer.md").read_text())
+
+    def test_write_capable_agent_does_not_deny_edit(self):
+        self.agent("ti.md", "---\nname: task-implementer\ndescription: builds\ntools: Read, Edit, Write, Bash, Grep, Glob\n---\n\nBody\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("edit: deny", (self.odir / "agents" / "task-implementer.md").read_text())
+
+    def test_name_from_file_stem_and_readme_skipped(self):
+        self.agent("stem-name.md", "no frontmatter\n")
+        self.agent("README.md", "# readme\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(p.name for p in (self.odir / "agents").iterdir()), ["stem-name.md"])
+
+    def test_stale_generated_agent_removed_user_agent_kept(self):
+        self.agent("a.md", "---\nname: a\n---\nb\n")
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        mine = self.odir / "agents" / "mine.md"
+        mine.parent.mkdir(parents=True, exist_ok=True)
+        mine.write_text("my agent\n")
+        (self.claude / "agents" / "a.md").unlink()
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.odir / "agents" / "a.md").exists())
+        self.assertEqual(mine.read_text(), "my agent\n")
+
+    def test_user_agent_with_same_name_is_not_overwritten(self):
+        self.agent("a.md", "---\nname: a\n---\nb\n")
+        (self.odir / "agents").mkdir(parents=True)
+        (self.odir / "agents" / "a.md").write_text("mine\n")
+        _, _, err = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual((self.odir / "agents" / "a.md").read_text(), "mine\n")
+        self.assertIn("not ours", err)
+
+    def test_no_agents_dir_is_fine(self):
+        rc, _, _ = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertFalse((self.odir / "agents").exists())
+
+
+class OpencodeConfigTest(Base):
+    path = property(lambda self: self.home / ".config" / "opencode" / "opencode.jsonc")
+
+    def ours(self, servers):
+        wj(self.cursor_src / "mcp.json", {"mcpServers": servers})
+
+    def setting(self, value):
+        f = self.home / AC.SETTINGS
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f'OPENCODE_MCP="{value}"\n')
+
+    def run_cfg(self):
+        return call(AC.main, ["opencode", "--profile", "shared"])
+
+    def test_translated_permissions_added(self):
+        self.perms(allow=["Bash(git status:*)", "Read(./src/**)", "Edit(./notes.md)"], deny=["Read(./.env)"])
+        self.run_cfg()
+        p = rj(self.path)["permission"]
+        self.assertEqual(p["bash"], {"git status *": "allow"})
+        self.assertEqual(p["read"], {"src/**": "allow", "**/.env": "deny"})
+        self.assertEqual(p["edit"], {"notes.md": "allow"})
+
+    def test_skill_and_ask_allowed(self):
+        self.perms(allow=[], deny=[])
+        self.run_cfg()
+        p = rj(self.path)["permission"]
+        self.assertEqual(p["skill"], {"*": "allow"})
+        self.assertEqual(p["ask"], {"*": "allow"})
+
+    def test_user_keys_win_ours_added(self):
+        self.perms(allow=["Bash(git status:*)"])
+        wj(self.path, {"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}})
+        self.run_cfg()
+        p = rj(self.path)["permission"]
+        self.assertEqual(p["bash"], {"npm *": "ask", "git status *": "allow"})
+        self.assertEqual(p["read"], {"keep.me": "allow"})
+
+    def test_mcp_added_when_opt_in(self):
+        self.ours({"cloudflare-docs": {"url": "https://docs.mcp.cloudflare.com/mcp"}})
+        self.setting("on")
+        self.run_cfg()
+        s = rj(self.path)["mcp"]
+        self.assertEqual(s["cloudflare-docs"], {"type": "remote", "url": "https://docs.mcp.cloudflare.com/mcp", "enabled": True})
+
+    def test_mcp_user_entry_wins(self):
+        self.ours({"cloudflare-docs": {"url": "ours"}})
+        wj(self.path, {"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": False}}})
+        self.setting("on")
+        self.run_cfg()
+        self.assertEqual(rj(self.path)["mcp"]["cloudflare-docs"]["url"], "users")
+
+    def test_mcp_skipped_when_off(self):
+        self.ours({"cloudflare-docs": {"url": "u"}})
+        self.setting("off")
+        self.run_cfg()
+        self.assertNotIn("mcp", rj(self.path))
+
+    def test_mcp_env_wins_over_setting(self):
+        self.ours({"cloudflare-docs": {"url": "u"}})
+        self.setting("on")
+        os.environ["DOTFILES_MCP"] = "off"
+        self.run_cfg()
+        self.assertNotIn("mcp", rj(self.path))
+        os.environ["DOTFILES_MCP"] = "1"
+        self.run_cfg()
+        self.assertIn("cloudflare-docs", rj(self.path)["mcp"])
+
+    def test_mcp_merges_into_existing_mcp_block(self):
+        self.ours({"cloudflare-docs": {"url": "ours"}})
+        wj(self.path, {"mcp": {"existing": {"type": "remote", "url": "x"}}})
+        self.setting("on")
+        self.run_cfg()
+        m = rj(self.path)["mcp"]
+        self.assertEqual(m["existing"]["url"], "x")
+        self.assertEqual(m["cloudflare-docs"]["url"], "ours")
+
+    def test_invalid_json_left_untouched(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text("{oops")
+        _, _, err = self.run_cfg()
+        self.assertEqual(self.path.read_text(), "{oops")
+        self.assertIn("not valid JSON", err)
+
+    def test_dry_run_writes_nothing(self):
+        rc, out, _ = call(AC.main, ["opencode", "--profile", "shared", "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.path.exists())
+        self.assertIn("would", out)
+
+
+class OpencodeManagedPermissionsTest(Base):
+    """The sidecar: a rule dropped from claude/settings.json must not stay in opencode.jsonc."""
+    cfg = property(lambda self: self.home / ".config" / "opencode" / "opencode.jsonc")
+    side = property(lambda self: self.home / ".config" / "opencode" / AC.MANAGED)
+
+    def run_cfg(self):
+        return call(AC.main, ["opencode", "--profile", "shared"])
+
+    def test_sidecar_holds_the_rules_we_added(self):
+        self.perms(allow=["Bash(git status:*)"], deny=["Read(./.env)"])
+        self.run_cfg()
+        self.assertEqual(rj(self.side)["bash"], {"git status *": "allow"})
+
+    def test_rule_removed_from_the_repo_goes_away_next_run(self):
+        self.perms(allow=["Bash(git status:*)", "Bash(ls:*)"])
+        self.run_cfg()
+        self.assertEqual(set(rj(self.cfg)["permission"]["bash"]), {"git status *", "ls *"})
+        self.perms(allow=["Bash(git status:*)"])  # ls dropped from claude/settings.json
+        self.run_cfg()
+        self.assertEqual(set(rj(self.cfg)["permission"]["bash"]), {"git status *"})
+
+    def test_a_rule_the_user_edited_is_not_taken_away(self):
+        self.perms(allow=["Bash(ls:*)"])
+        self.run_cfg()
+        p = self.cfg.parent / "opencode.jsonc"
+        data = rj(p)
+        data["permission"]["bash"]["ls *"] = "ask"  # the user changed our rule
+        wj(p, data)
+        self.perms(allow=[])  # and the repo dropped it
+        self.run_cfg()
+        self.assertEqual(rj(p)["permission"]["bash"], {"ls *": "ask"})
+
+    def test_a_rule_the_user_added_is_never_touched(self):
+        self.perms(allow=["Bash(git status:*)"])
+        wj(self.cfg, {"permission": {"bash": {"npm *": "ask"}}})
+        self.run_cfg()
+        self.assertEqual(rj(self.cfg)["permission"]["bash"], {"npm *": "ask", "git status *": "allow"})
+        self.perms(allow=[])
+        self.run_cfg()
+        self.assertEqual(rj(self.cfg)["permission"]["bash"], {"npm *": "ask"})
+
+    def test_dry_run_leaves_the_sidecar_alone(self):
+        self.perms(allow=["Bash(ls:*)"])
+        call(AC.main, ["opencode", "--profile", "shared", "--dry-run"])
+        self.assertFalse(self.side.exists())
+
+    def test_a_symlinked_config_is_never_claimed(self):
+        self.perms(allow=["Bash(ls:*)"])
+        target = Path(tempfile.mkdtemp()) / "mine.jsonc"
+        wj(target, {"permission": {"bash": {"ls *": "allow"}}})
+        self.cfg.parent.mkdir(parents=True, exist_ok=True)
+        self.cfg.symlink_to(target)
+        rc, _, err = self.run_cfg()
+        self.assertEqual(rc, 0)
+        self.assertIn("symlink", err)
+        self.assertFalse(self.side.exists())
+
+
+class OpencodeThemeTest(Base):
+    theme = property(lambda self: self.home / ".config" / "opencode" / "themes" / "copper.json")
+    tui = property(lambda self: self.home / ".config" / "opencode" / "tui.json")
+    # The key set the Opencode theme loader reads, read out of the shipped themes in
+    # opencode 2.0.25. A missing key aborts the whole theme ("Failed to load theme").
+    SHIPPED_KEYS = {
+        "primary", "secondary", "accent", "error", "warning", "success", "info",
+        "text", "textMuted", "background", "backgroundPanel", "backgroundElement",
+        "border", "borderActive", "borderSubtle",
+        "diffAdded", "diffRemoved", "diffContext", "diffHunkHeader",
+        "diffHighlightAdded", "diffHighlightRemoved",
+        "diffAddedBg", "diffRemovedBg", "diffContextBg", "diffLineNumber",
+        "diffAddedLineNumberBg", "diffRemovedLineNumberBg",
+        "markdownText", "markdownHeading", "markdownLink", "markdownLinkText", "markdownCode",
+        "markdownBlockQuote", "markdownEmph", "markdownStrong", "markdownHorizontalRule",
+        "markdownListItem", "markdownListEnumeration", "markdownImage", "markdownImageText",
+        "markdownCodeBlock",
+        "syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable", "syntaxString",
+        "syntaxNumber", "syntaxType", "syntaxOperator", "syntaxPunctuation",
+    }
+
+    def run_opencode(self, extra_args=None):
+        args = ["opencode", "--profile", "shared"]
+        if extra_args:
+            args += extra_args
+        return call(AC.main, args)
+
+    def test_theme_file_holds_the_copper_palette(self):
+        rc, _, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        data = json.loads(self.theme.read_text())
+        self.assertEqual(data["theme"]["primary"], AC.COPPER_THEME["primary"])
+        self.assertEqual(data["theme"]["background"], "#1C1917")
+        self.assertEqual(data["theme"]["accent"], "#E8BC77")
+        self.assertEqual(set(data["theme"]), set(AC.COPPER_THEME))
+        self.assertEqual(data["$schema"], "https://opencode.ai/theme.json")
+
+    def test_theme_has_every_key_the_opencode_loader_reads(self):
+        # regression: a missing key makes the TUI say "Failed to load theme" and use none
+        self.run_opencode()
+        keys = set(json.loads(self.theme.read_text())["theme"])
+        self.assertEqual(keys - self.SHIPPED_KEYS, set())
+        self.assertEqual(self.SHIPPED_KEYS - keys, set())
+
+    def test_every_colour_is_a_hex_string(self):
+        self.run_opencode()
+        for key, value in json.loads(self.theme.read_text())["theme"].items():
+            self.assertRegex(value, r"^#[0-9A-Fa-f]{6}$", key)
+
+    def test_tui_names_the_theme_because_the_schema_takes_a_string(self):
+        self.run_opencode()
+        data = json.loads(self.tui.read_text())
+        self.assertEqual(data["theme"], "copper")
+        self.assertEqual(data["$schema"], "https://opencode.ai/tui.json")
+        # tui.json has additionalProperties: false, so no marker key can live there
+        self.assertEqual(set(data), {"$schema", "theme"})
+
+    def test_user_theme_name_wins_and_is_reported(self):
+        self.tui.parent.mkdir(parents=True, exist_ok=True)
+        self.tui.write_text('{"theme": "tokyonight"}\n')
+        rc, out, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(self.tui.read_text())["theme"], "tokyonight")
+        self.assertIn("tokyonight", out)
+        self.assertTrue(self.theme.exists())  # copper is still there to pick
+
+    def test_user_chosen_theme_is_restored_next_run(self):
+        self.tui.parent.mkdir(parents=True, exist_ok=True)
+        self.run_opencode()
+        self.tui.write_text('{"theme": "gruvbox"}\n')
+        self.run_opencode()
+        self.assertEqual(json.loads(self.tui.read_text())["theme"], "gruvbox")
+
+    def test_other_tui_keys_survive(self):
+        self.tui.parent.mkdir(parents=True, exist_ok=True)
+        self.tui.write_text('{"scroll_speed": 3}\n')
+        self.run_opencode()
+        data = json.loads(self.tui.read_text())
+        self.assertEqual(data["scroll_speed"], 3)
+        self.assertEqual(data["theme"], "copper")
+
+    def test_rerun_skips_an_unchanged_theme(self):
+        self.run_opencode()
+        before = self.theme.read_text()
+        _, out, _ = self.run_opencode()
+        self.assertEqual(self.theme.read_text(), before)
+        self.assertIn("already set up", out)
+
+    def test_invalid_tui_json_is_left_alone(self):
+        self.tui.parent.mkdir(parents=True, exist_ok=True)
+        self.tui.write_text("{ not json\n")
+        _, _, err = self.run_opencode()
+        self.assertEqual(self.tui.read_text(), "{ not json\n")
+        self.assertIn("not valid JSON", err)
+
+    def test_an_older_generated_tui_is_replaced(self):
+        # the first layout put the palette inline, which the schema rejects
+        self.tui.parent.mkdir(parents=True, exist_ok=True)
+        self.tui.write_text(json.dumps({
+            "theme": {"name": "copper", "background": "#2a2523"},
+            "_dotfiles": {"generated": True, "source": "claude/"},
+        }, indent=2) + "\n")
+        rc, _, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        data = json.loads(self.tui.read_text())
+        self.assertEqual(data, {"$schema": "https://opencode.ai/tui.json", "theme": "copper"})
+
+    def test_a_broken_inline_theme_without_our_marker_is_the_users(self):
+        self.tui.parent.mkdir(parents=True, exist_ok=True)
+        self.tui.write_text('{"theme": {"background": "#fff"}}\n')
+        rc, out, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        self.assertIn("your Opencode theme", out)
+        self.assertIn("background", json.loads(self.tui.read_text())["theme"])
+
+
+class OpencodeRulesTest(Base):
+    path = property(lambda self: self.home / ".config" / "opencode" / "AGENTS.md")
+
+    def run_opencode(self, profile="shared", extra_args=None):
+        args = ["opencode", "--profile", profile]
+        if extra_args:
+            args += extra_args
+        return call(AC.main, args)
+
+    def test_shared_profile_carries_the_rules_and_the_note(self):
+        rc, _, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        text = self.path.read_text()
+        self.assertIn(AC.MARK, text)
+        self.assertIn("AskUserQuestion = `question`", text)
+        self.assertIn((AC.CLAUDE / "CLAUDE.md").read_text().strip(), text)
+
+    def test_owner_profile_gets_the_private_overlay_at_0600(self):
+        self.overlay("# mine\nkeep this\n")
+        rc, _, _ = self.run_opencode("owner")
+        self.assertEqual(rc, 0)
+        text = self.path.read_text()
+        self.assertIn("keep this", text)
+        self.assertIn(AC.MARK, text)
+        self.assertEqual(oct(self.path.stat().st_mode & 0o777), oct(0o600))
+
+    def test_owner_profile_without_the_file_warns(self):
+        rc, _, err = self.run_opencode("owner")
+        self.assertEqual(rc, 0)
+        self.assertIn("dots settings", err)
+
+    def test_output_style_is_appended(self):
+        styles = self.claude / "output-styles"
+        styles.mkdir()
+        (styles / "warm.md").write_text("---\nname: warm\n---\nShort lines.\n")
+        wj(self.claude / "settings.json", {"outputStyle": "warm"})
+        rc, _, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        text = self.path.read_text()
+        self.assertIn("# Reply style: warm", text)
+        self.assertIn("Short lines.", text)
+
+    def test_user_own_agents_md_is_never_overwritten(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text("my own opencode rules\n")
+        rc, _, err = self.run_opencode()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.path.read_text(), "my own opencode rules\n")
+        self.assertIn("owner.md", err)
+
+    def test_symlink_is_left_alone(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        target = Path(tempfile.mkdtemp()) / "elsewhere.md"
+        target.write_text("mine\n")
+        self.path.symlink_to(target)
+        rc, _, _ = self.run_opencode()
+        self.assertEqual(rc, 0)
+        self.assertTrue(self.path.is_symlink())
+        self.assertEqual(target.read_text(), "mine\n")
+
+    def test_rerun_is_idempotent(self):
+        self.run_opencode()
+        before = self.path.read_text()
+        _, out, _ = self.run_opencode()
+        self.assertEqual(self.path.read_text(), before)
+        self.assertIn("already set up", out)
+
+
+class OpencodeProjectsTest(Base):
+    def run_opencode(self, extra_args=None):
+        args = ["opencode", "--profile", "shared"]
+        if extra_args:
+            args += extra_args
+        return call(AC.main, args)
+
+    def test_creates_project_opencode_and_agent_links(self):
+        p1 = Path(tempfile.mkdtemp()) / "proj1"
+        p1.mkdir(parents=True)
+        p2 = Path(tempfile.mkdtemp()) / "proj2"
+        p2.mkdir(parents=True)
+        (self.claude / "agents").mkdir()
+        (self.claude / "agents" / "a.md").write_text("---\nname: a\n---\nb\n")
+        self._seed_global_agent()
+        rc, out, err = self.run_opencode(["--projects", f"{p1} {p2}"])
+        self.assertEqual(rc, 0, err)
+        cfg1 = p1 / ".opencode" / "opencode.jsonc"
+        self.assertTrue(cfg1.is_symlink())
+        self.assertEqual(os.path.realpath(cfg1), os.path.realpath(self.home / ".config" / "opencode" / "opencode.jsonc"))
+        ag = p1 / ".opencode" / "agents" / "a.md"
+        self.assertTrue(ag.is_symlink())
+        self.assertEqual(os.path.realpath(ag), os.path.realpath(self.home / ".config" / "opencode" / "agents" / "a.md"))
+        self.assertTrue((p2 / ".opencode" / "opencode.jsonc").is_symlink())
+        self.assertTrue((p2 / ".opencode" / "agents" / "a.md").is_symlink())
+
+    def test_does_not_clobber_existing_project_config_or_agent(self):
+        p = Path(tempfile.mkdtemp()) / "proj"
+        p.mkdir(parents=True)
+        (p / ".opencode").mkdir(parents=True)
+        (p / ".opencode" / "opencode.jsonc").write_text("mine\n")
+        (p / ".opencode" / "agents").mkdir()
+        (p / ".opencode" / "agents" / "a.md").write_text("project agent\n")
+        (self.claude / "agents").mkdir()
+        (self.claude / "agents" / "a.md").write_text("---\nname: a\n---\nb\n")
+        self._seed_global_agent()
+        rc, _, _ = self.run_opencode(["--projects", str(p)])
+        self.assertEqual(rc, 0)
+        self.assertEqual((p / ".opencode" / "opencode.jsonc").read_text(), "mine\n")
+        self.assertEqual((p / ".opencode" / "agents" / "a.md").read_text(), "project agent\n")
+
+    def _seed_global_agent(self):
+        ga = self.home / ".config" / "opencode" / "agents"
+        ga.mkdir(parents=True, exist_ok=True)
+        (ga / "a.md").write_text("---\nname: a\n---\nb\n")
+
+    def test_a_leading_tilde_means_the_home_folder(self):
+        p = self.home / "code" / "app"
+        p.mkdir(parents=True)
+        rc, _, _ = self.run_opencode(["--projects", "~/code/app"])
+        self.assertEqual(rc, 0)
+        self.assertTrue((p / ".opencode").is_dir())
+
+    def test_a_relative_path_is_skipped_with_a_warning(self):
+        rc, _, err = self.run_opencode(["--projects", "code/app"])
+        self.assertEqual(rc, 0)
+        self.assertIn("non-absolute", err)
+
+
+class CmdOpencodeTest(Base):
+    def test_full_run_creates_agents_and_config_and_never_writes_claude_dir(self):
+        self.perms(allow=["Bash(ls:*)"])
+        wj(self.cursor_src / "mcp.json", {"mcpServers": {"docs": {"url": "u"}}})
+        (self.claude / "agents").mkdir()
+        (self.claude / "agents" / "a.md").write_text("---\nname: a\n---\nb\n")
+        (self.home / AC.SETTINGS).parent.mkdir(parents=True, exist_ok=True)
+        (self.home / AC.SETTINGS).write_text('OPENCODE_MCP="on"\n')
+        rc, out, err = call(AC.main, ["opencode", "--profile", "shared"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, "")
+        self.assertTrue((self.home / ".config" / "opencode" / "agents" / "a.md").exists())
+        self.assertTrue((self.home / ".config" / "opencode" / "opencode.jsonc").exists())
+        self.assertEqual(rj(self.home / ".config" / "opencode" / "opencode.jsonc")["mcp"]["docs"],
+                         {"type": "remote", "url": "u", "enabled": True})
+        self.assertFalse((self.home / ".claude").exists())
+
+
 class CmdUserRulesTest(Base):
     def test_print_mode_writes_text_to_stdout_only(self):
         rc, out, _ = call(AC.main, ["user-rules", "--profile", "shared"])

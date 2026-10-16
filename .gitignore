@@ -24,3 +24,6 @@ __pycache__/
 
 # Session notes, hand-offs and ledgers from AI agents stay on the machine
 .agents/
+
+# Generated per-machine Opencode project config (mirrors ~/.config/opencode)
+.opencode/
