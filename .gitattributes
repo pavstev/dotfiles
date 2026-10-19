@@ -1,0 +1,8 @@
+# One line ending everywhere. A Windows git (autocrlf=true) would otherwise check
+# shell scripts out with CRLF, and `#!/usr/bin/env bash^M` cannot run.
+* text=auto eol=lf
+*.sh text eol=lf
+dotfiles text eol=lf
+*.png binary
+*.jpg binary
+*.webp binary

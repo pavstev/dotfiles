@@ -1,6 +1,6 @@
 //! spawn: start a new Claude Code session with Remote Control on, in a detached tmux.
 //!
-//! Port of claude/skills/ps:spawn/scripts/spawn.py. Same checks in the same
+//! Port of claude/skills/ps_spawn/scripts/spawn.py. Same checks in the same
 //! order, same lines on stdout, same exit codes (0 started, 2 bad args, 3 a check
 //! failed, 4 the session stopped, 5 no link in time), and the same argparse
 //! errors on stderr.
@@ -409,7 +409,7 @@ fn preflight(
         if !(truthy(g.get("bypassPermissionsModeAccepted"))
             || truthy(settings.get("skipDangerousModePermissionPrompt")))
         {
-            return Err("bypass warning never accepted on this Mac: run \
+            return Err("bypass warning never accepted on this machine: run \
 `claude --permission-mode bypassPermissions` once in a terminal, accept, \
 then /exit. Or pass --mode acceptEdits."
                 .into());
@@ -872,7 +872,7 @@ fn run(argv: &[String], env: &EnvMap, cwd: &str) -> Outcome {
         o.say(format!("NAME  {}", name));
         o.say(format!("MODE  {} in {}", a.mode, folder));
         o.say(format!("URL   {}", info));
-        o.say(format!("WATCH phone: Claude app > Code > {} · Mac: {}", name, watch));
+        o.say(format!("WATCH phone: Claude app > Code > {} · Terminal: {}", name, watch));
         o.say(format!("STOP  {}", stop));
         return o;
     }
@@ -1193,7 +1193,7 @@ mod tests {
         let env = env_with(&h, &f);
         let o = run(&s(&["--prompt", "x", "--dir", &h.proj, "--name", "n1"]), &env, &h.root);
         assert_eq!(o.code, 3);
-        assert!(o.stdout.starts_with("FAIL  bypass warning never accepted on this Mac: run "));
+        assert!(o.stdout.starts_with("FAIL  bypass warning never accepted on this machine: run "));
         assert!(o.stdout.contains("\nFIX   run `claude --permission-mode bypassPermissions` once"));
         // a name that cleans to nothing
         let o = run(&s(&["--prompt", "x", "--name", "..."]), &env, &h.root);
@@ -1237,7 +1237,7 @@ mod tests {
         assert_eq!(lines[0], "NAME  n1");
         assert_eq!(lines[1], format!("MODE  bypassPermissions in {}", h.proj));
         assert_eq!(lines[2], "URL   https://claude.ai/code/session_01XLjrBUwh9QVMBxLZ1bcqE4");
-        assert_eq!(lines[3], "WATCH phone: Claude app > Code > n1 · Mac: tmux -L claude-spawn attach -t n1");
+        assert_eq!(lines[3], "WATCH phone: Claude app > Code > n1 · Terminal: tmux -L claude-spawn attach -t n1");
         assert_eq!(lines[4], "STOP  tmux -L claude-spawn kill-session -t n1");
         // line ends are read like a Python text file reads them
         assert_eq!(std::fs::read_to_string(format!("{}/.claude/spawn/n1.md", h.root)).unwrap(), "Fix the login bug in app/auth.ts\nmore\n");

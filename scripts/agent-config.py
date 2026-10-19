@@ -69,9 +69,17 @@ if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
 else:
     _G = _Y = _D = _B = _0 = ""
 DRY = False
+# A run prints a count line per command, not one line per file that is up to date.
+# DOTFILES_VERBOSE=1 prints every line (the same switch as scripts/setup-lib.sh).
+VERBOSE = os.environ.get("DOTFILES_VERBOSE", "") not in ("", "0")
+_SKIPPED = 0
+_WRITTEN = 0
 
 
 def ok(msg):
+    global _WRITTEN
+    if msg.startswith(("wrote ", "updated ", "built ")):
+        _WRITTEN += 1
     print(f"{_G}✓{_0} {msg}")
 
 
@@ -80,7 +88,26 @@ def info(msg):
 
 
 def skip(msg):
-    print(f"{_D}•{_0} {msg} {_D}(already set up, skipping){_0}")
+    global _SKIPPED
+    if VERBOSE:
+        print(f"{_D}•{_0} {msg} {_D}(already set up, skipping){_0}")
+    else:
+        _SKIPPED += 1
+
+
+def header(msg):
+    """The line that says what a command reads. Verbose runs only."""
+    if VERBOSE:
+        info(msg)
+
+
+def summary(label):
+    """The count line for the files that were up to date, e.g. "Opencode config: 12 up to date, 1 written"."""
+    global _SKIPPED, _WRITTEN
+    if not VERBOSE and _SKIPPED:
+        more = f", {_WRITTEN} written" if _WRITTEN else ""
+        print(f"{_D}•{_0} {label}: {_SKIPPED} up to date{more}")
+    _SKIPPED = _WRITTEN = 0
 
 
 def warn(msg):
@@ -269,7 +296,11 @@ def save_json(path, old, new, private=False):
 CURSOR_NOTE = (
     "> In Cursor, read \"Claude\" as \"the agent\". Claude Code tool names map to Cursor:\n"
     "> Agent = Task (subagent), AskUserQuestion = AskQuestion, `/ps:*` skills work the same.\n"
-    "> Rules about Claude-only features apply where Cursor has an equivalent.\n\n"
+    "> Rules about Claude-only features apply where Cursor has an equivalent.\n"
+    "> Task accepts only these subagent_type values: generalPurpose, explore, cursor-guide,\n"
+    "> ci-investigator, bugbot, security-review, best-of-n-runner. A named agent from the agents\n"
+    "> table (code-reviewer, task-implementer, ...) is not one of them. Spawn generalPurpose and put\n"
+    "> this in the prompt: \"Read ~/.claude/agents/<name>.md first and follow it.\" Plain lookups use explore.\n\n"
 )
 # Present when the user pasted the rules into Cursor Settings > Rules > User Rules
 # (`agent-config.py user-rules --copy`). Holds the hash of the pasted text.
@@ -497,7 +528,7 @@ def cursor_cli_config(home):
 
 def cmd_cursor(args):
     home = Path.home()
-    info(f"Cursor config from {tilde(CLAUDE)} (profile: {args.profile})")
+    header(f"Cursor config from {tilde(CLAUDE)} (profile: {args.profile})")
     failed = 0
     for part in (lambda: cursor_rules(home, args.profile), lambda: cursor_agents(home),
                  lambda: cursor_hooks(home), lambda: cursor_mcp(home), lambda: cursor_cli_config(home)):
@@ -675,7 +706,7 @@ def opencode_config(home):
 
 def cmd_opencode(args):
     home = Path.home()
-    info(f"Opencode config from {tilde(CLAUDE)} (profile: {args.profile})")
+    header(f"Opencode config from {tilde(CLAUDE)} (profile: {args.profile})")
     failed = 0
     projects = args.projects.split() if args.projects else None
     for part in (lambda: opencode_agents(home), lambda: opencode_config(home),
@@ -1089,8 +1120,11 @@ def main(argv=None):
     o.add_argument("--projects", help="comma/space-separated absolute project paths to mirror the global config into")
     args = p.parse_args(argv)
     DRY = args.dry_run
-    return {"cursor": cmd_cursor, "user-rules": cmd_user_rules,
-            "claude-settings": cmd_claude_settings, "opencode": cmd_opencode}[args.cmd](args)
+    rc = {"cursor": cmd_cursor, "user-rules": cmd_user_rules,
+          "claude-settings": cmd_claude_settings, "opencode": cmd_opencode}[args.cmd](args)
+    summary({"cursor": "Cursor config", "claude-settings": "Claude settings",
+             "opencode": "Opencode config"}.get(args.cmd, args.cmd))
+    return rc
 
 
 if __name__ == "__main__":

@@ -20,8 +20,10 @@ worktree path or the current checkout). If the task text is missing or unclear, 
 
 1. Read the repo's `CLAUDE.md`, the `.claude/rules/` files for the folders you touch, and the
    task and spec parts it names. Look at `git log --oneline -10` for the commit style.
-2. Test first: write the failing test, run it, see it fail for the right reason.
-3. Write the smallest code that makes it pass. Run the test again and see it pass.
+2. Test first: write the failing test, run it, see it fail for the right reason. Quote that red
+   run in your hand-back.
+3. Write the smallest code that makes it pass. Run the test again and see it pass. For a bug
+   fix, `rg` the same pattern in sibling call sites: fix them in this task, or list them.
 4. Run the repo's typecheck and lint on your files, and the tests near your change.
    Use the commands the repo documents (`package.json` scripts, `Makefile`, `CLAUDE.md`).
 5. Commit with a message in the repo's style (Conventional Commits when it uses them).
@@ -44,6 +46,20 @@ worktree path or the current checkout). If the task text is missing or unclear, 
 - Never `sleep` to wait for output. Run the command and read its result.
 - If a check fails three times for the same reason, stop and report `BLOCKED` with the output.
   Do not weaken a test to make it pass.
+
+## Basics (every helper)
+
+- In a worktree: one plain command per Bash call, from the worktree root (rule 18). Report files
+  go inside the worktree.
+- Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
+- Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.
+- Never call `update_plan` or `wrap_up`: they belong to the main session.
+- `rm` only literal paths, or `"${VAR:?}"`.
+- Read big files in slices (offset and limit), or `rg -n` first: Read stops at 25K tokens.
+- You cannot start sub-agents, and skills that start them fail here: do that work inline.
+- Check each fact the brief states before you build on it. Say in the hand-back when the brief
+  was wrong.
+- A tool you lack (Write for a read-only agent, Monitor): hand the result back inline instead.
 
 ## Hand-back
 

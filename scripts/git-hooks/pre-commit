@@ -23,6 +23,17 @@ if git diff --cached --name-only 2>/dev/null | grep -q '^claude/skills/'; then
   done
 fi
 
+# --- Windows-safe paths: a name Windows cannot hold breaks `git clone` there
+# (windows-paths.sh says which).
+. "$(dirname "$0")/windows-paths.sh"
+winbad=$(git diff --cached --name-only --diff-filter=AR 2>/dev/null | windows_bad_paths)
+if [[ -n "$winbad" ]]; then
+  printf '\n\033[1;31m✖ pre-commit: a staged path has a character or name Windows cannot hold:\033[0m\n\n'
+  printf '%s\n' "$winbad" | head -20
+  printf '\nRename it (a skill folder uses _ for : — ps:foo lives in ps_foo).\n\n'
+  exit 1
+fi
+
 # --- Private words (private-words.sh): block a staged file name or an added
 # line that holds one. The commit-msg hook checks the message.
 . "$(dirname "$0")/private-words.sh"

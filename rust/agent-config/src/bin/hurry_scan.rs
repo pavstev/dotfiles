@@ -1,5 +1,5 @@
 //! hurry-scan: find out why a Claude Code session is slow, and what to cut.
-//! Port of claude/skills/ps:whatsleft/scripts/hurry-scan.py (the Python is the reference).
+//! Port of claude/skills/ps_whatsleft/scripts/hurry-scan.py (the Python is the reference).
 //! Read-only: it never changes anything.
 
 use clap::Parser;
@@ -1041,7 +1041,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
     if let Some(load) = m.load.filter(|l| *l != 0.0) {
         if load > m.cpus as f64 * 0.8 {
             let top = m.top.iter().map(|(c, _, n)| format!("{} {:.0}%", n, c)).collect::<Vec<_>>().join(", ");
-            add(50, "you", format!("Mac is busy (load {:.1} on {} cores)", load, m.cpus), format!("Top: {}.", top),
+            add(50, "you", format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus), format!("Top: {}.", top),
                 "Quit the heavy app. Run ps:bag-mode to see more.");
         }
     }

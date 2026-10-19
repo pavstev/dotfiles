@@ -9,16 +9,22 @@ set -euo pipefail
 # (see scripts/install.d/15-winget.sh); this step skips there.
 is_windows && { skip "Homebrew (not on Windows — WinGet installs the tools)"; exit 0; }
 
+step "Homebrew"
 brew_env
 if have brew; then
-  skip "Homebrew"
+  if verbose; then skip "Homebrew"; fi   # the Homebrew packages step shows brew works
   exit 0
 fi
 
-step "Installing Homebrew"
+# Homebrew on Linux needs glibc. On musl (Alpine) say so once; the brew steps skip.
+if is_musl; then
+  warn "Homebrew needs glibc, and this Linux uses musl (Alpine). The brew steps skip."
+  exit 0
+fi
+
+info "installing Homebrew"
 if ensure_brew; then
   ok "Homebrew installed"
 else
-  warn "Homebrew install failed (network or permissions). Downstream brew steps will skip;"
-  warn "fix the cause and re-run: ./dotfiles"
+  warn "Homebrew install failed. The brew steps skip. Fix the error above, then run dots again."
 fi

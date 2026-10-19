@@ -12,7 +12,7 @@ step "Touch ID for sudo"
 SUDO_LOCAL="/etc/pam.d/sudo_local"
 
 if grep -q "pam_tid" "$SUDO_LOCAL" 2>/dev/null; then
-  ok "Touch ID for sudo already configured — skipping."
+  skip "Touch ID for sudo"
   exit 0
 fi
 

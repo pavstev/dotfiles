@@ -14,7 +14,7 @@ for a in "/Applications/Cursor.app" "$HOME/Applications/Cursor.app"; do
   [[ -d "$a" ]] && { app="$a"; break; }
 done
 if [[ -z "$app" && ! -d "$HOME/.cursor" ]] && ! have cursor; then
-  info "Cursor not installed, nothing to set up"
+  note "not installed, nothing to set up"
   exit 0
 fi
 
@@ -47,6 +47,7 @@ else
   warn "no cursor command found, extensions not installed"
 fi
 
-# 3. Rules, agents, hooks, MCP, CLI config.
+# 3. Rules, agents, hooks, MCP, CLI config. agent-config prints its own count line.
+step_end
 "$REPO/scripts/agent-config" cursor --profile "$(dotfiles_profile)" \
   || warn "agent-config cursor reported an issue, see above"

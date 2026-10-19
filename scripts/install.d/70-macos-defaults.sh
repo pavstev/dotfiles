@@ -7,7 +7,7 @@ set -uo pipefail
 only_macos "macOS defaults"
 
 step "macOS defaults"
-info "Applying curated development defaults…"
+if verbose; then info "Applying curated development defaults…"; fi
 
 # --- Keyboard: fast key repeat, disable press-and-hold accent popup ---------
 defaults write -g KeyRepeat -int 2
@@ -46,4 +46,4 @@ defaults write -g NSAutomaticCapitalizationEnabled -bool false
 defaults write -g NSAutomaticSpellingCorrectionEnabled -bool false
 
 for app in Finder Dock SystemUIServer; do killall "$app" >/dev/null 2>&1 || true; done
-ok "macOS defaults applied (a few settings need logout/login to fully take effect)"
+uptodate "macOS defaults applied (a few settings need logout/login to fully take effect)"

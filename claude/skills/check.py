@@ -7,6 +7,7 @@ practices, and the agentskills.io spec. Stdlib only. Exit 1 on any FAIL.
   python3 claude/skills/check.py              # all skills
   python3 claude/skills/check.py ps:askme     # one or more skill folders
   python3 claude/skills/check.py --self-test  # run the built-in fixture tests
+  python3 claude/skills/check.py -q           # failures only, nothing when all pass
 """
 import os
 import re
@@ -128,8 +129,8 @@ def check_skill(path):
     if not fname:
         r.fail("name missing")
     else:
-        if fname != name:
-            r.fail("name '%s' != folder '%s'" % (fname, name))
+        if fname.replace(":", "_") != name:
+            r.fail("name '%s' needs folder '%s', found '%s'" % (fname, fname.replace(":", "_"), name))
         if len(fname) > MAX_NAME:
             r.fail("name longer than %d chars" % MAX_NAME)
         if not NAME_RE.match(fname):
@@ -219,14 +220,15 @@ def run(paths, quiet=False):
         status = "FAIL" if r.fails else ("WARN" if r.warns else "OK")
         if r.fails:
             bad += 1
-        if quiet and status == "OK":
-            continue
+        if quiet and status != "FAIL":
+            continue  # -q prints failures only; warnings show without -q
         print("%-4s %s" % (status, r.skill))
         for f in r.fails:
             print("       ✖ %s" % f)
         for w in r.warns:
             print("       · %s" % w)
-    print("%d skills checked, %d failing" % (len(paths), bad))
+    if bad or not quiet:
+        print("%d skills checked, %d failing" % (len(paths), bad))
     return 1 if bad else 0
 
 
@@ -247,7 +249,7 @@ def self_test():
     tmp = tempfile.mkdtemp(prefix="skillcheck-")
     try:
         def make(folder, text, extra=None):
-            d = os.path.join(tmp, folder)
+            d = os.path.join(tmp, folder.replace(":", "_"))
             os.makedirs(os.path.join(d, "scripts"))
             open(os.path.join(d, "SKILL.md"), "w").write(text)
             open(os.path.join(d, "scripts", "go.sh"), "w").write("#!/bin/sh\n")
@@ -263,7 +265,7 @@ def self_test():
             ("ps:mismatch", GOOD % "ps:other", [], 1),
             ("ps:badname", GOOD % "ps:Bad_Name", [], 1),
             ("ps:hardpath", (GOOD % "ps:hardpath").replace("${CLAUDE_SKILL_DIR}/scripts/go.sh",
-                                                           "~/.claude/skills/ps:hardpath/scripts/go.sh"), [], 1),
+                                                           "~/.claude/skills/ps_hardpath/scripts/go.sh"), [], 1),
             ("ps:deadlink", (GOOD % "ps:deadlink").replace("notes.md", "nope.md"), [], 1),
             ("ps:junk", GOOD % "ps:junk", [".ruff_cache"], 1),
             ("ps:firstperson", (GOOD % "ps:firstperson").replace("Use when the user asks for a demo: a short recipe. Third person.",
@@ -291,5 +293,5 @@ if __name__ == "__main__":
         sys.exit(self_test())
     quiet = "-q" in args
     targets = [a for a in args if not a.startswith("-")]
-    paths = [os.path.join(HERE, t) if not os.path.isabs(t) else t for t in targets] or list_skills(HERE)
+    paths = [os.path.join(HERE, t.replace(":", "_")) if not os.path.isabs(t) else t for t in targets] or list_skills(HERE)
     sys.exit(run(paths, quiet))

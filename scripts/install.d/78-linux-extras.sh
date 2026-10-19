@@ -25,7 +25,7 @@ if have code && [[ -f "$REPO/Brewfile" ]]; then
   done < <(sed -nE 's/^vscode "([^"]+)".*/\1/p' "$REPO/Brewfile" | tr '[:upper:]' '[:lower:]')
   [[ $added -eq 0 && $failed -eq 0 ]] && skip "VS Code extensions"
 else
-  info "VS Code not installed, so no extensions to add"
+  note "VS Code not installed, so no extensions to add"
 fi
 
 # 2. Login shell.

@@ -1,6 +1,6 @@
 //! route: decide who does each what's-left row, and what comes next.
 //!
-//! Port of claude/skills/ps:whatsleft/scripts/route.py. It matches the Python
+//! Port of claude/skills/ps_whatsleft/scripts/route.py. It matches the Python
 //! script byte for byte on stdout, stderr and exit code: the JSON reader, the
 //! argparse errors and the OSError texts are rebuilt to say what Python says.
 //! Known gaps: lone surrogates in JSON strings become U+FFFD, the Unicode
@@ -1534,7 +1534,7 @@ mod tests {
     fn skill_md(name: &str) -> String {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../claude/skills")
-            .join(name)
+            .join(name.replace(':', "_"))
             .join("SKILL.md");
         std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {}", p.display(), e))
     }

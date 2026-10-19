@@ -107,17 +107,17 @@ class GuardCursorTest(unittest.TestCase):
     def test_reuses_guard_limits(self):
         self.assertIsNotNone(guard)
         self.assertEqual(guard.NUDGE_CONTEXT, 300_000)
-        self.assertEqual(guard.SPAWN_CONTEXT, 500_000)
+        self.assertEqual(guard.SPAWN_CONTEXT, 350_000)
 
     # --- subagent ---
 
     def test_deny_above_spawn_context(self):
-        self.seed(500_001)
+        self.seed(350_001)
         self.assertDeny(self.spawn())
 
     def test_allow_at_or_below_spawn_context(self):
         self.assertSilent(self.spawn())  # nothing known
-        self.seed(500_000)
+        self.seed(350_000)
         self.assertSilent(self.spawn())
 
     def test_subagent_uses_parent_conversation(self):

@@ -8,7 +8,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const MARK: &str = "generated-by: dotfiles";
 const OWNER_MD: &str = ".config/dotfiles/owner.md";
@@ -18,7 +18,7 @@ const USER_RULES_MARK: &str = ".config/dotfiles/cursor-user-rules.sha256";
 const LIVE_REL: &str = ".claude/settings.json";
 const LAYER_REL: &str = ".config/dotfiles/claude-settings.json";
 const LAST_REL: &str = ".config/dotfiles/claude-settings.last.json";
-const CURSOR_NOTE: &str = "> In Cursor, read \"Claude\" as \"the agent\". Claude Code tool names map to Cursor:\n> Agent = Task (subagent), AskUserQuestion = AskQuestion, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where Cursor has an equivalent.\n\n";
+const CURSOR_NOTE: &str = "> In Cursor, read \"Claude\" as \"the agent\". Claude Code tool names map to Cursor:\n> Agent = Task (subagent), AskUserQuestion = AskQuestion, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where Cursor has an equivalent.\n> Task accepts only these subagent_type values: generalPurpose, explore, cursor-guide,\n> ci-investigator, bugbot, security-review, best-of-n-runner. A named agent from the agents\n> table (code-reviewer, task-implementer, ...) is not one of them. Spawn generalPurpose and put\n> this in the prompt: \"Read ~/.claude/agents/<name>.md first and follow it.\" Plain lookups use explore.\n\n";
 const OPENCODE_NOTE: &str = "> In OpenCode, read \"Claude\" as \"the agent\". Claude Code tool names map to OpenCode:\n> Agent = Task (subagent), AskUserQuestion = `question`, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where OpenCode has an equivalent.\n\n";
 const WRITE_TOOLS: [&str; 5] = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"];
 
@@ -37,9 +37,30 @@ fn y() -> &'static str { if color_enabled() { "\x1b[38;5;179m" } else { "" } }
 fn d() -> &'static str { if color_enabled() { "\x1b[38;5;245m" } else { "" } }
 fn b() -> &'static str { if color_enabled() { "\x1b[38;5;73m" } else { "" } }
 fn z() -> &'static str { if color_enabled() { "\x1b[0m" } else { "" } }
-pub fn ok(msg: &str) { println!("{}✓{} {}", g(), z(), msg); }
+static SKIPPED: AtomicUsize = AtomicUsize::new(0);
+static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+// DOTFILES_VERBOSE=1 prints every line; otherwise one count line per command (see summary).
+pub fn verbose() -> bool { env::var("DOTFILES_VERBOSE").map(|v| !v.is_empty() && v != "0").unwrap_or(false) }
+pub fn ok(msg: &str) {
+    if msg.starts_with("wrote ") || msg.starts_with("updated ") || msg.starts_with("built ") { WRITTEN.fetch_add(1, Ordering::Relaxed); }
+    println!("{}✓{} {}", g(), z(), msg);
+}
 pub fn info(msg: &str) { println!("{}»»{} {}", b(), z(), msg); }
-pub fn skip(msg: &str) { println!("{}•{} {} {}(already set up, skipping){}", d(), z(), msg, d(), z()); }
+pub fn skip(msg: &str) {
+    if verbose() { println!("{}•{} {} {}(already set up, skipping){}", d(), z(), msg, d(), z()); }
+    else { SKIPPED.fetch_add(1, Ordering::Relaxed); }
+}
+/// The line that says what a command reads. Verbose runs only.
+pub fn header(msg: &str) { if verbose() { info(msg); } }
+/// The count line for the files that were up to date, e.g. "Opencode config: 12 up to date, 1 written".
+pub fn summary(label: &str) {
+    let skipped = SKIPPED.swap(0, Ordering::Relaxed);
+    let written = WRITTEN.swap(0, Ordering::Relaxed);
+    if !verbose() && skipped > 0 {
+        let more = if written > 0 { format!(", {} written", written) } else { String::new() };
+        println!("{}•{} {}: {} up to date{}", d(), z(), label, skipped, more);
+    }
+}
 pub fn warn(msg: &str) { eprintln!("{}!{}  {}", y(), z(), msg); }
 pub fn tilde(p: &Path) -> String {
     let home = home_dir();
@@ -242,6 +263,8 @@ pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), St
     let mut nt = builder.tempfile_in(parent).map_err(|e| e.to_string())?;
     nt.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     nt.flush().map_err(|e| e.to_string())?;
+    #[cfg(not(unix))]
+    let _ = mode;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -271,7 +294,7 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
             && old == text {
                 let same_mode = mode.map(|m| fs::metadata(path).map(|md| {
                     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; md.permissions().mode() & 0o777 == m }
-                    #[cfg(not(unix))] { true }
+                    #[cfg(not(unix))] { let _ = (m, md); true }
                 }).unwrap_or(false)).unwrap_or(true);
                 if mode.is_none() || same_mode {
                     skip(&tilde(path));
@@ -322,7 +345,7 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
         let bak = path.with_file_name(format!("{}.bak-{}", path.file_name().unwrap().to_str().unwrap(), unix_ts()));
         let _ = atomic_write(&bak, &fs::read_to_string(path).unwrap_or_default(), Some(fs::metadata(path).map(|m| {
             #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; m.permissions().mode() & 0o777 }
-            #[cfg(not(unix))] { 0o644 }
+            #[cfg(not(unix))] { let _ = m; 0o644 }
         }).unwrap_or(0o644)));
     }
     let mode = if private { Some(0o600) } else { None };
@@ -778,7 +801,7 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
                 else { ok(&format!("linked {} → {}", pcfg.display(), global_cfg.display())); }
             }
             #[cfg(not(unix))]
-            { let _ = (global_cfg, pcfg); }
+            { let _ = (&global_cfg, &pcfg); }
         }
         if global_agents.is_dir() {
             let pagents = popencode.join("agents");
@@ -802,7 +825,7 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
 
 pub fn cmd_cursor(args: &CursorArgs) -> i32 {
     let home = home_dir();
-    info(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), args.profile));
+    header(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), args.profile));
     cursor_rules(&home, &args.profile);
     cursor_agents(&home);
     cursor_hooks(&home);
@@ -1176,18 +1199,20 @@ pub struct OpencodeArgs {
 pub fn run() -> i32 {
     let cli = Cli::parse();
     if let Some(r) = cli.repo { unsafe { env::set_var("DOTFILES_REPO", r); } }
-    match cli.cmd {
-        Commands::Cursor(a) => { set_dry(a.dry_run); cmd_cursor_dispatch(&a) }
-        Commands::UserRules(a) => { set_dry(a.dry_run); cmd_user_rules(&a.profile, a.copy, a.dry_run) }
-        Commands::ClaudeSettings(a) => { set_dry(a.dry_run); cmd_claude_settings_dispatch(&a) }
-        Commands::Opencode(a) => { set_dry(a.dry_run); cmd_opencode_dispatch(&a) }
-    }
+    let (rc, label) = match cli.cmd {
+        Commands::Cursor(a) => { set_dry(a.dry_run); (cmd_cursor_dispatch(&a), "Cursor config") }
+        Commands::UserRules(a) => { set_dry(a.dry_run); (cmd_user_rules(&a.profile, a.copy, a.dry_run), "user-rules") }
+        Commands::ClaudeSettings(a) => { set_dry(a.dry_run); (cmd_claude_settings_dispatch(&a), "Claude settings") }
+        Commands::Opencode(a) => { set_dry(a.dry_run); (cmd_opencode_dispatch(&a), "Opencode config") }
+    };
+    summary(label);
+    rc
 }
 
 fn cmd_cursor_dispatch(a: &CursorArgs) -> i32 {
     set_dry(a.dry_run);
     let home = home_dir();
-    info(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), a.profile));
+    header(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), a.profile));
     cursor_rules(&home, &a.profile);
     cursor_agents(&home);
     cursor_hooks(&home);
@@ -1213,7 +1238,7 @@ fn cmd_claude_settings_dispatch(a: &ClaudeSettingsArgs) -> i32 {
 fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
     set_dry(a.dry_run);
     let home = home_dir();
-    info(&format!("Opencode config from {} (profile: {})", tilde(&claude_dir()), a.profile));
+    header(&format!("Opencode config from {} (profile: {})", tilde(&claude_dir()), a.profile));
     let projects = a.projects.as_ref().map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>());
     opencode_agents(&home);
     opencode_config(&home);

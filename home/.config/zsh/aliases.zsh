@@ -9,6 +9,10 @@
 #  scripts keep using the real /usr/bin tools.
 # ----------------------------------------------------------------------------
 
+# Claude Code's shell (CLAUDECODE=1) gets the real tools: its commands broke on
+# ls=eza, cat=bat, ps=procs, du=dust and mkdir -p in 56 sessions.
+[[ -n $CLAUDECODE ]] && return
+
 # ---- ls -> eza -------------------------------------------------------------
 if command -v eza >/dev/null; then
   alias ls='eza --icons --group-directories-first'
