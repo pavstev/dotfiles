@@ -8,12 +8,19 @@ argument-hint: "[base..head or branch] [repo path]"
 
 Several review angles run at once, then one merged report. Each angle is an agent with one lens.
 The merge waits for all of them (a barrier). This buys quality, not tokens: a panel is 4 agent runs.
+The guard router sets model and effort: `panel: <angle>` calls run on Sonnet, a `final review:` call runs on Opus.
 
 ## Gate
 
 - Under about 300 changed lines and 5 files, and no risky area (auth, payments, data migration,
-  security): send ONE `code-reviewer`, model `opus`, effort `max`. Stop here.
+  security): send ONE `code-reviewer`, description `final review: <slug>`. Stop here.
 - Else run the panel.
+
+## Pace
+
+When `~/.claude/hooks/pace.py` exists, run `python3 ~/.claude/hooks/pace.py status`. Agents at once:
+3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (send nothing: run the repo's checks
+yourself, review the diff yourself, and say the week is spent). The guard enforces the cap.
 
 ## 1. Pin the change (you)
 
@@ -21,22 +28,23 @@ The merge waits for all of them (a barrier). This buys quality, not tokens: a pa
   lint commands from its `CLAUDE.md`, `package.json` or `Makefile`.
 - Do not paste the diff into the briefs. Each agent runs `git diff <range>` itself.
 
-## 2. Fan out in ONE message
+## 2. Fan out in waves
 
-Send all angles in one message. Do not merge until every angle has handed back. Never merge
-partial results.
+Wave 1 is the three Sonnet angles, in one message (one at a time when pace is `ahead`). The last
+agent is the judge: the `correctness` final review (Opus by the router). Send it after the angles
+return, with their findings in its brief. Do not merge until every agent has handed back.
+Never merge partial results.
 
-| Angle | subagent_type | model | effort | Lens |
-|---|---|---|---|---|
-| correctness | `code-reviewer` | opus | max | bugs, security, broken contracts, a rule one commit adds and another breaks. The judge. |
-| verify | `worker` | sonnet | high | run the tests, typecheck, lint and build; reproduce the main behaviour once. Change nothing. |
-| simplify | `code-reviewer` | sonnet | high | duplicate or dead code, an existing helper not reused, parts built bigger than the task needs. |
-| design | `code-reviewer` | sonnet | high | fit with the repo's rules and conventions, docs and tests updated, names, rollout and migration safety. |
+| Angle | subagent_type | Description | Lens |
+|---|---|---|---|
+| verify | `worker` | `panel: verify` | run the tests, typecheck, lint and build; reproduce the main behaviour once. Change nothing. |
+| simplify | `code-reviewer` | `panel: simplify` | duplicate or dead code, an existing helper not reused, parts built bigger than the task needs. |
+| design | `code-reviewer` | `panel: design` | fit with the repo's rules and conventions, docs and tests updated, names, rollout and migration safety. |
+| correctness | `code-reviewer` | `final review: <slug>` | bugs, security, broken contracts, a rule one commit adds and another breaks. Gets the other angles' findings and confirms or drops them. |
 
 One risky area that dominates the change (a payment webhook, an auth flow) may get a fifth agent:
-`code-reviewer`, sonnet, high, that area only. Never more than 5.
+`code-reviewer`, description `panel: <area>`, that area only. Never more than 5.
 
-Each call's description is `panel: <angle>` (the guard then leaves the sonnet angles on sonnet).
 Each brief holds: the repo path, the range, the angle and its lens, the check commands, and:
 
 ```
@@ -75,8 +83,8 @@ Spent: <n> agents (<n> opus)
 
 ## Fix round
 
-One fix round, then a re-review of the blocking findings only: one `code-reviewer`, sonnet, high,
-description `re-review: <slug>`, with the findings and the fix range. Not the full panel again. Anything still open goes to the user.
+One fix round, then a re-review of the blocking findings only: one `code-reviewer`,
+description `re-review: <slug>` (Sonnet), with the findings and the fix range. Not the full panel again. Anything still open goes to the user.
 
 ## Mistakes
 
@@ -86,5 +94,6 @@ description `re-review: <slug>`, with the findings and the fix range. Not the fu
 | Nobody runs the tests | The verify angle runs them and quotes real output. |
 | Merging as results arrive | Wait for every angle, then merge once. |
 | Pasting a 900-line diff into 4 briefs | Give the range; each agent reads the diff itself. |
-| A panel for a 40-line change | The gate: one opus `code-reviewer`. |
+| A panel for a 40-line change | The gate: one `final review:` `code-reviewer`. |
+| More than 3 agents at once | The Pace cap. Send the judge after the angles. |
 | A second full panel after the fixes | Re-review the blocking findings only. |

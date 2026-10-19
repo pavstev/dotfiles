@@ -74,5 +74,22 @@ class AgentsTest(unittest.TestCase):
         self.assertIn("| general-purpose spawns % | 67 | 0 |", rep)
 
 
+class NullTokensTest(unittest.TestCase):
+    def test_scan_survives_null_token_fields(self):
+        rec = usage_rec("2026-10-10T10:00:00Z", 1000, "m1")
+        rec["message"]["usage"].update({"input_tokens": None, "cache_creation_input_tokens": None,
+                                        "output_tokens": None})
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.jsonl")
+            with open(path, "w") as f:
+                f.write(json.dumps(rec) + "\n")
+            res = hs.scan(path)
+        self.assertEqual(res["r"]["calls"], 1)
+        self.assertEqual(res["r"]["out"], 0)
+        self.assertEqual(res["r"]["fresh_in"], 0)
+        self.assertEqual(res["r"]["cache_read"], 990)
+        self.assertEqual(res["peak"], 990)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

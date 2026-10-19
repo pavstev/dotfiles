@@ -1,9 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "cleanupPeriodDays": 365,
-  "model": "claude-opus-5-5",
+  "model": "opusplan",
   "effortLevel": "high",
-  "autoCompactWindow": 500000,
+  "autoCompactWindow": 350000,
   "modelSettings": {
     "claude-opus-5-5": {
       "effortLevel": "high"
@@ -53,7 +53,9 @@
       "mcp__a16997c4-316a-4f39-816e-0b9b5ac48d05__*",
       "mcp__claude_ai_Google_Drive__*",
       "mcp__claude_ai_PDF_Viewer__*",
-      "mcp__plugin_pdf-viewer_pdf__*"
+      "mcp__plugin_pdf-viewer_pdf__*",
+      "mcp__computer-use__*",
+      "mcp__plugin_desktop-commander_desktop-commander__*"
     ]
   },
   "statusLine": {
@@ -64,11 +66,22 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Agent|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session|mcp__Claude_Browser__.*|mcp__claude-in-chrome__.*",
+        "matcher": "Agent|EnterPlanMode|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session|mcp__Claude_Browser__.*|mcp__claude-in-chrome__.*|Bash|Read|Grep",
         "hooks": [
           {
             "type": "command",
             "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py pretool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py posttool",
             "timeout": 10
           }
         ]
@@ -96,6 +109,18 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py posttoolfailure",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
@@ -109,7 +134,7 @@
     ]
   },
   "enabledPlugins": {
-    "cloudflare@cloudflare": true,
+    "cloudflare@cloudflare": false,
     "data@synced": false,
     "brightdata-plugin@synced": false,
     "cowork-plugin-management@synced": false,
@@ -121,7 +146,13 @@
     "jev@synced": false,
     "jev@inline": false,
     "adversarial-review@synced": false,
-    "adversarial-review@inline": false
+    "adversarial-review@inline": false,
+    "engineering@synced": false,
+    "engineering@inline": false,
+    "design@synced": false,
+    "design@inline": false,
+    "desktop-commander@synced": false,
+    "desktop-commander@inline": false
   },
   "skillOverrides": {
     "anthropic-skills:spark": "user-invocable-only",

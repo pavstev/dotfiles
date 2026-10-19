@@ -2,7 +2,7 @@
 name: ps:whatsleft
 description: Use when the user runs /ps:whatsleft, or asks what is left, what remains, what is still open, "where are we", "what's on me", "what do I still need to do", "who does what next", wants the open work split between the user and Claude, or says the session is "slow", "laggy", "speed up", "hurry up" or "trim this session".
 argument-hint: "[kill dead tasks | report only | focus text]"
-allowed-tools: "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*) Skill(ps:askme) Skill(ps:mic-drop) TaskStop mcp__plugin_desktop-commander_desktop-commander__list_sessions mcp__plugin_desktop-commander_desktop-commander__force_terminate"
+allowed-tools: "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*) Skill(ps:askme) Skill(ps:mic-drop) TaskStop Bash(tmux -L claude-run kill-session *)"
 ---
 
 # What's Left
@@ -24,7 +24,7 @@ Then the agent does its own rows, asks the user the rest through [ps:askme](../p
 | Skill folder (`${CLAUDE_SKILL_DIR}`) | set for you | the folder of this SKILL.md | the folder of this SKILL.md |
 | Question with options | `AskUserQuestion` | `AskQuestion` | `question` |
 | Run ps:askme, ps:mic-drop | Skill tool | read its SKILL.md (`../ps:askme/`, `../ps:mic-drop/`) and follow it | same: read its SKILL.md and follow it |
-| Stop a task | `TaskStop`; desktop-commander PID: `force_terminate` | `kill <pid>` (find it with `lsof -ti :<port>` or `pgrep -f`) | `kill <pid>` (same way to find it) |
+| Stop a task | `TaskStop`; a tmux session this session started: `tmux -L claude-run kill-session -t <name>` | `kill <pid>` (find it with `lsof -ti :<port>` or `pgrep -f`) | `kill <pid>` (same way to find it) |
 | Web dashboard | Claude in Chrome, else the built-in browser | its browser tool | its browser tool, or a `bash` call to the CLI |
 | Native app | computer-use | none: 🧑 row | none: 🧑 row |
 | Slash command | the user types it | the user types it, or a new chat for `/compact` | the user types it |
@@ -38,7 +38,7 @@ Then the agent does its own rows, asks the user the rest through [ps:askme](../p
 5. Add what the scan cannot see: promises you made, steps you skipped, work the asks imply (an ask for "tests" needs a test that covers the new code). Confirm cheap facts with read-only commands (`git status`, `gh pr view`).
 6. Read the user's rules (CLAUDE.md, AGENTS.md, owner rules). A decision they already settle (main or PR, commit style) is not a question: follow the rule.
 7. Write each row once into `rows.json` in your scratchpad (no scratchpad: `mktemp -d`), with its `kind` (see "Who does it"), `risk`, `after` and `done`. Every `TASK` line is a row of kind `task` with `stop` from the scan.
-   The scan cannot see desktop-commander processes. Call desktop-commander `list_sessions` (Claude Code: load with ToolSearch `+desktop-commander list_sessions force_terminate`): a PID that this session's own `start_process` call returned is one more task row, named from that call. Not needed any more → `stop`. Any other PID is not yours: leave it out. No such tool → there are none.
+   A tmux session on socket `-L claude-run` is a task row only when this session started it. Not needed any more → `stop`. Any other session is not yours: leave it out.
 8. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/route.py <scratch>/rows.json` (add `--kill` for `kill dead tasks`). It prints a route per row and three NEXT lines. Exit 2 → fix the row it names, run it again. Do not route by hand.
 9. Write the report from the routes: DO rows and waiting work go in 🤖 Me, YOU rows in 🧑 You, ASK rows in 🧑 You as "Question below", a waiting question in 🧑 You as "Question next round", task rows in 🏃 Tasks.
 10. **NEXT 1:** do the DO rows now, in the same turn, in order.

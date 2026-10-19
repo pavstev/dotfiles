@@ -1,5 +1,12 @@
 use std::fs;
 use std::process::Command;
+
+const NOTE_WORDS: [&str; 9] = [
+    "generalPurpose", "explore", "cursor-guide", "ci-investigator", "bugbot",
+    "security-review", "best-of-n-runner", "~/.claude/agents/<name>.md",
+    "Read ~/.claude/agents/<name>.md first and follow it",
+];
+
 #[test]
 fn cursor_smoke() {
     let tmp = std::env::temp_dir().join("rust-ac-cursor");
@@ -19,7 +26,10 @@ fn cursor_smoke() {
         .env("NO_COLOR", "1")
         .output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(home.join(".cursor/rules/claude-global.mdc").exists());
+    let rule = fs::read_to_string(home.join(".cursor/rules/claude-global.mdc")).unwrap();
+    for w in NOTE_WORDS {
+        assert!(rule.contains(w), "rule lacks {w}: {rule}");
+    }
     let _ = fs::remove_dir_all(&tmp);
 }
 #[test]
@@ -54,5 +64,9 @@ fn user_rules_print() {
         .output().unwrap();
     assert!(out.status.success());
     assert!(!out.stdout.is_empty());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for w in NOTE_WORDS {
+        assert!(text.contains(w), "user rules lack {w}");
+    }
     let _ = fs::remove_dir_all(&tmp);
 }

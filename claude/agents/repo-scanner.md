@@ -35,6 +35,20 @@ line and stop.
 - One plain command per Bash call. No `cd … &&` chains in a worktree. Never `sleep`.
 - Mark a guess as `INFERRED`. Never present a pattern you did not see in the code.
 
+## Basics (every helper)
+
+- In a worktree: one plain command per Bash call, from the worktree root (rule 18). Report files
+  go inside the worktree.
+- Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
+- Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.
+- Never call `update_plan` or `wrap_up`: they belong to the main session.
+- `rm` only literal paths, or `"${VAR:?}"`.
+- Read big files in slices (offset and limit), or `rg -n` first: Read stops at 25K tokens.
+- You cannot start sub-agents, and skills that start them fail here: do that work inline.
+- Check each fact the brief states before you build on it. Say in the hand-back when the brief
+  was wrong.
+- A tool you lack (Write for a read-only agent, Monitor): hand the result back inline instead.
+
 ## Hand-back
 
 Line 1: `DONE <output path>` or `BLOCKED: <why>`. Then the top findings, one line each with

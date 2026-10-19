@@ -159,6 +159,14 @@ for app in Code Cursor; do
   done
 done
 
+# The settings build and the Opencode config below run agent-config, which needs cargo or
+# python3. A fresh Debian or Ubuntu has neither until step 05 installs python3, so install
+# the prerequisites now (step 05 then skips).
+if is_linux && ! have cargo && ! have python3; then
+  step "Linux prerequisites"
+  linux_prereqs || warn "prerequisites missing, so the Claude and Opencode config may not build. Fix the error above, then run dots again."
+fi
+
 step "Linking Claude config -> ~/.claude"
 info "profile: $PROFILE (AGENTS.md \"Profiles\")"
 CLAUDE_SRC="$REPO/claude"

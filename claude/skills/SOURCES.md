@@ -178,3 +178,14 @@ sonnet at high, the same scenario before and after each edit:
 - ps:review-panel (new): baseline split angles by area, ran no tests, asked read-only reviewers for
   notes files, had no confidence filter. With the skill: lens angles (correctness on opus, verify,
   simplify, design), one barrier, merge rules; a 60-line diff gets one opus reviewer instead.
+
+## Ideas from the engineering, design and desktop-commander plugins (2026-10-19)
+
+Reviewed 23 skills from three synced plugins before turning them off (13 calls in 19 days, none for
+desktop-commander). Ideas only, rewritten for this setup, no text copied. Full review in the ignored
+`.agents/research/2026-10-19-learn/plugin-skills-review.md`.
+
+- engineering `code-review` (Anthropic, Apache-2.0, https://github.com/anthropics/knowledge-work-plugins): the security, performance and correctness scan list, now one line in the `code-reviewer` agent.
+- design `accessibility-review` (Anthropic, Apache-2.0, https://github.com/anthropics/knowledge-work-plugins): the label, keyboard, focus, target size, contrast and zoom checks in the `ui-verifier` agent.
+- desktop-commander `terminal` and `desktop-commander-overview` (Desktop Commander, MIT, https://github.com/wonderwhy-er/DesktopCommanderMCP): the persistent interactive-session pattern, now driven through tmux in `ps:autopilot`. The desktop-commander MCP tools were removed from `ps:autopilot`, `ps:whatsleft` and `ps:mic-drop`.
+- Not taken: the other 20 skills (generic templates, connector flows, Obsidian, Hermes and OpenClaw setup).

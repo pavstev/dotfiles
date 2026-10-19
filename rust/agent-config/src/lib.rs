@@ -18,7 +18,7 @@ const USER_RULES_MARK: &str = ".config/dotfiles/cursor-user-rules.sha256";
 const LIVE_REL: &str = ".claude/settings.json";
 const LAYER_REL: &str = ".config/dotfiles/claude-settings.json";
 const LAST_REL: &str = ".config/dotfiles/claude-settings.last.json";
-const CURSOR_NOTE: &str = "> In Cursor, read \"Claude\" as \"the agent\". Claude Code tool names map to Cursor:\n> Agent = Task (subagent), AskUserQuestion = AskQuestion, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where Cursor has an equivalent.\n\n";
+const CURSOR_NOTE: &str = "> In Cursor, read \"Claude\" as \"the agent\". Claude Code tool names map to Cursor:\n> Agent = Task (subagent), AskUserQuestion = AskQuestion, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where Cursor has an equivalent.\n> Task accepts only these subagent_type values: generalPurpose, explore, cursor-guide,\n> ci-investigator, bugbot, security-review, best-of-n-runner. A named agent from the agents\n> table (code-reviewer, task-implementer, ...) is not one of them. Spawn generalPurpose and put\n> this in the prompt: \"Read ~/.claude/agents/<name>.md first and follow it.\" Plain lookups use explore.\n\n";
 const OPENCODE_NOTE: &str = "> In OpenCode, read \"Claude\" as \"the agent\". Claude Code tool names map to OpenCode:\n> Agent = Task (subagent), AskUserQuestion = `question`, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where OpenCode has an equivalent.\n\n";
 const WRITE_TOOLS: [&str; 5] = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"];
 

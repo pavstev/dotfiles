@@ -158,6 +158,42 @@ class RouteTest(unittest.TestCase):
             with self.assertRaises(route.BadInput):
                 route.route(rows)
 
+    def test_row_without_id_gets_a_default_id(self):
+        rows = [{"id": "r2", "kind": "work", "text": "taken"},
+                {"kind": "work", "text": "no id, place 2"},
+                {"id": "", "kind": "decision", "text": "empty id, place 3"},
+                {"id": None, "kind": "work", "text": "null id, place 4"}]
+        res = route.route(rows)
+        # place 2 would be r2, which is taken: next free is r3; then r3 is taken too
+        self.assertEqual([x["id"] for x in res["routes"]], ["r2", "r3", "r4", "r5"])
+        self.assertEqual(rows[1].get("id"), None)  # the caller's rows are not changed
+
+    def test_row_without_text_is_dropped_and_named(self):
+        rows = [{"id": "a", "kind": "work", "text": "build"},
+                {"kind": "work"},
+                {"id": "c", "kind": "nope", "text": ""},
+                {"id": "d", "kind": "work", "text": "   ", "after": ["a"]},
+                {"id": "e", "kind": "work", "text": "ship", "after": ["d"]}]
+        res = route.route(rows)
+        self.assertEqual([x["id"] for x in res["routes"]], ["a", "e"])
+        self.assertEqual(res["dropped"], ["dropped row r2: no text", "dropped row c: no text",
+                                          "dropped row d: no text"])
+        self.assertEqual(routes(res)["e"], "DO")  # a dropped row is not waited on
+        out = route.render(res)
+        self.assertEqual(out.count("dropped row c: no text"), 1)
+
+    def test_wrong_types_stay_bad_input(self):
+        bad = [
+            [{"id": 5, "kind": "work", "text": "t"}],
+            [{"id": ["a"], "kind": "work", "text": "t"}],
+            [{"kind": "nope", "text": "t"}],
+            [{"kind": "work", "risk": "rm -rf", "text": "t"}],
+            [{"kind": "work", "text": "t", "after": ["gone"]}],
+        ]
+        for rows in bad:
+            with self.assertRaises(route.BadInput):
+                route.route(rows)
+
     def test_cli(self):
         buf = io.StringIO()
         with redirect_stdout(buf):

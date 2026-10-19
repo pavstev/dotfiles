@@ -40,6 +40,20 @@ guess the scope.
   Never read `.env*` files.
 - If the same step fails three times for the same reason, stop and report `BLOCKED` with the output.
 
+## Basics (every helper)
+
+- In a worktree: one plain command per Bash call, from the worktree root (rule 18). Report files
+  go inside the worktree.
+- Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
+- Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.
+- Never call `update_plan` or `wrap_up`: they belong to the main session.
+- `rm` only literal paths, or `"${VAR:?}"`.
+- Read big files in slices (offset and limit), or `rg -n` first: Read stops at 25K tokens.
+- You cannot start sub-agents, and skills that start them fail here: do that work inline.
+- Check each fact the brief states before you build on it. Say in the hand-back when the brief
+  was wrong.
+- A tool you lack (Write for a read-only agent, Monitor): hand the result back inline instead.
+
 ## Hand-back
 
 Line 1: one of `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED: <why>`, `NEEDS_CONTEXT: <question>`. Then:

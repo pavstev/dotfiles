@@ -1,9 +1,14 @@
 # PROGRESS
 
+State:
 Brief: <path or one-line summary>
-Repo: <path> · Branch: <branch> · Started: <date time>
-Resume command: `/loop 30m Read PROGRESS.md and continue the next open task`
-Next step: <one line, the very next action>
+Repo: <path>
+Branch: <branch>
+Started: <date time>
+Resume: `/loop 30m Read PROGRESS.md and continue the next open task`
+Next: <one line, the very next action>
+Pace: <ok / ahead / critical, from the guard's last note>
+Blockers: <count>
 
 ## Tasks
 

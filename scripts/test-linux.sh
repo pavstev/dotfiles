@@ -177,10 +177,14 @@ check "links point into the repo" '
       .config/starship.toml:home/.config/starship.toml \
       ".config/Code/User/settings.json:home/Library/Application Support/Code/User/settings.json" \
       ".config/Cursor/User/keybindings.json:home/Library/Application Support/Cursor/User/keybindings.json" \
-      .claude/CLAUDE.md:claude/CLAUDE.md .claude/settings.json:claude/settings.json .claude/hooks:claude/hooks; do
+      .claude/CLAUDE.md:claude/CLAUDE.md .claude/hooks:claude/hooks; do
     p="${pair%%:*}"; want="$R/${pair#*:}"
     [ "$(readlink "$HOME/$p")" = "$want" ] && [ -e "$HOME/$p" ] || { echo "bad link: $p -> $(readlink "$HOME/$p") (want $want)"; exit 1; }
   done
+  # settings.json is built (repo base + private layer), so it is a real file, not a link.
+  S="$HOME/.claude/settings.json"
+  [ -f "$S" ] && [ ! -L "$S" ] || { echo "settings.json: want a built file, not a link"; exit 1; }
+  grep -q PreToolUse "$S" || { echo "settings.json: built file has no hooks"; exit 1; }
   [ ! -e "$HOME/Library" ] && [ ! -e "$HOME/.config/aerospace" ]'
 
 skipped="$(grep -c 'macOS only, skipping' "$LOGS/run1.log")"

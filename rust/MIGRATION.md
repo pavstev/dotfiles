@@ -26,6 +26,10 @@ Every Python tool now has a Rust binary in `rust/agent-config/src/bin/` (or `mai
 
 - The Python files stay. They are the reference for the tests and the fallback when there is no
   `cargo`. Delete them only after the hooks and skills call the Rust binaries.
+- The Rust `guard` matches `guard.py` as of 2026-10-16 only. The 2026-10-19 changes (model router,
+  pace guard via `claude/hooks/pace.py`, plan-mode gate, helper cap, general-purpose refusal, 350K ceiling,
+  the `GUARD_OFF` switch, Stop checks G10 to G12, tool checks G13 to G15 with the `posttool` mode, the
+  new G3 note and the G6 skip of a deleted hand-off) exist only in Python. Port them, and `pace.py`, before the hooks switch to the binary.
 - `claude/settings.json` still wires the Python `guard.py`, and the skills still call their
   `.py` scripts. Moving them to the Rust binaries is a separate, reversible step.
 - Where Python crashes with a traceback (null JSON where a number is expected, a lone surrogate,
@@ -35,8 +39,8 @@ Every Python tool now has a Rust binary in `rust/agent-config/src/bin/` (or `mai
   1 s timeout). Without that tool (a plain Debian or Ubuntu) it reads 0 and never denies on app
   context; the transcript path still works. Python uses its built-in sqlite3 module.
 - Local-time code in the scans uses `localtime_r` on unix and UTC on Windows.
-- Rust is not tested on Linux or Windows. The x1 box (Debian 13) has `cargo` but no C linker,
-  so it runs the Python fallback. Needs `build-essential` to test the Rust path there.
+- Rust is tested on Linux: on 2026-10-19 the x1 box (Debian 13, now with `cc`) built it and passed
+  `cargo test` (90 tests). Windows is still untested.
 
 ## How to run the checks
 

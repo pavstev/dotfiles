@@ -47,6 +47,13 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   `DOTFILES_STEPS` filters install.d steps (names without `.sh`; empty runs all). The pull, git
   identity prompt, links, skill sync and the Opencode config step still run: that one is in
   `./dotfiles` itself, not in `install.d`, so it needs no filter.
+- A new or edited agent (`claude/agents/*.md`) loads only in a new session: test it with a
+  headless `claude -p` run, not in the session that edited it (`claude/agents/README.md`).
+- Guard checks have an off switch: `GUARD_OFF="G10,G13"` in the env turns those checks off
+  (`claude/hooks/guard.py` docstring lists every check).
+- `claude/hooks/` is live in every session. Merge helper branches that touch it in a worktree
+  and bring main forward only when the tests pass: a conflict marker breaks every session's
+  hooks, and a broken SubagentStop leaves helper slots taken until they time out (90 min).
 
 ## Skills
 

@@ -137,12 +137,14 @@ def scan(path, is_sub=False):
             if mid in seen or not u or msg.get("model") == "<synthetic>":
                 continue
             seen.add(mid)
-            ctx = u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+            t_in, t_out = u.get("input_tokens") or 0, u.get("output_tokens") or 0
+            t_cr, t_cc = u.get("cache_read_input_tokens") or 0, u.get("cache_creation_input_tokens") or 0
+            ctx = t_in + t_cr + t_cc
             models[msg.get("model")] += 1
             r["calls"] += 1
-            r["out"] += u.get("output_tokens", 0)
-            r["fresh_in"] += u.get("input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
-            r["cache_read"] += u.get("cache_read_input_tokens", 0)
+            r["out"] += t_out
+            r["fresh_in"] += t_in + t_cc
+            r["cache_read"] += t_cr
             if first_ctx is None and ctx:
                 first_ctx = ctx
             peak = max(peak, ctx)

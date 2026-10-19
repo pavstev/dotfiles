@@ -269,7 +269,11 @@ def save_json(path, old, new, private=False):
 CURSOR_NOTE = (
     "> In Cursor, read \"Claude\" as \"the agent\". Claude Code tool names map to Cursor:\n"
     "> Agent = Task (subagent), AskUserQuestion = AskQuestion, `/ps:*` skills work the same.\n"
-    "> Rules about Claude-only features apply where Cursor has an equivalent.\n\n"
+    "> Rules about Claude-only features apply where Cursor has an equivalent.\n"
+    "> Task accepts only these subagent_type values: generalPurpose, explore, cursor-guide,\n"
+    "> ci-investigator, bugbot, security-review, best-of-n-runner. A named agent from the agents\n"
+    "> table (code-reviewer, task-implementer, ...) is not one of them. Spawn generalPurpose and put\n"
+    "> this in the prompt: \"Read ~/.claude/agents/<name>.md first and follow it.\" Plain lookups use explore.\n\n"
 )
 # Present when the user pasted the rules into Cursor Settings > Rules > User Rules
 # (`agent-config.py user-rules --copy`). Holds the hash of the pasted text.

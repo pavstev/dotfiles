@@ -30,20 +30,37 @@ A deny wins over a warning. Tests: `python3 claude/hooks/test_guard.py`.
 
 | Guard | Event | Rule |
 |-------|-------|------|
-| G1 | PreToolUse `Agent` | needs `model` + `effort`; `effort: max` only for plan / synthesis / architecture / final review; the prompt must name a deadline and a hand-back cap (for example `Deadline: 25 min.` and `Hand back at most 4,000 chars; write the rest to a file.`) |
+| G1 | PreToolUse `Agent` | the prompt must name a deadline and a hand-back cap (for example `Deadline: 25 min.` and `Hand back at most 4,000 chars; write the rest to a file.`). `model` and `effort` may be missing: the router fills them |
 | G2 | PreToolUse `CronCreate`, `ScheduleWakeup`, `Skill` (`loop`) | no interval under 30 min once context > 100K |
-| G3 | UserPromptSubmit; PreToolUse `Agent` | at 300K+ nudge `/ps:handoff` (1st prompt, then every 5th); deny spawning above 500K |
+| G3 | UserPromptSubmit; PreToolUse `Agent` | at 300K+ nudge `/ps:handoff` (1st prompt, then every 5th); deny spawning above 350K |
 | G4 | PreToolUse `AskUserQuestion` | one call per human turn |
 | G5 | PreToolUse `SubagentHandback`; SubagentStop | a subagent's hand-back may not exceed its cap by more than 10 percent; at most 2 denies per agent, then it passes |
-| W1 | PreToolUse `Agent` | warn, never deny: a `general-purpose` or `claude` spawn (or no `subagent_type`) gets a note to use `worker`, `Explore` or a named agent |
-| W2 | PreToolUse `Agent` | warn: a final or whole-branch review (in the description, or early in a reviewer's prompt) off opus or fable, or a `task-reviewer` on opus for a per-task review; a description naming a panel angle or a re-review is left alone |
+| G6 | Stop; PreToolUse `archive_session` | a hand-off file written this turn (`*/handoffs/*.md`) must be in the reply as a file link plus the `Read <path> and do it.` block (one deny); no archive of this session in the same turn |
+| G7 | PreToolUse `Agent` | deny `general-purpose`, `claude` and a missing `subagent_type`; the message names `worker`, `researcher`, `Explore`, `task-implementer`, `Plan` |
+| G8 | PreToolUse `Agent`; SubagentStop | helpers running at once per session: 3 when pace is `ok` or `unknown`, 1 when `ahead`, 0 when `critical`. Each slot is `{id: tool_use_id, t: time}` in the session state file (plain times from the first version still load). SubagentStop frees the oldest slot (not when its hand-back is denied); `guard.py posttoolfailure` (PostToolUseFailure, matcher `Agent`) frees the slot of the failed call's `tool_use_id`; entries over 90 min old are dropped. `flock` guards parallel calls |
+| G9 | PreToolUse `Skill`, `EnterPlanMode` | `superpowers:brainstorming` and `superpowers:writing-plans` in the main thread are allowed in plan mode, when pace is `ahead` or `critical`, and when the main model is Opus or Fable (newest assistant `message.model` in the transcript). With a Sonnet or Haiku main model they are denied: on `entrypoint: cli` use EnterPlanMode (opusplan); on `entrypoint: claude-desktop` (no opusplan) send a `Plan` helper or pick Opus. An unknown model or entrypoint is allowed. `EnterPlanMode` is denied when pace is `ahead` or `critical` (Sonnet plans without plan mode) |
 | W3 | PreToolUse browser tools (`mcp__Claude_Browser__*`, `mcp__claude-in-chrome__*`) | warn in a main window: at the 6th browser call of a turn (then every 20th), route checks to `ui-verifier` |
 | W4 | PreToolUse `Agent` | warn: past 15 spawns or 1.5M subagent tokens in a session (the `totalTokens` of each Agent result, and of each background task notification once), a budget note on every 5th spawn |
-| G6 | Stop; PreToolUse `archive_session` | a hand-off file written this turn (`*/handoffs/*.md`) must be in the reply as a file link plus the `Read <path> and do it.` block (one deny); no archive of this session in the same turn |
+
+**Router** (PreToolUse `Agent`, main thread, not `fork`): the guard sets `model` and `effort`, and
+`xhigh` or `max` never pass. `Plan` and a `code-reviewer` doing a final or whole-branch review
+(description or the first 400 chars of the prompt; a panel angle or re-review is not final) get
+opus + high (sonnet + high when pace is `ahead` or `critical`). Every other row never raises
+cost: the lower of the caller's model and the table's (`Explore`, `claude-code-guide`,
+`statusline-setup`: haiku; the rest: sonnet), effort `high` unless the caller gave `low` or
+`medium`, no effort for haiku. A changed call is
+returned as `permissionDecision: allow` + `updatedInput` (the whole tool input) + a note, on the
+same JSON line as the W notes.
+
+**Pace** comes from `pace.py` in this folder (`pace.status()`; `pace.refresh(budget_s=5)` on each
+UserPromptSubmit). Without the module, or on any error, the state is `unknown`. On a prompt, the
+first time a session's state becomes `ahead`, the guard adds one note (used and budget percent,
+what changes); while `critical` it adds the note on every prompt. The last announced state is kept
+in the session state file, and `unknown` does not reset it.
 
 Context size comes from the last assistant `usage` in the transcript (read from the end
-of the file, so big transcripts are cheap). Nudge counters live in
-`${TMPDIR:-/tmp}/claude-guard/<session_id>.json`.
+of the file, so big transcripts are cheap). Session state (nudge counter, spawn times, last pace
+note) lives in `${TMPDIR:-/tmp}/claude-guard/<session_id>.json`.
 
 G5 reads the cap from the subagent's own prompt: the smallest `N chars` (N of 200 or more) tied to
 the reply by a word in the same sentence, up to 80 characters before the number or 40 after it.

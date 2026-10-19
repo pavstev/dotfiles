@@ -302,6 +302,14 @@ class OwnerOverlayTest(Base):
         self.assertTrue(t.startswith(AC.CURSOR_NOTE))
         self.assertTrue(t.endswith(CLAUDE_MD))
 
+    def test_cursor_note_routes_named_agents_through_general_purpose(self):
+        # Cursor's Task rejects `code-reviewer`; the note must say what to send instead.
+        for word in ("generalPurpose", "explore", "cursor-guide", "ci-investigator", "bugbot",
+                     "security-review", "best-of-n-runner", "~/.claude/agents/<name>.md"):
+            self.assertIn(word, AC.CURSOR_NOTE)
+        self.assertIn("Read ~/.claude/agents/<name>.md first and follow it", AC.CURSOR_NOTE)
+        self.assertIn(AC.CURSOR_NOTE, AC.user_rules_text(self.home, "shared"))
+
     def test_user_rules_text_appends_output_style_after_the_overlay(self):
         self.overlay()
         self.settings(outputStyle="Terse")

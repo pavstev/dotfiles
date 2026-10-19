@@ -63,6 +63,10 @@ NOTICE = re.compile(
 )
 HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1[ \t]*(?=\n|$)", re.S)
 WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+IN_PLACE_EDIT = re.compile(  # a Bash edit of a file: sed -i, perl -pi / -i (not grep -i, not perl -MFoo)
+    r"\bsed\s+(?:[^\s|;&]+\s+)*?(?:-[A-Za-z]*i[A-Za-z.]*|--in-place\S*)(?=\s|$)"
+    r"|\bperl\s+(?:[^\s|;&]+\s+)*?-[lpna0-9w]*i(?:\.\S*)?(?=\s|$)"
+)
 OUTFILE = re.compile(r"(?:Output is being written to:|output_file:)\s*(\S+?\.output)")
 AGENT_ID = re.compile(r"agentId:\s*(\w+)")
 ANY_ID = re.compile(r"(?i)\b(?:task[_ ]?id|id)[:=\s]+([A-Za-z0-9_-]{6,})")
@@ -493,27 +497,71 @@ def in_repo(path, root):
     return bool(path) and (path == root or path.startswith(root + os.sep))
 
 
+def masked_exit(bare, check_end):
+    """The text that hides the check's exit code ('; echo', '|| true', '| tail'), or ''.
+    Looks only at what follows the check command, up to the first `&&`."""
+    pipe_ok = bool(re.search(r"\bpipefail\b", bare))
+    rest = re.split(r"&&", bare[check_end:], maxsplit=1)[0]
+    rest = re.sub(r"\d*>&\d+|&>", " ", rest)  # 2>&1 is a redirect, not a separator
+    m = re.match(r"([^;|\n]*)(\|\||;|\n|\|)?\s*(.*)", rest, re.S)
+    sep, after = m.group(2), m.group(3)
+    if sep == "|":
+        p = re.match(r"(tail|tee|head)\b", after)
+        return "" if pipe_ok or not p else "| " + p.group(1)
+    if sep == "||" and re.match(r"true\b", after):
+        return "|| true"
+    if sep in (";", "\n"):
+        p = re.match(r"(echo|true)\b", after)
+        return "; " + p.group(1) if p else ""
+    return ""
+
+
+def check_state(s, uid, bare, check_end):
+    """How the check at tool use `uid` ended: 'failed', 'running', 'hidden: <mask>' or 'passed'."""
+    inp = s["uses"][uid][1]
+    is_err, res = s["results"].get(uid, (False, ""))
+    if is_err:
+        return "failed"
+    if inp.get("run_in_background") is True or BG_RESULT.match(res):
+        status, summary = s["notices"].get(uid, ("", ""))
+        if not status:
+            return "running"
+        code = re.search(r"exit code:?\s*(-?\d+)", summary)
+        if status != "completed" or (code and code.group(1) != "0"):
+            return "failed"
+    mask = masked_exit(bare, check_end)
+    return "hidden: " + mask if mask else "passed"
+
+
 def check_freshness(s, root):
     """ME line when files were edited after the last check that ran in this repo."""
     last_edit = last_check = None
-    check_failed = False
+    state = ""
     for uid in s["order"]:
         name, inp, _, cwd, idx = s["uses"][uid]
         if name in WRITE_TOOLS and in_repo(inp.get("file_path") or inp.get("notebook_path"), root):
             last_edit = idx
         cmd = inp.get("command") or ""
         bare = HEREDOC.sub(" ", cmd)
-        if name == "Bash" and CHECK_CMD.search(bare) and (in_repo(cwd, root) or root in os.path.expanduser(bare)):
+        here = name == "Bash" and (in_repo(cwd, root) or root in os.path.expanduser(bare))
+        if here and IN_PLACE_EDIT.search(bare):
+            last_edit = idx
+        m = CHECK_CMD.search(bare) if name == "Bash" else None
+        if here and m:
             last_check = idx
-            check_failed = s["results"].get(uid, (False, ""))[0]
+            state = check_state(s, uid, bare, m.end())
     if last_edit is None:
         return
     if last_check is None:
         line("ME", "files edited, but no test/lint/check ran in this repo this session")
     elif last_check < last_edit:
         line("ME", "files edited after the last check run — run the checks again")
-    elif check_failed:
+    elif state == "failed":
         line("ME", "the last check run failed — fix it, then run it again")
+    elif state == "running":
+        line("ME", "the last check is still running: wait for its notice, then read its exit line")
+    elif state.startswith("hidden: "):
+        line("ME", f"the last check's exit code is hidden ({state[8:]}): read its log or run it again without it")
     else:
         line("OK", "a check ran after the last edit, and it passed")
 

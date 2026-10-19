@@ -12,7 +12,9 @@ Work alone, no subagents. Finish in 10 minutes.
 
 ## Steps
 
-1. **Pick the target.** Take it from the argument or the request. Default is Claude Code. The launch line uses the model the user named, else the model of the first phase. Targets: Claude Code, Sonnet, OpenCode, Cowork.
+1. **Pick the target.** Take it from the argument or the request. Default is Claude Code. Targets: Claude Code, Sonnet, OpenCode, Cowork. The model is the one the user named, else pick by where the session starts:
+   - Desktop app (the default; the owner starts sessions there): the picker has fixed models and no `opusplan`. Say `Opus 5.5` when the first phase plans or designs, else `Sonnet 5.5`.
+   - Terminal CLI (only when the user says terminal or CLI): `opusplan` when the first phase plans, else `sonnet`.
 2. **Gather facts.** Check them now, do not recall them.
    - `git rev-parse --show-toplevel`, branch, `git status -sb`, `git log -5 --oneline`, unpushed commits.
    - What is done, what is open, what failed or is missing (a tool not installed, a TODO left uncommitted).
@@ -21,8 +23,10 @@ Work alone, no subagents. Finish in 10 minutes.
 4. **Write the brief** to that path with the Write tool. Use [TEMPLATE.md](TEMPLATE.md). Rules for the brief:
    - Up to 150 lines. Absolute paths. No "as discussed" and no pointer to this chat.
    - Every fact says how it was checked. Date it.
-   - Every phase names a model and an effort. Cheap work gets `sonnet`. Plans and final review get `opus`.
-   - `## State` holds the named fields a resume needs. The next session updates them, or the ledger it names, after each phase.
+   - `## State` is `Key: Value` lines (Goal, Repo, Branch, Done, Next, Owner, Budget, Blockers). The next session updates them, or the ledger it names, after each phase.
+   - The approach sits in `## Why`, `## What`, `## How`. Acceptance lines in `## Done when` start with MUST, SHOULD or MAY.
+   - Every phase names a model and an effort. A phase that plans or designs says `Opus 5.5` (app) or `opusplan` (CLI), as in step 1. Build and review phases say `Sonnet 5.5` (app) or `sonnet` (CLI). Effort is `high`, never `xhigh` or `max`. Never give a build or review phase Opus: a final review phase says Sonnet too, and the guard runs the `code-reviewer` on Opus.
+   - A plan says which phases run in parallel (only independent ones, at most 3 at once) and which stop for the user (a secret to paste, a login, a paid or irreversible step), with the exact command or click.
    - Every phase names what it reads and what it writes. A later phase reads what an earlier one wrote, not the whole "Read first" list again. A phase that only reads is not a phase: fold it into the next one.
    - `## Report` caps the answer at 3,000 chars and sends the rest to a file.
 5. **Reply** in the shape below. Nothing else.
@@ -39,12 +43,12 @@ Read <path> and do it.
 
 Start with:
 - Folder: <repo>
-- Model: <opus | sonnet | provider/model>
-- Effort: <high | max>
+- Model: <Opus 5.5 | Sonnet 5.5 in the app; opusplan | sonnet in the CLI; provider/model for OpenCode>
+- Effort: high
 
 The paste line points at the file and never holds the brief. Another machine cannot read the file: say so in one line after the section.
 
 ## Done when
 
-- The file exists, has all ten template sections, and is at most 150 lines.
+- The file exists, has every template section, and is at most 150 lines.
 - The reply is the file link, the one-line block and the Start with section, nothing longer.

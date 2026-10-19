@@ -6,7 +6,23 @@
 set -euo pipefail
 
 input="$(cat)"
+# Without jq nothing below works: print the folder name and stop.
+if ! command -v jq >/dev/null 2>&1; then
+  printf ' %s' "$(basename "$PWD")"
+  exit 0
+fi
 get() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
+
+# Pace cache for claude/hooks/pace.py: written atomically when the weekly limit is present.
+pace_file="${XDG_CACHE_HOME:-$HOME/.cache}/claude-pace.json"
+if [ -n "$(get '.rate_limits.seven_day.used_percentage')" ] && mkdir -p "$(dirname "$pace_file")" 2>/dev/null; then
+  pace_tmp="$pace_file.$$"
+  if printf '%s' "$input" | jq -c --argjson now "$(date +%s)" '{updated: $now, five_hour: (.rate_limits.five_hour | if . then {used_percentage, resets_at} else null end), seven_day: (.rate_limits.seven_day | {used_percentage, resets_at})}' > "$pace_tmp" 2>/dev/null; then
+    mv "$pace_tmp" "$pace_file" 2>/dev/null || rm -f "$pace_tmp"
+  else
+    rm -f "$pace_tmp"
+  fi
+fi
 
 cwd="$(get '.workspace.current_dir')"; [ -n "$cwd" ] || cwd="$(get '.cwd')"; [ -n "$cwd" ] || cwd="$PWD"
 model="$(get '.model.display_name')"

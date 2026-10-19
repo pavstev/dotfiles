@@ -5,6 +5,7 @@
 set -uo pipefail
 . "$REPO/scripts/setup-lib.sh"
 
+brew_env   # on a fresh Linux the Homebrew from step 10 is not on PATH yet
 step "Opencode"
 if have opencode; then
   skip "Opencode"

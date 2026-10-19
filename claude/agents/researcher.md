@@ -75,3 +75,17 @@ HIGH | MEDIUM | LOW: <one clause on what drives it>
 Hard cap: the caller's cap when it names one, else 3,000 characters. Count before you hand back: a hook sends an over-cap hand-back back to you. With a notes file, put the full evidence there, keep 3 to 5 Evidence bullets in the message, and add a line `Notes: <path>`. If the harness refuses the notes file, hand back the top findings within the cap and say the file was refused. You exist to keep raw pages out of the orchestrator's context: summarize, cite, and let it re-read the source if it wants to. Never paste a full page, a long quote, or a code dump. Quote at most one sentence per source.
 
 Your output is UNVERIFIED until the orchestrator checks it. Make that check cheap: precise citations, honest confidence, explicit gaps.
+
+## Basics (every helper)
+
+- In a worktree: one plain command per Bash call, from the worktree root (rule 18). Report files
+  go inside the worktree.
+- Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
+- Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.
+- Never call `update_plan` or `wrap_up`: they belong to the main session.
+- `rm` only literal paths, or `"${VAR:?}"`.
+- Read big files in slices (offset and limit), or `rg -n` first: Read stops at 25K tokens.
+- You cannot start sub-agents, and skills that start them fail here: do that work inline.
+- Check each fact the brief states before you build on it. Say in the hand-back when the brief
+  was wrong.
+- A tool you lack (Write for a read-only agent, Monitor): hand the result back inline instead.

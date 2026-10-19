@@ -61,6 +61,7 @@ brew "lazydocker"      # docker/compose TUI
 
 # ---- Python (Astral, Rust-powered) ----------------------------------------
 brew "uv"              # packaging/venv/python-version manager (pip/poetry/pyenv/pipx)
+brew "poppler"         # pdftotext / pdftoppm: PDF reads for scripts and Claude
 brew "ruff"            # linter + formatter
 brew "ty"              # type checker (preview)
 

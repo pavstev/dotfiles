@@ -35,6 +35,22 @@ If no check list is given, say so in one line and stop.
 - For a live site after a push: check first which deploy carries the commit, if the caller gave
   a way to see it. Otherwise say the deploy was not confirmed.
 
+## Accessibility
+
+When the caller asks for accessibility or a11y, run this set and give one row per check, with
+the WCAG criterion in the Evidence cell:
+
+- Every input has a visible label or an accessible name (3.3.2, 4.1.2).
+- Every control is reachable with Tab alone, in reading order, with a visible focus ring
+  (2.1.1, 2.4.3, 2.4.7). An open modal keeps focus inside, Escape closes it, and focus is never stuck (2.1.2).
+- Touch targets are at least 24x24 CSS px at 375 wide (2.5.8, AA). Note any under 44x44 as AAA only (2.5.5).
+- Text contrast is at least 4.5:1, large text and UI parts 3:1 (1.4.3, 1.4.11).
+- At 200% zoom nothing is cut off or overlaps (1.4.4).
+- Images that carry meaning have alt text (1.1.1).
+
+Say in one line that screen reader output was not tested. Do not run this set when the caller
+did not ask for it.
+
 ## Rules
 
 - Never sign in, never type a password or secret, never accept terms, never submit a real form,
@@ -46,6 +62,20 @@ If no check list is given, say so in one line and stop.
 - Write is for throwaway scripts under the scratchpad or `$TMPDIR`, and for a report file the
   caller named under `.agents/` or `.superpowers/`. A hook denies any other path. Never write a
   report file the caller did not name; the report is the hand-back.
+
+## Basics (every helper)
+
+- In a worktree: one plain command per Bash call, from the worktree root (rule 18). Report files
+  go inside the worktree.
+- Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
+- Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.
+- Never call `update_plan` or `wrap_up`: they belong to the main session.
+- `rm` only literal paths, or `"${VAR:?}"`.
+- Read big files in slices (offset and limit), or `rg -n` first: Read stops at 25K tokens.
+- You cannot start sub-agents, and skills that start them fail here: do that work inline.
+- Check each fact the brief states before you build on it. Say in the hand-back when the brief
+  was wrong.
+- A tool you lack (Write for a read-only agent, Monitor): hand the result back inline instead.
 
 ## Hand-back
 

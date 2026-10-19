@@ -27,7 +27,7 @@ Each sub-question must be:
 
 Write the list out for the user before delegating. Number them. This is the plan; if it is wrong, the user stops you here for free.
 
-If the topic genuinely has a dependency chain, run it as ordered waves: wave 1 parallel, then wave 2 parallel using wave 1's answers. Never serialize what can run together, up to the cap of 5 in Phase 2.
+If the topic genuinely has a dependency chain, run it as ordered waves: wave 1 parallel, then wave 2 parallel using wave 1's answers. Never serialize what can run together, up to the Pace cap.
 
 ## Fan-out gate (before Phase 2)
 
@@ -46,11 +46,18 @@ Only a yes to 1 buys parallel researchers, one per sub-question. All no: send ON
 with every sub-question in its prompt. Phase 3 still checks its answer. Say in the plan which
 way the gate went and why.
 
+## Pace
+
+Before Phase 2, when `~/.claude/hooks/pace.py` exists, run `python3 ~/.claude/hooks/pace.py status`.
+Researchers at once: 3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (tell the user the
+week is spent and research the top sub-questions yourself with WebSearch). The guard enforces the cap. When `ahead`,
+merge sub-questions into fewer, larger researchers (3 to 6 facts each) before you send any.
+
 ## Phase 2 — Sub-agent delegation
 
-Spawn one `researcher` per sub-question, **all in a single message** so they run concurrently. **At most 5 at once.** With 6 or 7 sub-questions, send 5 first and the rest as a second wave after the first returns. Every later wave obeys the same cap.
+Spawn one `researcher` per sub-question, in one message per wave. **At most the Pace cap at once.** Send more sub-questions as later waves after the previous wave returns. Every wave obeys the same cap.
 
-Every research agent gets `subagent_type: researcher`, `model: sonnet`, `effort: high`, and a deadline in its prompt ("answer within 5 min"). Never `general-purpose`. The Captain itself runs at `max` only for the final synthesis.
+Every research agent gets `subagent_type: researcher` and a deadline in its prompt ("answer within 5 min"). The guard router sets model and effort. Never `general-purpose`.
 
 Each prompt must be self-contained:
 - The exact question, in one sentence.
@@ -65,7 +72,7 @@ Do NOT read pages or `WebFetch` in the main context to "check quickly". That is 
 
 For every return, do three things.
 
-**3a. Verify before you believe it.** Sub-agent output is unverified. Spot-check the load-bearing citations without pulling pages into your own context: a `file:line` claim → `Read` those lines yourself; a URL claim → one `researcher` with a verify brief ("does <url> say <claim>? quote the line"). Batch the URL checks into one wave. Mark each finding **ACCEPTED** (with your own evidence), **REJECTED** (with the evidence that disproves it, never silently), or **UNDETERMINED** (state what would settle it). A `LOW` confidence rating or an `INFERRED` label is a signal to check harder, not to discard.
+**3a. Verify before you believe it.** Sub-agent output is unverified. Spot-check the load-bearing citations without pulling pages into your own context: a `file:line` claim → `Read` those lines yourself; a URL claim → one `researcher` with a verify brief ("does <url> say <claim>? quote the line"). Batch the URL checks into one researcher. Mark each finding **ACCEPTED** (with your own evidence), **REJECTED** (with the evidence that disproves it, never silently), or **UNDETERMINED** (state what would settle it). A `LOW` confidence rating or an `INFERRED` label is a signal to check harder, not to discard.
 
 **3b. Heal the gaps.** For each `[MISSING_CONTEXT: ...]` tag, spawn a **second** `researcher` with a genuinely different attack, not a retry of the same query:
 - Widen the frame (the parent concept, the whole ecosystem, the vendor rather than the product).
@@ -73,7 +80,7 @@ For every return, do three things.
 - Change the source class (a repo's issues, a changelog, a conference talk, a standards doc, a local file).
 - Drop the constraint that was probably starving the search.
 
-Say what the first attempt tried. Run all secondary agents in parallel too. Same `subagent_type`, `model`, `effort` and deadline.
+Say what the first attempt tried. Run the secondary agents in waves under the Pace cap. Same `subagent_type` and deadline.
 
 **3c. Escalate only what survives.** If the second agent also fails, ask the user. Batch every survivor into ONE question block, do not drip-feed:
 

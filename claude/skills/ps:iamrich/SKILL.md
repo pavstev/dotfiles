@@ -1,12 +1,12 @@
 ---
 name: ps:iamrich
-description: Use when the user runs /ps:iamrich, puts "iamrich" before or after a request, or says the session has plenty of tokens and wants many parallel subagents for thorough research, implementation, or verification.
+description: Use when the user runs /ps:iamrich, puts "iamrich" before or after a request, or says the session has plenty of tokens and wants parallel subagents for thorough research, implementation, or verification.
 argument-hint: "[task — empty = the message it came with, or your last one]"
 ---
 
-# ps:iamrich — spend tokens, buy quality, not delay
+# ps:iamrich — spend tokens on quality, not delay
 
-The user has a large token budget. Cost is not a limit. Their wall-clock time is: tokens buy more helpers at once, never slower ones. The speed rules in CLAUDE.md still apply.
+The user wants thorough work from helpers. Their wall-clock time and the weekly pace both count. The speed rules in CLAUDE.md still apply.
 
 **This skill is the user's explicit request to use subagents** for this session. It stays on for later requests until the user says to save tokens.
 
@@ -31,25 +31,26 @@ parallel builders, one per independent part. Two parts that touch the same files
 
 ## Every Agent call
 
-Fill every field. Agent definitions default to a small model; these replace that.
-
 ```
 subagent_type: worker | task-implementer | task-reviewer | code-reviewer | researcher | Explore | Plan
-model:         sonnet (implement, per-task review, research) | opus (plan, final review)
-effort:        high   (max only for plan, research synthesis, architecture, final review; say which)
 description:   3-5 words
 prompt:        task + context + deadline ("done in N min") + "hand back ≤ 4,000 chars; write the rest to a file and cite it" (read-only agents: "stay ≤ 4,000 chars")
 ```
 
-Never `general-purpose`: it starts about 45K tokens heavier than `worker`. An agent that edits
-files also gets these two lines in its prompt: "Read each file with Read before you Edit it; `cat`
-in Bash is not a Read." and "The shell tool is `Bash`, with a capital B."
+Do not pass `model` or `effort`: the guard router sets them (Plan and the final review on
+Opus, lookups on Haiku, the rest on Sonnet `high`). Never `general-purpose`: the guard refuses it.
+An agent that edits files also gets these two lines in its prompt: "Read each file with Read
+before you Edit it; `cat` in Bash is not a Read." and "The shell tool is `Bash`, with a capital B."
 
-Before each fan-out, call `mcp__ccd_session_mgmt__get_usage`. Under 30% of the 5-hour window left: dispatch at most 3 agents.
+## Pace
+
+Before each fan-out, when `~/.claude/hooks/pace.py` exists, run `python3 ~/.claude/hooks/pace.py status`.
+Helpers at once: 3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (do the work
+yourself). Send a larger fan-out in waves of that size. The guard enforces the cap.
 
 ## Width, not wait
 
-- Run independent parts at the same time, each in its own worktree. No builder waits on another helper.
+- Run independent parts at the same time (up to the Pace cap), each in its own worktree.
 - Say a wall-clock estimate before starting and after each phase.
 - Size every check to the risk: measure what changed, not everything.
 
@@ -59,9 +60,9 @@ Before each fan-out, call `mcp__ccd_session_mgmt__get_usage`. Under 30% of the 5
 |---|---|
 | Recon | Parallel agents in one message, one question each: `Explore` for code, `researcher` for the web. Read the key files yourself too. |
 | Research | `researcher` only, never `general-purpose`. Follow `ps:captain-research`. |
-| Plan | A `Plan` agent on opus or fable designs while you draft. Merge the best of both. |
+| Plan | A `Plan` agent designs while you draft. Merge the best of both. |
 | Implement | `task-implementer` (a plan task with tests) or `worker`, with `isolation: "worktree"`, one per independent part. Batch 3-6 small tasks per implementer. REQUIRED SUB-SKILL: superpowers:subagent-driven-development for multi-step plans. |
-| Verify | Agents that did not write the change. One proves the behavior (tests, a reproduction). Per-batch reviews run on sonnet; with one batch, skip them. One fix round, then the final review: `code-reviewer`, opus, max, the full diff. Anything still open goes to the user. |
+| Verify | Agents that did not write the change. One proves the behavior (tests, a reproduction). Per-batch reviews run on sonnet; with one batch, skip them. One fix round, then the final review: one `code-reviewer` on the full diff (the router runs it on Opus). Anything still open goes to the user. |
 
 The floor, even for a one-line change: one independent verifier before you say done.
 

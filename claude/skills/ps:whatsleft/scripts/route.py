@@ -10,8 +10,8 @@ list for ps:askme (most costly first, capped), and the next step.
   python3 route.py --json rows.json     # machine output
 
 rows.json is a JSON list. Each row:
-  id     "m1"            unique, short
-  text   "No test for the export"
+  id     "m1"            unique, short; a row without one gets r<n> (its 1-based place)
+  text   "No test for the export"   a row with an empty text is dropped and named in the output
   kind   work | decision | optional | value | task | login | secret | payment | refused | no-tool
   who    me | you        only for kind optional (default me)
   risk   push | deploy | delete | paid | prod-config   (work only; omit when safe)
@@ -40,21 +40,44 @@ class BadInput(Exception):
 
 
 def validate(rows):
+    """Check the rows. Returns (rows, dropped): rows with a default id where one was
+    missing and without the rows that have no text, plus one note per dropped row.
+    The caller's rows are not changed."""
     if not isinstance(rows, list):
         raise BadInput("rows must be a JSON list")
-    ids = set()
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict):
+            raise BadInput("row %d: not an object" % (i + 1))
+        if r.get("id") not in (None, "") and not isinstance(r["id"], str):
+            raise BadInput("row %d: id must be a string" % (i + 1))
+    taken = {r["id"] for r in rows if r.get("id")}
+    seen, dropped, kept = set(), [], []
     for i, r in enumerate(rows):
         where = "row %d" % (i + 1)
-        if not isinstance(r, dict):
-            raise BadInput("%s: not an object" % where)
         rid = r.get("id")
-        if not rid or not isinstance(rid, str):
-            raise BadInput("%s: id missing" % where)
-        if rid in ids:
+        if not rid:
+            n = i + 1
+            while "r%d" % n in taken:
+                n += 1
+            rid = "r%d" % n
+            taken.add(rid)
+            r = dict(r, id=rid)
+        if rid in seen:
             raise BadInput("%s: duplicate id %s" % (where, rid))
-        ids.add(rid)
-        if not r.get("text"):
-            raise BadInput("%s: text missing" % rid)
+        seen.add(rid)
+        text = r.get("text")
+        if not text or (isinstance(text, str) and not text.strip()):
+            dropped.append(rid)
+            continue
+        kept.append(r)
+    rows = kept
+    ids = {r["id"] for r in rows}
+    gone = set(dropped)
+    for j, r in enumerate(rows):  # nothing waits on a dropped row
+        if isinstance(r.get("after"), list) and gone & set(a for a in r["after"] if isinstance(a, str)):
+            rows[j] = dict(r, after=[a for a in r["after"] if a not in gone])
+    for r in rows:
+        rid = r["id"]
         kind = r.get("kind")
         if not isinstance(kind, str) or kind not in KINDS:
             raise BadInput("%s: kind %r not in %s" % (rid, kind, sorted(KINDS)))
@@ -91,6 +114,7 @@ def validate(rows):
 
     for r in rows:
         visit(r["id"], [])
+    return rows, ["dropped row %s: no text" % d for d in dropped]
 
 
 def first_route(r, kill):
@@ -126,7 +150,7 @@ def priority(r):
 
 
 def route(rows, kill=False, cap=CAP):
-    validate(rows)
+    rows, dropped = validate(rows)
     by_id = {r["id"]: r for r in rows}
     out = {r["id"]: first_route(r, kill) for r in rows}
     # A DO row waits on any row not DONE or SKIP. A question that needs the
@@ -168,6 +192,7 @@ def route(rows, kill=False, cap=CAP):
         "default": [r["id"] for r in defaulted],
         "you": [r["id"] for r in rows if out[r["id"]] == "YOU"],
         "then": then,
+        "dropped": dropped,
         "_by_id": by_id,
     }
 
@@ -176,6 +201,7 @@ def render(res):
     lines = []
     for x in res["routes"]:
         lines.append("%-7s %-4s %s" % (x["route"], x["id"], x["text"]))
+    lines.extend(res.get("dropped", []))
     lines.append("")
     lines.append("NEXT 1 do now: %s" % (", ".join(res["do"]) or "nothing"))
     if res["ask"]:

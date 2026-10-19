@@ -10,15 +10,18 @@ Run the brief to the end while the user is away. The ledger is the memory. Commi
 
 ## Core loop
 
-1. **Resume check first.** If the prompt says "continued from a previous conversation" or "app was quit", or a limit just reset, read `PROGRESS.md` and jump to step 5. Do not re-plan.
-2. **Write the ledger now.** Copy [the template](PROGRESS.template.md) to `PROGRESS.md` in the repo root. Fill one row per task, the next step, and the resume command. Commit it.
+1. **Resume check first.** If the prompt says "continued from a previous conversation" or "app was quit", or a limit just reset, read `PROGRESS.md`, run `python3 ~/.claude/hooks/pace.py status` when that file exists, and jump to step 5. Do not re-plan. At `critical`: set `Pace: critical` in the `State:` block, log it, and end the turn so the loop waits for the weekly reset. Do this on every loop turn too, without relying on the guard's note.
+2. **Write the ledger now.** Copy [the template](PROGRESS.template.md) to `PROGRESS.md` in the repo root. Fill the `State:` block (`Key: Value` lines), one row per task and the resume command. Commit it.
 3. **Arm the resume on turn one.** Before any task work, start `/loop 30m` (or one CronCreate every 30 min) with the prompt "Read PROGRESS.md and continue the next open task". Use 30 min, not shorter: a hook denies shorter polls at large context. Do it even if no limit has hit yet.
 4. **Decide, never ask.** A blocker becomes a default. Pick the safest option, take it, and log it in the blockers table with the default taken. Stop only for an irreversible or paid action, and name it in the ledger.
-5. **Per task:** implement, run the repo's check, tick the row, commit both in one commit per task (even if the brief did not ask), update "next step". Then start the next task in the same turn.
-   A command that asks questions (y/N, a REPL): run it with desktop-commander `start_process` (Claude Code: load with ToolSearch `+desktop-commander start_process interact_with_process`), read each prompt, answer it with `interact_with_process`, log the PID and the answers in the ledger. Never pipe answers you have not read. No desktop-commander → use the command's non-interactive flag or env (`--yes`, `CI=1`); none → blocker row, default taken.
-6. **Before each fan-out,** call `mcp__ccd_session_mgmt__get_usage` if it exists. If under 30% of the 5-hour window remains, dispatch at most 3 agents. Every Agent call passes `model` and `effort`. A hook denies calls without them.
+5. **Per task:** implement, run the repo's check, tick the row, commit both in one commit per task (even if the brief did not ask), update `Next`. Then start the next task in the same turn.
+   Planning goes to a `Plan` helper (the guard runs it on Opus). Never call EnterPlanMode: it stops the run for approval.
+   After 2 failed tries on one step, stop retrying: set the row to blocked, log the failure and the default taken, and move to the next task. Never skip or weaken a test to get green.
+   A command that asks questions (y/N, a REPL): run it in tmux on its own socket: `tmux -L claude-run new-session -d -s <name> '<cmd>; echo EXIT $?; exec sleep 86400'`, so the pane stays after the command ends. Read the screen with `tmux -L claude-run capture-pane -p -t <name>`. Answer one prompt at a time with `tmux -L claude-run send-keys -t <name> '<answer>' Enter`. Log each prompt and answer in the ledger. When the screen shows `EXIT <n>`, log the code, then run `tmux -L claude-run kill-session -t <name>`. Never send answers you have not read a prompt for. No tmux → use the command's non-interactive flag or env (`--yes`, `CI=1`); none → blocker row, default taken.
+6. **Before each fan-out,** run `python3 ~/.claude/hooks/pace.py status` when that file exists. Helpers at once: 3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical`. Send a larger fan-out in waves of that size. Every Agent call carries a deadline and the hand-back cap; the guard sets model and effort and enforces the cap.
+   Obey the guard's pace notes. `ahead`: 1 helper at once, no plan mode. `critical`: no new helpers; finish the current task, commit it, log it in `State:`, and end the turn quietly. The resume loop waits for the weekly reset.
 7. **Hourly:** append one status line to the ledger and print the same line in chat. Format: `HH:MM · done n/N · now <task> · next <task> · blockers n`.
-8. **Limit hit:** write the resume time and next step in the ledger, end the turn quietly. The loop picks it up after the reset.
+8. **Limit hit:** write the resume time in the `State:` block and the limit log, end the turn quietly. The loop picks it up after the reset.
 9. **Finish:** all rows ticked, checks green, everything pushed. Delete the loop or cron. Run `/ps:mic-drop`.
 
 ## Red flags
@@ -33,7 +36,7 @@ These thoughts mean you are skipping a step.
 | "I'll remember where I was" | You will not after compaction. Update the ledger after every task. |
 | "A ledger is overhead for 3 tasks" | Write it. A restart costs more than the file. |
 | "I will wrap up when it feels done" | Done means every row ticked and `/ps:mic-drop` clean. |
-| "Checking usage costs a call" | Check before fan-out. Spawning blind is what trips the cap. |
+| "Checking pace costs a call" | Check before fan-out and on every resume. Spawning blind is what trips the cap. |
 | "I can poll every 5 minutes" | Hooks deny it. Use 30 min or more, or wait for a limit reset. |
 
 ## Rules
