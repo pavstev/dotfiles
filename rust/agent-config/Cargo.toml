@@ -45,6 +45,10 @@ path = "src/bin/whatsleft_scan.rs"
 name = "hurry_scan"
 path = "src/bin/hurry_scan.rs"
 
+[[bin]]
+name = "yt_transcribe"
+path = "src/bin/yt_transcribe.rs"
+
 [[bench]]
 name = "manual"
 harness = false

@@ -32,13 +32,13 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `Brewfile` | every package (per-machine extras in the ignored `Brewfile.local`). |
 | `settings.example`, `scripts/settings.sh` | every setting with a note and default; the `dots settings` menu. |
 | `scripts/test-linux.sh` | runs `./dotfiles` twice in a fresh Debian or Ubuntu container. |
-| `bootstrap.sh` | fresh-machine one-liner (Mac, Debian, Ubuntu). README "Set up a Mac" has it. |
+| `bootstrap.sh` | fresh-machine one-liner (macOS, Linux, Windows). The README "Set up" sections have it. |
 
 ## Tests
 
 - Unit: `python3 scripts/test_agent_config.py`, `python3 cursor/hooks/test_guard_cursor.py`,
   `python3 claude/hooks/test_guard.py` and every `claude/skills/*/scripts/test_*.py` (pre-commit
-  runs those). They must also pass on `/usr/bin/python3` (3.9) and on Linux python (no Mac paths,
+  runs those). They must also pass on `/usr/bin/python3` (3.9) and on Linux python (no macOS paths,
   no `pbcopy`).
 - `bash scripts/test-dotfiles.sh`: `./dotfiles` in a temp HOME with a temp repo and origin (first
   run, owner profile, owner rules linked and unlinked, a no-change second run, restart after a
@@ -110,40 +110,55 @@ Opencode does not get Claude's guard hooks, output-style switching, or connector
 [`docs/cursor-port.md`](docs/cursor-port.md); the full user reference is
 [`docs/guide.md`](docs/guide.md).
 
-## Linux
+## Platforms
 
-`./dotfiles` also runs on Debian 13 and Ubuntu 24.04 (a normal user with `sudo`). The Mac is the
-reference: a Mac run must behave as before.
+`./dotfiles` runs on macOS, Linux (Debian 13, Ubuntu 24.04) and Windows (Git Bash). All three are
+first-class: a change must keep each one working. Write docs and messages for all three; name an
+OS only where the behavior really differs.
 
 - Ask the OS with `is_macos`, `is_linux`, `is_windows` and `only_macos <what>` from
-  `scripts/setup-lib.sh`, never inline `uname`. Python uses `sys.platform`. A Mac-only step
+  `scripts/setup-lib.sh`, never inline `uname`. Python uses `sys.platform`. A macOS-only step
   starts with `only_macos "<what>"`; a Linux-only step with `is_linux || exit 0`; a
   Windows-only step with `is_windows || exit 0`.
+- No GNU-only or BSD-only flags in shared scripts (`sed -i`, `stat`, `date -j`, `readlink -f`).
+- Tests: `scripts/test-dotfiles.sh` on the machine you work on, `scripts/test-linux.sh` for Linux.
+  Windows has no automated test yet.
+
+## Linux
+
+`./dotfiles` runs on Debian 13 and Ubuntu 24.04 (a normal user with `sudo`).
+
 - Tools come from Homebrew on Linux (`/home/linuxbrew/.linuxbrew`), same Brewfile:
   `brewfile_for_os` drops `cask`, `mas`, `tap`, `vscode` and `brew "mas"` lines. apt installs only
   `LINUX_PREREQS` (step `05-linux-prereqs`); never add `apt install` of tools.
-- Paths: `brew_env` knows the Linux prefixes. Editor settings keep their Mac path under
+- Paths: `brew_env` knows the Linux prefixes. Editor settings keep their macOS path under
   `home/Library/Application Support/` and link to `~/.config/{Code,Cursor}/User` on Linux.
-- No GNU-only or BSD-only flags in shared scripts (`sed -i`, `stat`, `date -j`, `readlink -f`).
 - Test: `bash scripts/test-linux.sh debian:13` and `ubuntu:24.04` exit 0 and the second run changes
   nothing. Needs podman or docker. `--keep` leaves the container, `--reuse` reruns your edits.
 
 ## Windows
 
-`./dotfiles` also runs on Windows in Git Bash (MSYS/MINGW). Windows is detected with `is_windows`
+`./dotfiles` runs on Windows in Git Bash (MSYS/MINGW). Windows is detected with `is_windows`
 (`scripts/setup-lib.sh`); WSL counts as Linux and gets Homebrew on Linux like any other Linux machine.
 
-- **Packages:** there is no Homebrew on Windows. Step `10-homebrew` skips, and step `15-winget`
-  installs Opencode (`winget install Anomaly.OpenCode`) when `winget` is available; it warns and
-  continues otherwise. The other Brewfile tools are not installed on Windows — install the ones you
-  want manually.
-- **Links:** everything in `dotfiles`'s link list links under `$HOME` (Git Bash maps `$HOME` to
-  `%USERPROFILE%`), so `.zshrc`, `.gitconfig`, `.config/*`, `.claude` and `.config/opencode` work as
-  on Mac and Linux. VS Code and Cursor settings link to `%APPDATA%\{Code,Cursor}\User\` on Windows
-  (`AppData/Roaming`), where the apps read them.
+- **Steps:** a Windows run executes only `15-winget` (Opencode: `SST.opencode`, then
+  `Anomaly.OpenCode`; `yt-dlp.yt-dlp` for `ps:yt-learn`), `57-claude-code` (`Anthropic.ClaudeCode`, then the PowerShell installer). Homebrew, zsh, mise, gh and the Brewfile do not exist there, so the other steps stay
+  silent. `DOTFILES_STEPS` still runs any step by name.
+- **Links:** Git Bash `ln -s` copies unless `MSYS=winsymlinks:nativestrict` (set in `setup-lib.sh`), and a
+  native link needs Windows Developer Mode. `./dotfiles` checks this first and stops with the fix. It links
+  only `.config/gh/config.yml`, `.claude` and `.config/opencode`; VS Code and Cursor settings link to
+  `%APPDATA%\{Code,Cursor}\User\`. `~/.gitconfig` is not linked (it sets `delta` and `code`): the git
+  identity goes to `~/.gitconfig.local`, which the user's own `~/.gitconfig` includes.
+- **Output:** links print one total line, not one per file. The first run skips the settings menu
+  (`bash ~/dotfiles/dotfiles settings` opens it).
+- **Clone-safe paths:** a tracked path with `: < > " | ? *` or `\`, a trailing dot or space, or a device
+  name (`con`, `nul`, ...) makes `git clone` fail on Windows ("invalid path") and leaves a clone with no
+  checkout. So a skill folder is `ps_foo` while its `name:` stays `ps:foo`. The pre-commit hook and
+  `scripts/test-dotfiles.sh` reject such paths. `.gitattributes` forces LF, and `bootstrap.sh` clones with
+  `core.autocrlf=false` and repairs a clone that has no `./dotfiles` (a re-run of the one-liner fixes it).
 - **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
   print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Nerd Font are
-  Mac-only.
+  macOS-only.
 - **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
   usual tools when they are on PATH.
 - **Opencode config:** `agent-config opencode` generates agents, permissions and MCP under
@@ -178,7 +193,7 @@ reference: a Mac run must behave as before.
 ## Settings
 
 `~/.config/dotfiles/settings` (one `NAME="value"` per line, mode 600, never in git) holds this
-Mac's settings; `settings.example` lists each with a note and default. `dots settings` (also
+machine's settings; `settings.example` lists each with a note and default. `dots settings` (also
 `dots private`) shows a menu that saves each change at once; Done ends it and `dots` refreshes
 links, the Cursor rule and the Opencode config. The first run (no file) asks git name and
 email, then shows the menu.
@@ -205,12 +220,14 @@ email, then shows the menu.
   same way (cherry-pick, rebase and `--no-verify` skip the commit hooks) and stops a push that
   brings a second history.
 - **Theme:** warm Claude copper-on-stone. Refine it; never swap palettes.
-- **Mac and Linux:** one code path where possible; OS-only branches behind `is_macos`/`is_linux`.
+- **macOS, Linux and Windows:** one code path where possible; OS-only branches behind
+  `is_macos`/`is_linux`/`is_windows`.
 - **Idempotent and safe:** steps detect and skip what is installed, back up config before
   overriding, and warn and continue on failure. Source `scripts/setup-lib.sh`.
 - **Explicit linking:** `./dotfiles` links only the paths in its `LINKS` array. A new managed file
   means a new entry there.
-- **New machine:** `bootstrap.sh` installs Xcode CLT, clones `DOTFILES_REPO` and runs `./dotfiles`.
+- **New machine:** `bootstrap.sh` installs Xcode CLT (macOS) or git and curl (Linux), clones
+  `DOTFILES_REPO` and runs `./dotfiles`.
   At a terminal the first run is guided (gum menus: git identity, settings, an optional extra, the
   sign-ins in `90-sign-in.sh`: GitHub, Claude Code, Opencode, Cursor); without one it reads name and
   email from stdin and skips the rest.

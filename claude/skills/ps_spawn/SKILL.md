@@ -1,6 +1,6 @@
 ---
 name: ps:spawn
-description: "Starts a new Claude Code session on this Mac with Remote Control on and permissions bypassed, working on a given prompt, so the user can watch it from the phone. Use when the user runs /ps:spawn, or asks (often from the phone through Remote Control) to start, open, launch or spawn a new session, a fresh session or a second session with a prompt."
+description: "Starts a new Claude Code session on this machine with Remote Control on and permissions bypassed, working on a given prompt, so the user can watch it from the phone. Use when the user runs /ps:spawn, or asks (often from the phone through Remote Control) to start, open, launch or spawn a new session, a fresh session or a second session with a prompt."
 argument-hint: "[prompt for the new session] [in <folder>] [as <name>]"
 allowed-tools: "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*)"
 ---
@@ -37,7 +37,7 @@ The script prints `NAME`, `MODE`, `URL`, `WATCH` and `STOP` lines. Use the mode 
 ```markdown
 Started **fix-login-test** in `~/proj` (bypassPermissions, Remote Control on).
 - Phone: Claude app > Code > fix-login-test, or https://claude.ai/code/session_…
-- Mac: `tmux -L claude-spawn attach -t fix-login-test`
+- Terminal: `tmux -L claude-spawn attach -t fix-login-test`
 - Stop: `tmux -L claude-spawn kill-session -t fix-login-test`
 ```
 

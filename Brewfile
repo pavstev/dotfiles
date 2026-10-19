@@ -62,6 +62,9 @@ brew "lazydocker"      # docker/compose TUI
 # ---- Python (Astral, Rust-powered) ----------------------------------------
 brew "uv"              # packaging/venv/python-version manager (pip/poetry/pyenv/pipx)
 brew "poppler"         # pdftotext / pdftoppm: PDF reads for scripts and Claude
+brew "yt-dlp"          # YouTube captions and audio (ps:yt-learn, the yt_transcribe bin)
+brew "ffmpeg"          # audio to 16 kHz wav for the Whisper fallback
+brew "whisper-cpp"     # whisper-cli: local speech to text when a video has no captions
 brew "ruff"            # linter + formatter
 brew "ty"              # type checker (preview)
 

@@ -20,7 +20,7 @@ The dev-workflow seeds from that sweep (`ps:go-lint`, `ps:readme-writer`) were d
 
 ## ps:hurry-up (merged into ps:whatsleft on 2026-10-12)
 
-Session speed scanner, now `ps:whatsleft/scripts/hurry-scan.py`. Adapted from these public ideas, rewritten for this setup
+Session speed scanner, now `ps_whatsleft/scripts/hurry-scan.py`. Adapted from these public ideas, rewritten for this setup
 (read-only, transcript-based, plain short output, `[ME]`/`[YOU]` split):
 
 - context-budget (ECC) — inventory and flag bloat in agents, skills, rules, MCP — https://claudeskills.info/skills/affaan-m/ecc/context-budget/

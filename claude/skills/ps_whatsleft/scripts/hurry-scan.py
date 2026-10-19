@@ -335,7 +335,7 @@ def judge(s, w, m, window):
         add(40, "me", f"{s['errors']} tool errors", "Retry loops waste turns.", "I will stop, read the error once, and change the plan.")
     if m["load"] and m["load"] > m["cpus"] * 0.8:
         top = ", ".join(f"{n} {c:.0f}%" for c, _, n in m["top"])
-        add(50, "you", f"Mac is busy (load {m['load']:.1f} on {m['cpus']} cores)", f"Top: {top}.", "Quit the heavy app. Run ps:bag-mode to see more.")
+        add(50, "you", f"This machine is busy (load {m['load']:.1f} on {m['cpus']} cores)", f"Top: {top}.", "Quit the heavy app. Run ps:bag-mode to see more.")
     f.sort(reverse=True)
     return f
 

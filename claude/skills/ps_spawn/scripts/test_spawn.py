@@ -2,7 +2,7 @@
 """Tests for spawn.py. No tmux and no claude needed: they test the checks,
 the command and the screen reading.
 
-  python3 claude/skills/ps:spawn/scripts/test_spawn.py
+  python3 claude/skills/ps_spawn/scripts/test_spawn.py
 """
 import datetime
 import importlib.util

@@ -1,5 +1,5 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
-//! Port of claude/skills/ps:harness-optimize/scripts/harness_stats.py (the Python is the reference).
+//! Port of claude/skills/ps_harness-optimize/scripts/harness_stats.py (the Python is the reference).
 
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;

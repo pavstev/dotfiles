@@ -225,7 +225,7 @@ edit_java() {
     info "Your own lines in local.zsh also set JAVA_HOME. The setting from here runs after them, so it wins."
   fi
 
-  pick="$(ask_one "☕ Which Java should this Mac use? (sets JAVA_HOME)" "${labels[@]}")" || pick=""
+  pick="$(ask_one "☕ Which Java should this machine use? (sets JAVA_HOME)" "${labels[@]}")" || pick=""
   for i in "${!labels[@]}"; do
     if (( i < ${#homes[@]} )) && [[ "${labels[$i]}" == "$pick" ]]; then java="${homes[$i]}"; break; fi
   done
@@ -254,7 +254,7 @@ edit_java() {
   fi
 }
 
-# edit_steps: the install.d steps that dots always skips on this Mac.
+# edit_steps: the install.d steps that dots always skips on this machine.
 edit_steps() {
   local f v w out="" now
   local -a all=() picked=() sel=()
@@ -312,11 +312,11 @@ edit_words_extra() {
 # edit_rules: the private rules, free text for Claude, Cursor and Opencode. Empty removes them.
 edit_rules() {
   local text
-  if ! text="$(ask_long "🔒 Private rules for Claude, Cursor and Opencode (Markdown). They stay on this Mac." \
+  if ! text="$(ask_long "🔒 Private rules for Claude, Cursor and Opencode (Markdown). They stay on this machine." \
       "$(cat "$OWNER_MD" 2>/dev/null)")"; then
     info "private rules: not changed"
   elif [[ -z "${text//[[:space:]]/}" ]]; then
-    rm -f "$OWNER_MD" && info "private rules: none on this Mac"
+    rm -f "$OWNER_MD" && info "private rules: none on this machine"
   else
     mkdir -p "$DOTFILES_CONF" && chmod 700 "$DOTFILES_CONF" &&
       (umask 077 && printf '%s\n' "$text" >"$OWNER_MD") && chmod 600 "$OWNER_MD" &&
@@ -379,7 +379,7 @@ rules_value() {
   if [[ -s "$OWNER_MD" ]]; then lines_of "$OWNER_MD"; else printf 'none'; fi
 }
 
-step "Settings (they stay on this Mac, never in git)"
+step "Settings (they stay on this machine, never in git)"
 info "File: ~/.config/dotfiles/settings. Each change saves at once."
 done_row="✅ Done"
 keys=(edit_git_name edit_git_email edit_profile edit_mcp edit_opencode_mcp edit_java edit_steps edit_projects

@@ -231,16 +231,16 @@ check "skill scripts run" '
   set -e -o pipefail
   export PATH="/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:$PATH"
   cd ~/dotfiles
-  out="$(bash "claude/skills/ps:mic-drop/scripts/mic-check.sh" --no-fetch || true)"   # exit 1 = NOT CLEAN, fine
+  out="$(bash "claude/skills/ps_mic-drop/scripts/mic-check.sh" --no-fetch || true)"   # exit 1 = NOT CLEAN, fine
   printf "%s" "$out" | grep -q "VERDICT:"
-  bash "claude/skills/ps:handoff/scripts/handoff-path.sh" test-topic | grep -q test-topic
-  python3 "claude/skills/ps:whatsleft/scripts/whatsleft-scan.py" --eta | grep -q VERDICT
+  bash "claude/skills/ps_handoff/scripts/handoff-path.sh" test-topic | grep -q test-topic
+  python3 "claude/skills/ps_whatsleft/scripts/whatsleft-scan.py" --eta | grep -q VERDICT
   # hurry-scan exits 1 with this message when the machine has no Claude session yet
-  rc=0; out="$(python3 "claude/skills/ps:whatsleft/scripts/hurry-scan.py" --brief 2>&1)" || rc=$?
+  rc=0; out="$(python3 "claude/skills/ps_whatsleft/scripts/hurry-scan.py" --brief 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || printf "%s" "$out" | grep -q "No session transcript"
-  hs="claude/skills/ps:harness-optimize/scripts/harness_stats.py"; j="$(mktemp)"
+  hs="claude/skills/ps_harness-optimize/scripts/harness_stats.py"; j="$(mktemp)"
   python3 "$hs" collect --out "$j" >/dev/null && python3 "$hs" inventory --in "$j" >/dev/null
-  bash "claude/skills/ps:bag-mode/scripts/bag-check.sh" --eta 5m | grep -q "NOT APPLICABLE"
+  bash "claude/skills/ps_bag-mode/scripts/bag-check.sh" --eta 5m | grep -q "NOT APPLICABLE"
   echo "{}" | bash claude/statusline.sh >/dev/null'
 
 # ---- 5. result ---------------------------------------------------------------

@@ -1,5 +1,5 @@
 //! whatsleft-scan: collect proof of what is still open in a Claude Code session.
-//! Port of claude/skills/ps:whatsleft/scripts/whatsleft-scan.py (the Python is the reference).
+//! Port of claude/skills/ps_whatsleft/scripts/whatsleft-scan.py (the Python is the reference).
 //!
 //! Reads the session transcript (JSONL) and the git state of every repo the session touched.
 //! Prints tagged evidence lines so the agent can build the "me / you" table.

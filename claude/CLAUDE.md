@@ -6,11 +6,12 @@ repo (`~/dotfiles`), linked to `~/.claude/CLAUDE.md` and updated by `dots`. Pers
 
 ## Environment
 
-- macOS, zsh + Oh My Zsh + Starship, terminal **Ghostty**.
+- macOS, Linux (Debian, Ubuntu) or Windows (Git Bash). Run `uname -s` before an OS-specific
+  command. macOS and Linux: zsh + Oh My Zsh + Starship, terminal **Ghostty**.
 - `~/dotfiles` is plain git. Most of `$HOME` is symlinked from `~/dotfiles/home`, so edit the
   source and it is live; check `ls -la` when unsure. `dots` pulls, relinks and provisions; there
   is no background sync. Repo guide: `~/dotfiles/AGENTS.md`.
-- CLI defaults: `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`/`difftastic`, `lazygit`.
+- CLI defaults (macOS and Linux; Windows has only what is on PATH): `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`/`difftastic`, `lazygit`.
 - Runtimes via `mise`. Python: `uv`/`ruff`/`ty`. JS/TS: `biome`. Go: `golangci-lint`.
   Rust: `rustup`, `cargo nextest`/`clippy`. Images in scripts: `uv run --with pillow`. PDFs:
   poppler (`pdftotext`, `pdftoppm`).
@@ -62,12 +63,12 @@ The user's time is the cost that counts.
 11. After a push, say which deployment carries the commit before calling anything live; test the real domain only after that.
 12. Say the clock unasked, as a Vienna time (HH:MM): one number and a range before starting and after each phase (time asks too). Helper builds ran 2 to 5 times faster than estimated; work that waits on the user ran longer.
 13. Finishing: work lands on main in one commit unless the user says PR; when asked, squash the session's commits and `push --force-with-lease`.
-14. Steps for the user: one flat numbered "What you do now" list at the end, one click or one command per line. Each step names the app, tab or URL; check its preconditions first; drop steps the Mac can do. After the user says done, check the result read-only.
+14. Steps for the user: one flat numbered "What you do now" list at the end, one click or one command per line. Each step names the app, tab or URL; check its preconditions first; drop steps the machine can do. After the user says done, check the result read-only.
 15. Writing: no em dashes, no taglines, short plain sentences.
 16. Runs over an hour keep a `PROGRESS.md` ledger and resume from it after compaction or restart.
 17. "Archive this" means: commit, push, scan once, archive, in one go; no new verification and no "Archive now?". When the work is pushed and nothing waits on the user, archive the same way.
 18. In a worktree, every Bash call is one plain command from the worktree root: no `cd … &&`, chains, heredocs or `$()`; file content goes through Write or Edit. A worktree-isolated session refuses anything more complex.
-19. Other sessions share this Mac and these repos: fetch before a commit, stage only your own paths, never stash or revert other files, and stop only processes you started (no broad `pkill`, no `launchctl bootout` without a yes).
+19. Other sessions share this machine and these repos: fetch before a commit, stage only your own paths, never stash or revert other files, and stop only processes you started (no broad `pkill`, no `launchctl bootout` without a yes).
 20. Never say done, fixed or passed without proof: read the exit line, reproduce the symptom, run the real command, and check live before you state a claim from logs.
 21. After Esc, a cut-off or "No response requested", continue the task from the ledger. When the user pressed Esc to add text, wait for the new message; never answer with "say go".
 22. Before the final report, stop your own helpers, monitors, dev servers, test databases and shells.

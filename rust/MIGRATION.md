@@ -11,11 +11,12 @@ Every Python tool now has a Rust binary in `rust/agent-config/src/bin/` (or `mai
 | `scripts/agent-config.py` | `agent-config` | `tools/parity_cases.py` 39/42 (the 3 are `--help` wording), `tools/parity_scenarios.py` 6/6 |
 | `claude/hooks/guard.py` | `guard` | the 52 cases of `test_guard.py`, run against the binary: 52/52 |
 | `cursor/hooks/guard_cursor.py` | `guard_cursor` | the 23 cases of `test_guard_cursor.py`, run against the binary: 23/23 |
-| `ps:spawn/scripts/spawn.py` | `spawn` | 420 differential cases with a fake `tmux`/`claude`: 0 diffs |
-| `ps:whatsleft/scripts/route.py` | `route` | 1616 differential cases: 2 diffs (inputs where Python itself crashes) |
-| `ps:harness-optimize/scripts/harness_stats.py` | `harness_stats` | byte-identical `collect` on 266 real sessions, 17 reader commands |
-| `ps:whatsleft/scripts/whatsleft-scan.py` | `whatsleft_scan` | 205 runs, 0 diffs |
-| `ps:whatsleft/scripts/hurry-scan.py` | `hurry_scan` | 82 runs, 0 diffs |
+| `ps_spawn/scripts/spawn.py` | `spawn` | 420 differential cases with a fake `tmux`/`claude`: 0 diffs |
+| `ps_whatsleft/scripts/route.py` | `route` | 1616 differential cases: 2 diffs (inputs where Python itself crashes) |
+| `ps_harness-optimize/scripts/harness_stats.py` | `harness_stats` | byte-identical `collect` on 266 real sessions, 17 reader commands |
+| `ps_whatsleft/scripts/whatsleft-scan.py` | `whatsleft_scan` | 205 runs, 0 diffs |
+| `ps_whatsleft/scripts/hurry-scan.py` | `hurry_scan` | 82 runs, 0 diffs |
+| a private Python tool (source outside this repo; it keeps its own copy) | `yt_transcribe`, called by `ps_yt-learn/scripts/fetch.sh` | `--print-id` on 106 links: 0 diffs; 23 unit tests; live captions and Whisper runs. Captions use `yt-dlp` and Whisper uses `whisper-cli` (whisper.cpp), not the Python libraries |
 
 `scripts/agent-config` is the entry point. It runs the Rust build (made on first use when
 `cargo` works, rebuilt when `lib.rs`, `main.rs` or `Cargo.toml` change) and falls back to

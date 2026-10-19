@@ -15,7 +15,7 @@ Personal strings are described here, never quoted.
 | P5 | Off-limits rule that names a personal Cloudflare account and a mail address | `claude/CLAUDE.md:34-41` | Moved to the untracked owner overlay. |
 | P6 | First-person biography line (a long session anecdote) | `claude/CLAUDE.md:45` | Neutral line in the repo; the anecdote moves to the overlay. |
 | P7 | Home paths that hold the account name | `.agents/research/verify-friend.md:3,35`, `.agents/research/verify-harness.md:3` | Files deleted. |
-| P8 | Names of the owner's private projects, session stats, a work machine | `docs/plans/2026-10-12-*.md`; example rows in `claude/skills/ps:sessions/SKILL.md:35-36` | Plans deleted. Example rows renamed, with a skill test. |
+| P8 | Names of the owner's private projects, session stats, a work machine | `docs/plans/2026-10-12-*.md`; example rows in `claude/skills/ps_sessions/SKILL.md:35-36` | Plans deleted. Example rows renamed, with a skill test. |
 | P9 | Name of a skill from a private work repo | `claude/skill-sync.sh:74-85` (history comment) | Comment removed. |
 | P10 | Lists of the owner's `~/.claude` (with a private tools folder) | `.agents/research/claude-manifest-{before,after}.txt` | Deleted. The manifest check runs from a scratch copy. |
 | P11 | Session notes about the owner's Macs, accounts and apps | `.agents/research/*.md` (9 notes) | Deleted. The durable facts are in `docs/cursor-port.md`; its source links stay there. |

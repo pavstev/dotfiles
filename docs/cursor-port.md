@@ -31,7 +31,7 @@ shipped app and CLI bundles.
 
 | Profile | Who | Claude | Cursor global rule | Cursor MCP |
 |---------|-----|--------|--------------------|------------|
-| `owner` | a Mac with private rules | `CLAUDE.md` link, plus `~/.claude/rules/owner.md` linked to `~/.config/dotfiles/owner.md` | `claude/CLAUDE.md` + `owner.md` | opt-in |
+| `owner` | a machine with private rules | `CLAUDE.md` link, plus `~/.claude/rules/owner.md` linked to `~/.config/dotfiles/owner.md` | `claude/CLAUDE.md` + `owner.md` | opt-in |
 | `shared` | anyone else (default) | `CLAUDE.md` link | `claude/CLAUDE.md` | opt-in |
 
 `owner.md` holds the private rules (`dots settings`). It never enters the repo. Order:
@@ -45,7 +45,7 @@ exists (saved as `PROFILE` in the settings), else `shared`.
 | `~/.claude/CLAUDE.md` | `~/.cursor/rules/claude-global.mdc` (`alwaysApply: true`) | generate (adds frontmatter + a short tool-name note, which also lists the 7 `subagent_type` values Cursor accepts and tells the agent to run a named agent as `generalPurpose` with "Read ~/.claude/agents/<name>.md first and follow it"; the owner profile adds `owner.md` and writes the file 0600) |
 | `outputStyle` + `output-styles/<name>.md` | `~/.cursor/rules/claude-output-style.mdc` (`alwaysApply: true`) | generate from the active style |
 | project `CLAUDE.md` / `AGENTS.md` | same files | native (Cursor reads both) |
-| `skills/ps:*` | `~/.claude/skills/ps:*` | native compat; `skill-sync.sh` no longer links them into `~/.cursor/skills` (two roots can list them twice) |
+| `skills/ps_*` | `~/.claude/skills/ps_*` | native compat; `skill-sync.sh` no longer links them into `~/.cursor/skills` (two roots can list them twice) |
 | `agents/*.md` | `~/.cursor/agents/*.md` | generate (`model: inherit`, `readonly: true` when tools are read-only); wins over the native `~/.claude/agents` import |
 | `hooks/guard.py` (G3 context ceiling) | `~/.cursor/hooks.json` -> `cursor/hooks/guard_cursor.py` on `subagentStart` (IDE) and `preToolUse` for `Task` (the CLI fires no `subagentStart`) | merge entries; the adapter reuses `guard.py` limits |
 | `permissions.allow/deny` | `~/.cursor/cli-config.json` `permissions` | merge (translated: `Bash(x:*)` -> `Shell(x)`, exact `Bash(x y)` -> `Shell(x:y)`, deny `Read(./p)` -> `Read(**/p)`) |
@@ -53,7 +53,7 @@ exists (saved as `PROFILE` in the settings), else `shared`.
 | `statusLine` -> `statusline.sh` | `cli-config.json` `statusLine` (CLI only) | merge, same script |
 | `enabledPlugins` (cloudflare) | Cursor imports Claude plugins | native compat |
 | MCP | `~/.cursor/mcp.json` from `cursor/mcp.json` (`cloudflare-docs`) | merge; on every profile only with `CURSOR_MCP="on"` (`dots settings`) or `DOTFILES_MCP=on` |
-| editor settings, keybindings | `~/Library/Application Support/Cursor/User/*` (Mac), `~/.config/Cursor/User/*` (Linux) | link (unchanged) |
+| editor settings, keybindings | `~/Library/Application Support/Cursor/User/*` (macOS), `~/.config/Cursor/User/*` (Linux), `%APPDATA%\Cursor\User\*` (Windows) | link (unchanged) |
 | Brewfile `vscode` extensions | Cursor extensions | `cursor --install-extension` loop |
 
 ## Gaps

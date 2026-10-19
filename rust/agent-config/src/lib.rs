@@ -242,6 +242,8 @@ pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), St
     let mut nt = builder.tempfile_in(parent).map_err(|e| e.to_string())?;
     nt.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
     nt.flush().map_err(|e| e.to_string())?;
+    #[cfg(not(unix))]
+    let _ = mode;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -271,7 +273,7 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
             && old == text {
                 let same_mode = mode.map(|m| fs::metadata(path).map(|md| {
                     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; md.permissions().mode() & 0o777 == m }
-                    #[cfg(not(unix))] { true }
+                    #[cfg(not(unix))] { let _ = (m, md); true }
                 }).unwrap_or(false)).unwrap_or(true);
                 if mode.is_none() || same_mode {
                     skip(&tilde(path));
@@ -322,7 +324,7 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
         let bak = path.with_file_name(format!("{}.bak-{}", path.file_name().unwrap().to_str().unwrap(), unix_ts()));
         let _ = atomic_write(&bak, &fs::read_to_string(path).unwrap_or_default(), Some(fs::metadata(path).map(|m| {
             #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; m.permissions().mode() & 0o777 }
-            #[cfg(not(unix))] { 0o644 }
+            #[cfg(not(unix))] { let _ = m; 0o644 }
         }).unwrap_or(0o644)));
     }
     let mode = if private { Some(0o600) } else { None };
@@ -778,7 +780,7 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
                 else { ok(&format!("linked {} → {}", pcfg.display(), global_cfg.display())); }
             }
             #[cfg(not(unix))]
-            { let _ = (global_cfg, pcfg); }
+            { let _ = (&global_cfg, &pcfg); }
         }
         if global_agents.is_dir() {
             let pagents = popencode.join("agents");

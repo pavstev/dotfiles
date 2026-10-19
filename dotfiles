@@ -58,8 +58,15 @@ else
   fi
 fi
 
+# Windows needs real symlinks (Developer Mode). Stop first, once, with the fix.
+if is_windows && ! windows_links_ready; then
+  warn "Windows can't make links yet. Turn on Developer Mode:"
+  info "Settings > System > For developers > Developer Mode (On). Then run the same command again."
+  exit 1
+fi
+
 # A person at a terminal gets the guided setup. Its menus need gum.
-if at_terminal && ! have gum; then
+if at_terminal && ! have gum && ! is_windows; then
   step "Getting ready"
   if ensure_brew && brew install --quiet gum >/dev/null 2>&1; then
     ok "menus ready"
@@ -77,9 +84,14 @@ if [[ ! -f "$DOTFILES_SETTINGS" ]]; then
   elif is_windows; then machine="Windows machine"
   else machine="Linux machine"
   fi
-  banner "🦴 dotfiles" "This sets up your $machine for Claude Code, Cursor and Opencode." \
-    "A few questions first, then about 20 to 40 minutes of installs." \
-    "Use ↑ ↓ to move and Enter to pick."
+  if is_windows; then
+    banner "🦴 dotfiles" "This sets up your $machine for Claude Code and Opencode." \
+      "It asks for your name and email, then takes about 5 minutes."
+  else
+    banner "🦴 dotfiles" "This sets up your $machine for Claude Code, Cursor and Opencode." \
+      "A few questions first, then about 20 to 40 minutes of installs." \
+      "Use ↑ ↓ to move and Enter to pick."
+  fi
 fi
 name="$(setting GIT_NAME)" email="$(setting GIT_EMAIL)"
 # --includes: also read ~/.gitconfig.local, which ~/.gitconfig includes.
@@ -98,7 +110,9 @@ export DOTFILES_FIRST_RUN="$FIRST_RUN"
 
 # The settings menu (scripts/settings.sh): on the first run at a terminal, or any
 # time with: dots settings
-if [[ -n "$FIRST_RUN$ASK_SETTINGS" ]] && at_terminal; then
+if [[ -n "$FIRST_RUN" && -z "$ASK_SETTINGS" ]] && is_windows; then
+  info "Change settings later with: bash ~/dotfiles/dotfiles settings"
+elif [[ -n "$FIRST_RUN$ASK_SETTINGS" ]] && at_terminal; then
   bash "$REPO/scripts/settings.sh" || warn "settings not finished. Run: dots settings"
 elif [[ -n "$ASK_SETTINGS" ]]; then
   warn "dots settings asks questions, so run it in a terminal"
@@ -121,6 +135,8 @@ if is_macos && [[ -n "$FIRST_RUN" ]] && at_terminal && [[ ! -d /Applications/Cla
 fi
 
 step "Linking files"
+export DOTFILES_LINK_QUIET=1
+LINK_COUNT=0
 # Explicit allow-list: relative paths under home/ map 1:1 to the same
 # relative path under $HOME. Anything NOT listed here is never touched —
 # secrets and per-machine state (gh hosts.yml, atuin data dir, VS Code/
@@ -129,21 +145,27 @@ step "Linking files"
 LINKS=()
 # AeroSpace is a Mac window manager.
 if is_macos; then LINKS+=(".config/aerospace"); fi
-LINKS+=(
-  ".config/atuin"
-  ".config/bat"
-  ".config/btop"
-  ".config/fastfetch"
-  ".config/gh/config.yml"
-  ".config/ghostty"
-  ".config/lazygit"
-  ".config/starship.toml"
-  ".config/tealdeer"
-  ".config/yazi"
-  ".config/zsh"
-  ".gitconfig"
-  ".zshrc"
-)
+if is_windows; then
+  # No zsh, Homebrew or terminal tools here: link only what Windows uses.
+  LINKS+=(".config/gh/config.yml")
+  windows_gitconfig
+else
+  LINKS+=(
+    ".config/atuin"
+    ".config/bat"
+    ".config/btop"
+    ".config/fastfetch"
+    ".config/gh/config.yml"
+    ".config/ghostty"
+    ".config/lazygit"
+    ".config/starship.toml"
+    ".config/tealdeer"
+    ".config/yazi"
+    ".config/zsh"
+    ".gitconfig"
+    ".zshrc"
+  )
+fi
 for item in "${LINKS[@]}"; do
   link_item "$REPO/home/$item" "$HOME/$item"
 done
@@ -167,6 +189,9 @@ if is_linux && ! have cargo && ! have python3; then
   linux_prereqs || warn "prerequisites missing, so the Claude and Opencode config may not build. Fix the error above, then run dots again."
 fi
 
+(( LINK_COUNT > 0 )) && ok "linked $LINK_COUNT files"
+LINK_COUNT=0
+
 step "Linking Claude config -> ~/.claude"
 info "profile: $PROFILE (AGENTS.md \"Profiles\")"
 CLAUDE_SRC="$REPO/claude"
@@ -181,6 +206,8 @@ if [[ -d "$CLAUDE_SRC" ]]; then
   for f in CLAUDE.md statusline.sh; do
     link_item "$CLAUDE_SRC/$f" "$CLAUDE_DST/$f"
   done
+  (( LINK_COUNT > 0 )) && ok "linked $LINK_COUNT Claude files"
+  unset DOTFILES_LINK_QUIET
   # settings.json is built, not linked: the repo base plus the private layer
   # (~/.config/dotfiles/claude-settings.json). Claude writes this file itself; what
   # it changed since the last build moves into the private layer first.
@@ -192,7 +219,7 @@ if [[ -d "$CLAUDE_SRC" ]]; then
     link_item "$OWNER_MD" "$rule"
   else
     if [[ "$PROFILE" == owner ]]; then
-      warn "owner profile, but no private rules on this Mac. Add them with: dots settings"
+      warn "owner profile, but no private rules on this machine. Add them with: dots settings"
     fi
     if [[ -L "$rule" && "$(readlink "$rule")" == "$OWNER_MD" ]]; then
       rm -f "$rule" && ok "removed the owner rules link"
@@ -216,8 +243,19 @@ step "Linking Opencode config -> ~/.config/opencode"
 # permissions and opt-in MCP servers merged into ~/.config/opencode/opencode.jsonc.
 # They are generated/merged, never linked, so the user's own values win.
 if [[ -x "$REPO/scripts/agent-config" ]]; then
-  "$REPO/scripts/agent-config" opencode --profile "$PROFILE" \
-    || warn "agent-config opencode reported an issue, see above"
+  if is_windows; then
+    # One line instead of eleven; the whole output only when something fails.
+    oc_log="$(mktemp "${TMPDIR:-/tmp}/dots-oc.XXXXXX")"
+    if "$REPO/scripts/agent-config" opencode --profile "$PROFILE" >"$oc_log" 2>&1; then
+      ok "Opencode config written ($(grep -c '^✓' "$oc_log") files)"
+    else
+      cat "$oc_log"; warn "agent-config opencode reported an issue, see above"
+    fi
+    rm -f "$oc_log"
+  else
+    "$REPO/scripts/agent-config" opencode --profile "$PROFILE" \
+      || warn "agent-config opencode reported an issue, see above"
+  fi
 else
   warn "scripts/agent-config missing or not executable — skipping Opencode config"
 fi
@@ -225,13 +263,17 @@ fi
 if [[ -d "$REPO/scripts/install.d" ]]; then
   # DOTFILES_STEPS="60-cursor ..." runs only the named steps (for temp-HOME tests),
   # also the ones in SKIP_STEPS: the env wins for one run. Else SKIP_STEPS in the
-  # settings names steps that never run on this Mac (also in dots settings).
+  # settings names steps that never run on this machine (also in dots settings).
   skip_steps=" "
   if [[ -z "${DOTFILES_STEPS:-}" || -n "$OWN_STEPS" ]]; then skip_steps=" $(setting SKIP_STEPS) "; fi
   for f in "$REPO"/scripts/install.d/*.sh; do
     [[ -f "$f" ]] || continue
     s="$(basename "$f" .sh)"
     if [[ -n "${DOTFILES_STEPS:-}" && " $DOTFILES_STEPS " != *" $s "* ]]; then
+      continue
+    fi
+    # Windows has no Homebrew, zsh or mise: it runs only the steps that work there.
+    if is_windows && [[ -z "${DOTFILES_STEPS:-}" && " 15-winget 57-claude-code " != *" $s "* ]]; then
       continue
     fi
     if [[ "$skip_steps" == *" $s "* ]]; then
@@ -244,7 +286,15 @@ fi
 
 printf '\n'
 brew_env   # step 10 can install it during this run
-if ! have brew; then
+if is_windows; then
+  if [[ -n "$FIRST_RUN" ]]; then
+    banner "✅ All set" "Close this window and open a new Git Bash." \
+      "Claude Code: run claude (it asks you to sign in the first time)." \
+      "Opencode: run opencode auth login once, then opencode." \
+      "Skills: type /ps: in Claude Code to see them." \
+      "Update later: bash ~/dotfiles/dotfiles"
+  fi
+elif ! have brew; then
   warn "Homebrew is missing, so the apps and tools did not install. Fix the error above, then run dots again."
 elif [[ -n "$FIRST_RUN" ]]; then
   is_macos && new_shell="Open a new Terminal window." || new_shell="Open a new terminal, or run: exec zsh"

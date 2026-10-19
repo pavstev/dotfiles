@@ -23,7 +23,7 @@ Checked against Opencode v2.0.25. Sources: the Opencode docs on
 - Step `90-sign-in.sh` offers `opencode auth login` on the first run when
   `opencode auth list` says `No authenticated integrations`.
 - On Windows there is no Homebrew; step `15-winget.sh` installs the `opencode` CLI via
-  `winget install Anomaly.OpenCode` when `winget` is available (warns and continues otherwise).
+  `winget install SST.opencode` when `winget` is available (warns and continues otherwise).
 - `scripts/agent-config.py` (Python 3 stdlib) generates every Opencode file. It never writes
   under `~/.claude`. Generated Markdown carries `generated-by: dotfiles`; JSON merges keep the
   user's values and back up before a change.
@@ -37,7 +37,7 @@ separate Opencode skills folder is needed (`~/.config/opencode` has no skills di
 
 | Claude item | Opencode item | Method |
 |-------------|---------------|--------|
-| `skills/ps:*` | `~/.config/opencode` reads `~/.claude/skills/ps:*` | native compat; `skill-sync.sh` links per-skill |
+| `skills/ps_*` | `~/.config/opencode` reads `~/.claude/skills/ps_*` | native compat; `skill-sync.sh` links per-skill |
 
 The colon in `ps:*` is outside the agentskills.io spec, and Opencode loads them anyway
 (`skill: allow` is merged into `opencode.jsonc`).
@@ -144,6 +144,6 @@ leaves a `opencode.jsonc.bak-<timestamp>` next to it.
 
 ## Windows
 
-Opencode works the same on Windows (Git Bash). The CLI comes from WinGet (`Anomaly.OpenCode`, step
+Opencode works the same on Windows (Git Bash). The CLI comes from WinGet (`SST.opencode`, step
 `15-winget.sh`) instead of Homebrew, and the clipboard uses `clip.exe`. Config is generated into
-`~/.config/opencode` identically to Mac and Linux. No settings are Windows-specific.
+`~/.config/opencode` the same as on macOS and Linux. No settings are Windows-specific.

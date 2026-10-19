@@ -1,9 +1,9 @@
 # dotfiles guide
 
-The full reference. To set up a Mac or a Linux machine, start with the [README](../README.md).
+The full reference. To set up macOS, Linux or Windows, start with the [README](../README.md).
 
 > [!IMPORTANT]
-> Run `./dotfiles` from the Terminal app, not inside a Claude Code session. Claude rewrites
+> Run `./dotfiles` from a plain terminal (Git Bash on Windows), not inside a Claude Code session. Claude rewrites
 > `~/.claude` during a live session, which can race the link step. If that happens, run
 > `dots` again from a plain shell.
 
@@ -23,7 +23,7 @@ changes. The old tools get eaten by faster, prettier ones. The terminal goes **b
 - 🛟 **Override-safe**: a pre-existing config file is **moved aside** to
   `<file>.bak-<timestamp>` before its link goes in, so adopting these defaults on a
   machine that's already set up never costs you your old setup.
-- 🧳 **Portable**: Apple Silicon + Intel Macs, and Debian 13 and Ubuntu 24.04; machine-specific bits live in gitignored local files.
+- 🧳 **Portable**: macOS (Apple Silicon and Intel), Debian 13 and Ubuntu 24.04, and Windows (Git Bash); machine-specific bits live in gitignored local files.
 - 🤖 **AI-ready**: Claude Code skills, agents, hooks, and settings live here and follow you everywhere — Cursor and Opencode read the same source.
 - 🎨 **Coherent**: one warm copper-on-stone palette across Ghostty, Starship, fzf, delta, atuin, and the prompt.
 
@@ -180,7 +180,7 @@ claude.ai connectors — Opencode has no hook system. The full mapping and gap t
 
 ## Multi-machine
 
-- **Bootstrap**: the one-liner in the [README](../README.md) turns a blank Mac into this, end to end.
+- **Bootstrap**: the one-liner in the [README](../README.md) turns a blank macOS, Linux or Windows machine into this, end to end.
 - **Synced history**: [atuin](https://atuin.sh) owns `Ctrl-R` (the `↑` arrow stays native).
   `atuin register` / `atuin login` once, and your history follows you.
 - **Per-machine overrides**: gitignored `~/.config/zsh/local.zsh` & `~/.zshrc.local` for
@@ -197,19 +197,18 @@ claude.ai connectors — Opencode has no hook system. The full mapping and gap t
 ## Linux
 
 `./dotfiles` runs on Debian 13 and Ubuntu 24.04 (x86_64 and arm64) as a normal user with `sudo`.
-The code asks the OS with `is_macos` and `is_linux` (`scripts/setup-lib.sh`); a Mac behaves as
-before. On Linux:
+The code asks the OS with `is_macos`, `is_linux` and `is_windows` (`scripts/setup-lib.sh`). On Linux:
 
 - **Packages:** step `05-linux-prereqs` installs `build-essential`, `curl`, `file`, `git`,
   `procps`, `python3` and `zsh` with `apt`. Step `10-homebrew` then installs Homebrew on Linux
   (`/home/linuxbrew/.linuxbrew`), and `20-brew-bundle` installs the Brewfile from it. A temp
-  copy of the Brewfile drops the lines that only work on a Mac (`cask`, `mas`, `tap`,
+  copy of the Brewfile drops the lines that only work on macOS (`cask`, `mas`, `tap`,
   `vscode`). One Brewfile and one tool version on both systems, and no `batcat` or `fdfind`.
 - **Skipped on Linux:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
   print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Fira Code Nerd Font
-  are Mac-only too.
+  are macOS-only too.
 - **Links:** `~/.config/Code/User/*` and `~/.config/Cursor/User/*` link to the same
-  files that a Mac gets under `~/Library/Application Support`. Ghostty reads
+  files that macOS gets under `~/Library/Application Support`. Ghostty reads
   `~/.config/ghostty` on both.
 - **Shell:** `init.zsh` finds Homebrew on Linux, falls back to `C.UTF-8` when `en_US.UTF-8` is
   not built, and sets `GIT_EDITOR` to `$EDITOR` in interactive zsh when VS Code is not installed
@@ -220,8 +219,8 @@ before. On Linux:
   needs a user that is not root.
 - **Other distros:** the prerequisites step needs `apt-get`. Without it, it prints the package
   list and carries on; the Homebrew installer may then complain about missing tools.
-- **Skills:** `ps:bag-mode` is for a Mac laptop. On Linux its script says so and exits 0.
-  The other skill scripts run on both.
+- **Skills:** `ps:bag-mode` is for a Mac laptop. On Linux and Windows it says so and stops.
+  `ps:spawn` needs `tmux`, so it runs on macOS and Linux only. The other skill scripts run on all three.
 
 ### Test it
 
@@ -246,21 +245,21 @@ not covered. A run takes about 10 minutes.
 `./dotfiles` runs on Windows in Git Bash (MSYS/MINGW). Windows is detected with `is_windows`
 (`scripts/setup-lib.sh`); WSL counts as Linux and follows the Linux path.
 
-- **Packages:** no Homebrew on Windows. Step `10-homebrew` skips, and step `15-winget` installs
-  Opencode (`winget install Anomaly.OpenCode`) when `winget` is available, warning and continuing
-  otherwise. Other Brewfile tools are not installed on Windows — install the ones you want manually.
-- **Links:** everything links under `$HOME` (Git Bash maps `$HOME` to `%USERPROFILE%`), so
-  `.zshrc`, `.gitconfig`, `.config/*`, `.claude` and `.config/opencode` work as on Mac and Linux.
-  VS Code and Cursor settings link to `%APPDATA%\{Code,Cursor}\User\` on Windows (`AppData/Roaming`),
-  where the apps read them.
+- **Packages:** no Homebrew on Windows. Two steps run there: `15-winget` (Opencode: `SST.opencode`,
+  then `Anomaly.OpenCode`; and `yt-dlp.yt-dlp` for `ps:yt-learn`) and `57-claude-code` (`Anthropic.ClaudeCode`, then the PowerShell
+  installer). The other Brewfile tools are not installed. Install the ones you want yourself.
+- **Links:** real symlinks, so Windows Developer Mode must be on (the script stops with the fix).
+  `.claude`, `.config/opencode`, `.config/gh/config.yml` and the VS Code and Cursor settings
+  (`%APPDATA%\{Code,Cursor}\User\`) link. `~/.gitconfig` is not linked; the git identity goes to
+  `~/.gitconfig.local`, which your own `~/.gitconfig` includes.
 - **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
-  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Nerd Font are Mac-only.
+  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Nerd Font are macOS-only.
 - **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
   usual tools when they are on PATH.
-- **Opencode config:** `agent-config.py opencode` generates agents, permissions and MCP under
-  `~/.config/opencode` and uses `clip` for the clipboard — identical output on all three OSes.
-- **Python:** `agent-config.py` and Claude settings need `python3`; install it on Windows (e.g. via
-  WinGet) or those generated config steps warn and skip.
+- **Opencode config:** `scripts/agent-config opencode` generates agents, permissions and MCP under
+  `~/.config/opencode` and uses `clip` for the clipboard. The output is the same on all three OSes.
+- **Python:** not needed when `cargo` is installed: `scripts/agent-config` builds and runs the Rust
+  version. Without `cargo` it needs `python3` (from WinGet), or the generated config steps warn and skip.
 
 ## Secrets
 
@@ -299,7 +298,7 @@ fullscreen · `⌥⇧ ;` service mode (reload / reset).
 dotfiles/
 ├── assets/logo.svg           # the mark above
 ├── AGENTS.md  CLAUDE.md      # how AI agents (Claude/Cursor/Opencode) operate this repo
-├── bootstrap.sh              # fresh-machine one-liner (Mac, Debian, Ubuntu)
+├── bootstrap.sh              # fresh-machine one-liner (macOS, Linux, Windows)
 ├── dotfiles                  # the one command: pull + link + provision
 ├── Brewfile                  # every package + VS Code extensions (Brewfile.local for extras)
 ├── claude/                   # Claude config, symlinked into ~/.claude
@@ -333,11 +332,11 @@ dotfiles/
 │   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
 │   │                         #   05 linux-prereqs (Linux only)
-│   │                         #   → 10 homebrew
+│   │                         #   → 10 homebrew → 15 winget (Windows only)
 │   │                         #   → 20 brew-bundle → 30 omz → 40 rust → 50 node → 55 gh
 │   │                         #   → 57 claude-code → 58 opencode → 60 cursor → 70 macos → 72 touch-id
 │   │                         #   → 75 terminal → 77 git-hooks → 78 linux-extras → 90 sign-in
-│   │                         #   (70, 72, 75: macOS only; 05, 78: Linux only)
+│   │                         #   (70, 72, 75: macOS only; 05, 78: Linux only; 15: Windows only)
 │   │                         #   (DOTFILES_STEPS="60-cursor" ./dotfiles runs only the named steps;
 │   │                         #    pull, links and skill sync still run)
 │   ├── fix-brew-permissions.sh   # macOS only

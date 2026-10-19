@@ -18,6 +18,9 @@
 # docs/opencode-port.md, "Skills").
 set -euo pipefail
 
+# Git Bash `ln -s` copies unless asked for native links (the dotfiles script sets this too).
+case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) export MSYS=winsymlinks:nativestrict ;; esac
+
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/skills" && pwd)"
 
 # Names of the real skill folders (has SKILL.md; not _template / dotfile / file).
@@ -37,18 +40,19 @@ list_skills() {
 # no longer exists, e.g. a skill folder we renamed or deleted). Never touches a
 # real directory or a symlink pointing anywhere else — those are the user's.
 prune_stale() {
-  local root="$1" link target
+  local root="$1" link target n=0
   for link in "$root"/*; do
     [[ -L "$link" ]] || continue
     target="$(readlink "$link")"
     [[ "$target" == "$SRC"/* ]] || continue
     [[ -e "$target" ]] && continue
-    rm -f "$link" && echo "·  removed stale $link (target no longer exists: $target)"
+    rm -f "$link" && n=$((n + 1))
   done
+  if (( n > 0 )); then echo "·  removed $n old skill links from $root"; fi
 }
 
 link_each() { # <skills-root>
-  local root="$1" name link target
+  local root="$1" name link target made=0
   if [[ -L "$root" ]]; then
     echo "!  $root is a symlink, left untouched (no skills added there)" >&2
     return 0
@@ -60,12 +64,16 @@ link_each() { # <skills-root>
     if [[ -L "$link" && "$(readlink "$link")" == "$target" ]]; then
       continue                                              # already ours — idempotent
     fi
+    # Windows: an earlier run (before native links) left a COPY of our own skill. A copy never
+    # follows the repo, so replace it with a link. Only our ps_* names, only a real folder.
+    if [[ "$name" == ps_* && -d "$link" && ! -L "$link" && -n "${MSYS:-}" ]]; then rm -rf "$link"; fi
     if [[ -e "$link" || -L "$link" ]]; then
       echo "·  $link exists (not ours) — left untouched"    # NEVER clobber the user's
       continue
     fi
-    ln -s "$target" "$link" 2>/dev/null && echo "✓ $link → $target" || echo "!  can't link $link" >&2
+    if ln -s "$target" "$link" 2>/dev/null; then made=$((made + 1)); else echo "!  can't link $link" >&2; fi
   done < <(list_skills)
+  if (( made > 0 )); then echo "✓ linked $made skills into $root"; fi
 }
 
 # This repo links only the skills it owns. A private skills repo ships its own

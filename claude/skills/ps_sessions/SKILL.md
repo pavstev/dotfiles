@@ -1,6 +1,6 @@
 ---
 name: ps:sessions
-description: "Finds, reads, messages, renames, monitors and archives other Claude Code sessions on this Mac, and makes one session wait for another without polling. Use when the user names another session, says one session should wait for or inform another, asks to find an archived session where something was done, or wants a hub view of what each running session still needs."
+description: "Finds, reads, messages, renames, monitors and archives other Claude Code sessions on this machine, and makes one session wait for another without polling. Use when the user names another session, says one session should wait for or inform another, asks to find an archived session where something was done, or wants a hub view of what each running session still needs."
 ---
 
 # Sessions

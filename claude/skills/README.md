@@ -12,12 +12,15 @@ or by hand) adds a **per-skill symlink** into `~/.claude/skills`. Cursor and Ope
 shows up in every agent on every machine after `dots`.
 
 ```
-~/dotfiles/claude/skills/ps:foo  ──symlink──▶  ~/.claude/skills/ps:foo
+~/dotfiles/claude/skills/ps_foo  ──symlink──▶  ~/.claude/skills/ps_foo
 ```
 
-Names keep the `ps:` prefix on purpose: it namespaces them like plugin skills and
-the slash command stays `/ps:foo`. The open Agent Skills spec forbids the colon, so
-these are Claude Code + Cursor + Opencode skills, not portable ones.
+The `name:` keeps the `ps:` prefix on purpose: it namespaces the skill like a plugin
+skill and the slash command stays `/ps:foo`. The folder says `ps_foo`, because Windows
+cannot hold a colon in a file name and `git clone` fails there on one. No tracked path
+may hold a character Windows rejects (`scripts/test-dotfiles.sh` and the pre-commit hook
+check this). The open Agent Skills spec forbids the colon in `name:`, so these are
+Claude Code + Cursor + Opencode skills, not portable ones.
 
 ## Rules every skill follows
 
@@ -30,7 +33,7 @@ python3 claude/skills/check.py ps:askme   # one skill
 python3 claude/skills/check.py --self-test
 ```
 
-- `name` equals the folder name. Lowercase, digits, hyphens, optional `ps:` prefix.
+- `name` equals the folder name with `:` written as `_` (`ps:foo` lives in `ps_foo`). Lowercase, digits, hyphens, optional `ps:` prefix.
 - `description` is third person, says what the skill does **and when** to use it, and
   is quoted whenever it contains `: ` (an unquoted colon silently drops the skill).
   It never summarises the workflow — an agent that reads a summary skips the body.
@@ -46,8 +49,8 @@ python3 claude/skills/check.py --self-test
 ## Add your own
 
 ```sh
-cp -r _template ps:my-skill
-$EDITOR ps:my-skill/SKILL.md      # set name + description, keep the body short
+cp -r _template ps_my-skill
+$EDITOR ps_my-skill/SKILL.md      # set name + description, keep the body short
 python3 check.py ps:my-skill
 dots                              # links it; commit + push to sync machines
 ```

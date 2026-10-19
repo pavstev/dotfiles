@@ -3,7 +3,7 @@
 
 Small transcripts are written to a temp folder; no real sessions, no home paths.
 
-  python3 claude/skills/ps:whatsleft/scripts/test_whatsleft_scan.py
+  python3 claude/skills/ps_whatsleft/scripts/test_whatsleft_scan.py
 """
 import contextlib
 import importlib.util

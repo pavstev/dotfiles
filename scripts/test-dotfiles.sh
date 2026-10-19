@@ -127,6 +127,46 @@ run run5.log
 grep -q 'pulled the latest version' "$T/run5.log" && pass "pull restarts the script" || bad "no restart after the pull"
 grep -q 'dotfiles: done (new)' "$T/run5.log" && pass "the new script ran" || bad "the old script ran after the pull"
 
+# 7. Windows safety: no tracked path may hold a name Windows cannot check out.
+. "$REPO/scripts/git-hooks/windows-paths.sh"
+winbad="$(cd "$REPO" && git ls-files | windows_bad_paths)"
+[[ -z "$winbad" ]] && pass "every tracked path is Windows-safe" || { bad "paths Windows cannot hold: $(printf '%s' "$winbad" | head -3 | tr '\n' ' ')"; }
+
+# 8. bootstrap.sh: a fresh clone, and the repair of a clone with no checkout (what
+#    a failed Windows clone leaves behind).
+H2="$T/home2"; mkdir -p "$H2"
+printf 'Test User\ntest@example.com\n' >"$T/stdin"
+bs() { # bs <log> <dir>
+  env HOME="$H2" NO_COLOR=1 DOTFILES_STEPS=none GIT_CONFIG_GLOBAL=/dev/null DOTFILES_REPO="$T/origin.git" DOTFILES="$2" \
+    bash "$REPO/bootstrap.sh" >"$T/$1" 2>&1 <"$T/stdin"
+}
+if bs bs1.log "$T/bs1" && [[ -f "$T/bs1/dotfiles" ]]; then pass "bootstrap: fresh clone runs"; else bad "bootstrap: fresh clone (log: bs1.log)"; fi
+[[ "$(git -C "$T/bs1" config core.autocrlf)" == false ]] && pass "bootstrap: autocrlf off in the clone" || bad "bootstrap: autocrlf not off"
+tgit clone -q --no-checkout "$T/origin.git" "$T/bs2" && [[ ! -f "$T/bs2/dotfiles" ]] || bad "couldn't make a clone without a checkout"
+if bs bs2.log "$T/bs2" && [[ -f "$T/bs2/dotfiles" ]]; then pass "bootstrap: a clone with no checkout is repaired"; else bad "bootstrap: repair (log: bs2.log)"; fi
+grep -q 'Repairing' "$T/bs2.log" && pass "bootstrap: says it repairs" || bad "bootstrap: repair not reported"
+rc=0; DOTFILES_REPO="$T/missing.git" DOTFILES="$T/bs3" HOME="$H2" GIT_CONFIG_GLOBAL=/dev/null bash "$REPO/bootstrap.sh" >"$T/bs3.log" 2>&1 <"$T/stdin" || rc=$?
+[[ "$rc" -ne 0 && ! -e "$T/bs3" ]] && pass "bootstrap: a failed clone leaves nothing behind" || bad "bootstrap: failed clone left $T/bs3 or exited 0"
+
+# 9. A Windows run (Git Bash), faked with a `uname` that says MINGW64: it runs only the
+#    Windows steps, links little, prints one total, and leaves the user's own .gitconfig alone.
+H3="$T/home3"; mkdir -p "$H3" "$T/fakebin"
+printf '#!/bin/sh\ncase "$1" in -s) echo MINGW64_NT-10.0 ;; *) exec /usr/bin/uname "$@" ;; esac\n' >"$T/fakebin/uname"
+chmod +x "$T/fakebin/uname"
+printf '[user]\n\tname = Mine\n' >"$H3/.gitconfig.bak-1"           # the user's own file, backed up by an old run
+cp "$R/home/.gitconfig" "$H3/.gitconfig"                              # the repo copy an old run left
+printf 'Win User\nwin@example.com\n' >"$T/stdin"
+rc=0
+env HOME="$H3" PATH="$T/fakebin:$PATH" NO_COLOR=1 AGENT_CONFIG_IMPL=python bash "$R/dotfiles" >"$T/win.log" 2>&1 <"$T/stdin" || rc=$?
+[[ "$rc" -eq 0 ]] && pass "Windows run exits 0" || bad "Windows run exit $rc (log: win.log)"
+grep -qiE 'homebrew|oh my zsh|brew bundle' "$T/win.log" && bad "Windows run mentions Homebrew or Oh My Zsh" || pass "Windows run is quiet about Mac tools"
+grep -q 'All set' "$T/win.log" && pass "Windows run ends with the All set box" || bad "Windows run has no All set box"
+[[ "$(grep -c '^✓ linked ' "$T/win.log")" -le 4 ]] && pass "Windows run prints totals, not one line per link" || bad "Windows run prints many link lines"
+[[ -L "$H3/.claude/CLAUDE.md" ]] && pass "Windows run links ~/.claude" || bad "Windows run did not link ~/.claude"
+[[ ! -L "$H3/.gitconfig" ]] && grep -q 'name = Mine' "$H3/.gitconfig" && pass "Windows run keeps the user's own .gitconfig" || bad "Windows run replaced the user's .gitconfig"
+git config -f "$H3/.gitconfig" --get-all include.path | grep -q gitconfig.local && pass "Windows .gitconfig includes the identity file" || bad "Windows .gitconfig misses the include"
+[[ ! -e "$H3/.zshrc" ]] && pass "Windows run does not link .zshrc" || bad "Windows run linked .zshrc"
+
 if [[ "$fails" -eq 0 ]]; then printf '\nALL PASS\n'; exit 0; fi
 KEEP=1
 printf '\n%d check(s) failed\n' "$fails"

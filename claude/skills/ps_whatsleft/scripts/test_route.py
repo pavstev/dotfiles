@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for route.py and for the links between ps:whatsleft, ps:askme and ps:mic-drop.
 
-  python3 claude/skills/ps:whatsleft/scripts/test_route.py
+  python3 claude/skills/ps_whatsleft/scripts/test_route.py
 """
 import importlib.util
 import io
@@ -230,7 +230,7 @@ class SkillLinkTest(unittest.TestCase):
     """The three skills must keep pointing at each other."""
 
     def read(self, name):
-        with open(os.path.join(SKILLS, name, "SKILL.md"), encoding="utf-8") as f:
+        with open(os.path.join(SKILLS, name.replace(":", "_"), "SKILL.md"), encoding="utf-8") as f:
             return f.read()
 
     def test_whatsleft_links(self):

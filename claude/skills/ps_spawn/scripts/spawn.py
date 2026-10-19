@@ -110,7 +110,7 @@ def preflight(folder, mode, name, env, which=shutil.which, tmux_has=None):
     if mode == "bypassPermissions":
         settings = load_json(os.path.join(cfg, "settings.json"))
         if not (g.get("bypassPermissionsModeAccepted") or settings.get("skipDangerousModePermissionPrompt")):
-            raise CheckFailed("bypass warning never accepted on this Mac: run "
+            raise CheckFailed("bypass warning never accepted on this machine: run "
                               "`claude --permission-mode bypassPermissions` once in a terminal, accept, "
                               "then /exit. Or pass --mode acceptEdits.")
     if tmux_has is None:
@@ -214,7 +214,7 @@ def main(argv=None):
         print("NAME  %s" % name)
         print("MODE  %s in %s" % (a.mode, folder))
         print("URL   %s" % info)
-        print("WATCH phone: Claude app > Code > %s · Mac: %s" % (name, watch))
+        print("WATCH phone: Claude app > Code > %s · Terminal: %s" % (name, watch))
         print("STOP  %s" % stop)
         return 0
     tail = "\n".join([ln for ln in pane.splitlines() if ln.strip()][-12:])

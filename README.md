@@ -4,11 +4,11 @@
 
 # dotfiles
 
-**One command sets up a Mac, Debian or Ubuntu for coding with Claude Code, Cursor and Opencode.**
+**One command sets up macOS, Linux (Debian, Ubuntu) or Windows for coding with Claude Code, Cursor and Opencode.**
 
 </div>
 
-## Set up a Mac
+## Set up macOS
 
 1. Open the **Terminal** app. Do not use a Claude Code window for this.
 2. Paste this line, then press Enter:
@@ -41,13 +41,13 @@ that can run `sudo`.
 
    No `curl` yet? Run `sudo apt-get install -y curl` first.
 3. Type your password when it asks. `apt` and Homebrew need it.
-4. Answer the questions, as in steps 4 to 6 of the Mac setup.
+4. Answer the questions, as in steps 4 to 6 of the macOS setup.
 5. Open a new terminal, or run `exec zsh`.
 
 ## Set up Windows
 
-This works in Git Bash (MSYS/MINGW). You need `git`, `curl` and `python3` on PATH
-(install them via WinGet if missing).
+This works in Git Bash (MSYS/MINGW). You need `git` and `curl` on PATH. Install them with WinGet if
+they are missing.
 
 1. Open a Git Bash terminal.
 2. Paste this line, then press Enter:
@@ -56,17 +56,19 @@ This works in Git Bash (MSYS/MINGW). You need `git`, `curl` and `python3` on PAT
    bash -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
    ```
 
-3. Answer the questions (git name/email, then the settings menu). Pick ✅ Done to keep the defaults.
-4. Wait. The first run installs Opencode via WinGet and links your config files.
-5. Open a new Git Bash window, or run: `exec zsh`
+3. Answer the two questions (git name and email).
+4. Wait about 5 minutes. The run installs Claude Code and Opencode with WinGet and links your config.
+   If it says "Windows can't make links yet", turn on Settings > System > For developers >
+   Developer Mode, then paste the same line again.
+5. Close the window and open a new Git Bash. Run `claude`.
 
-What is different from a Mac:
+What is different on Windows:
 
-- No Homebrew on Windows. Opencode comes from WinGet (`winget install Anomaly.OpenCode`); the
-  other Brewfile tools are not installed — add the ones you want manually.
-- VS Code and Cursor settings link to `%APPDATA%\{Code,Cursor}\User\`, where the apps read them.
-- Three steps are macOS only and skip with one line: macOS defaults, Touch ID for sudo, Apple
-  Terminal appearance. The Claude desktop app offer, AeroSpace and the Nerd Font are Mac-only too.
+- No Homebrew. Claude Code (`Anthropic.ClaudeCode`), Opencode (`SST.opencode`) and `yt-dlp` come from
+  WinGet.
+  The other Brewfile tools are not installed. Add the ones you want yourself.
+- Your own `~/.gitconfig` stays. Only the git name and email are added to it.
+- The macOS-only steps and the zsh setup do not run.
 - `scripts/agent-config` generates the Opencode/Claude/Cursor config. It runs the Rust build in
   `rust/agent-config` (built on first use when `cargo` is installed), so Python is not needed
   there. With no `cargo` it falls back to `python3` (install it via WinGet) or the steps warn and skip.

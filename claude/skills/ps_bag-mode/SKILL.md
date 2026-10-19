@@ -1,7 +1,7 @@
 ---
 name: ps:bag-mode
 description: Use when the user is about to close the laptop lid or leave with a Mac while Claude sessions, subagents, or background tasks keep running, or asks which tasks are heavy, how long they will stay heavy, how long the session still needs, or how to keep Claude alive in a bag with Amphetamine.
-allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/scripts/bag-check.sh *) Bash(python3 ${CLAUDE_SKILL_DIR}/../ps:whatsleft/scripts/whatsleft-scan.py *)"
+allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/scripts/bag-check.sh *) Bash(python3 ${CLAUDE_SKILL_DIR}/../ps_whatsleft/scripts/whatsleft-scan.py *)"
 ---
 
 # Bag Mode
@@ -22,7 +22,7 @@ Mac only. Run `uname -s` first. If it does not print `Darwin`, tell the user "ba
 
 ETA = time the session still needs. The shared scan from `ps:whatsleft` works it out from open rows and running agents:
 
-`python3 ${CLAUDE_SKILL_DIR}/../ps:whatsleft/scripts/whatsleft-scan.py --eta`
+`python3 ${CLAUDE_SKILL_DIR}/../ps_whatsleft/scripts/whatsleft-scan.py --eta`
 
 It prints one line, like `ETA ~35 min (25-50)`. Pass the high end of the range to the check (`--eta 50m`); the script adds its own 25% buffer. If the user gave a time, use their time. If this session knows later phases or agent deadlines the scan cannot see, add them and say so. If the scan finds no session, ask the user for a time.
 

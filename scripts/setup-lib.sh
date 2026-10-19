@@ -59,6 +59,18 @@ is_windows() {
   return 1
 }
 
+# Git Bash `ln -s` makes COPIES unless MSYS asks for native links. A copy never follows
+# the repo, so Windows must make real links (they need Developer Mode on).
+is_windows && export MSYS=winsymlinks:nativestrict
+
+# windows_links_ready: true when this shell can make a real symlink (Windows only).
+windows_links_ready() {
+  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/dots-link.XXXXXX")" || return 1
+  : >"$d/a"
+  if ln -s "$d/a" "$d/b" 2>/dev/null && [[ -L "$d/b" ]]; then rm -rf "$d"; return 0; fi
+  rm -rf "$d"; return 1
+}
+
 # winpath <posix-path>: a Windows path (C:\Users\...) for the POSIX path, for
 # Windows apps that cannot read /c/Users-style paths. Needs cygpath (Git Bash
 # ships it); falls back to the input unchanged.
@@ -277,6 +289,7 @@ spin() {
 # link_item <src> <dst> — symlink dst -> src, idempotent and non-destructive:
 # already-correct links are left alone; a pre-existing real file/dir/symlink
 # elsewhere is backed up to <dst>.bak-<timestamp> before linking.
+LINK_COUNT=0   # links made since the last count reset; DOTFILES_LINK_QUIET=1 prints a total, not each
 link_item() {
   local s="$1" d="$2"
   [[ -e "$s" ]] || return 0
@@ -292,7 +305,8 @@ link_item() {
   fi
   mkdir -p "$(dirname "$d")" 2>/dev/null
   if ln -s "$s" "$d" 2>/dev/null; then
-    ok "linked $(basename "$d")"
+    LINK_COUNT=$((LINK_COUNT + 1))
+    [[ -n "${DOTFILES_LINK_QUIET:-}" ]] || ok "linked $(basename "$d")"
   else
     warn "couldn't link $d → $s"
   fi
@@ -356,6 +370,22 @@ git_identity() {
     ok "git commits use: $1 <$2>"
   else
     warn "couldn't write $f"
+  fi
+}
+
+# windows_gitconfig: on Windows the repo's ~/.gitconfig is not linked. It sets delta as the
+# pager and VS Code as the editor, and a Windows machine has neither. The identity
+# still works: ~/.gitconfig includes ~/.gitconfig.local. A repo ~/.gitconfig left by an
+# earlier run (a link or a copy) goes, and the newest backup comes back.
+windows_gitconfig() {
+  local g="$HOME/.gitconfig" b
+  if [[ -L "$g" ]] || grep -q 'symlinked from this repo' "$g" 2>/dev/null; then
+    rm -f "$g"
+    b="$(ls -t "$g".bak-* 2>/dev/null | head -1)"
+    if [[ -n "$b" ]]; then mv "$b" "$g" && info "restored your own .gitconfig"; fi
+  fi
+  if ! git config --global --get-all include.path 2>/dev/null | grep -q 'gitconfig.local'; then
+    git config --global --add include.path "~/.gitconfig.local"
   fi
 }
 

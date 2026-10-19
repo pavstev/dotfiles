@@ -1,26 +1,46 @@
 #!/usr/bin/env bash
-# 15-winget.sh: Windows only. Installs Opencode (the `opencode` CLI) via WinGet,
-# which is built into Windows 10/11. The Brewfile's `brew "opencode"` does not
-# apply on Windows (no Homebrew there), so this step covers it.
-# Idempotent and tolerant: skips when `opencode` is present or winget is missing,
-# and warns (never fails) when the install cannot complete.
+# 15-winget.sh: Windows only. Installs Opencode (the `opencode` CLI) and yt-dlp (for ps:yt-learn)
+# with WinGet, which is built into Windows 10/11. The Brewfile does not apply on Windows.
+# Idempotent and tolerant: skips what is present or when winget is missing, and
+# warns (never fails) when an install cannot finish. SST.opencode is the Opencode package
+# today; Anomaly.OpenCode is the official one that replaces it.
 set -uo pipefail
 . "$REPO/scripts/setup-lib.sh"
 is_windows || exit 0
 
-step "Opencode via WinGet"
+winget_install() {
+  winget install --id "$1" -e --accept-package-agreements --accept-source-agreements --silent >/dev/null 2>&1
+}
 
-if have opencode; then
-  skip "Opencode"
-  exit 0
-fi
+install_opencode() {
+  step "Opencode"
+  if have opencode; then
+    skip "Opencode"
+    return
+  fi
+  have winget || { warn "winget not found. Install Opencode yourself: winget install SST.opencode"; return; }
+  local id
+  for id in SST.opencode Anomaly.OpenCode; do
+    if winget_install "$id"; then
+      ok "Opencode installed"
+      return
+    fi
+  done
+  warn "Opencode did not install. Try in PowerShell: winget install SST.opencode"
+}
 
-have winget || { warn "winget not found — skipping WinGet tools. Install Opencode manually, e.g. winget install Anomaly.OpenCode"; exit 0; }
+install_ytdlp() {
+  step "yt-dlp"
+  if have yt-dlp; then
+    skip "yt-dlp"
+  elif ! have winget; then
+    warn "winget not found. Install yt-dlp yourself: winget install yt-dlp.yt-dlp"
+  elif winget_install yt-dlp.yt-dlp; then
+    ok "yt-dlp installed"
+  else
+    warn "yt-dlp did not install. Try in PowerShell: winget install yt-dlp.yt-dlp"
+  fi
+}
 
-info "Installing Opencode via WinGet…"
-if winget install --id Anomaly.OpenCode -e --accept-package-agreements --accept-source-agreements --silent >/dev/null 2>&1; then
-  ok "Opencode installed (sign in once: opencode auth login)"
-else
-  warn "WinGet could not install Opencode (package not in the store yet, or no network)."
-  warn "Install manually: winget install Anomaly.OpenCode  (or see the Opencode docs for other Windows options)"
-fi
+install_opencode
+install_ytdlp

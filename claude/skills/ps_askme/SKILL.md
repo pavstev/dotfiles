@@ -26,7 +26,7 @@ Take defaults for the rest and name them in one line. After the answers, start w
 </light_mode>
 
 <handoff_mode>
-[ps:whatsleft](../ps:whatsleft/SKILL.md) calls this mode after it did its own rows. The rows after `whatsleft:` are the ASK rows its `route.py` picked: decisions, values, optional work, risky work and STOP tasks. Rows only the user can do (login, secret, payment) never come here; they stay in the 🧑 table.
+[ps:whatsleft](../ps_whatsleft/SKILL.md) calls this mode after it did its own rows. The rows after `whatsleft:` are the ASK rows its `route.py` picked: decisions, values, optional work, risky work and STOP tasks. Rows only the user can do (login, secret, payment) never come here; they stay in the 🧑 table.
 1. Settle what you can first. A row a read-only check or a tool you have can answer is not a question. Do it or drop it.
 2. Ask the rest in one call, in the order given (route.py already put the costly ones first and capped them).
 3. Each option says who acts and what happens, e.g. "Open a PR, I do it (Recommended)" or "Skip, it stays in the README list". Optional row: do it or skip it, with your pick first. A `value` row: an option holds a value only when a tool showed it (say where). An unchecked guess is never "(Recommended)": recommend "Leave it open, I ask again later"; the free-text answer takes the real value.
