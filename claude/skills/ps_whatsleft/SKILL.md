@@ -2,7 +2,7 @@
 name: ps:whatsleft
 description: Use when the user runs /ps:whatsleft, or asks what is left, what remains, what is still open, "where are we", "what's on me", "what do I still need to do", "who does what next", wants the open work split between the user and Claude, or says the session is "slow", "laggy", "speed up", "hurry up" or "trim this session".
 argument-hint: "[kill dead tasks | report only | focus text]"
-allowed-tools: "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*) Skill(ps:askme) Skill(ps:mic-drop) TaskStop Bash(tmux -L claude-run kill-session *)"
+allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin whatsleft_scan *) Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin route *) Skill(ps:askme) Skill(ps:mic-drop) TaskStop Bash(tmux -L claude-run kill-session *)"
 ---
 
 # What's Left
@@ -31,7 +31,7 @@ Then the agent does its own rows, asks the user the rest through [ps:askme](../p
 
 ## Steps
 
-1. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/whatsleft-scan.py`. It reads this session's transcript, the git state of every repo the session touched, running tasks and slow-session findings. It is read-only except `git fetch`; `--no-fetch` skips it, `--no-ci` skips CI, `--session <id|path>` scans another session.
+1. Run `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin whatsleft_scan`. It reads this session's transcript, the git state of every repo the session touched, running tasks and slow-session findings. It is read-only except `git fetch`; `--no-fetch` skips it, `--no-ci` skips CI, `--session <id|path>` scans another session.
 2. Check the `DELIVERABLE` guess. The reply starts with it: a path, a URL or a commit sha. Nothing → `Deliverable: none yet`.
 3. Check every `ASK` line. Find the proof in this session: a tool result that shows it done (test output, pushed sha, file on disk). Proof counts only when it came after the last change it covers, and covers that exact thing. Proof found → ✅ Done. No proof → it is a row.
 4. Turn every `ME`, `YOU`, `CHECK`, `LATER` and `SPEED` line into a row. A line that a read-only check shows is fine is dropped.
@@ -39,7 +39,7 @@ Then the agent does its own rows, asks the user the rest through [ps:askme](../p
 6. Read the user's rules (CLAUDE.md, AGENTS.md, owner rules). A decision they already settle (main or PR, commit style) is not a question: follow the rule.
 7. Write each row once into `rows.json` in your scratchpad (no scratchpad: `mktemp -d`), with its `kind` (see "Who does it"), `risk`, `after` and `done`. Every `TASK` line is a row of kind `task` with `stop` from the scan.
    A tmux session on socket `-L claude-run` is a task row only when this session started it. Not needed any more → `stop`. Any other session is not yours: leave it out.
-8. Run `python3 ${CLAUDE_SKILL_DIR}/scripts/route.py <scratch>/rows.json` (add `--kill` for `kill dead tasks`). It prints a route per row and three NEXT lines. Exit 2 → fix the row it names, run it again. Do not route by hand.
+8. Run `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin route <scratch>/rows.json` (add `--kill` for `kill dead tasks`). It prints a route per row and three NEXT lines. Exit 2 → fix the row it names, run it again. Do not route by hand.
 9. Write the report from the routes: DO rows and waiting work go in 🤖 Me, YOU rows in 🧑 You, ASK rows in 🧑 You as "Question below", a waiting question in 🧑 You as "Question next round", task rows in 🏃 Tasks.
 10. **NEXT 1:** do the DO rows now, in the same turn, in order.
 11. **NEXT 2:** run `ps:askme` with the `whatsleft:` line route.py printed. askme asks in one call, then does the work the answers unlock. Name the DEFAULT rows and your pick in one line.

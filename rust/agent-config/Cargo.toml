@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 dirs = "6"
 sha2 = "0.10"
 tempfile = "3"
@@ -48,6 +48,10 @@ path = "src/bin/hurry_scan.rs"
 [[bin]]
 name = "yt_transcribe"
 path = "src/bin/yt_transcribe.rs"
+
+[[bin]]
+name = "pace"
+path = "src/bin/pace.rs"
 
 [[bench]]
 name = "manual"

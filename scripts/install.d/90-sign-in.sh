@@ -22,7 +22,7 @@ if have agent && ! agent status 2>/dev/null | grep -qi 'logged in as'; then
   labels+=("🖱️  Cursor"); cmds+=("agent login")
 fi
 if (( ${#labels[@]} == 0 )); then
-  skip "sign-ins"
+  if verbose; then skip "sign-ins"; fi
   exit 0
 fi
 if [[ -z "${DOTFILES_FIRST_RUN:-}" ]] || ! at_terminal; then

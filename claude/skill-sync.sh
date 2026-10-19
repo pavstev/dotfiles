@@ -91,4 +91,5 @@ link_each "$HOME/.claude/skills"
 # older builds listed such skills twice (forum.cursor.com/t/150137); ~/.config/opencode
 # has no skills dir at all. So this script never touches either folder.
 
-echo "✓ skill-sync complete"
+# Quiet when nothing changed: ./dotfiles prints the count line. DOTFILES_VERBOSE=1 says it.
+if [[ -n "${DOTFILES_VERBOSE:-}" && "${DOTFILES_VERBOSE}" != 0 ]]; then echo "✓ skill-sync complete"; fi

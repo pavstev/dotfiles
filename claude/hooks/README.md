@@ -23,7 +23,7 @@ See `format-after-edit.sh` for a sample.
 
 ## guard.py
 
-`guard.py` (Python 3, stdlib only, fail-open: any error exits 0 silently) keeps sessions
+`guard.py` and its Rust twin `guard` (`rust/agent-config`; same checks, tested by `rust/agent-config/tools/run_hook_tests.py`) (Python 3, stdlib only, fail-open: any error exits 0 silently) keeps sessions
 cheap. Deny = message on stderr + exit 2. Warn (the W rows) = exit 0 with
 `hookSpecificOutput.additionalContext` on stdout, so the call runs and the model reads the note.
 A deny wins over a warning. Tests: `python3 claude/hooks/test_guard.py`.
@@ -103,11 +103,15 @@ check, so the hook does not try to get around it. The rule text carries the fix 
 
 ### Scratch mode
 
-`python3 ~/.claude/hooks/guard.py scratch` is not wired in `settings.json`. An agent file wires it
+`~/.claude/hooks/rust-bin --hook guard scratch` is not wired in `settings.json`. An agent file wires it
 in its frontmatter as a `PreToolUse` hook on `Write|Edit|NotebookEdit` (the ui-verifier does). It
 allows a write only when the real path is under `/tmp`, `/private/tmp`, `/var/folders`,
 `/private/var/folders`, `$TMPDIR`, a `scratchpad` folder, or a `.agents/` or `.superpowers/` note
 folder (callers name report files there). Anything else is denied.
 
 Wired in [`claude/settings.json`](../settings.json) (`hooks`). Each command starts with
-`test -r ~/.claude/hooks/guard.py || exit 0`, so a missing script never blocks a tool.
+`test -r ~/.claude/hooks/rust-bin || exit 0`, so a missing launcher never blocks a tool.
+`rust-bin --hook guard <mode>` runs the Rust `guard` when it is newer than its sources, else
+`guard.py`; with neither a binary nor `python3` it exits 0, silent. It never builds (`dots` does,
+with `scripts/agent-config --bins`). Force one with `RUST_BIN_IMPL=python|rust`. To go back to
+Python for good, revert the commit that switched the commands. Notes: `rust/MIGRATION.md`.

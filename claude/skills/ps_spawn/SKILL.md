@@ -2,7 +2,7 @@
 name: ps:spawn
 description: "Starts a new Claude Code session on this machine with Remote Control on and permissions bypassed, working on a given prompt, so the user can watch it from the phone. Use when the user runs /ps:spawn, or asks (often from the phone through Remote Control) to start, open, launch or spawn a new session, a fresh session or a second session with a prompt."
 argument-hint: "[prompt for the new session] [in <folder>] [as <name>]"
-allowed-tools: "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*)"
+allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin spawn *)"
 ---
 
 # Spawn a Remote Control session
@@ -15,7 +15,7 @@ One script call starts a new session in a detached tmux, with `claude --remote-c
 2. **The folder.** A folder the user named, else this session's working directory. The prompt names files (`tests/auth.spec.ts`) that are not in that folder and the user named none → ask one question: the folder you think fits (Recommended) or this one.
    **The name.** A name the user gave, else 2-4 words for the job (`fix-login-test`). The script adds nothing to it.
 3. **Say it starts.** One line before the call: "Starting <name> in <folder>, up to 60 s."
-4. **Run once:** `python3 ${CLAUDE_SKILL_DIR}/scripts/spawn.py --prompt-file <scratch>/prompt.md [--dir <folder>] [--name <name>]`
+4. **Run once:** `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin spawn --prompt-file <scratch>/prompt.md [--dir <folder>] [--name <name>]`
    `--dry-run` runs only the checks and prints the command.
 5. **Read the exit code.** Never run it a second time for the same prompt.
 

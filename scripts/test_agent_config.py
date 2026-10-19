@@ -28,6 +28,7 @@ os.environ["NO_COLOR"] = "1"
 _spec = importlib.util.spec_from_file_location("agent_config", str(SCRIPT))
 AC = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(AC)
+AC.VERBOSE = True  # the tests read each line; QuietOutputTest below covers the short output
 
 CLAUDE_MD = (
     "# Global\n\nintro line\n\n"
@@ -1780,6 +1781,61 @@ class MainTest(Base):
         self.assertTrue(AC.DRY)
         call(AC.main, ["cursor"])
         self.assertFalse(AC.DRY)
+
+
+class QuietOutputTest(Base):
+    """The default output: a count line per command, not one line per file up to date."""
+
+    def setUp(self):
+        super().setUp()
+        AC.VERBOSE = False
+        AC._SKIPPED = AC._WRITTEN = 0
+        self.addCleanup(setattr, AC, "VERBOSE", True)
+
+    def test_skip_counts_and_summary_prints_one_line(self):
+        _, out, _ = call(lambda: [AC.skip("a"), AC.skip("b"), AC.skip("c")])
+        self.assertEqual(out, "")
+        _, out, _ = call(AC.summary, "Opencode config")
+        self.assertEqual(out, "• Opencode config: 3 up to date\n")
+        _, out, _ = call(AC.summary, "Opencode config")
+        self.assertEqual(out, "")  # the count is spent
+
+    def test_written_files_keep_their_line_and_join_the_count(self):
+        _, out, _ = call(lambda: [AC.skip("a"), AC.ok("wrote ~/x"), AC.ok("removed ~/y (gone)")])
+        self.assertIn("✓ wrote ~/x", out)
+        self.assertIn("✓ removed ~/y", out)
+        _, out, _ = call(AC.summary, "Cursor config")
+        self.assertEqual(out, "• Cursor config: 1 up to date, 1 written\n")
+
+    def test_nothing_skipped_prints_no_count_line(self):
+        _, out, _ = call(AC.summary, "Cursor config")
+        self.assertEqual(out, "")
+
+    def test_header_is_verbose_only(self):
+        _, out, _ = call(AC.header, "Cursor config from x")
+        self.assertEqual(out, "")
+        AC.VERBOSE = True
+        _, out, _ = call(AC.header, "Cursor config from x")
+        self.assertIn("Cursor config from x", out)
+
+    def test_verbose_prints_every_skip_line(self):
+        AC.VERBOSE = True
+        _, out, _ = call(AC.skip, "~/a")
+        self.assertIn("(already set up, skipping)", out)
+
+    def test_a_second_opencode_run_is_one_line(self):
+        home = self.tmp / "home"
+        (self.tmp / "claude" / "agents").mkdir(parents=True)
+        (self.tmp / "claude" / "CLAUDE.md").write_text(CLAUDE_MD)
+        with mock.patch.object(AC, "CLAUDE", self.tmp / "claude"), \
+             mock.patch.object(Path, "home", return_value=home), \
+             mock.patch.dict(os.environ, {"DOTFILES_PROFILE": "shared"}):
+            call(AC.main, ["opencode"])
+            AC._SKIPPED = AC._WRITTEN = 0
+            _, out, _ = call(AC.main, ["opencode"])
+        self.assertEqual(len(out.strip().splitlines()), 1, out)
+        self.assertIn("Opencode config:", out)
+        self.assertIn("up to date", out)
 
 
 if __name__ == "__main__":

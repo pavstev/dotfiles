@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 #  bootstrap.sh: a fresh macOS, Linux or Windows (Git Bash) machine → full environment
-#  in one command. Installs Xcode CLT (macOS) or git and curl (Debian, Ubuntu; Git Bash
+#  in one command. Installs Xcode CLT (macOS) or git and curl (Linux; Git Bash
 #  has both), clones this repo, runs ./dotfiles (which installs everything else).
 #  The one-liner that runs it is in the README "Set up" sections.
 #
@@ -20,8 +20,8 @@ ok()   { printf "${c_g}✓${c_0} %s\n"  "$*"; }
 IS_WIN=""
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WIN=1 ;; esac
 
-# 1. macOS gets the Xcode Command Line Tools (git + compilers). Debian and Ubuntu get
-#    git and curl from apt; Git Bash on Windows has both. ./dotfiles installs the rest.
+# 1. macOS gets the Xcode Command Line Tools (git + compilers). Linux gets git and curl
+#    from apt, dnf, pacman or apk; Git Bash on Windows has both. ./dotfiles installs the rest.
 if [[ "$(uname -s)" == Darwin ]]; then
   if ! xcode-select -p >/dev/null 2>&1; then
     info "Installing Xcode Command Line Tools — accept the dialog that appears…"
@@ -31,10 +31,15 @@ if [[ "$(uname -s)" == Darwin ]]; then
   ok "Xcode Command Line Tools present"
 else
   if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
-    command -v apt-get >/dev/null 2>&1 || { echo "This Linux has no apt-get. Install git and curl, then run this again." >&2; exit 1; }
     [[ "$(id -u)" -eq 0 ]] && SUDO="" || SUDO="sudo"
-    info "Installing git and curl with apt (asks for your password once)…"
-    $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git curl ca-certificates
+    info "Installing git and curl (asks for your password once)…"
+    if command -v apt-get >/dev/null 2>&1; then
+      $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git curl ca-certificates
+    elif command -v dnf >/dev/null 2>&1; then $SUDO dnf install -y -q git curl ca-certificates
+    elif command -v pacman >/dev/null 2>&1; then $SUDO pacman -S --needed --noconfirm git curl ca-certificates
+    elif command -v apk >/dev/null 2>&1; then $SUDO apk add -q git curl ca-certificates bash
+    else echo "This Linux has no apt, dnf, pacman or apk. Install git and curl, then run this again." >&2; exit 1
+    fi
   fi
   ok "git and curl present"
 fi

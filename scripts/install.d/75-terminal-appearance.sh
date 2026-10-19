@@ -45,7 +45,7 @@ tell application "Terminal"
 end tell
 OSA
 then
-  ok "Apple Terminal → FiraCode Nerd Font Mono ${FONT_SIZE}pt, ${COLUMNS_}×${ROWS_} (compact, icons on)"
+  uptodate "Apple Terminal → FiraCode Nerd Font Mono ${FONT_SIZE}pt, ${COLUMNS_}×${ROWS_} (compact, icons on)"
 else
   warn "Couldn't set Apple Terminal appearance automatically."
   warn "Grant Automation permission (System Settings → Privacy → Automation), then re-run: ./dotfiles"

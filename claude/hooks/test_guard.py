@@ -1808,16 +1808,19 @@ class GuardTest(unittest.TestCase):
         settings = os.path.join(os.path.dirname(GUARD), "..", "settings.json")
         with open(settings) as f:
             hooks = json.load(f)["hooks"]["PreToolUse"]
-        matchers = [h["matcher"] for h in hooks if "guard.py pretool" in json.dumps(h)]
+        matchers = [h["matcher"] for h in hooks if "guard pretool" in json.dumps(h)]
         self.assertTrue(matchers and all("|Read|Grep" in m for m in matchers), matchers)
 
     def test_g15_letter_case_on_macos(self):
         self.secret_tree()
-        for path in ("~/.config/ZSH/LOCAL.zsh", "~/.config/zsh/Local.ZSH"):
-            self.assertEqual(self.g15("Read", {"file_path": path}, platform="darwin"), self.G15_FILE, path)
-            self.assertEqual(self.g15bash("cat " + path, platform="darwin"), self.G15_FILE, path)
-        self.assertEqual(self.g15bash("cat ~/.config/zsh/LOCAL.z*", platform="darwin"), self.G15_FILE)
-        self.assertEqual(self.g15("Grep", {"path": "~/.config/ZSH"}, platform="darwin"), self.G15_FILE)
+        # The deny needs a case-insensitive file system (macOS default): on a case-sensitive
+        # one (Linux) ~/.config/ZSH is another folder and the check has nothing to resolve.
+        if os.path.exists(os.path.join(self.dir, ".CONFIG")):
+            for path in ("~/.config/ZSH/LOCAL.zsh", "~/.config/zsh/Local.ZSH"):
+                self.assertEqual(self.g15("Read", {"file_path": path}, platform="darwin"), self.G15_FILE, path)
+                self.assertEqual(self.g15bash("cat " + path, platform="darwin"), self.G15_FILE, path)
+            self.assertEqual(self.g15bash("cat ~/.config/zsh/LOCAL.z*", platform="darwin"), self.G15_FILE)
+            self.assertEqual(self.g15("Grep", {"path": "~/.config/ZSH"}, platform="darwin"), self.G15_FILE)
         self.assertIsNone(self.g15("Read", {"file_path": "~/.config/ZSH/LOCAL.zsh"}, platform="linux"))
         self.assertIsNone(self.g15bash("cat ~/.config/ZSH/LOCAL.zsh", platform="linux"))
         self.assertIsNone(self.g15("Read", {"file_path": "~/.config/ZSH/ALIASES.zsh"}, platform="darwin"))

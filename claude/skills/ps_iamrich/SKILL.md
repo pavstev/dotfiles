@@ -44,7 +44,7 @@ before you Edit it; `cat` in Bash is not a Read." and "The shell tool is `Bash`,
 
 ## Pace
 
-Before each fan-out, when `~/.claude/hooks/pace.py` exists, run `python3 ~/.claude/hooks/pace.py status`.
+Before each fan-out, when `~/.claude/hooks/rust-bin` exists, run `~/.claude/hooks/rust-bin pace status`.
 Helpers at once: 3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (do the work
 yourself). Send a larger fan-out in waves of that size. The guard enforces the cap.
 

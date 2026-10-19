@@ -4,7 +4,7 @@
 
 # dotfiles
 
-**One command sets up macOS, Linux (Debian, Ubuntu) or Windows for coding with Claude Code, Cursor and Opencode.**
+**One command sets up macOS, Linux or Windows for coding with Claude Code, Cursor and Opencode.**
 
 </div>
 
@@ -29,8 +29,9 @@
 
 ## Set up Linux
 
-This works on Debian 13 and Ubuntu 24.04, on x86_64 and arm64. You need a normal user
-that can run `sudo`.
+This works on Debian, Ubuntu, Fedora and Arch, on x86_64 and arm64. You need a normal user
+that can run `sudo`. Alpine gets the links and the config, but not the Homebrew tools
+(Homebrew needs glibc).
 
 1. Open a terminal.
 2. Paste this line, then press Enter:
@@ -39,8 +40,8 @@ that can run `sudo`.
    bash -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
    ```
 
-   No `curl` yet? Run `sudo apt-get install -y curl` first.
-3. Type your password when it asks. `apt` and Homebrew need it.
+   No `curl` yet? Install it with your package manager first (for example `sudo apt-get install -y curl`).
+3. Type your password when it asks. The package manager and Homebrew need it.
 4. Answer the questions, as in steps 4 to 6 of the macOS setup.
 5. Open a new terminal, or run `exec zsh`.
 

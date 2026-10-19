@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py pretool",
+            "command": "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard pretool",
             "timeout": 10
           }
         ]
@@ -81,7 +81,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py posttool",
+            "command": "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard posttool",
             "timeout": 10
           }
         ]
@@ -92,7 +92,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py stop",
+            "command": "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard stop",
             "timeout": 10
           }
         ]
@@ -103,7 +103,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py subagentstop",
+            "command": "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard subagentstop",
             "timeout": 10
           }
         ]
@@ -115,7 +115,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py posttoolfailure",
+            "command": "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard posttoolfailure",
             "timeout": 10
           }
         ]
@@ -126,7 +126,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -r ~/.claude/hooks/guard.py || exit 0; python3 ~/.claude/hooks/guard.py prompt",
+            "command": "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard prompt",
             "timeout": 10
           }
         ]

@@ -25,4 +25,4 @@ else
   mise exec -- corepack prepare pnpm@latest --activate >/dev/null 2>&1 \
     || warn "pnpm activation failed — re-run: ./dotfiles"
 fi
-ok "node + pnpm ready"
+ok_if_changed "node + pnpm ready"

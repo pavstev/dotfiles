@@ -7,6 +7,7 @@ practices, and the agentskills.io spec. Stdlib only. Exit 1 on any FAIL.
   python3 claude/skills/check.py              # all skills
   python3 claude/skills/check.py ps:askme     # one or more skill folders
   python3 claude/skills/check.py --self-test  # run the built-in fixture tests
+  python3 claude/skills/check.py -q           # failures only, nothing when all pass
 """
 import os
 import re
@@ -219,14 +220,15 @@ def run(paths, quiet=False):
         status = "FAIL" if r.fails else ("WARN" if r.warns else "OK")
         if r.fails:
             bad += 1
-        if quiet and status == "OK":
-            continue
+        if quiet and status != "FAIL":
+            continue  # -q prints failures only; warnings show without -q
         print("%-4s %s" % (status, r.skill))
         for f in r.fails:
             print("       ✖ %s" % f)
         for w in r.warns:
             print("       · %s" % w)
-    print("%d skills checked, %d failing" % (len(paths), bad))
+    if bad or not quiet:
+        print("%d skills checked, %d failing" % (len(paths), bad))
     return 1 if bad else 0
 
 

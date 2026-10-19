@@ -5,8 +5,8 @@
   python3 rust/agent-config/tools/run_hook_tests.py
 
 The reference tests start the Python hook as a subprocess. This copies each test into a temp
-folder, swaps the interpreter-and-script pair for the Rust binary, and runs the copy. Tests that
-call Python functions directly still test Python; the subprocess ones test the binary.
+folder, swaps the interpreter-and-script pair for the Rust binary, and runs the copy. The tests that
+called Python functions or mocked the pace module are redirected to the binary by hook_test_shim.py.
 """
 import os
 import re
@@ -25,6 +25,22 @@ CASES = [
 ]
 
 
+SHIM_MODULE = "import guard  # noqa: E402"
+SHIM_MAIN = 'if __name__ == "__main__":'
+
+
+def add_shim(src, exe):
+    """Run the direct-call and pace-mock tests of test_guard.py against the binary."""
+    head = (
+        f"{SHIM_MODULE}\nsys.path.insert(0, {HERE!r})\nimport hook_test_shim as _shim\n"
+        f"_shim.install_module(guard, {exe!r})\n"
+    )
+    tail = f"_shim.install_tests(GuardTest, {exe!r})\n\n\n{SHIM_MAIN}"
+    if SHIM_MODULE not in src or SHIM_MAIN not in src:
+        return None
+    return src.replace(SHIM_MODULE, head, 1).replace(SHIM_MAIN, tail, 1)
+
+
 def main():
     failed = 0
     for test, hook_dir, binary, pattern, tail in CASES:
@@ -40,6 +56,11 @@ def main():
         if n == 0:
             print(f"{test}: nothing to replace, the test changed shape")
             return 2
+        if binary == "guard":
+            out = add_shim(out, exe)
+            if out is None:
+                print(f"{test}: shim anchors not found, the test changed shape")
+                return 2
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, os.path.basename(test))
             with open(path, "w", encoding="utf-8") as f:

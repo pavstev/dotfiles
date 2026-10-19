@@ -6,7 +6,7 @@ repo (`~/dotfiles`), linked to `~/.claude/CLAUDE.md` and updated by `dots`. Pers
 
 ## Environment
 
-- macOS, Linux (Debian, Ubuntu) or Windows (Git Bash). Run `uname -s` before an OS-specific
+- macOS, Linux (Debian, Ubuntu, Fedora, Arch; Alpine without Homebrew) or Windows (Git Bash). Run `uname -s` before an OS-specific
   command. macOS and Linux: zsh + Oh My Zsh + Starship, terminal **Ghostty**.
 - `~/dotfiles` is plain git. Most of `$HOME` is symlinked from `~/dotfiles/home`, so edit the
   source and it is live; check `ls -la` when unsure. `dots` pulls, relinks and provisions; there

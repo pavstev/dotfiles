@@ -294,6 +294,12 @@ edit_projects() {
     "acme-app side-project" "private projects"
 }
 
+# edit_test_host: the SSH host for the Linux part of scripts/os-check.sh.
+edit_test_host() {
+  edit_words TEST_HOST "🧪 SSH host for the Linux check of scripts/os-check.sh (empty: this machine)" \
+    "my-linux-box" "test host"
+}
+
 # edit_opencode_projects: absolute paths whose .opencode/ mirrors the global Opencode config.
 edit_opencode_projects() {
   local v
@@ -383,7 +389,7 @@ step "Settings (they stay on this machine, never in git)"
 info "File: ~/.config/dotfiles/settings. Each change saves at once."
 done_row="✅ Done"
 keys=(edit_git_name edit_git_email edit_profile edit_mcp edit_opencode_mcp edit_java edit_steps edit_projects
-  edit_opencode_projects edit_words_extra edit_rules)
+  edit_opencode_projects edit_test_host edit_words_extra edit_rules)
 start="" last=""
 if [[ -n "${DOTFILES_FIRST_RUN:-}" ]]; then start="$done_row"; fi
 while :; do
@@ -397,6 +403,7 @@ while :; do
     "$(row "⏩ " "Steps to skip" "$(value_or "$(setting SKIP_STEPS)" "none")")"
     "$(row "📁 " "Private projects" "$(value_or "$(setting PRIVATE_PROJECTS)" "none")")"
     "$(row "📂 " "Opencode projects" "$(opencode_projects_value)")"
+    "$(row "🧪 " "Test host" "$(value_or "$(setting TEST_HOST)" "this machine")")"
     "$(row "🚫 " "Private words" "$(value_or "$(setting PRIVATE_WORDS)" "none")")"
     "$(row "🔒 " "Private rules" "$(rules_value)")"
   )

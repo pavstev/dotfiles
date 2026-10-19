@@ -23,7 +23,7 @@ changes. The old tools get eaten by faster, prettier ones. The terminal goes **b
 - 🛟 **Override-safe**: a pre-existing config file is **moved aside** to
   `<file>.bak-<timestamp>` before its link goes in, so adopting these defaults on a
   machine that's already set up never costs you your old setup.
-- 🧳 **Portable**: macOS (Apple Silicon and Intel), Debian 13 and Ubuntu 24.04, and Windows (Git Bash); machine-specific bits live in gitignored local files.
+- 🧳 **Portable**: macOS (Apple Silicon and Intel), Linux (Debian, Ubuntu, Fedora, Arch; Alpine without Homebrew), and Windows (Git Bash); machine-specific bits live in gitignored local files.
 - 🤖 **AI-ready**: Claude Code skills, agents, hooks, and settings live here and follow you everywhere — Cursor and Opencode read the same source.
 - 🎨 **Coherent**: one warm copper-on-stone palette across Ghostty, Starship, fzf, delta, atuin, and the prompt.
 
@@ -37,6 +37,7 @@ $EDITOR ~/dotfiles/home/.config/zsh/init.zsh   # edit: it's live immediately, no
 dotd                                            # preview source changes  (git diff)
 dots                                            # pull + relink + reprovision: for new files, packages, machines
 dots settings                                   # the settings menu: git name, Java, private rules and more
+dots -v                                         # the same run, with every line (the default is one line per step)
 dot                                             # cd into the repo
 ```
 
@@ -196,16 +197,17 @@ claude.ai connectors — Opencode has no hook system. The full mapping and gap t
 
 ## Linux
 
-`./dotfiles` runs on Debian 13 and Ubuntu 24.04 (x86_64 and arm64) as a normal user with `sudo`.
+`./dotfiles` runs on Debian, Ubuntu, Fedora and Arch (x86_64 and arm64) as a normal user with `sudo`.
 The code asks the OS with `is_macos`, `is_linux` and `is_windows` (`scripts/setup-lib.sh`). On Linux:
 
-- **Packages:** step `05-linux-prereqs` installs `build-essential`, `curl`, `file`, `git`,
-  `procps`, `python3` and `zsh` with `apt`. Step `10-homebrew` then installs Homebrew on Linux
+- **Packages:** step `05-linux-prereqs` installs build tools, `curl`, `file`, `git`, `procps`,
+  `python3` and `zsh` with apt, dnf, pacman or apk (`LINUX_PREREQS` in `scripts/setup-lib.sh`
+  has the names for each). Step `10-homebrew` then installs Homebrew on Linux
   (`/home/linuxbrew/.linuxbrew`), and `20-brew-bundle` installs the Brewfile from it. A temp
   copy of the Brewfile drops the lines that only work on macOS (`cask`, `mas`, `tap`,
   `vscode`). One Brewfile and one tool version on both systems, and no `batcat` or `fdfind`.
 - **Skipped on Linux:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
-  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Fira Code Nerd Font
+  print nothing (`dots -v` shows `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Fira Code Nerd Font
   are macOS-only too.
 - **Links:** `~/.config/Code/User/*` and `~/.config/Cursor/User/*` link to the same
   files that macOS gets under `~/Library/Application Support`. Ghostty reads
@@ -217,8 +219,10 @@ The code asks the OS with `is_macos`, `is_linux` and `is_windows` (`scripts/setu
 - **Without `sudo`:** install the packages in `LINUX_PREREQS` (`scripts/setup-lib.sh`) as root,
   and install Homebrew yourself under `~/.linuxbrew`; `dots` finds it there. Homebrew on Linux
   needs a user that is not root.
-- **Other distros:** the prerequisites step needs `apt-get`. Without it, it prints the package
-  list and carries on; the Homebrew installer may then complain about missing tools.
+- **Alpine (musl):** Homebrew needs glibc. Step `10-homebrew` says so once, and the steps that need
+  Homebrew skip. You get the links, the shell and the Claude, Cursor and Opencode config, not the tools.
+- **Other distros:** without apt, dnf, pacman or apk, the prerequisites step prints the commands
+  to install yourself and carries on.
 - **Skills:** `ps:bag-mode` is for a Mac laptop. On Linux and Windows it says so and stops.
   `ps:spawn` needs `tmux`, so it runs on macOS and Linux only. The other skill scripts run on all three.
 
@@ -233,12 +237,25 @@ bash scripts/test-linux.sh ubuntu:24.04
 ```
 
 It builds a small base image once, copies the working tree in (git-ignored files stay out),
-runs `./dotfiles` and again `./dotfiles`, and checks: run 1 exits 0 with no warning, run 2
-changes nothing, the links, the tools, `zsh -ic exit` prints nothing, `bash -n` on every shell
-script, and the four Python test files. `--keep` leaves the container for a look
+runs `./dotfiles` and again `./dotfiles`, and checks: run 1 exits 0 with no warning and no shell
+error, both runs end with the done line, run 2 changes nothing and takes 90 seconds at most,
+`dots -v` works, the links, the tools, the Rust tools, `zsh -ic exit` prints nothing, `bash -n`
+on every shell script, and the four Python test files. `--keep` leaves the container for a look
 (`podman exec -it dots-test-debian-13 bash`), `--reuse` syncs your edits into it and runs again.
 It runs without a terminal, so the gum menus, the password prompts and the sign-in step are
-not covered. A run takes about 10 minutes.
+not covered. A run takes 15 to 25 minutes; most of it is Homebrew and the Rust build.
+
+To run it on another Linux machine, set `TEST_HOST` (an SSH host name) in `dots settings` and run
+`scripts/os-check.sh linux`. It copies the tree there and runs `test-linux.sh` for each image in
+`OS_CHECK_IMAGES`. `scripts/os-check.sh` with no OS checks every OS whose files changed: macOS,
+Linux and Windows (a throwaway UTM clone of `win11-golden`). It is manual only. In Claude Code, run
+`/os-check`.
+
+The Windows check needs the VM `win11-golden` once: install UTM (`brew install --cask utm`), save
+the Windows 11 Arm64 ISO from microsoft.com/software-download/windows11arm64 as
+`~/VMs/iso/Win11_arm64_en-us.iso`, then run `bash scripts/win-golden.sh`. It installs Windows
+unattended (about 30 minutes) and shuts the VM down. Each check then clones it, so the golden VM
+stays clean.
 
 ## Windows
 
@@ -253,7 +270,7 @@ not covered. A run takes about 10 minutes.
   (`%APPDATA%\{Code,Cursor}\User\`) link. `~/.gitconfig` is not linked; the git identity goes to
   `~/.gitconfig.local`, which your own `~/.gitconfig` includes.
 - **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
-  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Nerd Font are macOS-only.
+  print nothing (`dots -v` shows `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Nerd Font are macOS-only.
 - **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
   usual tools when they are on PATH.
 - **Opencode config:** `scripts/agent-config opencode` generates agents, permissions and MCP under
@@ -329,7 +346,7 @@ dotfiles/
 │   ├── settings.sh           # the settings menu: first run and `dots settings`
 │   ├── agent-config.py       # generates and merges the Cursor and Opencode files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
-│   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart
+│   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart, fake Linux
 │   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
 │   │                         #   05 linux-prereqs (Linux only)
 │   │                         #   → 10 homebrew → 15 winget (Windows only)
@@ -340,7 +357,7 @@ dotfiles/
 │   │                         #   (DOTFILES_STEPS="60-cursor" ./dotfiles runs only the named steps;
 │   │                         #    pull, links and skill sync still run)
 │   ├── fix-brew-permissions.sh   # macOS only
-│   ├── test-linux.sh         # runs ./dotfiles twice in a Debian or Ubuntu container
+│   ├── test-linux.sh         # runs ./dotfiles twice in a Linux container
 │   └── git-hooks/            # secret scan, private words, push check (install.d/77)
 ```
 
@@ -414,7 +431,7 @@ For Opencode:
 **`~/.claude` didn't get linked.** You ran `./dotfiles` inside a Claude Code session,
 which can race Claude rewriting `~/.claude` live. Re-run `dots` from a plain shell.
 
-**Linux: a step failed at `apt` or Homebrew.** Run `dots` again after fixing the line above it.
+**Linux: a step failed at the package manager or Homebrew.** Run `dots` again after fixing the line above it.
 The Homebrew installer needs `sudo` and a user that is not root.
 
 **Icons look like boxes.** The Nerd Font is wired into **both** terminals automatically:

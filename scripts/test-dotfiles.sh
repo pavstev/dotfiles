@@ -10,15 +10,17 @@
 #  unlinked, a run that changes nothing, and the restart after a pull.
 #
 #  bash scripts/test-dotfiles.sh          # --keep leaves the temp folder
+#  Prints only failures, then one closing line. -v also prints each PASS.
 # ============================================================================
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KEEP=""
+KEEP="" VERBOSE=""
 for a in "$@"; do
   case "$a" in
     --keep) KEEP=1 ;;
-    *) printf 'usage: test-dotfiles.sh [--keep]\n' >&2; exit 2 ;;
+    -v|--verbose) VERBOSE=1 ;;
+    *) printf 'usage: test-dotfiles.sh [--keep] [-v]\n' >&2; exit 2 ;;
   esac
 done
 
@@ -27,8 +29,8 @@ T="$(cd "$T" && pwd -P)"
 cleanup() { if [[ -n "$KEEP" ]]; then printf 'kept: %s\n' "$T"; else rm -rf "$T"; fi; }
 trap cleanup EXIT
 
-fails=0
-pass() { printf 'PASS  %s\n' "$*"; }
+fails=0 passes=0
+pass() { passes=$((passes + 1)); if [[ -n "$VERBOSE" ]]; then printf 'PASS  %s\n' "$*"; fi; }
 bad()  { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
 # git for the setup only: no user config, no hooks, no signing.
@@ -99,6 +101,11 @@ run run3.log
 after="$(fingerprint)"
 [[ "$before" == "$after" ]] && pass "second run changes nothing" || bad "second run changed links or settings"
 grep -qE 'linked |backed up' "$T/run3.log" && bad "second run linked or backed up something" || pass "second run links nothing new"
+# Output: a run with nothing to do is one short screen, and -v / DOTFILES_VERBOSE=1 prints it all.
+[[ "$(wc -l <"$T/run3.log")" -le 20 ]] && pass "second run prints one short screen" || bad "second run prints $(wc -l <"$T/run3.log") lines"
+grep -q 'already set up' "$T/run3.log" && bad "second run prints a skip line per file" || pass "second run prints no per-file skip lines"
+run run3v.log DOTFILES_VERBOSE=1
+grep -q 'already set up' "$T/run3v.log" && pass "DOTFILES_VERBOSE=1 prints the skip lines" || bad "DOTFILES_VERBOSE=1 printed no skip lines"
 
 # 4b. Claude changes its settings: the change is kept in the private layer.
 python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["testKeptKey"]=True; open(p,"w").write(json.dumps(d, indent=4))' "$LIVE"
@@ -119,7 +126,7 @@ grep -q 'removed the owner rules link' "$T/run4.log" && pass "unlink reported" |
 
 # 6. A new commit on origin: the run pulls it and restarts with the new script.
 tgit clone -q "$T/origin.git" "$T/other" &&
-  sed 's/ok "dotfiles: done"/ok "dotfiles: done (new)"/' "$T/other/dotfiles" >"$T/dotfiles.new" &&
+  sed 's/ok "dotfiles: done/ok "dotfiles: done (new)/' "$T/other/dotfiles" >"$T/dotfiles.new" &&
   cat "$T/dotfiles.new" >"$T/other/dotfiles" &&
   tgit -C "$T/other" commit -qam "new script" && tgit -C "$T/other" push -q origin HEAD:main ||
   bad "couldn't push a new commit to the temp origin"
@@ -167,7 +174,86 @@ grep -q 'All set' "$T/win.log" && pass "Windows run ends with the All set box" |
 git config -f "$H3/.gitconfig" --get-all include.path | grep -q gitconfig.local && pass "Windows .gitconfig includes the identity file" || bad "Windows .gitconfig misses the include"
 [[ ! -e "$H3/.zshrc" ]] && pass "Windows run does not link .zshrc" || bad "Windows run linked .zshrc"
 
-if [[ "$fails" -eq 0 ]]; then printf '\nALL PASS\n'; exit 0; fi
+# 10. The last line: the done line, or the warning count of every step. A test step in the
+#     temp repo warns; the count file is gone after the run.
+mkdir -p "$T/tmp"
+[[ "$(tail -n 1 "$T/run3.log")" =~ ^✓\ dotfiles:\ done\ \(profile:\ [a-z]+\)$ ]] && pass "a clean run ends with the done line" \
+  || bad "clean run last line: $(tail -n 1 "$T/run3.log")"
+printf '#!/usr/bin/env bash\n. "$REPO/scripts/setup-lib.sh"\nwarn "test warning one"\nwarn "test warning two"\n' \
+  >"$R/scripts/install.d/99-test-warn.sh"
+run run10.log DOTFILES_STEPS=99-test-warn TMPDIR="$T/tmp"
+rm -f "$R/scripts/install.d/99-test-warn.sh"
+grep -q '^!  dotfiles: done with 2 warnings (profile: ' "$T/run10.log" && pass "the last line counts the warnings of a step" \
+  || bad "warning count line missing (log: run10.log)"
+[[ -z "$(ls "$T/tmp" | grep dots-warn)" ]] && pass "no warning count file left" || bad "warning count file left in TMPDIR"
+
+# 11. Linux package managers, faked: a fake `uname` says Linux, a fake package manager and
+#     its query tool say every package but zsh is there, and a fake sudo runs the command.
+#     PATH holds only the fakes and a few real tools, so the host's own package manager stays out.
+fake_linux() { # fake_linux <dir> <manager or none>
+  local d="$1" m="$2" t
+  mkdir -p "$d"
+  for t in bash mktemp id tr tail rm grep cat env; do ln -sf "$(command -v "$t")" "$d/$t"; done
+  printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; *) echo x86_64 ;; esac\n' >"$d/uname"
+  printf '#!/bin/sh\n"$@"\n' >"$d/sudo"
+  # each fake logs its arguments; a query for zsh fails, every other package is there
+  case "$m" in
+    apt-get) printf '#!/bin/sh\necho "apt-get $*" >>"%s/log"\n' "$d" >"$d/apt-get"
+      printf '#!/bin/sh\nfor a; do p="$a"; done\n[ "$p" = zsh ] || echo "install ok installed"\n' >"$d/dpkg-query" ;;
+    dnf) printf '#!/bin/sh\necho "dnf $*" >>"%s/log"\n' "$d" >"$d/dnf"
+      printf '#!/bin/sh\n[ "$2" != zsh ]\n' >"$d/rpm" ;;
+    pacman) printf '#!/bin/sh\nif [ "$1" = -Q ]; then [ "$2" != zsh ]; else echo "pacman $*" >>"%s/log"; fi\n' "$d" >"$d/pacman" ;;
+    apk) printf '#!/bin/sh\nif [ "$1" = info ]; then [ "$3" != zsh ]; else echo "apk $*" >>"%s/log"; fi\n' "$d" >"$d/apk" ;;
+  esac
+  chmod +x "$d"/* 2>/dev/null
+}
+lx() { # lx <dir>: source setup-lib.sh as on that fake Linux, print the manager, list, missing, rc
+  env -i HOME="$H" PATH="$1" NO_COLOR=1 "$1/bash" -c '. "$0/scripts/setup-lib.sh"
+    printf "%s|%s|%s|" "$LINUX_PKG" "${LINUX_PREREQS[*]}" "$(linux_prereqs_missing | tr "\n" " ")"
+    linux_prereqs >/dev/null 2>&1; echo "rc=$?"' "$R"
+}
+for m in apt-get dnf pacman apk; do
+  d="$T/linux-$m"; fake_linux "$d" "$m"; out="$(lx "$d")"
+  case "$m" in
+    apt-get) want_list="build-essential ca-certificates curl file git procps python3 zsh"
+      want_log="apt-get install -y -qq --no-install-recommends zsh" ;;
+    dnf) want_list="gcc gcc-c++ make ca-certificates curl file git procps-ng python3 zsh"; want_log="dnf install -y -q zsh" ;;
+    pacman) want_list="base-devel ca-certificates curl file git procps-ng python zsh"
+      want_log="pacman -S --needed --noconfirm zsh" ;;
+    apk) want_list="bash ca-certificates curl file git python3 zsh"; want_log="apk add -q --no-cache zsh" ;;
+  esac
+  [[ "$out" == "$m|$want_list|zsh |rc=0" ]] && pass "Linux $m: finds the manager, its list and the missing zsh" \
+    || bad "Linux $m: got '$out'"
+  grep -qxF "$want_log" "$d/log" 2>/dev/null && pass "Linux $m: installs zsh with the right command" \
+    || bad "Linux $m: install command: $(cat "$d/log" 2>/dev/null | tr '\n' ';')"
+done
+d="$T/linux-none"; fake_linux "$d" none; out="$(lx "$d")"
+[[ "$out" == "|cc make curl file git ps python3 zsh|cc make curl file git ps python3 zsh |rc=1" ]] \
+  && pass "Linux with no known manager: lists the missing commands and fails" || bad "Linux with no manager: got '$out'"
+
+# 12. The os-check skip rule: which OS each changed file is for.
+which_want='dotfiles: macos linux windows
+scripts/setup-lib.sh: macos linux windows
+rust/agent-config/src/lib.rs: macos linux windows
+claude/hooks/guard.py: macos linux windows
+scripts/install.d/15-winget.sh: windows
+scripts/install.d/57-claude-code.sh: macos linux windows
+scripts/install.d/70-macos-defaults.sh: macos
+scripts/install.d/05-linux-prereqs.sh: linux
+scripts/install.d/78-linux-extras.sh: linux
+Brewfile: macos linux
+home/.zshrc: macos linux
+home/.config/gh/config.yml: macos linux windows
+.gitattributes: windows
+scripts/test-linux.sh: linux
+scripts/test-dotfiles.sh: macos
+README.md: none
+claude/skills/ps_handoff/SKILL.md: none'
+which_got="$(bash "$REPO/scripts/os-check.sh" --which $(printf '%s\n' "$which_want" | cut -d: -f1))"
+[[ "$which_got" == "$which_want" ]] && pass "os-check maps each file to the right OS" \
+  || bad "os-check map differs: $(diff <(printf '%s\n' "$which_want") <(printf '%s\n' "$which_got") | grep '^[<>]' | head -3 | tr '\n' ' ')"
+
+if [[ "$fails" -eq 0 ]]; then printf 'ALL PASS (%d checks)\n' "$passes"; exit 0; fi
 KEEP=1
-printf '\n%d check(s) failed\n' "$fails"
+printf '%d of %d check(s) failed\n' "$fails" "$((fails + passes))"
 exit 1

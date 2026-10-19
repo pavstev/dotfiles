@@ -23,15 +23,17 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `dotfiles` | the one command: git pull, link files, run provisioning steps. |
 | `home/` | mirrors `$HOME` 1:1; only paths in the `LINKS` array of `dotfiles` are touched. |
 | `scripts/install.d/` | ordered (`NN-name.sh`), skip-aware, fault-tolerant provisioning steps. |
+| `scripts/os-check.sh`, `scripts/win-golden.sh` | the manual check on all three OSes; the one-time builder of the Windows test VM `win11-golden` (UTM, Mac only). |
 | `scripts/setup-lib.sh` | step helpers (`step`/`info`/`ok`/`warn`/`skip`/`have`/`brew_env`/`link_item`), `dotfiles_profile`, `setting`. |
 | `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). |
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`) and `hooks/guard_cursor.py` (+ test), the hook adapter for guard G3. |
-| `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when `lib.rs`, `main.rs` or `Cargo.toml` change); falls back to `agent-config.py` when `cargo` is missing. `AGENT_CONFIG_IMPL=python` or `rust` forces one. |
+| `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes); falls back to `agent-config.py` when `cargo` is missing. `AGENT_CONFIG_IMPL=python` or `rust` forces one. `--bins` builds every bin and always exits 0. |
+| `claude/hooks/rust-bin` | launcher for hooks and skills: runs the fresh Rust bin (`.exe` on Windows), else the Python twin at once; never builds. `RUST_BIN_IMPL=python` or `rust` forces one. `--hook` fails open (exit 0) when nothing can run. Notes: `rust/MIGRATION.md`. |
 | `scripts/agent-config.py` | the Python reference, same CLI: stdlib generator: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
 | `docs/guide.md`, `docs/cursor-port.md`, `docs/opencode-port.md` | the user guide; the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
 | `Brewfile` | every package (per-machine extras in the ignored `Brewfile.local`). |
 | `settings.example`, `scripts/settings.sh` | every setting with a note and default; the `dots settings` menu. |
-| `scripts/test-linux.sh` | runs `./dotfiles` twice in a fresh Debian or Ubuntu container. |
+| `scripts/test-linux.sh` | runs `./dotfiles` twice in a fresh Linux container (Debian, Ubuntu, Fedora, Arch, Alpine). |
 | `bootstrap.sh` | fresh-machine one-liner (macOS, Linux, Windows). The README "Set up" sections have it. |
 
 ## Tests
@@ -42,7 +44,21 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   no `pbcopy`).
 - `bash scripts/test-dotfiles.sh`: `./dotfiles` in a temp HOME with a temp repo and origin (first
   run, owner profile, owner rules linked and unlinked, a no-change second run, restart after a
-  pull). About 2 seconds, nothing installs.
+  pull, the warning count on the last line, apt, dnf, pacman and apk faked on a fake Linux, and
+  the os-check file map). About 10 seconds, nothing installs.
+- `scripts/os-check.sh` (or `/os-check` in Claude Code): the manual check on all three OSes, run
+  before a commit to setup code. No git hook and no CI runs it. It checks each OS whose files
+  changed (`--force` runs one anyway, `--since <ref>` widens the diff): macOS with
+  `test-dotfiles.sh`, Linux with `test-linux.sh` on the `TEST_HOST` SSH host (or local podman or
+  docker), Windows in a throwaway clone of the UTM VM `win11-golden` (built once with
+  `scripts/win-golden.sh`; see "Windows"). Logs: `.os-check/` (Linux per
+  image: `.os-check/linux-logs/`). Each run has its own container names and host folder, so two
+  worktrees can run it at once. `--which FILE...` prints the OSes a file is for. A new path rule
+  needs a line in the map test of `test-dotfiles.sh` (section 12).
+- `scripts/test-linux.sh` also fails on shell errors that skip `warn` (`command not found`,
+  `unbound variable`, a Python traceback, a Rust panic), on a last line that is not the done line,
+  on a second run over 90 seconds or one that rebuilds the Rust tools, and on a failed `dots -v`.
+  Its base image tag holds a hash of the recipe, so a recipe change builds a fresh image.
 - One step in a temp HOME: `HOME=$(mktemp -d) DOTFILES_STEPS=60-cursor ./dotfiles`.
   `DOTFILES_STEPS` filters install.d steps (names without `.sh`; empty runs all). The pull, git
   identity prompt, links, skill sync and the Opencode config step still run: that one is in
@@ -112,7 +128,7 @@ Opencode does not get Claude's guard hooks, output-style switching, or connector
 
 ## Platforms
 
-`./dotfiles` runs on macOS, Linux (Debian 13, Ubuntu 24.04) and Windows (Git Bash). All three are
+`./dotfiles` runs on macOS, Linux and Windows (Git Bash). All three are
 first-class: a change must keep each one working. Write docs and messages for all three; name an
 OS only where the behavior really differs.
 
@@ -121,20 +137,22 @@ OS only where the behavior really differs.
   starts with `only_macos "<what>"`; a Linux-only step with `is_linux || exit 0`; a
   Windows-only step with `is_windows || exit 0`.
 - No GNU-only or BSD-only flags in shared scripts (`sed -i`, `stat`, `date -j`, `readlink -f`).
-- Tests: `scripts/test-dotfiles.sh` on the machine you work on, `scripts/test-linux.sh` for Linux.
-  Windows has no automated test yet.
+- Tests: `scripts/test-dotfiles.sh` on the machine you work on, `scripts/test-linux.sh` for Linux,
+  `scripts/os-check.sh windows` for Windows (a UTM VM on a Mac; see "Windows" below).
 
 ## Linux
 
-`./dotfiles` runs on Debian 13 and Ubuntu 24.04 (a normal user with `sudo`).
+`./dotfiles` runs on Debian, Ubuntu, Fedora and Arch (a normal user with `sudo`). Alpine (musl) gets
+the links and the config, but no Homebrew tools: Homebrew needs glibc, so the brew steps skip there.
 
 - Tools come from Homebrew on Linux (`/home/linuxbrew/.linuxbrew`), same Brewfile:
-  `brewfile_for_os` drops `cask`, `mas`, `tap`, `vscode` and `brew "mas"` lines. apt installs only
-  `LINUX_PREREQS` (step `05-linux-prereqs`); never add `apt install` of tools.
+  `brewfile_for_os` drops `cask`, `mas`, `tap`, `vscode` and `brew "mas"` lines. The system package
+  manager (apt, dnf, pacman or apk: `LINUX_PKG`) installs only `LINUX_PREREQS` (step
+  `05-linux-prereqs`); never add a system install of tools.
 - Paths: `brew_env` knows the Linux prefixes. Editor settings keep their macOS path under
   `home/Library/Application Support/` and link to `~/.config/{Code,Cursor}/User` on Linux.
-- Test: `bash scripts/test-linux.sh debian:13` and `ubuntu:24.04` exit 0 and the second run changes
-  nothing. Needs podman or docker. `--keep` leaves the container, `--reuse` reruns your edits.
+- Test: `bash scripts/test-linux.sh debian:13` (also `ubuntu:24.04`, `fedora:latest`,
+  `archlinux:latest`, `alpine:latest`) exits 0 and the second run changes nothing. Needs podman or docker. `--keep` leaves the container, `--reuse` reruns your edits.
 
 ## Windows
 
@@ -157,7 +175,7 @@ OS only where the behavior really differs.
   `scripts/test-dotfiles.sh` reject such paths. `.gitattributes` forces LF, and `bootstrap.sh` clones with
   `core.autocrlf=false` and repairs a clone that has no `./dotfiles` (a re-run of the one-liner fixes it).
 - **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
-  print `macOS only, skipping`. The Claude desktop app offer, AeroSpace and the Nerd Font are
+  print nothing (`dots -v` shows `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Nerd Font are
   macOS-only.
 - **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
   usual tools when they are on PATH.
@@ -166,6 +184,13 @@ OS only where the behavior really differs.
 - **Python:** not needed when `cargo` is installed: `scripts/agent-config` builds and runs the Rust
   version. Without `cargo` it needs `python3` (WinGet or the Python installer) or the generated
   config steps warn and skip.
+- **Test VM (Mac only):** `scripts/os-check.sh windows` clones the UTM VM `win11-golden`
+  (Windows 11 Arm64, OpenSSH Server, Developer Mode, Git, PowerShell 7), starts the clone,
+  copies the tree over SSH, runs `./dotfiles` twice in Git Bash, checks both exit codes, the
+  links and `pwsh -Command exit`, then deletes the clone, also after a failure. It never starts
+  the golden VM. Build the golden VM once with `bash scripts/win-golden.sh` (needs UTM and the
+  Windows ISO in `~/VMs/iso`; the script reads your SSH key at run time). The VM, its answer
+  file and its login stay in `~/VMs`, outside the repo.
 
 ## Profiles
 
@@ -200,7 +225,8 @@ email, then shows the menu.
 
 - Names: `GIT_NAME`, `GIT_EMAIL` (written to `~/.gitconfig.local`), `PROFILE`, `CURSOR_MCP`,
   `OPENCODE_MCP`, `OPENCODE_PROJECTS`, `JAVA_HOME` (picked from the Javas found, or typed),
-  `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions").
+  `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions"), `TEST_HOST` (the SSH host
+  for the Linux part of `scripts/os-check.sh`).
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `scripts/agent-config.py`,
   `home/.config/zsh/settings.zsh` (sourced after `local.zsh`, so its `JAVA_HOME` wins). The last
   line of a name wins. Env vars win for one run: `DOTFILES_PROFILE`, `DOTFILES_MCP`,
@@ -224,6 +250,15 @@ email, then shows the menu.
   `is_macos`/`is_linux`/`is_windows`.
 - **Idempotent and safe:** steps detect and skip what is installed, back up config before
   overriding, and warn and continue on failure. Source `scripts/setup-lib.sh`.
+- **Short output:** a run with nothing to do prints about 20 lines on every OS, one per step
+  (`• Oh My Zsh + plugins: 5 up to date`). `skip` counts instead of printing; a step header waits
+  until the step prints something; a written, changed or backed-up file, a warning and an error
+  still print in full. `dots -v` (or `DOTFILES_VERBOSE=1`) prints everything. `skip` lives in three
+  places that must stay in step: `scripts/setup-lib.sh`, `scripts/agent-config.py` and
+  `rust/agent-config/src/lib.rs` (they print one `• Opencode config: 12 up to date` line per
+  command). New step: use `skip` for "already there", `uptodate` or `ok_if_changed` for a closing
+  line that only says "fine", `note` for "nothing to do here". The git hooks and
+  `scripts/test-dotfiles.sh` print only failures (`test-dotfiles.sh -v` shows each pass).
 - **Explicit linking:** `./dotfiles` links only the paths in its `LINKS` array. A new managed file
   means a new entry there.
 - **New machine:** `bootstrap.sh` installs Xcode CLT (macOS) or git and curl (Linux), clones

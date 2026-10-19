@@ -9,6 +9,8 @@ set -uo pipefail
 is_windows || exit 0
 
 winget_install() {
+  # Already installed (this shell's PATH may not see it yet): that counts as done.
+  winget list --id "$1" -e --accept-source-agreements >/dev/null 2>&1 && return 0
   winget install --id "$1" -e --accept-package-agreements --accept-source-agreements --silent >/dev/null 2>&1
 }
 

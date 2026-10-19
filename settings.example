@@ -38,3 +38,7 @@ SKIP_STEPS=""
 # email, your full git name and the name written as one word count too.
 PRIVATE_PROJECTS=""
 PRIVATE_WORDS=""
+
+# The SSH host (a name from ~/.ssh/config) where scripts/os-check.sh runs the Linux
+# check in podman or docker. Empty: it uses podman or docker on this machine.
+TEST_HOST=""

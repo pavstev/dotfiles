@@ -28,4 +28,4 @@ else
 fi
 
 rustup component add clippy rust-analyzer >/dev/null 2>&1 || true
-ok "Rust ready ($(rustc --version 2>/dev/null || echo 'rustc pending'))"
+ok_if_changed "Rust ready ($(rustc --version 2>/dev/null || echo 'rustc pending'))"

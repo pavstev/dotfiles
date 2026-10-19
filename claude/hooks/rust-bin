@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  rust-bin [--hook] <name> [args...]: run a dotfiles tool as its Rust binary
+#  when there is a fresh one, else as its Python file right away.
+#
+#  It never builds anything: a hook or a skill call must not wait on cargo.
+#  `dots` builds the binaries (scripts/agent-config --bins). A binary is fresh
+#  when it exists and no source file of rust/agent-config is newer than it.
+#
+#    ~/.claude/hooks/rust-bin --hook guard pretool    # a hook: with no binary and
+#                                                      # no python3 it exits 0, silent
+#    ~/.claude/hooks/rust-bin spawn --prompt-file p.md # a skill call: it says what is missing
+#
+#  RUST_BIN_IMPL=python forces the Python file; RUST_BIN_IMPL=rust forces the binary.
+#  Windows (Git Bash) runs <name>.exe. stdin, stdout, stderr and the exit code pass through.
+# ============================================================================
+set -u
+
+hook=0
+if [ "${1:-}" = "--hook" ]; then hook=1; shift; fi
+name="${1:-}"
+if [ -z "$name" ]; then echo "usage: rust-bin [--hook] <name> [args...]" >&2; exit 2; fi
+shift
+
+# This file is linked as ~/.claude/hooks/rust-bin; cd -P finds the repo behind the link.
+HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
+REPO="$(cd "$HERE/../.." 2>/dev/null && pwd)"
+[ -f "$REPO/rust/agent-config/Cargo.toml" ] || REPO="${DOTFILES_REPO:-$HOME/dotfiles}"
+CRATE="$REPO/rust/agent-config"
+
+# the same test as is_windows in scripts/setup-lib.sh (not sourced: that costs time on every hook)
+exe="$name"
+case "$(uname -s 2>/dev/null)" in MINGW* | MSYS* | CYGWIN* | Windows_NT) exe="$name.exe" ;; esac
+BIN="$CRATE/target/release/$exe"
+
+# the Python twin of each binary (the reference and the fallback)
+case "$name" in
+  guard) py="$REPO/claude/hooks/guard.py" ;;
+  pace) py="$REPO/claude/hooks/pace.py" ;;
+  guard_cursor) py="$REPO/cursor/hooks/guard_cursor.py" ;;
+  spawn) py="$REPO/claude/skills/ps_spawn/scripts/spawn.py" ;;
+  route) py="$REPO/claude/skills/ps_whatsleft/scripts/route.py" ;;
+  whatsleft_scan) py="$REPO/claude/skills/ps_whatsleft/scripts/whatsleft-scan.py" ;;
+  hurry_scan) py="$REPO/claude/skills/ps_whatsleft/scripts/hurry-scan.py" ;;
+  harness_stats) py="$REPO/claude/skills/ps_harness-optimize/scripts/harness_stats.py" ;;
+  agent-config) py="$REPO/scripts/agent-config.py" ;;
+  *) py="" ;;
+esac
+
+fresh() {
+  [ -x "$BIN" ] || return 1
+  [ -z "$(find "$CRATE/src" "$CRATE/Cargo.toml" "$CRATE/Cargo.lock" -newer "$BIN" -type f 2>/dev/null | head -1)" ]
+}
+
+impl="${RUST_BIN_IMPL:-auto}"
+if [ "$impl" != python ] && { [ "$impl" = rust ] && [ -x "$BIN" ] || fresh; }; then
+  exec "$BIN" "$@"
+fi
+
+if [ -n "$py" ] && [ -f "$py" ] && command -v python3 >/dev/null 2>&1; then
+  exec python3 "$py" "$@"
+fi
+
+if [ -x "$BIN" ] && [ "$impl" != python ]; then exec "$BIN" "$@"; fi # stale, but nothing else to run
+[ "$hook" = 1 ] && exit 0 # a hook fails open
+if [ -n "$py" ]; then
+  echo "rust-bin: no fresh Rust binary for '$name' and no python3 for its Python file. Run: dots" >&2
+else
+  echo "rust-bin: no Rust binary for '$name' ('$name' has no Python file). Run: dots" >&2
+fi
+exit 127

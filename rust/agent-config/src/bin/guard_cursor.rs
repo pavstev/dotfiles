@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const NUDGE_CONTEXT: i64 = 300_000;
-const SPAWN_CONTEXT: i64 = 500_000;
+const SPAWN_CONTEXT: i64 = 350_000;
 const NUDGE_EVERY: i64 = 5;
 const MAX_STATE_FILES: usize = 200;
 const MAX_STATE_AGE: u64 = 7 * 24 * 3600;

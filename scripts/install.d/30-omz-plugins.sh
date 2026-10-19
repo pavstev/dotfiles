@@ -7,6 +7,12 @@ set -euo pipefail
 
 step "Oh My Zsh + plugins"
 
+# The installer needs zsh. Without it, say so once and try nothing (step 05 installs it).
+if ! have zsh; then
+  warn "zsh is missing, so Oh My Zsh is not installed. Install zsh, then run dots again."
+  exit 0
+fi
+
 if [[ -d "$HOME/.oh-my-zsh" ]]; then
   skip "Oh My Zsh"
 else
@@ -42,4 +48,4 @@ clone_plugin https://github.com/zsh-users/zsh-autosuggestions             zsh-au
 clone_plugin https://github.com/zdharma-continuum/fast-syntax-highlighting fast-syntax-highlighting
 clone_plugin https://github.com/Aloxaf/fzf-tab                             fzf-tab
 clone_plugin https://github.com/zsh-users/zsh-completions                  zsh-completions
-ok "Oh My Zsh + plugins ready"
+ok_if_changed "Oh My Zsh + plugins ready"

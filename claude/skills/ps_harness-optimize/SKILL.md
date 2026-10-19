@@ -2,7 +2,7 @@
 name: ps:harness-optimize
 description: Use when the user asks whether their Claude Code harness, skills, hooks or settings changes helped, wants session analytics or a before/after comparison of sessions, asks how to optimize or trim the harness globally or per project, or runs the periodic harness review.
 argument-hint: "[since date | project name]"
-allowed-tools: "Bash(python3 ${CLAUDE_SKILL_DIR}/scripts/*) Bash(/usr/bin/python3 ${CLAUDE_SKILL_DIR}/scripts/*)"
+allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin harness_stats *)"
 ---
 
 # Harness optimize
@@ -12,7 +12,7 @@ small changes with evidence. The numbers come from the script, never from eyebal
 
 ## Steps
 
-1. **Collect.** `python3 ${CLAUDE_SKILL_DIR}/scripts/harness_stats.py collect --since <date> --exclude <this session id>`.
+1. **Collect.** `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin harness_stats collect --since <date> --exclude <this session id>`. Every `harness_stats.py <cmd>` below runs the same way: `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin harness_stats <cmd>`.
    Default `--since`: the date of the newest `~/.claude/research/*-harness-review.md`, else 14 days ago.
    It reads main transcripts AND `subagents/*.jsonl` (most tool errors live there) and the desktop
    app's records (title, archived). Default window: since the last review, or 14 days.

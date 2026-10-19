@@ -1,0 +1,1228 @@
+//! Weekly usage pace for the Pro plan: the Rust port of `claude/hooks/pace.py`.
+//!
+//! Included by `src/bin/pace.rs` and the guard with `#[path] mod`. The cache files keep the Python
+//! formats (compact JSON), so both implementations read each other's caches.
+//! Sources: the statusline cache (`claude-pace.json`) when fresh, else an estimate from the
+//! transcripts under `$CLAUDE_CONFIG_DIR/projects`. Caches live in `${XDG_CACHE_HOME:-~/.cache}`.
+#![allow(dead_code)] // the guard uses `status` only; the CLI uses the rest
+
+use regex::Regex;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
+
+const WEEK: i64 = 7 * 86400;
+const FORMAT: f64 = 2.0; // cache format: older caches are rebuilt or ignored
+const SCAN_FORMAT: f64 = 3.0; // scan cache: 3 added the weekly-limit hits per file
+const MIN_HIT_COST: f64 = 1000.0; // a limit-hit calibration below this cost comes from a partial scan
+pub const DEFAULT_WEEK_WEIGHT: f64 = 5860.0;
+const FRESH_S: i64 = 6 * 3600; // statusline cache is fresh for 6 hours
+const RESULT_TTL_S: i64 = 120; // cached estimate is current for 2 minutes
+const CALIBRATE_MIN: f64 = 5.0; // needs this much reported use to calibrate
+const CRITICAL: f64 = 85.0;
+const CHECK_EVERY: u64 = 200; // lines between clock checks
+
+pub struct Status {
+    pub state: String, // "ok" | "ahead" | "critical" | "unknown"
+    pub used: Option<f64>,
+    pub budget: f64,
+    pub source: Option<String>,
+    pub resets_at: Option<i64>,
+}
+
+pub struct RefreshResult {
+    pub complete: bool,
+    pub weight: f64,
+    pub files: usize,
+}
+
+// --- paths and JSON files --------------------------------------------------------------------
+
+/// Where the caches and the transcripts live. Tests build one over a temp dir.
+pub struct Paths {
+    pub cache: PathBuf,
+    pub projects: PathBuf,
+}
+
+fn env_nonempty(k: &str) -> Option<String> {
+    std::env::var(k).ok().filter(|v| !v.is_empty())
+}
+
+fn home() -> PathBuf {
+    let from_env = env_nonempty("HOME").or_else(|| if cfg!(windows) { env_nonempty("USERPROFILE") } else { None });
+    from_env.map(PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("~"))
+}
+
+impl Paths {
+    pub fn from_env() -> Paths {
+        let cache = env_nonempty("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache"));
+        let base = env_nonempty("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".claude"));
+        Paths { cache, projects: base.join("projects") }
+    }
+
+    fn file(&self, name: &str) -> PathBuf {
+        self.cache.join(name)
+    }
+}
+
+fn read_json(path: &PathBuf) -> Option<Value> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+/// Atomic write; errors are swallowed like the Python `_write_json`.
+fn write_text(path: &PathBuf, text: &str) {
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let tmp = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
+    if fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, path)).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+// --- Python-compatible number and JSON text --------------------------------------------------
+
+/// repr(float) of Python.
+pub fn py_float(f: f64) -> String {
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+    }
+    if !f.is_finite() {
+        return if f.is_nan() { "NaN".into() } else if f > 0.0 { "Infinity".into() } else { "-Infinity".into() };
+    }
+    let e = format!("{:e}", f.abs());
+    let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let sign = if f < 0.0 { "-" } else { "" };
+    let body = if (-4..16).contains(&exp) {
+        if exp >= 0 {
+            let int_len = exp as usize + 1;
+            if digits.len() <= int_len {
+                format!("{}{}.0", digits, "0".repeat(int_len - digits.len()))
+            } else {
+                format!("{}.{}", &digits[..int_len], &digits[int_len..])
+            }
+        } else {
+            format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
+        }
+    } else {
+        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
+        format!("{}e{}{:02}", m, if exp < 0 { "-" } else { "+" }, exp.abs())
+    };
+    format!("{}{}", sign, body)
+}
+
+/// json.dumps of a string (ensure_ascii).
+fn json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
+                let mut buf = [0u16; 2];
+                for u in c.encode_utf16(&mut buf) {
+                    out.push_str(&format!("\\u{:04x}", u));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// round(x, 1) of Python: the exact decimal value, rounded half to even.
+fn round1(x: f64) -> f64 {
+    format!("{:.1}", x).parse().unwrap_or(x)
+}
+
+/// float(s) of Python for the forms that matter here.
+fn py_parse_float(s: &str) -> Option<f64> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let cleaned: String;
+    let t = if t.contains('_') {
+        let b: Vec<char> = t.chars().collect();
+        for (i, c) in b.iter().enumerate() {
+            if *c == '_' && !(i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(|n| n.is_ascii_digit())) {
+                return None;
+            }
+        }
+        cleaned = t.replace('_', "");
+        cleaned.as_str()
+    } else {
+        t
+    };
+    t.parse::<f64>().ok()
+}
+
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Null => false,
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_none_or(|f| f != 0.0),
+        Value::String(s) => !s.is_empty(),
+        Value::Array(a) => !a.is_empty(),
+        Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// isinstance(v, (int, float)): bools count as numbers in Python.
+fn pynum(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => n.as_f64(),
+        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+        _ => None,
+    }
+}
+
+/// isinstance(v, int)
+fn pyint(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)),
+        Value::Bool(b) => Some(*b as i64),
+        _ => None,
+    }
+}
+
+/// `v == n` for a JSON number (a bool never equals the format numbers 2 and 3).
+fn num_eq(v: Option<&Value>, n: f64) -> bool {
+    matches!(v, Some(Value::Number(x)) if x.as_f64() == Some(n))
+}
+
+/// Python's sum() of floats (3.12+ compensated summation).
+fn py_sum(xs: impl Iterator<Item = f64>) -> f64 {
+    let (mut s, mut c) = (0.0f64, 0.0f64);
+    for x in xs {
+        let t = s + x;
+        if s.abs() >= x.abs() {
+            c += (s - t) + x;
+        } else {
+            c += (x - t) + s;
+        }
+        s = t;
+    }
+    if c != 0.0 && c.is_finite() { s + c } else { s }
+}
+
+// --- time ------------------------------------------------------------------------------------
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 }
+        }
+    }
+}
+
+/// Local (year, month, day) of a unix time.
+#[cfg(all(unix, target_pointer_width = "64"))]
+fn local_ymd(secs: i64) -> (i64, i64, i64) {
+    #[repr(C)]
+    struct Tm {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        tm_mday: i32,
+        tm_mon: i32,
+        tm_year: i32,
+        tm_wday: i32,
+        tm_yday: i32,
+        tm_isdst: i32,
+        tm_gmtoff: i64,
+        tm_zone: *const u8,
+    }
+    unsafe extern "C" {
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let mut tm = Tm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        tm_gmtoff: 0,
+        tm_zone: std::ptr::null(),
+    };
+    // SAFETY: both pointers are valid for the call; localtime_r only writes into `tm`.
+    let r = unsafe { localtime_r(&secs, &mut tm) };
+    if r.is_null() {
+        return civil_from_days(secs.div_euclid(86400));
+    }
+    (tm.tm_year as i64 + 1900, tm.tm_mon as i64 + 1, tm.tm_mday as i64)
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+fn local_ymd(secs: i64) -> (i64, i64, i64) {
+    // No portable local-time call without a new crate: other platforms count days in UTC.
+    civil_from_days(secs.div_euclid(86400))
+}
+
+fn local_day(t: i64) -> i64 {
+    let (y, m, d) = local_ymd(t);
+    days_from_civil(y, m, d)
+}
+
+fn strptime_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)^([0-9]{4})-(1[0-2]|0[1-9]|[1-9])-(3[0-1]|[1-2][0-9]|0[1-9]|[1-9]| [1-9])T(2[0-3]|[0-1][0-9]|[0-9]):([0-5][0-9]|[0-9]):(6[0-1]|[0-5][0-9]|[0-9])$",
+        )
+        .expect("static regex")
+    })
+}
+
+/// calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%S")); None when strptime would fail.
+fn strptime_utc(s: &str) -> Option<i64> {
+    let c = strptime_re().captures(s)?;
+    let n = |i: usize| -> Option<i64> { c.get(i)?.as_str().trim().parse().ok() };
+    let (y, mo, d, h, mi, se) = (n(1)?, n(2)?, n(3)?, n(4)?, n(5)?, n(6)?);
+    if y < 1 || d > days_in_month(y, mo) {
+        return None;
+    }
+    Some(days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se)
+}
+
+fn epoch_f(v: f64) -> Option<i64> {
+    if !v.is_finite() {
+        return None;
+    }
+    Some(if v > 1e11 { (v / 1000.0) as i64 } else { v as i64 })
+}
+
+/// Seconds since the epoch from a number, a numeric string or an ISO UTC string; else None.
+fn epoch(v: Option<&Value>) -> Option<i64> {
+    match v? {
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => Some(if i > 100_000_000_000 { (i as f64 / 1000.0) as i64 } else { i }),
+            None => epoch_f(n.as_f64()?),
+        },
+        Value::String(s) => match py_parse_float(s) {
+            Some(f) => epoch_f(f),
+            None => strptime_utc(&s.chars().take(19).collect::<String>()),
+        },
+        _ => None,
+    }
+}
+
+/// `_num`: a finite JSON number, else 0.
+fn num(v: Option<&Value>) -> f64 {
+    match v {
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite()).unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+/// `_pct`: a finite number clamped to 0..100.
+fn pct(v: Option<&Value>) -> Option<f64> {
+    match v? {
+        Value::Number(n) => {
+            let f = n.as_f64().filter(|f| f.is_finite())?;
+            let lo = if f > 0.0 { f } else { 0.0 };
+            Some(if lo < 100.0 { lo } else { 100.0 })
+        }
+        _ => None,
+    }
+}
+
+// --- week and budget -------------------------------------------------------------------------
+
+fn get<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
+    v.as_object()?.get(k)
+}
+
+/// The seven_day object of the statusline cache, if it has one.
+fn c1_seven_day(p: &Paths) -> Option<(Value, Value)> {
+    let c1 = read_json(&p.file("claude-pace.json"))?;
+    let sd = get(&c1, "seven_day").filter(|v| v.is_object())?.clone();
+    Some((c1, sd))
+}
+
+/// The known weekly reset in the future (rolled forward by whole weeks), or None.
+fn c1_reset(p: &Paths, now: i64) -> Option<i64> {
+    let (_, sd) = c1_seven_day(p)?;
+    let mut e = epoch(get(&sd, "resets_at"))?;
+    if e <= now {
+        e += ((now - e).div_euclid(WEEK) + 1) * WEEK;
+    }
+    Some(e)
+}
+
+fn fallback_week_start(now: i64) -> i64 {
+    let days = now.div_euclid(86400);
+    let weekday = (days + 3).rem_euclid(7); // 1970-01-01 was a Thursday; Monday is 0
+    let start = days * 86400 + 6 * 3600 - weekday * 86400;
+    if start <= now { start } else { start - WEEK }
+}
+
+fn week_start(p: &Paths, now: i64) -> i64 {
+    c1_reset(p, now).map_or_else(|| fallback_week_start(now), |e| e - WEEK)
+}
+
+fn budget_for(now: i64, ws: i64) -> f64 {
+    let idx = (local_day(now) - local_day(ws)).max(0);
+    (idx + 1).min(6) as f64 / 6.0 * 100.0
+}
+
+// --- calibration -----------------------------------------------------------------------------
+
+fn calib(p: &Paths) -> Option<Value> {
+    read_json(&p.file("claude-pace-calib.json"))
+}
+
+fn week_weight_in(p: &Paths) -> f64 {
+    let c = calib(p);
+    let w = c.as_ref().filter(|c| num_eq(get(c, "v"), FORMAT)).and_then(|c| get(c, "week_weight"));
+    match w {
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite() && *f > 0.0).unwrap_or(DEFAULT_WEEK_WEIGHT),
+        _ => DEFAULT_WEEK_WEIGHT,
+    }
+}
+
+/// When the stored calibration was made (epoch), or 0 when there is none.
+fn calib_updated(p: &Paths) -> f64 {
+    let c = calib(p);
+    c.as_ref()
+        .filter(|c| num_eq(get(c, "v"), FORMAT))
+        .and_then(|c| get(c, "updated"))
+        .and_then(pynum)
+        .unwrap_or(0.0)
+}
+
+/// Store the calibration. `updated` orders them: the newest calibration wins.
+pub fn seed_weight(p: &Paths, week_weight: f64, now: Option<i64>, source: &str, week_start: Option<i64>) {
+    let now = now.unwrap_or_else(unix_now);
+    let ws = week_start.map_or("null".to_string(), |w| w.to_string());
+    let text = format!(
+        "{{\"v\":2,\"week_weight\":{},\"updated\":{},\"source\":{},\"week_start\":{}}}",
+        py_float(week_weight),
+        now,
+        json_str(source),
+        ws
+    );
+    write_text(&p.file("claude-pace-calib.json"), &text);
+}
+
+// --- statusline cache ------------------------------------------------------------------------
+
+/// (seven_day used %, resets_at) when the statusline cache is fresh, else None.
+fn fresh_c1(p: &Paths, now: i64) -> Option<(f64, i64)> {
+    let (c1, sd) = c1_seven_day(p)?;
+    let updated = epoch(get(&c1, "updated"))?;
+    let resets = epoch(get(&sd, "resets_at"))?;
+    let used = pct(get(&sd, "used_percentage"))?;
+    if !(-3600..=FRESH_S).contains(&(now - updated)) || resets <= now {
+        return None;
+    }
+    Some((used, resets))
+}
+
+// --- transcript scan -------------------------------------------------------------------------
+
+/// (input, output) price per million tokens for a Claude model, else None (free or foreign).
+fn prices(model: &str) -> Option<(f64, f64)> {
+    let m = model.to_lowercase();
+    if m.contains(":free") {
+        return None;
+    }
+    [("opus", (5.0, 25.0)), ("sonnet", (3.0, 15.0)), ("haiku", (1.0, 5.0)), ("fable", (15.0, 75.0))]
+        .iter()
+        .find(|(f, _)| m.contains(f))
+        .map(|(_, p)| *p)
+}
+
+/// Cost units of one usage block: cache writes cost 1.25x (5m) or 2x (1h), reads 0.1x.
+fn cost(u: &serde_json::Map<String, Value>, price: (f64, f64)) -> f64 {
+    let cc = num(u.get("cache_creation_input_tokens"));
+    let (w5, w1) = match u.get("cache_creation") {
+        Some(Value::Object(d)) if d.contains_key("ephemeral_5m_input_tokens") || d.contains_key("ephemeral_1h_input_tokens") => {
+            (num(d.get("ephemeral_5m_input_tokens")), num(d.get("ephemeral_1h_input_tokens")))
+        }
+        _ => (0.0, cc),
+    };
+    let cin = num(u.get("input_tokens")) + 1.25 * w5 + 2.0 * w1 + 0.1 * num(u.get("cache_read_input_tokens"));
+    (price.0 * cin + price.1 * num(u.get("output_tokens"))) / 1e6
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> bool {
+    let Some(&first) = needle.first() else { return true };
+    let mut i = 0;
+    while let Some(off) = hay[i..].iter().position(|&b| b == first) {
+        let s = i + off;
+        if hay.len() - s < needle.len() {
+            return false;
+        }
+        if &hay[s..s + needle.len()] == needle {
+            return true;
+        }
+        i = s + 1;
+    }
+    false
+}
+
+/// (message key, timestamp, weight) for a counted assistant record, else None.
+fn parse_line(line: &[u8], pos: i64, ws: i64) -> Option<(String, i64, f64)> {
+    if !find(line, b"\"usage\"") {
+        return None;
+    }
+    let d: Value = serde_json::from_slice(line).ok()?;
+    let msg = get(&d, "message")?.as_object()?;
+    let usage = msg.get("usage")?.as_object()?;
+    let price = prices(msg.get("model")?.as_str()?)?;
+    let ts = epoch(get(&d, "timestamp"))?;
+    if ts < ws {
+        return None;
+    }
+    let weight = cost(usage, price);
+    let key = match msg.get("id") {
+        Some(Value::String(s)) if !s.is_empty() => s.clone(),
+        _ => format!("L{}", pos),
+    };
+    Some((key, ts, weight))
+}
+
+/// Timestamp of the app's "You've hit your weekly limit" record, else None. The record is an API
+/// error message (synthetic assistant) or a system record; a real reply that quotes it does not count.
+fn hit_ts(line: &[u8]) -> Option<i64> {
+    let d: Value = serde_json::from_slice(line).ok()?;
+    let o = d.as_object()?;
+    let msg = o.get("message").and_then(Value::as_object);
+    let mut texts: Vec<&str> = Vec::new();
+    match o.get("type").and_then(Value::as_str) {
+        Some("assistant") if msg.is_some() => {
+            let m = msg?;
+            let api_err = o.get("isApiErrorMessage").is_some_and(truthy);
+            if !(api_err || m.get("model").and_then(Value::as_str) == Some("<synthetic>")) {
+                return None;
+            }
+            match m.get("content") {
+                Some(Value::String(s)) => texts.push(s),
+                Some(Value::Array(a)) => {
+                    texts.extend(a.iter().filter_map(|b| b.as_object()?.get("text")?.as_str()));
+                }
+                _ => {}
+            }
+        }
+        Some("system") => {
+            texts.extend(o.get("content").and_then(Value::as_str));
+            texts.extend(msg.and_then(|m| m.get("content")).and_then(Value::as_str));
+        }
+        _ => {}
+    }
+    if !texts.iter().any(|t| t.to_lowercase().contains("hit your weekly limit")) {
+        return None;
+    }
+    epoch(o.get("timestamp"))
+}
+
+/// Insertion-ordered message map, like a Python dict: a repeated key keeps its place.
+#[derive(Default)]
+struct Msgs {
+    items: Vec<(String, i64, f64)>,
+    idx: HashMap<String, usize>,
+}
+
+impl Msgs {
+    fn set(&mut self, k: String, ts: i64, w: f64) {
+        match self.idx.get(&k) {
+            Some(&i) => self.items[i] = (k, ts, w),
+            None => {
+                self.idx.insert(k.clone(), self.items.len());
+                self.items.push((k, ts, w));
+            }
+        }
+    }
+
+    fn keep_from(&mut self, lo: i64) {
+        self.items.retain(|(_, ts, _)| *ts >= lo);
+        self.idx = self.items.iter().enumerate().map(|(i, (k, _, _))| (k.clone(), i)).collect();
+    }
+}
+
+struct Ent {
+    size: Option<i64>,
+    offset: i64,
+    mtime: Value,
+    msgs: Msgs,
+    hits: Vec<i64>,
+}
+
+impl Ent {
+    fn new() -> Ent {
+        Ent { size: Some(0), offset: 0, mtime: Value::from(0), msgs: Msgs::default(), hits: Vec::new() }
+    }
+
+    fn from_json(e: &Value) -> Option<Ent> {
+        let o = e.as_object()?;
+        let offset = match o.get("offset")? {
+            Value::Number(n) => n.as_i64()?,
+            _ => return None,
+        };
+        let mut msgs = Msgs::default();
+        for (k, v) in o.get("msgs")?.as_object()? {
+            let a = v.as_array()?;
+            msgs.set(k.clone(), epoch_int(a.first()?)?, a.get(1).and_then(pynum)?);
+        }
+        let hits = o.get("hits").and_then(Value::as_array).map(|a| a.iter().filter_map(epoch_int).collect()).unwrap_or_default();
+        let size = o.get("size").and_then(|v| v.as_f64()).filter(|f| f.fract() == 0.0).map(|f| f as i64);
+        let mtime = o.get("mtime").cloned().unwrap_or(Value::from(0));
+        Some(Ent { size, offset, mtime, msgs, hits })
+    }
+
+    fn write(&self, out: &mut String) {
+        out.push('{');
+        if let Some(s) = self.size {
+            out.push_str(&format!("\"size\":{},", s));
+        }
+        out.push_str(&format!("\"offset\":{},\"mtime\":", self.offset));
+        match self.mtime.as_f64() {
+            Some(f) if self.mtime.is_f64() => out.push_str(&py_float(f)),
+            _ => out.push_str(&self.mtime.to_string()),
+        }
+        out.push_str(",\"msgs\":{");
+        for (i, (k, ts, w)) in self.msgs.items.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("{}:[{},{}]", json_str(k), ts, py_float(*w)));
+        }
+        out.push_str("},\"hits\":[");
+        out.push_str(&self.hits.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(","));
+        out.push_str("]}");
+    }
+}
+
+fn epoch_int(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        _ => None,
+    }
+}
+
+/// (cost up to the first weekly-limit hit of week wk, hit time) or None. Needs a complete scan.
+fn limit_hit_calibration(files: &[(String, Ent)], wk: i64) -> Option<(f64, i64)> {
+    let t0 = files.iter().flat_map(|(_, e)| e.hits.iter().copied()).filter(|t| (wk..wk + WEEK).contains(t)).min()?;
+    let c = py_sum(
+        files.iter().flat_map(|(_, e)| e.msgs.items.iter()).filter(|(_, ts, _)| wk <= *ts && *ts <= t0).map(|(_, _, w)| *w),
+    );
+    (c > MIN_HIT_COST).then_some((c, t0))
+}
+
+/// Jsonl files modified since min_mtime, newest first, and the count of all jsonl files.
+fn find_files(root: &PathBuf, min_mtime: f64) -> (Vec<(f64, i64, String)>, usize) {
+    let mut found = Vec::new();
+    let mut total = 0;
+    let walk = WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && e.file_name() == "tool-results"));
+    for ent in walk.flatten() {
+        if ent.file_type().is_dir() || !ent.file_name().to_string_lossy().ends_with(".jsonl") {
+            continue;
+        }
+        let Ok(md) = fs::metadata(ent.path()) else { continue };
+        if md.is_dir() {
+            continue;
+        }
+        total += 1;
+        let mtime = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs() as f64 + d.subsec_nanos() as f64 * 1e-9);
+        if mtime >= min_mtime {
+            found.push((mtime, md.len() as i64, ent.path().to_string_lossy().into_owned()));
+        }
+    }
+    found.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)).then_with(|| b.2.cmp(&a.2)));
+    (found, total)
+}
+
+/// Read the new complete lines of one file into ent. False when the time budget ended.
+fn scan_file(path: &str, ent: &mut Ent, ws: i64, deadline: Instant) -> bool {
+    let mut pos = ent.offset;
+    let mut n = 0u64;
+    if let Ok(f) = fs::File::open(path) {
+        let mut r = BufReader::new(f);
+        if pos >= 0 && r.seek(SeekFrom::Start(pos as u64)).is_ok() {
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                if !matches!(r.read_until(b'\n', &mut line), Ok(k) if k > 0) || line.last() != Some(&b'\n') {
+                    break; // end, an error, or a partial last line: wait for the writer
+                }
+                let got = parse_line(&line, pos, ws);
+                if line.len() < 8000
+                    && find(&line.to_ascii_lowercase(), b"hit your weekly limit")
+                    && let Some(t) = hit_ts(&line).filter(|t| *t >= ws)
+                {
+                    ent.hits.push(t);
+                }
+                pos += line.len() as i64;
+                if let Some((k, ts, w)) = got {
+                    ent.msgs.set(k, ts, w); // last record of a message wins
+                }
+                n += 1;
+                if n.is_multiple_of(CHECK_EVERY) && Instant::now() >= deadline {
+                    ent.offset = pos;
+                    return false;
+                }
+            }
+        }
+    }
+    ent.offset = pos;
+    true
+}
+
+fn sum_week(files: &[(String, Ent)], ws: i64) -> f64 {
+    let mut total = 0.0;
+    for (_, e) in files {
+        for (_, ts, w) in &e.msgs.items {
+            if ws <= *ts && *ts < ws + WEEK {
+                total += *w;
+            }
+        }
+    }
+    total
+}
+
+fn valid_files(scan: Option<&Value>) -> HashMap<String, Ent> {
+    let mut ok = HashMap::new();
+    let Some(s) = scan.filter(|s| num_eq(get(s, "v"), SCAN_FORMAT)) else { return ok };
+    if let Some(Value::Object(files)) = get(s, "files") {
+        for (p, e) in files {
+            if let Some(ent) = Ent::from_json(e) {
+                ok.insert(p.clone(), ent);
+            }
+        }
+    }
+    ok
+}
+
+/// The cached estimate when it is a well-formed result record.
+fn load_result(p: &Paths) -> Option<Value> {
+    let r = read_json(&p.file("claude-pace-result.json"))?;
+    if !num_eq(get(&r, "v"), FORMAT) || get(&r, "weight").and_then(pynum).is_none() {
+        return None;
+    }
+    if get(&r, "at").and_then(pynum).is_none() || !get(&r, "ws").is_some_and(|v| pyint(v).is_some()) {
+        return None;
+    }
+    Some(r)
+}
+
+/// Scan new transcript bytes for at most budget_s seconds (one chunk minimum per call).
+pub fn refresh_in(p: &Paths, budget_s: f64, now: Option<i64>) -> RefreshResult {
+    let now = now.unwrap_or_else(unix_now);
+    let wait = if budget_s.is_finite() { budget_s.clamp(0.0, 1e7) } else { 0.0 };
+    let deadline = Instant::now() + Duration::from_secs_f64(wait);
+    let ws = week_start(p, now);
+    let scan = read_json(&p.file("claude-pace-scan.json"));
+    let mut old = valid_files(scan.as_ref());
+    let had_valid = !old.is_empty();
+    let meta = scan.as_ref().filter(|s| num_eq(get(s, "v"), SCAN_FORMAT));
+    let mut backfilled = meta.and_then(|m| get(m, "backfilled")).is_some_and(truthy);
+    // A cold calibration looks at the previous week too, once, to find its limit hit.
+    let back = calib_updated(p) == 0.0 && !backfilled;
+    let lo = if back { ws - WEEK } else { ws };
+    let meta_lo = meta.and_then(|m| get(m, "lo")).and_then(|v| v.as_i64());
+    let mut dirty = false;
+    if meta_lo.is_none_or(|l| l > lo) {
+        old.clear(); // the cache covers less than this scan needs: rebuild
+        dirty = had_valid;
+    }
+    let old_len = old.len();
+    let mut files: Vec<(String, Ent)> = Vec::new();
+    let mut complete = true;
+    let mut started = false;
+    let (found, total) = find_files(&p.projects, (lo - 86400) as f64);
+    for (mtime, size, path) in found {
+        let mut ent = match old.remove(&path) {
+            Some(e) if size >= e.offset => e,
+            _ => {
+                dirty = true;
+                Ent::new()
+            }
+        };
+        if size == ent.offset && ent.size == Some(size) {
+            files.push((path, ent));
+            continue;
+        }
+        if started && Instant::now() >= deadline {
+            complete = false;
+            files.push((path, ent));
+            continue;
+        }
+        started = true;
+        if !scan_file(&path, &mut ent, lo, deadline) {
+            complete = false;
+        }
+        ent.size = Some(size);
+        ent.mtime = serde_json::Number::from_f64(mtime).map_or(Value::from(0), Value::Number);
+        dirty = true;
+        files.push((path, ent));
+    }
+    if files.len() != old_len {
+        dirty = true;
+    }
+    if complete {
+        if back {
+            backfilled = true;
+            dirty = true;
+        }
+        // Weeks to look at: the previous one only on the backfill pass, then this one (newer wins).
+        let weeks = if back { vec![ws - WEEK, ws] } else { vec![ws] };
+        for wk in weeks {
+            if let Some((c, t0)) = limit_hit_calibration(&files, wk)
+                && t0 as f64 > calib_updated(p)
+            {
+                seed_weight(p, c, Some(t0), "limit-hit", Some(wk));
+            }
+        }
+    }
+    if dirty || meta_lo != Some(lo) {
+        let mut out = format!("{{\"v\":3,\"lo\":{},\"backfilled\":{},\"files\":{{", lo, backfilled);
+        for (i, (path, ent)) in files.iter_mut().enumerate() {
+            ent.msgs.keep_from(lo);
+            ent.hits.retain(|t| *t >= lo);
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&json_str(path));
+            out.push(':');
+            ent.write(&mut out);
+        }
+        out.push_str("}}");
+        write_text(&p.file("claude-pace-scan.json"), &out);
+    }
+    let weight = sum_week(&files, ws);
+    let res = format!(
+        "{{\"v\":2,\"at\":{},\"ws\":{},\"weight\":{},\"files\":{},\"complete\":{}}}",
+        now,
+        ws,
+        py_float(weight),
+        total,
+        complete
+    );
+    write_text(&p.file("claude-pace-result.json"), &res);
+    if complete
+        && weight > 0.0
+        && let Some((used, _)) = fresh_c1(p, now).filter(|c| c.0 >= CALIBRATE_MIN)
+    {
+        seed_weight(p, weight / (used / 100.0), Some(now), "statusline", Some(ws));
+    }
+    RefreshResult { complete, weight, files: total }
+}
+
+pub fn refresh(budget_s: f64, now: Option<i64>) -> RefreshResult {
+    refresh_in(&Paths::from_env(), budget_s, now)
+}
+
+/// Calibrate the weekly weight from a percent the app reports. True when stored.
+pub fn seed_in(p: &Paths, used: f64, now: Option<i64>) -> bool {
+    if !(used > 0.0 && used <= 100.0) {
+        return false;
+    }
+    let now = now.unwrap_or_else(unix_now);
+    let res = refresh_in(p, 60.0, Some(now));
+    if !res.complete || res.weight <= 0.0 {
+        return false; // a partial scan would store a too-small weight
+    }
+    seed_weight(p, res.weight / (used / 100.0), Some(now), "seed", None);
+    true
+}
+
+pub fn seed(used: f64, now: Option<i64>) -> bool {
+    seed_in(&Paths::from_env(), used, now)
+}
+
+// --- status ----------------------------------------------------------------------------------
+
+fn state_of(used: Option<f64>, budget: f64) -> &'static str {
+    match used {
+        None => "unknown",
+        Some(u) if u >= CRITICAL => "critical",
+        Some(u) if u > budget => "ahead",
+        Some(_) => "ok",
+    }
+}
+
+fn out(state: &str, used: Option<f64>, budget: f64, source: Option<&str>, resets_at: Option<i64>) -> Status {
+    Status {
+        state: state.to_string(),
+        used: used.map(round1),
+        budget: round1(budget),
+        source: source.map(str::to_string),
+        resets_at,
+    }
+}
+
+fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
+    let ws = week_start(p, now);
+    let budget = budget_for(now, ws);
+    if let Some((used, resets)) = fresh_c1(p, now) {
+        return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("statusline"), Some(resets)));
+    }
+    if let Some(r) = load_result(p)
+        && get(&r, "ws").and_then(pyint) == Some(ws)
+    {
+        let positive = match get(&r, "files") {
+            None => false,
+            Some(v) => pynum(v).ok_or(())? > 0.0,
+        };
+        if positive {
+            let weight = get(&r, "weight").and_then(pynum).ok_or(())?;
+            let raw = weight / week_weight_in(p) * 100.0;
+            let used = if raw < 100.0 { raw } else { 100.0 };
+            return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("estimate"), c1_reset(p, now)));
+        }
+    }
+    Ok(out("unknown", None, budget, None, None))
+}
+
+/// Weekly pace from the caches only. Never panics; any error gives state "unknown".
+pub fn status_in(p: &Paths, now: Option<i64>) -> Status {
+    let now = now.unwrap_or_else(unix_now);
+    let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| status_inner(p, now)));
+    if let Ok(Ok(s)) = attempt {
+        return s;
+    }
+    let budget = std::panic::catch_unwind(|| budget_for(now, fallback_week_start(now))).unwrap_or(0.0);
+    out("unknown", None, budget, None, None)
+}
+
+pub fn status(now: Option<i64>) -> Status {
+    match std::panic::catch_unwind(Paths::from_env) {
+        Ok(p) => status_in(&p, now),
+        Err(_) => out("unknown", None, 0.0, None, None),
+    }
+}
+
+pub fn week_weight() -> f64 {
+    week_weight_in(&Paths::from_env())
+}
+
+pub fn needs_refresh_in(p: &Paths, now: i64) -> bool {
+    if fresh_c1(p, now).is_some() {
+        return false;
+    }
+    let Some(r) = load_result(p) else { return true };
+    let at = get(&r, "at").and_then(pynum).unwrap_or(0.0);
+    (now as f64 - at).abs() >= RESULT_TTL_S as f64 || get(&r, "ws").and_then(pyint) != Some(week_start(p, now))
+}
+
+pub fn needs_refresh(now: i64) -> bool {
+    needs_refresh_in(&Paths::from_env(), now)
+}
+
+// --- CLI text (json.dumps defaults) ----------------------------------------------------------
+
+pub fn status_json(s: &Status) -> String {
+    let used = s.used.map_or("null".to_string(), py_float);
+    let source = s.source.as_deref().map_or("null".to_string(), json_str);
+    let resets = s.resets_at.map_or("null".to_string(), |r| r.to_string());
+    format!(
+        "{{\"state\": {}, \"used\": {}, \"budget\": {}, \"source\": {}, \"resets_at\": {}}}",
+        json_str(&s.state),
+        used,
+        py_float(s.budget),
+        source,
+        resets
+    )
+}
+
+pub fn refresh_json(r: &RefreshResult) -> String {
+    format!("{{\"complete\": {}, \"weight\": {}, \"files\": {}}}", r.complete, py_float(r.weight), r.files)
+}
+
+pub fn seed_json(week_weight: f64) -> String {
+    format!("{{\"week_weight\": {}}}", py_float(week_weight))
+}
+
+/// `float(arg)` of the CLI: None when Python would raise ValueError.
+pub fn parse_percent(arg: &str) -> Option<f64> {
+    py_parse_float(arg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const DAY: i64 = 86400;
+    fn mon() -> i64 {
+        days_from_civil(2026, 10, 19) * 86400 + 6 * 3600
+    }
+
+    fn iso(t: i64) -> String {
+        let (y, m, d) = civil_from_days(t.div_euclid(86400));
+        let s = t.rem_euclid(86400);
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", y, m, d, s / 3600, s % 3600 / 60, s % 60)
+    }
+
+    fn record(t: i64, id: &str, model: &str, inp: i64, out: i64, cc: i64, cr: i64) -> String {
+        json!({"type": "assistant", "timestamp": iso(t), "message": {"id": id, "model": model, "usage": {
+            "input_tokens": inp, "output_tokens": out, "cache_creation_input_tokens": cc, "cache_read_input_tokens": cr}}})
+        .to_string()
+    }
+
+    fn sonnet(t: i64, id: &str) -> String {
+        record(t, id, "claude-sonnet-5-5", 1000, 500, 2000, 10000)
+    }
+
+    const WEIGHT: f64 = 0.0255; // sonnet: 3 x (1000 + 2 x 2000 + 0.1 x 10000) + 15 x 500, per million
+
+    struct Env {
+        _dir: tempfile::TempDir,
+        p: Paths,
+    }
+
+    fn env() -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths { cache: dir.path().join("cache"), projects: dir.path().join("projects") };
+        fs::create_dir_all(p.projects.join("proj")).unwrap();
+        Env { _dir: dir, p }
+    }
+
+    impl Env {
+        fn write(&self, name: &str, lines: &[String]) {
+            let path = self.p.projects.join("proj").join(name);
+            let mut text = lines.join("\n");
+            text.push('\n');
+            fs::write(&path, text).unwrap();
+            let f = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_modified(UNIX_EPOCH + Duration::from_secs((mon() + DAY) as u64)).unwrap();
+        }
+
+        fn c1(&self, updated: i64, used: f64, resets: i64) {
+            let v = json!({"updated": updated, "seven_day": {"used_percentage": used, "resets_at": resets}});
+            write_text(&self.p.file("claude-pace.json"), &v.to_string());
+        }
+
+        fn weight(&self) -> f64 {
+            get(&load_result(&self.p).unwrap(), "weight").and_then(pynum).unwrap()
+        }
+    }
+
+    #[test]
+    fn python_float_text_and_rounding() {
+        assert_eq!(py_float(40.0), "40.0");
+        assert_eq!(py_float(12.3), "12.3");
+        assert_eq!(py_float(0.0255), "0.0255");
+        assert_eq!(py_float(1e16), "1e+16");
+        assert_eq!(py_float(1.5e-7), "1.5e-07");
+        assert_eq!(round1(0.25), 0.2);
+        assert_eq!(round1(41.23456), 41.2);
+        assert_eq!(round1(16.666666666666664), 16.7);
+        assert_eq!(json_str("a\u{e9}\"b"), "\"a\\u00e9\\\"b\"");
+    }
+
+    #[test]
+    fn epoch_forms() {
+        assert_eq!(epoch(Some(&json!(1760860800))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!(1760860800000i64))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!("1760860800"))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!("2025-10-19T08:00:00Z"))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!("2025-10-19T08:00:00.123Z"))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!("2025-02-30T08:00:00Z"))), None);
+        assert_eq!(epoch(Some(&json!(null))), None);
+        assert_eq!(epoch(Some(&json!("junk"))), None);
+        assert_eq!(epoch(Some(&json!(true))), None);
+    }
+
+    #[test]
+    fn fallback_week_starts_monday_six_utc() {
+        assert_eq!(fallback_week_start(mon() + 60), mon());
+        assert_eq!(fallback_week_start(mon() - 60), mon() - WEEK);
+        assert_eq!(fallback_week_start(mon() + 6 * DAY + 3600), mon());
+    }
+
+    #[test]
+    fn fresh_statusline_wins_and_states() {
+        let e = env();
+        let now = mon() + 2 * DAY;
+        for (used, want) in [(10.0, "ok"), (84.0, "ahead"), (85.0, "critical"), (100.0, "critical")] {
+            e.c1(now - 10, used, mon() + WEEK);
+            let st = status_in(&e.p, Some(now));
+            assert_eq!(st.source.as_deref(), Some("statusline"));
+            assert_eq!(st.resets_at, Some(mon() + WEEK));
+            assert_eq!(st.state, want, "used {used}");
+        }
+        e.c1(now - 7 * 3600, 41.2, mon() + WEEK); // stale
+        assert_eq!(status_in(&e.p, Some(now)).state, "unknown");
+    }
+
+    #[test]
+    fn unknown_without_data_and_json_text() {
+        let e = env();
+        let st = status_in(&e.p, Some(mon() + 3600));
+        assert_eq!((st.state.as_str(), st.used, st.source.clone()), ("unknown", None, None));
+        let text = status_json(&st);
+        assert!(text.starts_with("{\"state\": \"unknown\", \"used\": null, \"budget\": "), "{text}");
+        assert!(text.ends_with(", \"source\": null, \"resets_at\": null}"), "{text}");
+    }
+
+    #[test]
+    fn estimate_from_transcripts_and_dedupe() {
+        let e = env();
+        e.write("a.jsonl", &[sonnet(mon() + 60, "m1"), sonnet(mon() + 61, "m1"), sonnet(mon() - 60, "old")]);
+        let now = mon() + DAY;
+        seed_weight(&e.p, WEIGHT * 100.0, Some(now), "seed", None);
+        let r = refresh_in(&e.p, 5.0, Some(now));
+        assert!(r.complete);
+        assert_eq!(r.files, 1);
+        assert!((e.weight() - WEIGHT).abs() < 1e-12, "{}", e.weight());
+        let st = status_in(&e.p, Some(now));
+        assert_eq!(st.source.as_deref(), Some("estimate"));
+        assert_eq!(st.used, Some(1.0));
+    }
+
+    #[test]
+    fn model_families_and_cache_write_split() {
+        let e = env();
+        let recs = [
+            record(mon() + 60, "a", "claude-opus-4-8", 1000, 500, 2000, 10000),
+            record(mon() + 61, "b", "openai/gpt-oss-120b:free", 1000, 500, 2000, 10000),
+            record(mon() + 62, "c", "<synthetic>", 1000, 500, 2000, 10000),
+        ];
+        e.write("a.jsonl", &recs);
+        refresh_in(&e.p, 5.0, Some(mon() + DAY));
+        assert!((e.weight() - (5.0 * 6000.0 + 25.0 * 500.0) / 1e6).abs() < 1e-12);
+        let split = json!({"type": "assistant", "timestamp": iso(mon() + 60), "message": {"id": "s", "model": "claude-opus-4-8",
+            "usage": {"cache_creation_input_tokens": 3000, "cache_creation": {"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 2000}}}});
+        e.write("a.jsonl", &[split.to_string()]);
+        fs::remove_file(e.p.file("claude-pace-scan.json")).unwrap();
+        refresh_in(&e.p, 5.0, Some(mon() + DAY));
+        assert!((e.weight() - 5.0 * (1.25 * 1000.0 + 2.0 * 2000.0) / 1e6).abs() < 1e-12);
+    }
+
+    #[test]
+    fn partial_last_line_waits_for_the_writer() {
+        let e = env();
+        e.write("a.jsonl", &[sonnet(mon() + 60, "m1")]);
+        let path = e.p.projects.join("proj").join("a.jsonl");
+        let next = sonnet(mon() + 90, "m2");
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str(&next[..40]);
+        fs::write(&path, &text).unwrap();
+        let now = mon() + DAY;
+        refresh_in(&e.p, 5.0, Some(now));
+        assert!((e.weight() - WEIGHT).abs() < 1e-12);
+        text.push_str(&next[40..]);
+        text.push('\n');
+        fs::write(&path, text).unwrap();
+        refresh_in(&e.p, 5.0, Some(now));
+        assert!((e.weight() - 2.0 * WEIGHT).abs() < 1e-12);
+    }
+
+    #[test]
+    fn time_budget_stops_and_next_call_continues() {
+        let e = env();
+        let recs: Vec<String> = (0..1500).map(|i| sonnet(mon() + i, &format!("m{i}"))).collect();
+        e.write("a.jsonl", &recs);
+        let now = mon() + DAY;
+        let r = refresh_in(&e.p, 0.0, Some(now));
+        assert!(!r.complete);
+        assert!(e.weight() < 1500.0 * WEIGHT);
+        let mut done = false;
+        for _ in 0..20 {
+            done = refresh_in(&e.p, 0.0, Some(now)).complete;
+            if done {
+                break;
+            }
+        }
+        assert!(done);
+        assert!((e.weight() - 1500.0 * WEIGHT).abs() < 1e-9);
+    }
+
+    #[test]
+    fn limit_hit_sets_calibration() {
+        let e = env();
+        let big = |t, id: &str| record(t, id, "claude-opus-4-8", 400_000_000, 0, 0, 0); // 2000 cost units
+        let t0 = mon() + 2 * DAY;
+        let hit = json!({"type": "assistant", "timestamp": iso(t0), "isApiErrorMessage": true, "message": {"model": "<synthetic>",
+            "content": [{"type": "text", "text": "You've hit your weekly limit"}]}});
+        e.write("a.jsonl", &[big(mon() + 3600, "b1"), hit.to_string(), big(t0 + 60, "after")]);
+        refresh_in(&e.p, 5.0, Some(mon() + 3 * DAY));
+        let c = calib(&e.p).unwrap();
+        assert_eq!(get(&c, "source").and_then(Value::as_str), Some("limit-hit"));
+        assert_eq!(get(&c, "week_weight").and_then(Value::as_f64), Some(2000.0));
+        assert_eq!(get(&c, "updated").and_then(Value::as_i64), Some(t0));
+        assert_eq!(week_weight_in(&e.p), 2000.0);
+    }
+
+    #[test]
+    fn statusline_and_seed_calibrate_and_bad_percents_fail() {
+        let e = env();
+        let now = mon() + DAY;
+        let recs: Vec<String> = (0..10).map(|i| sonnet(mon() + 60, &format!("m{i}"))).collect();
+        e.write("a.jsonl", &recs);
+        for bad in [0.0, -3.0, 101.0, f64::NAN] {
+            assert!(!seed_in(&e.p, bad, Some(now)));
+        }
+        assert!(!e.p.file("claude-pace-calib.json").exists());
+        assert!(seed_in(&e.p, 25.0, Some(now)));
+        assert!((week_weight_in(&e.p) - 10.0 * WEIGHT / 0.25).abs() < 1e-9);
+        assert!((status_in(&e.p, Some(now)).used.unwrap() - 25.0).abs() < 0.05);
+        e.c1(now - 10, 10.0, mon() + WEEK);
+        refresh_in(&e.p, 5.0, Some(now));
+        assert!((week_weight_in(&e.p) - 10.0 * WEIGHT / 0.10).abs() < 1e-9);
+    }
+
+    #[test]
+    fn old_cache_formats_are_ignored() {
+        let e = env();
+        e.write("a.jsonl", &[sonnet(mon() + 60, "m1")]);
+        write_text(&e.p.file("claude-pace-scan.json"), r#"{"v":1,"ws":1,"files":{}}"#);
+        write_text(&e.p.file("claude-pace-result.json"), r#"{"at":1,"ws":1,"weight":1e9,"files":5,"complete":true}"#);
+        write_text(&e.p.file("claude-pace-calib.json"), r#"{"week_weight":1.3e9,"updated":1}"#);
+        let now = mon() + DAY;
+        assert_eq!(status_in(&e.p, Some(now)).state, "unknown");
+        assert_eq!(week_weight_in(&e.p), DEFAULT_WEEK_WEIGHT);
+        refresh_in(&e.p, 5.0, Some(now));
+        assert!((e.weight() - WEIGHT).abs() < 1e-12);
+    }
+}

@@ -48,7 +48,7 @@ way the gate went and why.
 
 ## Pace
 
-Before Phase 2, when `~/.claude/hooks/pace.py` exists, run `python3 ~/.claude/hooks/pace.py status`.
+Before Phase 2, when `~/.claude/hooks/rust-bin` exists, run `~/.claude/hooks/rust-bin pace status`.
 Researchers at once: 3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (tell the user the
 week is spent and research the top sub-questions yourself with WebSearch). The guard enforces the cap. When `ahead`,
 merge sub-questions into fewer, larger researchers (3 to 6 facts each) before you send any.

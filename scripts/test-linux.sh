@@ -5,35 +5,41 @@
 #
 #    bash scripts/test-linux.sh debian:13
 #    bash scripts/test-linux.sh ubuntu:24.04
+#    bash scripts/test-linux.sh fedora:latest     # also archlinux:latest, alpine:latest
 #
 #  Needs podman or docker on the host that runs it. No sudo on the host.
 #  What it does:
 #    1. builds a base image once (image + sudo + git + curl + a user "dev" with sudo),
-#       like a fresh install that has nothing else
+#       like a fresh install that has nothing else. apt, dnf, pacman or apk.
 #    2. starts a container, copies this working tree in as a git repo with no remote
 #       (git-ignored files stay out), pipes a git name and email to ./dotfiles
 #    3. run 1: ./dotfiles. Run 2: ./dotfiles again, which must change nothing
-#    4. checks: links, tools, `zsh -ic exit` prints nothing, bash -n, the unit tests
+#    4. checks: no shell errors, the last line, run 2 time, `dots -v`, links, tools, the Rust
+#       tools, `zsh -ic exit` prints nothing, bash -n, the unit tests. On musl (Alpine) there is no Homebrew, so the brew tools are
+#       not checked and its one warning is expected.
 #    5. removes the container (the base image stays, for speed)
 #  Exit 0 only when every check passes.
 #
 #  Options:  --keep   leave the container running (shell in: podman exec -it NAME bash)
 #            --reuse  use the kept container: sync the tree, run both runs again
 #            --clean  also remove the base image at the end
+#            -v       also print each PASS (the default prints failures and the last line)
 #  Env:      CONTAINER_RUNTIME=podman|docker (default: the first one found)
 #            TEST_LOG_DIR=<dir> for the logs (default: $TMPDIR/dots-test-linux)
-#  Debian and Ubuntu images only (apt).
+#            TEST_NAME_SUFFIX=<word> added to the container name, so two runs never clash
+#  Images: Debian, Ubuntu, Fedora, Arch, Alpine (and others with one of their package managers).
 # ============================================================================
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="" KEEP=0 REUSE=0 CLEAN=0
+IMAGE="" KEEP=0 REUSE=0 CLEAN=0 VERBOSE=""
 for a in "$@"; do
   case "$a" in
     --keep) KEEP=1 ;;
     --reuse) REUSE=1; KEEP=1 ;;
     --clean) CLEAN=1 ;;
-    -h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -v|--verbose) VERBOSE=1 ;;
+    -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) printf 'unknown option: %s\n' "$a" >&2; exit 2 ;;
     *) IMAGE="$a" ;;
   esac
@@ -47,15 +53,30 @@ fi
 [[ -n "$RT" ]] || { printf 'no podman or docker found\n' >&2; exit 2; }
 
 slug="$(printf '%s' "$IMAGE" | tr -c 'a-zA-Z0-9\n' '-' | sed 's/-*$//')"
-BASE="dots-test-base-$slug"
-NAME="dots-test-$slug"
+# The base image: the image plus sudo, git, curl and a user "dev" with sudo. Its tag holds a
+# hash of this recipe, so a changed recipe builds a new image instead of using a stale one.
+RECIPE="FROM $IMAGE
+ENV DEBIAN_FRONTEND=noninteractive
+RUN if command -v apt-get >/dev/null; then apt-get update \\
+      && apt-get install -y --no-install-recommends sudo ca-certificates curl git && rm -rf /var/lib/apt/lists/*; \\
+    elif command -v dnf >/dev/null; then \\
+      dnf install -y sudo ca-certificates curl git findutils tar shadow-utils procps-ng && dnf clean all; \\
+    elif command -v pacman >/dev/null; then pacman -Syu --noconfirm sudo ca-certificates curl git findutils tar; \\
+    elif command -v apk >/dev/null; then \\
+      apk add --no-cache bash sudo ca-certificates curl git findutils tar coreutils shadow; \\
+    else echo \"no apt-get, dnf, pacman or apk in $IMAGE\" >&2; exit 1; fi
+RUN useradd -m -s /bin/bash dev \\
+ && echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev && chmod 440 /etc/sudoers.d/dev"
+BASE="dots-test-base-$slug-$(printf '%s' "$RECIPE" | cksum | cut -d' ' -f1)"
+NAME="dots-test-$slug${TEST_NAME_SUFFIX:+-$TEST_NAME_SUFFIX}"
 LOGS="${TEST_LOG_DIR:-${TMPDIR:-/tmp}/dots-test-linux-$(id -u)}/$slug"
 (umask 077; mkdir -p "$LOGS")
 [[ -d "$LOGS" && ! -L "$LOGS" ]] || { printf 'bad log dir: %s\n' "$LOGS" >&2; exit 2; }
 rm -f "$LOGS"/*.log
 
 fails=0
-pass() { printf 'PASS  %s\n' "$*"; }
+passes=0
+pass() { passes=$((passes + 1)); if [[ -n "${VERBOSE:-}" ]]; then printf 'PASS  %s\n' "$*"; fi; }
 bad()  { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 note() { printf '»»    %s\n' "$*"; }
 cx()   { "$RT" exec -i "$NAME" bash -lc "$1"; }   # a command as the user "dev"
@@ -70,14 +91,7 @@ trap cleanup EXIT
 if ! "$RT" image inspect "$BASE" >/dev/null 2>&1; then
   note "building $BASE from $IMAGE"
   ctx="$(mktemp -d)"
-  if ! "$RT" build -q -t "$BASE" -f - "$ctx" >"$LOGS/build.log" 2>&1 <<EOF
-FROM $IMAGE
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends sudo ca-certificates curl git \
- && rm -rf /var/lib/apt/lists/*
-RUN useradd -m -s /bin/bash dev \
- && echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev && chmod 440 /etc/sudoers.d/dev
-EOF
+  if ! printf '%s\n' "$RECIPE" | "$RT" build -q -t "$BASE" -f - "$ctx" >"$LOGS/build.log" 2>&1
   then
     rmdir "$ctx" 2>/dev/null
     bad "base image build failed (see $LOGS/build.log)"
@@ -110,7 +124,7 @@ else
              --exclude=__pycache__ --exclude=local.zsh -cf - .; }
 fi
 cx 'mkdir -p ~/dotfiles && find ~/dotfiles -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +'
-pack | "$RT" exec -i "$NAME" bash -lc 'tar -xf - -C ~/dotfiles' || { bad "couldn't copy the tree"; exit 1; }
+pack | "$RT" exec -i "$NAME" bash -lc 'tar --warning=no-unknown-keyword -xf - -C ~/dotfiles' || { bad "couldn't copy the tree"; exit 1; }
 cx 'cd ~/dotfiles && git init -q -b main 2>/dev/null; git add -A &&
     git -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m snapshot' \
   || { bad "couldn't make the snapshot repo"; exit 1; }
@@ -124,11 +138,17 @@ cx 'rm -rf ~/origin.git && git clone -q --bare ~/dotfiles ~/origin.git && cd ~/d
 STATE='cd ~; { find ~ -maxdepth 5 -type l -printf "%p -> %l\n" 2>/dev/null | sort
   ls ~/.oh-my-zsh/custom/plugins ~/.local/bin ~/.config/dotfiles 2>/dev/null
   cat ~/.gitconfig.local ~/.config/dotfiles/settings 2>/dev/null
-  dpkg-query -W -f "\${Package}\n" 2>/dev/null | sort
-  export PATH="/home/linuxbrew/.linuxbrew/bin:$HOME/.linuxbrew/bin:$HOME/.cargo/bin:$PATH"
+  { dpkg-query -W -f "\${Package}\n"; rpm -qa --qf "%{NAME}\n"; pacman -Qq; apk info; } 2>/dev/null | sort
+  export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/opt/rustup/bin:$HOME/.linuxbrew/bin:$HOME/.cargo/bin:$PATH"
   brew list --formula 2>/dev/null | sort
   rustup toolchain list 2>/dev/null; mise ls 2>/dev/null
   gh extension list 2>/dev/null; } | md5sum'
+
+# musl (Alpine): Homebrew cannot run, so step 10 warns once and the last line counts it.
+MUSL=0
+cx 'compgen -G "/lib/ld-musl-*" >/dev/null' && MUSL=1
+OK_WARN='^$'
+((MUSL)) && OK_WARN='^!  (Homebrew needs glibc|dotfiles: done with 1 warning )'
 
 # ---- 3. run 1 and run 2 ------------------------------------------------------
 note "run 1 (fresh): ./dotfiles on $IMAGE ($RT, logs in $LOGS)"
@@ -140,7 +160,7 @@ note "run 1 took $((SECONDS - t0))s, exit $rc1"
 if (( rc1 == 0 )); then pass "run 1 exits 0"; else bad "run 1 exit $rc1"; fi
 
 # Warnings go to stderr as "!  text". A clean run has none.
-unexpected="$(grep -E '^!  ' "$LOGS/run1.log" || true)"
+unexpected="$(grep -E '^!  ' "$LOGS/run1.log" | grep -vE "$OK_WARN" || true)"
 if [[ -z "$unexpected" ]]; then pass "run 1 prints no unexpected warnings"
 else bad "run 1 warnings:"; printf '%s\n' "$unexpected" | sed 's/^/        /'; fi
 
@@ -150,7 +170,8 @@ t0=$SECONDS
 "$RT" exec -i -e NO_COLOR=1 -e DOTFILES_PROFILE=shared "$NAME" bash -lc 'cd ~/dotfiles && ./dotfiles' \
   </dev/null >"$LOGS/run2.log" 2>&1
 rc2=$?
-note "run 2 took $((SECONDS - t0))s, exit $rc2"
+t2=$((SECONDS - t0))
+note "run 2 took ${t2}s, exit $rc2"
 if (( rc2 == 0 )); then pass "run 2 exits 0"; else bad "run 2 exit $rc2"; fi
 after="$(cx "$STATE")"
 changes="$(grep -E '^(✓ (linked|removed)|»» (Installing|installing|Initialising|cloning|Activating)|.*backed up)' "$LOGS/run2.log" || true)"
@@ -160,9 +181,28 @@ else
   [[ -z "$changes" ]] || printf '%s\n' "$changes" | sed 's/^/        /'
   [[ "$before" == "$after" ]] || printf '        state fingerprint differs: %s vs %s\n' "$before" "$after"
 fi
-unexpected="$(grep -E '^!  ' "$LOGS/run2.log" || true)"
+unexpected="$(grep -E '^!  ' "$LOGS/run2.log" | grep -vE "$OK_WARN" || true)"
 if [[ -z "$unexpected" ]]; then pass "run 2 prints no unexpected warnings"
 else bad "run 2 warnings:"; printf '%s\n' "$unexpected" | sed 's/^/        /'; fi
+
+# Errors that do not go through warn: a typo, a missing command, a crash.
+ERR_RE='command not found|unbound variable|syntax error|bad substitution|integer expression expected'
+ERR_RE+='|binary operator expected|too many arguments|No such file or directory|Permission denied'
+ERR_RE+='|Traceback \(most recent call last\)|panicked at'
+# The last line: the done line, with the warning count when a step warned.
+want_last='^✓ dotfiles: done \(profile: shared\)$'
+((MUSL)) && want_last='^!  dotfiles: done with 1 warning \(profile: shared\)'
+for n in 1 2; do
+  errs="$(grep -E "$ERR_RE" "$LOGS/run$n.log" || true)"
+  if [[ -z "$errs" ]]; then pass "run $n prints no shell or runtime errors"
+  else bad "run $n errors:"; printf '%s\n' "$errs" | head -8 | sed 's/^/        /'; fi
+  last="$(tail -n 1 "$LOGS/run$n.log")"
+  if [[ "$last" =~ $want_last ]]; then pass "run $n ends with the done line"
+  else bad "run $n last line: $last"; fi
+done
+if (( t2 <= 90 )); then pass "run 2 takes ${t2}s (90s at most)"; else bad "run 2 takes ${t2}s (90s at most)"; fi
+if grep -q 'building the Rust' "$LOGS/run2.log"; then bad "run 2 builds the Rust tools again"
+else pass "run 2 does not build the Rust tools again"; fi
 
 # ---- 4. checks ---------------------------------------------------------------
 check() { # <label> <command in the container>
@@ -187,15 +227,37 @@ check "links point into the repo" '
   grep -q PreToolUse "$S" || { echo "settings.json: built file has no hooks"; exit 1; }
   [ ! -e "$HOME/Library" ] && [ ! -e "$HOME/.config/aerospace" ]'
 
-skipped="$(grep -c 'macOS only, skipping' "$LOGS/run1.log")"
-if (( skipped >= 3 )); then pass "Mac-only steps skip with a message ($skipped)"
-else bad "Mac-only steps should each say 'macOS only, skipping' (found $skipped, want 3)"; fi
+# The short output: run 2 has nothing to do, so it is one short screen with no per-file lines.
+lines2="$(wc -l <"$LOGS/run2.log" | tr -d ' ')"
+if (( lines2 <= 25 )) && ! grep -q 'already set up' "$LOGS/run2.log"; then pass "run 2 prints one short screen ($lines2 lines)"
+else bad "run 2 prints $lines2 lines, or per-file skip lines (see $LOGS/run2.log)"; fi
+if grep -q 'macOS only' "$LOGS/run1.log"; then bad "run 1 says 'macOS only' (the Mac-only steps should be silent)"
+else pass "Mac-only steps are silent on Linux"; fi
 
-check "the CLI tools are on PATH" '
-  export PATH="/home/linuxbrew/.linuxbrew/bin:$HOME/.linuxbrew/bin:$HOME/.local/bin:$PATH"
-  miss=""; for t in git zsh python3 brew rg fd bat eza fzf zoxide starship atuin jq gh delta lazygit mise uv claude; do
-    command -v "$t" >/dev/null || miss="$miss $t"; done
-  [ -z "$miss" ] || { echo "missing:$miss"; exit 1; }'
+# Run 3: dots -v prints everything, still exits 0, and warns about nothing new.
+"$RT" exec -i -e NO_COLOR=1 -e DOTFILES_PROFILE=shared "$NAME" bash -lc 'cd ~/dotfiles && ./dotfiles -v' \
+  </dev/null >"$LOGS/run3v.log" 2>&1
+rc3=$?
+lines3="$(wc -l <"$LOGS/run3v.log" | tr -d ' ')"
+unexpected="$(grep -E '^!  ' "$LOGS/run3v.log" | grep -vE "$OK_WARN" || true)"
+if (( rc3 == 0 && lines3 > lines2 )) && [[ -z "$unexpected" ]]; then pass "dots -v prints more ($lines3 lines) and exits 0"
+else bad "dots -v: exit $rc3, $lines3 lines (run 2: $lines2), warnings: ${unexpected:-none}"; fi
+check "no warning files left in /tmp" '! ls /tmp/dots-warn.* 2>/dev/null | grep .'
+
+tools="git zsh python3 brew rg fd bat eza fzf zoxide starship atuin jq gh delta lazygit mise uv claude"
+((MUSL)) && tools="git zsh python3"
+check "the CLI tools are on PATH" "
+  export PATH=\"/home/linuxbrew/.linuxbrew/bin:\$HOME/.linuxbrew/bin:\$HOME/.local/bin:\$PATH\"
+  miss=''; for t in $tools; do command -v \"\$t\" >/dev/null || miss=\"\$miss \$t\"; done
+  [ -z \"\$miss\" ] || { echo \"missing:\$miss\"; exit 1; }"
+
+# The Rust tools: dots builds them once the toolchain is there (not on musl: no Homebrew rustup).
+if ((MUSL == 0)); then
+  check "the Rust tools are built and run" '
+    B=~/dotfiles/rust/agent-config/target/release
+    for b in agent-config guard yt_transcribe; do [ -x "$B/$b" ] || { echo "missing: $B/$b"; exit 1; }; done
+    [ "$(bash ~/dotfiles/claude/hooks/rust-bin yt_transcribe --print-id https://youtu.be/dQw4w9WgXcQ)" = dQw4w9WgXcQ ]'
+fi
 
 check "zsh -ic exit prints nothing" '
   out="$(zsh -ic exit 2>&1 </dev/null)"; [ -z "$out" ] || { printf "%s\n" "$out" | head -10; exit 1; }'
@@ -245,8 +307,8 @@ check "skill scripts run" '
 
 # ---- 5. result ---------------------------------------------------------------
 if (( fails == 0 )); then
-  printf '\nALL PASS on %s (logs: %s)\n' "$IMAGE" "$LOGS"
+  printf 'ALL PASS on %s, %d checks (logs: %s)\n' "$IMAGE" "$passes" "$LOGS"
   exit 0
 fi
-printf '\n%d check(s) failed on %s (logs: %s)\n' "$fails" "$IMAGE" "$LOGS"
+printf '%d check(s) failed on %s (logs: %s)\n' "$fails" "$IMAGE" "$LOGS"
 exit 1

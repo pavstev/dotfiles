@@ -30,3 +30,6 @@ __pycache__/
 
 # Rust build output (rust/agent-config/target, ~400 MB)
 target/
+
+# scripts/os-check.sh logs
+.os-check/

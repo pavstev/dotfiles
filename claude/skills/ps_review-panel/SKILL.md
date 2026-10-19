@@ -18,7 +18,7 @@ The guard router sets model and effort: `panel: <angle>` calls run on Sonnet, a 
 
 ## Pace
 
-When `~/.claude/hooks/pace.py` exists, run `python3 ~/.claude/hooks/pace.py status`. Agents at once:
+When `~/.claude/hooks/rust-bin` exists, run `~/.claude/hooks/rust-bin pace status`. Agents at once:
 3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (send nothing: run the repo's checks
 yourself, review the diff yourself, and say the week is spent). The guard enforces the cap.
 
