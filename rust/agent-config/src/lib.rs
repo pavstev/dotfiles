@@ -714,16 +714,17 @@ pub fn opencode_plugin(home: &Path) {
     }
     // a JSON string is a valid TypeScript string literal
     let literal = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
-    let bash = plugin_bash(dots::os::is_windows(), dots::os::which("bash"));
-    let text = OPENCODE_PLUGIN.replace("__RUST_BIN__", &literal(&guard.to_string_lossy())).replace("__BASH__", &literal(&bash));
+    let sh = plugin_sh(dots::os::is_windows(), dots::os::which("sh"));
+    let text = OPENCODE_PLUGIN.replace("__RUST_BIN__", &literal(&guard.to_string_lossy())).replace("__SH__", &literal(&sh));
     write_generated(&path, &text, None);
 }
 
-/// The bash the plugin starts, found when the plugin is written. On Windows a bare `bash` can be the
-/// WSL launcher in System32, so the plugin gets the full path of the Git Bash that runs `dots`. Empty
-/// means the plugin starts `bash` by name: always on macOS and Linux, and on Windows when no usable
-/// bash is on PATH.
-fn plugin_bash(windows: bool, found: Option<PathBuf>) -> String {
+/// The sh the plugin starts, found when the plugin is written. The launcher is plain POSIX sh, and sh
+/// starts faster than Homebrew bash. On Windows a bare name can find a program in System32 first (bash
+/// there is the WSL launcher), so the plugin gets the full path of the Git Bash `sh.exe` (`usr\bin`)
+/// on the PATH of `dots`, never a System32 path. Empty means the plugin starts `sh` by name: always on
+/// macOS and Linux, and on Windows when no usable sh is on PATH.
+fn plugin_sh(windows: bool, found: Option<PathBuf>) -> String {
     if !windows {
         return String::new();
     }
@@ -1528,14 +1529,15 @@ mod agent_config_tests;
 mod tests {
     use super::*;
     #[test]
-    fn plugin_bash_is_a_full_path_on_windows_only() {
-        let git = PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe");
-        assert_eq!(plugin_bash(true, Some(git.clone())), git.to_string_lossy());
-        // the WSL launcher is never written, and nothing found means `bash` by name
-        assert_eq!(plugin_bash(true, Some(PathBuf::from(r"C:\Windows\System32\bash.exe"))), "");
-        assert_eq!(plugin_bash(true, None), "");
-        // macOS and Linux keep `bash` by name
-        assert_eq!(plugin_bash(false, Some(PathBuf::from("/bin/bash"))), "");
+    fn plugin_sh_is_a_full_path_on_windows_only() {
+        let git = PathBuf::from(r"C:\Program Files\Git\usr\bin\sh.exe");
+        assert_eq!(plugin_sh(true, Some(git.clone())), git.to_string_lossy());
+        // a System32 path is never written, in any case or slash style; nothing found means `sh` by name
+        assert_eq!(plugin_sh(true, Some(PathBuf::from(r"C:\Windows\System32\sh.exe"))), "");
+        assert_eq!(plugin_sh(true, Some(PathBuf::from("C:/WINDOWS/SYSTEM32/sh.exe"))), "");
+        assert_eq!(plugin_sh(true, None), "");
+        // macOS and Linux keep `sh` by name
+        assert_eq!(plugin_sh(false, Some(PathBuf::from("/bin/sh"))), "");
     }
     #[test]
     fn translate_bash_prefix() {

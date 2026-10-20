@@ -320,11 +320,14 @@ fn opencode_plugin_names_rust_bin() {
     assert!(text.contains(&format!("const RUST_BIN: string = {literal}")), "{text}");
     assert!(text.contains("[RUST_BIN, \"--hook\", \"guard\", \"pretool\"]"), "{text}");
     assert!(!text.contains("python"), "{text}");
-    // the bash is filled in and falls back to `bash` by name when it is empty (always, off Windows)
-    assert!(!text.contains("__BASH__"), "{text}");
-    assert!(text.contains("spawnSync(BASH || \"bash\", [RUST_BIN,"), "{text}");
+    // the sh is filled in and falls back to `sh` by name when it is empty (always, off Windows)
+    assert!(!text.contains("__SH__"), "{text}");
+    assert!(text.contains("spawnSync(SH || \"sh\", [RUST_BIN,"), "{text}");
+    assert!(!text.contains("bash\""), "the plugin must not start bash: {text}");
+    let sh = text.lines().find(|l| l.starts_with("const SH: string =")).unwrap_or_else(|| panic!("no SH line: {text}"));
+    assert!(!sh.to_lowercase().contains("system32"), "{sh}");
     if !cfg!(windows) {
-        assert!(text.contains("const BASH: string = \"\""), "{text}");
+        assert_eq!(sh, "const SH: string = \"\"");
     }
 }
 
