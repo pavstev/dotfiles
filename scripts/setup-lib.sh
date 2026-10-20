@@ -189,8 +189,8 @@ DOTFILES_SETTINGS="$DOTFILES_CONF/settings"   # NAME="value" lines (settings.exa
 OWNER_MD="$DOTFILES_CONF/owner.md"   # the private rules, free text; never in the repo
 
 # setting <NAME>: the value of NAME in the settings file, or nothing. The last NAME
-# line wins, and one pair of "" around the value goes. scripts/agent-config.py
-# setting() and home/.config/zsh/settings.zsh read the file the same way.
+# line wins, and one pair of "" around the value goes. `setting()` in
+# rust/agent-config/src/lib.rs and home/.config/zsh/settings.zsh read the file the same way.
 setting() {
   [[ -r "$DOTFILES_SETTINGS" ]] || return 0
   awk -v k="$1" 'index($0, k "=") == 1 {

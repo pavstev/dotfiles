@@ -76,7 +76,6 @@ The repo owns your global Claude setup and symlinks each piece into `~/.claude`
 claude/
 ├── settings.json   ⇒ ~/.claude/settings.json     built by dots (see below), shared base
 ├── CLAUDE.md       → ~/.claude/CLAUDE.md          global instructions
-├── statusline.sh   → ~/.claude/statusline.sh      copper-themed status line
 ├── skills/         → ~/.claude/skills  (per-skill; Cursor and Opencode read it)
 ├── agents/         → ~/.claude/agents
 ├── hooks/          → ~/.claude/hooks
@@ -94,10 +93,11 @@ Before it builds, `dots` compares the live file with what it wrote last time
 then moves into the private layer, and `dots` prints its name (never its value). So
 nothing is lost, the repo stays clean, and the next run prints nothing new. A rewrite that
 only changes the layout counts as no change. To share a kept key with everyone, run
-`python3 scripts/agent-config.py claude-settings promote <key>` and commit.
+`scripts/agent-config claude-settings promote <key>` and commit. The copper status line is the
+`statusline` Rust bin, run as `bash ~/.claude/hooks/rust-bin statusline`.
 
-**Skills are the headline.** One source (`claude/skills`), synced everywhere by
-[`skill-sync.sh`](../claude/skill-sync.sh): write once, use in every agent. Skills use the
+**Skills are the headline.** One source (`claude/skills`), linked everywhere by
+`dots` (the skills step): write once, use in every agent. Skills use the
 portable [SKILL.md](https://cursor.com/docs/skills) format, so the same folder works in
 Claude Code, **Cursor** and **Opencode**:
 
@@ -124,7 +124,7 @@ Cursor is present:
    `~/.local/bin`.
 2. It installs the Brewfile `vscode` extensions into Cursor with
    `cursor --install-extension`. It skips `ms-python.vscode-pylance` (not on Open VSX).
-3. It runs [`scripts/agent-config.py`](../scripts/agent-config.py) `cursor`.
+3. It runs [`scripts/agent-config`](../scripts/agent-config) `cursor`.
 
 What Cursor gets:
 
@@ -135,8 +135,8 @@ What Cursor gets:
   `~/.cursor/rules/claude-output-style.mdc` (the active output style), and
   `~/.cursor/agents/*.md`. These files carry a `generated-by: dotfiles` marker. A file
   without it is yours, and the script leaves it alone.
-- **Merged key by key:** `~/.cursor/hooks.json` (guard adapter
-  [`cursor/hooks/guard_cursor.py`](../cursor/hooks/guard_cursor.py)), `~/.cursor/mcp.json`
+- **Merged key by key:** `~/.cursor/hooks.json` (guard adapter: the
+  `guard_cursor` bin, run through `claude/hooks/rust-bin`), `~/.cursor/mcp.json`
   (from [`cursor/mcp.json`](../cursor/mcp.json), ships `cloudflare-docs`; opt-in on every
   profile: turn on Cursor MCP in `dots settings`), and
   `~/.cursor/cli-config.json` (`permissions`, `attribution`, `statusLine`). Your own
@@ -151,7 +151,7 @@ Cursor.app so you can sign in there too.
 
 Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source.
 Edit `claude/`, then run `dots`. Step `58-opencode` verifies the
-`opencode` CLI (installed from `tools.list`), and `agent-config.py opencode` — wired into
+`opencode` CLI (installed from `tools.list`), and `agent-config opencode` — wired into
 `./dotfiles` itself, not into a step, so `dots settings` picks up a changed setting —
 generates what Opencode needs:
 
@@ -202,8 +202,8 @@ claude.ai connectors — Opencode has no hook system. The full mapping and gap t
 `./dotfiles` runs on Debian, Ubuntu, Fedora and Arch (x86_64 and arm64) as a normal user with `sudo`.
 The code asks the OS with `is_macos`, `is_linux` and `is_windows` (`scripts/setup-lib.sh`). On Linux:
 
-- **Packages:** step `05-linux-prereqs` installs build tools, `curl`, `file`, `git`, `procps`,
-  `python3` and `zsh` with apt, dnf, pacman or apk (`scripts/linux-prereqs.txt`
+- **Packages:** step `05-linux-prereqs` installs build tools, `curl`, `file`, `git`, `procps`
+  and `zsh` with apt, dnf, pacman or apk (`scripts/linux-prereqs.txt`
   has the names for each). Step `12-tools` then installs the command-line tools of `tools.list`
   with mise (no Homebrew on Linux): it installs mise first, then each tool from the first source
   that works. Same tools and versions as macOS, and no `batcat` or `fdfind`. On Alpine the native
@@ -243,7 +243,9 @@ It builds a small base image once, copies the working tree in (git-ignored files
 runs `./dotfiles` and again `./dotfiles`, and checks: run 1 exits 0 with no warning and no shell
 error, both runs end with the done line, run 2 changes nothing and takes 90 seconds at most,
 `dots -v` works, the links, the tools, the Rust tools, `zsh -ic exit` prints nothing, `bash -n`
-on every shell script, and the four Python test files. `--keep` leaves the container for a look
+on every shell script, and that the Rust skill tools run (`skill_check`, `mic_check`,
+`whatsleft_scan`, `hurry_scan`, `harness_stats`, `bag_check`, `statusline`). The Rust unit tests run
+on the host with `cargo test`, not in the container. `--keep` leaves the container for a look
 (`podman exec -it dots-test-debian-13 bash`), `--reuse` syncs your edits into it and runs again.
 It runs without a terminal, so the gum menus, the password prompts and the sign-in step are
 not covered. A run takes 10 to 25 minutes; most of it is the tool downloads and the Rust build.
@@ -281,8 +283,8 @@ stays clean.
   usual tools when they are on PATH.
 - **Opencode config:** `scripts/agent-config opencode` generates agents, permissions and MCP under
   `~/.config/opencode` and uses `clip` for the clipboard. The output is the same on all three OSes.
-- **Python:** not needed when `cargo` is installed: `scripts/agent-config` builds and runs the Rust
-  version. Without `cargo` it needs `python3` (from WinGet), or the generated config steps warn and skip.
+- **Python:** not needed. `scripts/agent-config` builds and runs the Rust version. Without `cargo`
+  the generated config steps warn and skip, and `dots` installs Rust on its next run.
 
 ## Secrets
 
@@ -326,11 +328,10 @@ dotfiles/
 ├── tools.list                # every command-line tool: name, commands, OSes, sources (the one list)
 ├── Brewfile                  # the macOS apps, fonts + VS Code extensions (Brewfile.local for extras)
 ├── claude/                   # Claude config, symlinked into ~/.claude
-│   ├── settings.json  CLAUDE.md  statusline.sh  skill-sync.sh
+│   ├── settings.json  CLAUDE.md
 │   └── skills/ agents/ hooks/ output-styles/
 ├── cursor/                   # Cursor-only sources, merged into ~/.cursor
-│   ├── mcp.json              # MCP servers (cloudflare-docs); your entries win
-│   └── hooks/guard_cursor.py # Cursor hook adapter for guard G3 (+ test)
+│   └── mcp.json              # MCP servers (cloudflare-docs); your entries win
 ├── docs/guide.md            # this guide
 ├── docs/cursor-port.md       # Cursor port: profiles, mapping, gap table
 ├── docs/opencode-port.md    # Opencode port: rules, agents, permissions, gaps
@@ -349,8 +350,7 @@ dotfiles/
 │       Cursor/User/{settings,keybindings}.json       # Cursor: same
 ├── scripts/
 │   ├── setup-lib.sh          # shell helpers for the few bash scripts (step/info/ok/warn/have, is_*, setting)
-│   ├── agent-config.py       # generates and merges the Cursor and Opencode files
-│   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
+│   ├── agent-config          # shim for the Rust build that generates and merges the Cursor and Opencode files
 │   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart, fake Linux
 │   │                         # (the provisioning steps are Rust: rust/agent-config/src/dots/install/)
 │   │                         # ordered, skip-aware steps, run by `./dotfiles`:
@@ -382,10 +382,10 @@ dotfiles/
 | bat / lazygit / bottom / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
 | Claude settings (`claude/settings.json`) | the repo base for everyone; your own keys go in `~/.config/dotfiles/claude-settings.json` | `dots` (it builds `~/.claude/settings.json`) |
-| Share a key Claude saved for you | `python3 scripts/agent-config.py claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
+| Share a key Claude saved for you | `scripts/agent-config claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
 | Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | `dots`, then the next session (a deny beats every allow) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
-| Opencode rules, agents, permissions, theme | `claude/` (shared source); the palette lives in `scripts/agent-config.py` | `dots` (regenerates `~/.config/opencode`) |
+| Opencode rules, agents, permissions, theme | `claude/` (shared source); the palette lives in `rust/agent-config/themes/copper.json` | `dots` (regenerates `~/.config/opencode`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
 | Settings: git name, profile, Cursor MCP, Opencode MCP, Opencode projects, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
 
@@ -418,7 +418,7 @@ For Cursor, delete the generated files and our merged entries:
 
 1. `rm ~/.cursor/rules/claude-global.mdc ~/.cursor/rules/claude-output-style.mdc`
 2. `rm $(grep -l 'generated-by: dotfiles' ~/.cursor/agents/*.md) ~/.cursor/.dotfiles-managed.json`
-3. In `~/.cursor/hooks.json`, delete the 5 entries that run `cursor/hooks/guard_cursor.py`.
+3. In `~/.cursor/hooks.json`, delete the 5 entries that run `guard_cursor` (`rust-bin --hook guard_cursor`).
 4. In `~/.cursor/mcp.json`, delete `cloudflare-docs` (only there when MCP is on).
 
 For Opencode:

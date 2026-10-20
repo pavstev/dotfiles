@@ -3140,6 +3140,43 @@ mod tests {
     }
 
     #[test]
+    fn test_cron_interval_function() {
+        let f = cron_interval_minutes;
+        assert_eq!(f("* * * * *"), Some(1));
+        assert_eq!(f("*/15 * * * *"), Some(15));
+        assert_eq!(f("5 * * * *"), Some(60));
+        assert_eq!(f("0-30/10 * * * *"), Some(10));
+        assert_eq!(f("0 */3 * * *"), Some(180));
+        assert_eq!(f("0 9 * * *"), None);
+        assert_eq!(f("nope"), None);
+    }
+
+    #[test]
+    fn test_last_assistant_usage_used_and_large_file() {
+        // usage of the newest assistant record counts; a last record without usage is skipped
+        let assistant = |total: i64| {
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 10, "cache_creation_input_tokens": total - 10 - 500,
+                    "cache_read_input_tokens": 500, "output_tokens": 5}}})
+        };
+        let result = || json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "x"}]}});
+        let mut recs = vec![json!({"type": "user", "message": {"role": "user", "content": "hi"}})];
+        for _ in 0..3000 {
+            recs.push(assistant(120_000));
+            recs.push(result());
+        }
+        recs.push(assistant(250_000));
+        recs.push(result()); // last record has no usage
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let text: String = recs.iter().map(|r| format!("{r}\n")).collect();
+        fs::write(&path, text).unwrap();
+        assert_eq!(context_size(&json!(path.to_string_lossy())), 250_000);
+        assert_eq!(context_size(&json!(dir.path().join("nope.jsonl").to_string_lossy())), 0);
+    }
+
+    #[test]
     fn loop_intervals() {
         assert_eq!(loop_interval_seconds("5m check deploy"), Some(300));
         assert_eq!(loop_interval_seconds("30s /foo"), Some(30));

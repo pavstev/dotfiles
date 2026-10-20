@@ -9,9 +9,20 @@
 _skill_repo() { printf '%s' "${DOTFILES:-$HOME/dotfiles}"; }
 _skill_src()  { printf '%s' "$(_skill_repo)/claude/skills"; }
 
+# Link each repo skill into ~/.claude/skills and drop our own dead links. `dots` does the
+# same (rust/agent-config/src/dots/skills.rs); this is the quick version for install/remove.
 _skill_sync_links() {
-  local sync="$(_skill_repo)/claude/skill-sync.sh"
-  [[ -x "$sync" ]] && "$sync" >/dev/null 2>&1
+  local src="$(_skill_src)" root="$HOME/.claude/skills" d name link
+  mkdir -p "$root" || return 0
+  for link in "$root"/*(N@); do
+    [[ -e "$link" ]] || { [[ "$(readlink "$link")" == "$src"/* ]] && rm -f "$link"; }
+  done
+  for d in "$src"/*/; do
+    name="$(basename "$d")"
+    [[ "$name" == _* || "$name" == .* || ! -f "$d/SKILL.md" ]] && continue
+    [[ -e "$root/$name" || -L "$root/$name" ]] || ln -s "${d%/}" "$root/$name"
+  done
+  return 0
 }
 
 # ----- internal: copper/stone color theme ------------------------------------

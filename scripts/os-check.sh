@@ -51,7 +51,7 @@ OUT="$REPO/.os-check"
 mkdir -p "$OUT"
 
 # ---- which OS a changed file is for ----------------------------------------
-RE_ALL='^(dotfiles|bootstrap\.sh|tools\.list|scripts/(setup-lib|settings|os-check)\.sh|scripts/(agent-config|tools)|rust/|claude/(settings\.json|skill-sync\.sh|hooks/))'
+RE_ALL='^(dotfiles|bootstrap\.sh|tools\.list|scripts/(setup-lib|settings|os-check)\.sh|scripts/(agent-config|tools)|rust/|claude/(settings\.json|hooks/))'
 RE_WIN='\.psm?1$|(^|/)(windows|winget|scoop)|^home/\.config/(gh|opencode)/|^home/Library/Application Support/|^\.gitattributes$'
 RE_LINUX='^(home/|scripts/test-linux\.sh)'
 RE_MAC='^(Brewfile|home/|scripts/(test-dotfiles|fix-brew-permissions)\.sh)'

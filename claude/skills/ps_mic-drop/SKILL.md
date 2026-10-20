@@ -2,7 +2,7 @@
 name: ps:mic-drop
 description: Use when the user wants to wrap up, close out, or finish a session — "do everything yourself", "is it all pushed?", "did checks pass?", "clean up background tasks", "archive this session", "are we done?", or before leaving a repo for the day.
 argument-hint: "[--squash] [extra repo paths to check — empty = this session's repos]"
-allowed-tools: "Bash(bash ${CLAUDE_SKILL_DIR}/scripts/mic-check.sh *) Bash(tmux -L claude-run kill-session *)"
+allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check *) Bash(tmux -L claude-run kill-session *)"
 ---
 
 # Mic Drop
@@ -15,10 +15,10 @@ Done means: nothing mandatory left, everything committed and pushed, no conflict
 
 1. **Finish the work.** Read back over this session. List every promise, TODO, and failing thing.
    - Mandatory (the user asked for it, or it is broken) → do it now.
-   - Optional (nice to have) → save it: `bash ${CLAUDE_SKILL_DIR}/scripts/mic-check.sh --note "<one line>" <repo path>`.
+   - Optional (nice to have) → save it: `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check --note "<one line>" <repo path>`.
 2. **Clean background work.** List everything you started: background Bash shells, agents, Monitors, crons (`CronList`), wakeups, side sessions (`mcp__ccd_session_mgmt__list_sessions` with `linked: true`). See "Background tasks" below. Stop what is done, stuck, or obsolete with `TaskStop` / `CronDelete`.
    A tmux session on socket `-L claude-run` that this session started is its own task too. End it when done: `tmux -L claude-run kill-session -t <name>`.
-3. **Scan.** Run `bash ${CLAUDE_SKILL_DIR}/scripts/mic-check.sh [--since <first session sha>] <every repo this session touched>`.
+3. **Scan.** Run `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check [--since <first session sha>] <every repo this session touched>`.
    It does `git fetch`, then reads only. Every line is `OK`, `FIX` (mandatory) or `WARN` (decide).
 4. **Fix every `FIX`.** See the table. For each `WARN`: fix it, or `--note` it.
 5. **Verify.** Run every command under `RUN`. Fix failures. Wait for CI on the pushed commit, up to 15 minutes. Still running after that → report it as pending and do not archive. The user said "archive this" and the scan is CLEAN → skip this step and the CI wait. "Archive when done" is not "archive this": verify first.

@@ -7,20 +7,23 @@
 # or annotate the line with  # scan-allowlist  to skip it.
 set -uo pipefail
 
-# --- Skill lint: any staged change under claude/skills/ must pass check.py ----
+# --- Skill lint: any staged change under claude/skills/ must pass the skill_check bin ----
 if git diff --cached --name-only 2>/dev/null | grep -q '^claude/skills/'; then
-  if ! python3 claude/skills/check.py -q; then
-    printf '\n\033[1;31m✖ pre-commit: claude/skills/check.py failed — fix the skill or run it for details.\033[0m\n\n'
+  bash claude/hooks/rust-bin skill_check -q
+  rc=$?
+  if [[ "$rc" -eq 127 ]]; then
+    printf '\033[33m! pre-commit: no skill_check binary, so the skill lint is skipped. Run: dots\033[0m\n'
+  elif [[ "$rc" -ne 0 ]]; then
+    printf '\n\033[1;31m✖ pre-commit: skill_check failed — fix the skill or run `bash claude/hooks/rust-bin skill_check` for details.\033[0m\n\n'
     exit 1
   fi
-  # Script tests bundled with a skill (claude/skills/*/scripts/test_*.py).
-  for t in claude/skills/*/scripts/test_*.py; do
-    [[ -f "$t" ]] || continue
-    if ! python3 "$t" >/dev/null 2>&1; then
-      printf '\n\033[1;31m✖ pre-commit: %s failed — run it for details.\033[0m\n\n' "$t"
+  # The skill-script tests (they run the real skill bins).
+  if command -v cargo >/dev/null 2>&1; then
+    if ! cargo test --quiet --test skill_bins --manifest-path rust/agent-config/Cargo.toml >/dev/null 2>&1; then
+      printf '\n\033[1;31m✖ pre-commit: the skill-script tests failed — run `cargo test --test skill_bins` in rust/agent-config for details.\033[0m\n\n'
       exit 1
     fi
-  done
+  fi
 fi
 
 # --- Windows-safe paths: a name Windows cannot hold breaks `git clone` there

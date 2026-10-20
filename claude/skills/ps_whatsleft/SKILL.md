@@ -9,11 +9,11 @@ allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin whatsleft_scan *) 
 
 Two tables, one for the agent and one for the user, plus an ETA and a table of running tasks. Every row is one simple action. Every ✅ has proof.
 
-Then the agent does its own rows, asks the user the rest through [ps:askme](../ps_askme/SKILL.md), and closes out with `ps:mic-drop` when nothing is left to ask. `scripts/route.py` decides who does what, so the answer is the same every time. The same steps hold in Claude Code, in Cursor and in OpenCode.
+Then the agent does its own rows, asks the user the rest through [ps:askme](../ps_askme/SKILL.md), and closes out with `ps:mic-drop` when nothing is left to ask. The `route` bin decides who does what, so the answer is the same every time. The same steps hold in Claude Code, in Cursor and in OpenCode.
 
 ## Args
 
-- `kill dead tasks`: stop every task marked STOP without asking (route.py `--kill`), and say which.
+- `kill dead tasks`: stop every task marked STOP without asking (`route --kill`), and say which.
 - `report only`: steps 1-9 only. No work, no questions, no mic-drop.
 - Any other text is a focus: keep only rows about it. Args can combine.
 
@@ -42,7 +42,7 @@ Then the agent does its own rows, asks the user the rest through [ps:askme](../p
 8. Run `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin route <scratch>/rows.json` (add `--kill` for `kill dead tasks`). It prints a route per row and three NEXT lines. Exit 2 → fix the row it names, run it again. Do not route by hand.
 9. Write the report from the routes: DO rows and waiting work go in 🤖 Me, YOU rows in 🧑 You, ASK rows in 🧑 You as "Question below", a waiting question in 🧑 You as "Question next round", task rows in 🏃 Tasks.
 10. **NEXT 1:** do the DO rows now, in the same turn, in order.
-11. **NEXT 2:** run `ps:askme` with the `whatsleft:` line route.py printed. askme asks in one call, then does the work the answers unlock. Name the DEFAULT rows and your pick in one line.
+11. **NEXT 2:** run `ps:askme` with the `whatsleft:` line route printed. askme asks in one call, then does the work the answers unlock. Name the DEFAULT rows and your pick in one line.
 12. **NEXT 3 says `rerun`:** mark rows `done`, `skip` (the user said skip, or you took a DEFAULT) or `asked: true` (the user said yes), then go to step 8.
 13. **NEXT 3 says `mic-drop`:** first one short update: only what changed since the report (new ✅, skipped rows, rows still on the user). Then run `ps:mic-drop` as the last step. It checks, pushes, and archives only when clean.
 

@@ -71,6 +71,22 @@ path = "src/bin/pace.rs"
 name = "tools"
 path = "src/bin/tools.rs"
 
+[[bin]]
+name = "statusline"
+path = "src/bin/statusline.rs"
+
+[[bin]]
+name = "skill_check"
+path = "src/bin/skill_check.rs"
+
+[[bin]]
+name = "mic_check"
+path = "src/bin/mic_check.rs"
+
+[[bin]]
+name = "bag_check"
+path = "src/bin/bag_check.rs"
+
 [[bench]]
 name = "manual"
 harness = false

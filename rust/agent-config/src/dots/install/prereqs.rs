@@ -1,5 +1,5 @@
 //! 05-linux-prereqs: the packages Homebrew on Linux and the other steps need (build tools,
-//! curl, git, python3, zsh). Linux only. Also the setup-lib.sh helpers `linux_prereqs` and
+//! curl, git, zsh). Linux only. Also the setup-lib.sh helpers `linux_prereqs` and
 //! `linux_prereqs_missing`. The lists are in scripts/linux-prereqs.txt.
 
 use super::super::os;

@@ -1,5 +1,5 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
-//! Port of claude/skills/ps_harness-optimize/scripts/harness_stats.py (the Python is the reference).
+//! Port of the old Python tool harness_stats.py (deleted; its tests are mapped in tests/PORTED.md).
 
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
@@ -950,7 +950,7 @@ fn cmd_cuts(a: &CutsArgs) {
         let first: Vec<&str> = first_s.lines().collect();
         let root = first.last().map(|s| s.to_string()).unwrap_or(root0);
         out!("Repo history starts {}. If that is inside your window, the older pushes are in another repo:", root);
-        out!("  gh repo list --limit 50   then   harness_stats.py cuts --gh OWNER/REPO --since {}\n", a.since);
+        out!("  gh repo list --limit 50   then   harness_stats cuts --gh OWNER/REPO --since {}\n", a.since);
     }
     let mut commits: Vec<(Dt, String)> = vec![];
     for l in outp.lines() {

@@ -27,13 +27,12 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `scripts/linux-prereqs.txt` | the Linux packages per manager (apt-get, dnf, pacman, apk, other), read by the shim and by `dots`. |
 | `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `step`/`info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`. |
 | `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). |
-| `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`) and `hooks/guard_cursor.py` (+ test), the hook adapter for guard G3. |
-| `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes); falls back to `agent-config.py` when `cargo` is missing. `AGENT_CONFIG_IMPL=python` or `rust` forces one. `--bins` builds every bin and always exits 0. |
-| `claude/hooks/rust-bin` | launcher for hooks and skills: runs the fresh Rust bin (`.exe` on Windows), else the Python twin at once; never builds. `RUST_BIN_IMPL=python` or `rust` forces one. `--hook` fails open (exit 0) when nothing can run. Notes: `rust/MIGRATION.md`. |
-| `scripts/agent-config.py` | the Python reference, same CLI: stdlib generator: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
+| `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`). The Cursor guard adapter is the Rust bin `guard_cursor`. |
+| `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes). With no binary and no `cargo` it says "Run: dots" and exits 127. `--bins` builds every bin and always exits 0. The CLI: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
+| `claude/hooks/rust-bin` | launcher for hooks and skills: runs the Rust bin (`.exe` on Windows) when it exists, with no freshness check; never builds. With no binary, `--hook` fails open (exit 0, silent) and a skill call says "Run: dots" and exits 127. Notes: `rust/MIGRATION.md`. |
 | `docs/guide.md`, `docs/cursor-port.md`, `docs/opencode-port.md` | the user guide; the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
 | `tools.list` | THE list of command-line tools: `name \| commands \| OSes \| sources in order` (mise, apk, winget, scoop, cargo, brew, sh). Add a tool = add a line. Nothing else lists tools. |
-| `scripts/tools`, `scripts/tools-env.sh` | `scripts/tools` installs mise first when needed, then the tools: the Rust bin `tools` (`rust/agent-config/src/tools_core.rs`, `bin/tools.rs`) when fresh, else a bash version for the `mise:` and `apk:` sources (a new machine has no cargo and no Python). `--check`, `--only a,b`, `--list`, `-q`, `-v`. `tools-env.sh` puts the mise, cargo and WinGet dirs on PATH. |
+| `scripts/tools`, `scripts/tools-env.sh` | `scripts/tools` installs mise first when needed, then the tools: the Rust bin `tools` (`rust/agent-config/src/tools_core.rs`, `bin/tools.rs`) when fresh, else a bash version for the `mise:` and `apk:` sources (a new machine has no cargo). `--check`, `--only a,b`, `--list`, `-q`, `-v`. `tools-env.sh` puts the mise, cargo and WinGet dirs on PATH. |
 | `Brewfile` | the macOS apps only: casks, the tap, the font, `vscode` lines (per-machine extras in the ignored `Brewfile.local`). |
 | `settings.example` | every setting with a note and default. The `dots settings` menu is `rust/agent-config/src/dots/menu.rs`. |
 | `scripts/test-linux.sh` | runs `./dotfiles` twice in a fresh Linux container (Debian, Ubuntu, Fedora, Arch, Alpine). |
@@ -41,12 +40,12 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 
 ## Tests
 
-- Unit: `python3 scripts/test_agent_config.py`, `python3 cursor/hooks/test_guard_cursor.py`,
-  `python3 claude/hooks/test_guard.py` and every `claude/skills/*/scripts/test_*.py` (pre-commit
-  runs those). They must also pass on `/usr/bin/python3` (3.9) and on Linux python (no macOS paths,
-  no `pbcopy`).
-- `cargo test` in `rust/agent-config`: includes the tool resolver (`tools_core.rs`, fake sources) and
-  a parse of the real `tools.list`.
+- `cargo test` in `rust/agent-config`: every unit and process test (guard, pace, guard_cursor,
+  agent-config, the skill bins), the tool resolver (`tools_core.rs`, fake sources) and a parse of the
+  real `tools.list`. The old Python tests are ported; `rust/agent-config/tests/PORTED.md` maps each
+  one to its Rust test, and `ported_map_complete` (in `tests/guard.rs`) checks the map. The pre-commit
+  hook runs `rust-bin skill_check` and `cargo test --test skill_bins` for a staged skill change.
+  No test needs Python.
 - `bash scripts/test-dotfiles.sh`: `./dotfiles` in a temp HOME with a temp repo and origin (first
   run, owner profile, owner rules linked and unlinked, a no-change second run, restart after a
   pull, the warning count on the last line, apt, dnf, pacman and apk faked on a fake Linux, and
@@ -63,7 +62,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   worktrees can run it at once. `--which FILE...` prints the OSes a file is for. A new path rule
   needs a line in the map test of `test-dotfiles.sh` (section 12).
 - `scripts/test-linux.sh` also fails on shell errors that skip `warn` (`command not found`,
-  `unbound variable`, a Python traceback, a Rust panic), on a last line that is not the done line,
+  `unbound variable`, a Rust panic), on a last line that is not the done line,
   on a second run over 90 seconds or one that rebuilds the Rust tools, and on a failed `dots -v`.
   Its base image tag holds a hash of the recipe, so a recipe change builds a fresh image.
 - One step in a temp HOME: `HOME=$(mktemp -d) DOTFILES_STEPS=60-cursor ./dotfiles`.
@@ -73,14 +72,14 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 - A new or edited agent (`claude/agents/*.md`) loads only in a new session: test it with a
   headless `claude -p` run, not in the session that edited it (`claude/agents/README.md`).
 - Guard checks have an off switch: `GUARD_OFF="G10,G13"` in the env turns those checks off
-  (`claude/hooks/guard.py` docstring lists every check).
+  (the `GUARD_OFF` doc comment in `rust/agent-config/src/bin/guard.rs` lists every check).
 - `claude/hooks/` is live in every session. Merge helper branches that touch it in a worktree
   and bring main forward only when the tests pass: a conflict marker breaks every session's
   hooks, and a broken SubagentStop leaves helper slots taken until they time out (90 min).
 
 ## Skills
 
-`claude/skill-sync.sh` links each `claude/skills/<name>` into `~/.claude/skills`, never touching
+`dots` (`rust/agent-config/src/dots/skills.rs`) links each `claude/skills/<name>` into `~/.claude/skills`, never touching
 skills it does not own (on a name clash the local one wins). Cursor and Opencode read
 `~/.claude/skills` natively; nothing goes into `~/.cursor/skills` (and Opencode has no skills
 dir of its own). New skill: copy `claude/skills/_template/`, keep folder name == `name:`, run
@@ -107,7 +106,7 @@ Edit `claude/`, then run `dots`. Step `58-opencode` (`dots/install/opencode.rs`)
 `./dotfiles` itself, so it also runs for `dots settings` — generates what Opencode needs:
 
 - **Skills (shared, no extra step):** Opencode reads `~/.claude/skills` natively, and
-  `claude/skill-sync.sh` already links every `claude/skills/<name>` there — all `ps:*`
+  `dots` already links every `claude/skills/<name>` there — all `ps:*`
   skills work in Opencode, in every project.
 - **Rules:** `~/.config/opencode/AGENTS.md` generated from `claude/CLAUDE.md` with the owner
   overlay and the active output style. Opencode reads it as its global instructions and only
@@ -140,7 +139,7 @@ first-class: a change must keep each one working. Write docs and messages for al
 OS only where the behavior really differs.
 
 - Ask the OS with `is_macos`, `is_linux`, `is_windows` and `only_macos <what>` from
-  `scripts/setup-lib.sh`, never inline `uname`. Python uses `sys.platform`. A macOS-only step
+  `scripts/setup-lib.sh`, never inline `uname`. Rust uses `dots::os` (`is_macos`, `is_linux`, `is_windows`). A macOS-only step
   starts with `only_macos "<what>"`; a Linux-only step with `is_linux || exit 0`; a
   Windows-only step with `is_windows || exit 0`.
 - No GNU-only or BSD-only flags in shared scripts (`sed -i`, `stat`, `date -j`, `readlink -f`).
@@ -195,9 +194,8 @@ on Linux: the tools come from mise.
   `x86_64-pc-windows-gnu` host (no Visual Studio Build Tools; Windows on Arm runs it under x64
   emulation) and `llvm-tools`: the build needs LLVM's dlltool, which the shim copies to
   `~/.cargo/dlltool`. It runs a copy of `dots.exe`, because Windows locks a running `.exe`.
-- **Python:** not needed when `cargo` is installed: `scripts/agent-config` builds and runs the Rust
-  version. Without `cargo` it needs `python3` (WinGet or the Python installer) or the generated
-  config steps warn and skip.
+- **Python:** not needed. `scripts/agent-config` builds and runs the Rust version. Without `cargo`
+  the generated config steps warn and skip, and `dots` installs Rust on its next run.
 - **Test VM (Mac only):** `scripts/os-check.sh windows` clones the UTM VM `win11-golden`
   (Windows 11 Arm64, OpenSSH Server, Developer Mode, Git, PowerShell 7), starts the clone,
   copies the tree over SSH, runs `./dotfiles` twice in Git Bash, checks both exit codes, the
@@ -241,7 +239,7 @@ email, then shows the menu.
   `OPENCODE_MCP`, `OPENCODE_PROJECTS`, `JAVA_HOME` (picked from the Javas found, or typed),
   `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions"), `TEST_HOST` (the SSH host
   for the Linux part of `scripts/os-check.sh`).
-- Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `scripts/agent-config.py`,
+- Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `rust/agent-config/src/lib.rs`,
   `home/.config/zsh/settings.zsh` (sourced after `local.zsh`, so its `JAVA_HOME` wins). The last
   line of a name wins. Env vars win for one run: `DOTFILES_PROFILE`, `DOTFILES_MCP`,
   `DOTFILES_STEPS`, `DOTFILES_PROJECTS`.
@@ -267,9 +265,9 @@ email, then shows the menu.
 - **Short output:** a run with nothing to do prints about 20 lines on every OS, one per step
   (`• Oh My Zsh + plugins: 5 up to date`). `skip` counts instead of printing; a step header waits
   until the step prints something; a written, changed or backed-up file, a warning and an error
-  still print in full. `dots -v` (or `DOTFILES_VERBOSE=1`) prints everything. `skip` lives in three
-  places that must stay in step: `scripts/setup-lib.sh`, `scripts/agent-config.py` and
-  `rust/agent-config/src/lib.rs` (they print one `• Opencode config: 12 up to date` line per
+  still print in full. `dots -v` (or `DOTFILES_VERBOSE=1`) prints everything. `skip` lives in two
+  places that must stay in step: `scripts/setup-lib.sh` and
+  `rust/agent-config/src/lib.rs` (the latter prints one `• Opencode config: 12 up to date` line per
   command). New step: use `skip` for "already there", `uptodate` or `ok_if_changed` for a closing
   line that only says "fine", `note` for "nothing to do here". The git hooks and
   `scripts/test-dotfiles.sh` print only failures (`test-dotfiles.sh -v` shows each pass).

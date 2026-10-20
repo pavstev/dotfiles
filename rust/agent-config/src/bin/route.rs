@@ -7,7 +7,7 @@
 //! printable table behind `repr()` is approximate, and the argparse help text is
 //! the Python 3.9 one.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
 const KINDS: &[&str] = &[
@@ -582,35 +582,68 @@ struct Row {
     after: Vec<String>,
 }
 
-fn bad(msg: String) -> Result<Vec<Row>, String> {
+fn bad(msg: String) -> Result<(Vec<Row>, Vec<String>), String> {
     Err(msg)
 }
 
-fn validate(rows: &Py) -> Result<Vec<Row>, String> {
+/// Python's `validate`: rows with a default id where one is missing, without the rows that have no
+/// text, plus one note per dropped row. The caller's rows are not changed.
+fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
     let list = match rows {
         Py::List(l) => l,
         _ => return bad("rows must be a JSON list".into()),
     };
-    let mut ids: Vec<String> = Vec::new();
-    let mut out: Vec<Row> = Vec::new();
+    let mut dicts: Vec<&[(String, Py)]> = Vec::new();
     for (i, r) in list.iter().enumerate() {
-        let wh = format!("row {}", i + 1);
         let d = match r {
             Py::Dict(d) => d,
-            _ => return bad(format!("{}: not an object", wh)),
+            _ => return bad(format!("row {}: not an object", i + 1)),
         };
+        match dget(d, "id") {
+            None | Some(Py::Null) | Some(Py::Str(_)) => {}
+            Some(_) => return bad(format!("row {}: id must be a string", i + 1)),
+        }
+        dicts.push(d);
+    }
+    let mut taken: HashSet<String> = dicts
+        .iter()
+        .filter_map(|d| match dget(d, "id") {
+            Some(Py::Str(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut dropped: Vec<String> = Vec::new();
+    type Kept<'a> = (String, &'a [(String, Py)], Py); // id, the row, its text
+    let mut kept: Vec<Kept> = Vec::new();
+    for (i, d) in dicts.iter().enumerate() {
         let rid = match dget(d, "id") {
             Some(Py::Str(s)) if !s.is_empty() => s.clone(),
-            _ => return bad(format!("{}: id missing", wh)),
+            _ => {
+                let mut n = i + 1;
+                while taken.contains(&format!("r{}", n)) {
+                    n += 1;
+                }
+                let rid = format!("r{}", n);
+                taken.insert(rid.clone());
+                rid
+            }
         };
-        if ids.contains(&rid) {
-            return bad(format!("{}: duplicate id {}", wh, rid));
+        if !seen.insert(rid.clone()) {
+            return bad(format!("row {}: duplicate id {}", i + 1, rid));
         }
-        ids.push(rid.clone());
-        let text = match dget(d, "text") {
-            Some(t) if t.truthy() => t.clone(),
-            _ => return bad(format!("{}: text missing", rid)),
-        };
+        let text = dget(d, "text").cloned().unwrap_or(Py::Null);
+        let blank = !text.truthy() || matches!(&text, Py::Str(s) if py_strip(s).is_empty());
+        if blank {
+            dropped.push(rid);
+            continue;
+        }
+        kept.push((rid, d, text));
+    }
+    let gone: HashSet<&str> = dropped.iter().map(|s| s.as_str()).collect();
+    let mut out: Vec<Row> = Vec::new();
+    for (rid, d, text) in kept {
+        let d: &[(String, Py)] = d;
         let kind_v = dget(d, "kind").cloned().unwrap_or(Py::Null);
         let kind = match kind_v.as_str() {
             Some(k) if KINDS.contains(&k) => k.to_string(),
@@ -665,7 +698,12 @@ fn validate(rows: &Py) -> Result<Vec<Row>, String> {
             Some(Py::List(items)) => {
                 for it in items {
                     match it {
-                        Py::Str(s) => after.push(s.clone()),
+                        // nothing waits on a dropped row
+                        Py::Str(s) => {
+                            if !gone.contains(s.as_str()) {
+                                after.push(s.clone());
+                            }
+                        }
                         _ => return bad(format!("{}: after must be a list of ids", rid)),
                     }
                 }
@@ -686,9 +724,10 @@ fn validate(rows: &Py) -> Result<Vec<Row>, String> {
             after,
         });
     }
+    let ids: HashSet<&str> = out.iter().map(|r| r.id.as_str()).collect();
     for r in &out {
         for dep in &r.after {
-            if !ids.contains(dep) {
+            if !ids.contains(dep.as_str()) {
                 return bad(format!("{}: after names unknown id {}", r.id, dep));
             }
             if *dep == r.id {
@@ -727,7 +766,7 @@ fn validate(rows: &Py) -> Result<Vec<Row>, String> {
     for r in &out {
         visit(&r.id, &[], &deps, &mut state)?;
     }
-    Ok(out)
+    Ok((out, dropped.iter().map(|d| format!("dropped row {}: no text", d)).collect()))
 }
 
 fn first_route(r: &Row, kill: bool) -> &'static str {
@@ -774,10 +813,11 @@ struct Res {
     default: Vec<String>,
     you: Vec<String>,
     then: &'static str,
+    dropped: Vec<String>,
 }
 
 fn route(rows_py: &Py, kill: bool, cap: usize) -> Result<Res, String> {
-    let rows = validate(rows_py)?;
+    let (rows, dropped) = validate(rows_py)?;
     let mut out: HashMap<String, &'static str> = HashMap::new();
     for r in &rows {
         out.insert(r.id.clone(), first_route(r, kill));
@@ -819,6 +859,7 @@ fn route(rows_py: &Py, kill: bool, cap: usize) -> Result<Res, String> {
         default: defaulted.iter().map(|r| r.id.clone()).collect(),
         you: rows.iter().filter(|r| out[&r.id] == "YOU").map(|r| r.id.clone()).collect(),
         then,
+        dropped,
     })
 }
 
@@ -836,6 +877,7 @@ fn render(res: &Res) -> String {
     for (id, rt, text) in &res.routes {
         lines.push(format!("{} {} {}", pad_to(rt, 7), pad_to(id, 4), py_str(text)));
     }
+    lines.extend(res.dropped.iter().cloned());
     lines.push(String::new());
     let do_s = if res.do_ids.is_empty() { "nothing".to_string() } else { res.do_ids.join(", ") };
     lines.push(format!("NEXT 1 do now: {}", do_s));
@@ -858,7 +900,7 @@ fn render(res: &Res) -> String {
     if res.then == "mic-drop" {
         lines.push("NEXT 3 run ps:mic-drop".to_string());
     } else {
-        lines.push("NEXT 3 update the rows (answers, done), run route.py again".to_string());
+        lines.push("NEXT 3 update the rows (answers, done), run route again".to_string());
     }
     lines.join("\n")
 }
@@ -884,6 +926,7 @@ fn res_json(res: &Res) -> String {
         ("default".into(), strs(&res.default)),
         ("you".into(), strs(&res.you)),
         ("then".into(), Py::Str(res.then.to_string())),
+        ("dropped".into(), strs(&res.dropped)),
     ]);
     dumps(&doc, 0)
 }
@@ -1399,8 +1442,11 @@ mod tests {
         assert_eq!(msg(r#"[{"id": "x", "kind": "work", "text": "t", "who": null}]"#), "x: who must be me or you");
         assert_eq!(msg(r#"{"id": "x"}"#), "rows must be a JSON list");
         assert_eq!(msg(r#"[5]"#), "row 1: not an object");
-        assert_eq!(msg(r#"[{"id": 5, "kind": "work", "text": "t"}]"#), "row 1: id missing");
-        assert_eq!(msg(r#"[{"id": "x", "kind": "work", "text": ""}]"#), "x: text missing");
+        assert_eq!(msg(r#"[{"id": 5, "kind": "work", "text": "t"}]"#), "row 1: id must be a string");
+        // a row with no text is dropped, never an error
+        let res = route(&p(r#"[{"id": "x", "kind": "work", "text": ""}]"#), false, CAP).unwrap();
+        assert!(res.routes.is_empty());
+        assert_eq!(res.dropped, ["dropped row x: no text"]);
         assert_eq!(
             msg(r#"[{"id": "x", "kind": "work", "text": "t"}, {"id": "x", "kind": "work", "text": "u"}]"#),
             "row 2: duplicate id x"
@@ -1470,6 +1516,66 @@ mod tests {
     }
 
     #[test]
+    fn test_row_without_id_gets_a_default_id() {
+        let rows = p(r#"[{"id": "r2", "kind": "work", "text": "taken"},
+                         {"kind": "work", "text": "no id, place 2"},
+                         {"id": "", "kind": "decision", "text": "empty id, place 3"},
+                         {"id": null, "kind": "work", "text": "null id, place 4"}]"#);
+        let res = route(&rows, false, CAP).unwrap();
+        // place 2 would be r2, which is taken: next free is r3; then r3 is taken too
+        let got: Vec<&str> = res.routes.iter().map(|(i, _, _)| i.as_str()).collect();
+        assert_eq!(got, ["r2", "r3", "r4", "r5"]);
+        // the caller's rows are not changed
+        let Py::List(l) = &rows else { panic!() };
+        let Py::Dict(d) = &l[1] else { panic!() };
+        assert!(dget(d, "id").is_none());
+    }
+
+    #[test]
+    fn test_row_without_text_is_dropped_and_named() {
+        let rows = p(r#"[{"id": "a", "kind": "work", "text": "build"},
+                         {"kind": "work"},
+                         {"id": "c", "kind": "nope", "text": ""},
+                         {"id": "d", "kind": "work", "text": "   ", "after": ["a"]},
+                         {"id": "e", "kind": "work", "text": "ship", "after": ["d"]}]"#);
+        let res = route(&rows, false, CAP).unwrap();
+        let got: Vec<&str> = res.routes.iter().map(|(i, _, _)| i.as_str()).collect();
+        assert_eq!(got, ["a", "e"]);
+        assert_eq!(res.dropped, ["dropped row r2: no text", "dropped row c: no text", "dropped row d: no text"]);
+        assert_eq!(r(&res, "e"), "DO"); // a dropped row is not waited on
+        let out = render(&res);
+        assert_eq!(out.matches("dropped row c: no text").count(), 1);
+    }
+
+    #[test]
+    fn test_wrong_types_stay_bad_input_with_pythons_messages() {
+        let msg = |s: &str| route(&p(s), false, CAP).err().unwrap();
+        assert_eq!(msg(r#"[{"id": 5, "kind": "work", "text": "t"}]"#), "row 1: id must be a string");
+        assert_eq!(msg(r#"[{"id": ["a"], "kind": "work", "text": "t"}]"#), "row 1: id must be a string");
+        assert_eq!(msg(r#"[{"id": "ok", "kind": "work", "text": "t"}, 5]"#), "row 2: not an object");
+        assert_eq!(
+            msg(r#"[{"kind": "nope", "text": "t"}]"#),
+            "r1: kind 'nope' not in ['decision', 'login', 'no-tool', 'optional', 'payment', 'refused', 'secret', 'task', 'value', 'work']"
+        );
+        assert_eq!(
+            msg(r#"[{"kind": "work", "text": "t", "after": ["gone"]}]"#),
+            "r1: after names unknown id gone"
+        );
+        // a dropped row is gone: it cannot be named as unknown
+        let res = route(&p(r#"[{"id": "a", "kind": "work", "text": "t", "after": ["b"]}, {"id": "b"}]"#), false, CAP).unwrap();
+        assert_eq!(r(&res, "a"), "DO");
+    }
+
+    #[test]
+    fn test_cli_json_lists_the_dropped_rows() {
+        let o = cli(&["--json"], r#"[{"id":"a","kind":"work","text":"x"},{"id":"b"}]"#);
+        assert_eq!(o.code, 0);
+        assert!(o.stdout.ends_with("  \"then\": \"mic-drop\",\n  \"dropped\": [\n    \"dropped row b: no text\"\n  ]\n}\n"), "{}", o.stdout);
+        let o = cli(&[], r#"[{"id":"a","kind":"work","text":"x"},{"id":"b"}]"#);
+        assert!(o.stdout.starts_with("DO      a    x\ndropped row b: no text\n\nNEXT 1"), "{}", o.stdout);
+    }
+
+    #[test]
     fn test_cli() {
         // an empty file is not JSON
         let o = cli(&["/dev/null"], "");
@@ -1507,7 +1613,7 @@ mod tests {
         assert_eq!(o.code, 0);
         assert_eq!(
             o.stdout,
-            "{\n  \"routes\": [\n    {\n      \"id\": \"a\",\n      \"route\": \"DO\",\n      \"text\": \"x\"\n    }\n  ],\n  \"do\": [\n    \"a\"\n  ],\n  \"ask\": [],\n  \"default\": [],\n  \"you\": [],\n  \"then\": \"mic-drop\"\n}\n"
+            "{\n  \"routes\": [\n    {\n      \"id\": \"a\",\n      \"route\": \"DO\",\n      \"text\": \"x\"\n    }\n  ],\n  \"do\": [\n    \"a\"\n  ],\n  \"ask\": [],\n  \"default\": [],\n  \"you\": [],\n  \"then\": \"mic-drop\",\n  \"dropped\": []\n}\n"
         );
         let o = cli(&["--kill", "--cap=1"], r#"[{"id":"t","kind":"task","stop":true,"text":"x"}]"#);
         assert!(o.stdout.starts_with("DO      t    x\n"));
@@ -1542,7 +1648,7 @@ mod tests {
     #[test]
     fn test_whatsleft_links() {
         let s = skill_md("ps:whatsleft");
-        for needle in ["scripts/route.py", "ps:askme", "ps:mic-drop", "AskQuestion", "AskUserQuestion", "whatsleft:"] {
+        for needle in ["rust-bin route", "ps:askme", "ps:mic-drop", "AskQuestion", "AskUserQuestion", "whatsleft:"] {
             assert!(s.contains(needle), "{}", needle);
         }
     }
@@ -1550,7 +1656,7 @@ mod tests {
     #[test]
     fn test_askme_links() {
         let s = skill_md("ps:askme");
-        for needle in ["ps:whatsleft", "whatsleft:", "AskQuestion", "AskUserQuestion", "route.py", "ps:mic-drop"] {
+        for needle in ["ps:whatsleft", "whatsleft:", "AskQuestion", "AskUserQuestion", "`route`", "ps:mic-drop"] {
             assert!(s.contains(needle), "{}", needle);
         }
     }

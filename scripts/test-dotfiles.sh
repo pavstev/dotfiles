@@ -96,8 +96,8 @@ grep -q '^PROFILE="[a-z]' "$SETTINGS" 2>/dev/null && bad "PROFILE saved without 
 grep -q 'profile: shared' "$T/run1.log" && pass "profile is shared" || bad "profile not shared"
 # Claude settings: a built file, the repo base only while there is no private layer.
 [[ -f "$LIVE" && ! -L "$LIVE" ]] && pass "settings.json is a built file" || bad "settings.json is a link or missing"
-python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' \
-  "$LIVE" "$R/claude/settings.json" && pass "settings.json equals the repo base" || bad "settings.json differs from the base"
+[[ "$(tr -d ' \t\n' <"$LIVE")" == "$(tr -d ' \t\n' <"$R/claude/settings.json")" ]] \
+  && pass "settings.json equals the repo base" || bad "settings.json differs from the base"
 [[ ! -e "$LAYER" ]] && pass "no private layer yet" || bad "a private layer appeared on its own"
 # Opencode: the rules, the agents and the copper theme are generated on every run.
 grep -q 'generated-by: dotfiles' "$OC/AGENTS.md" 2>/dev/null && pass "Opencode AGENTS.md generated" || bad "Opencode AGENTS.md missing"
@@ -126,7 +126,8 @@ run run3v.log DOTFILES_VERBOSE=1
 grep -q 'already set up' "$T/run3v.log" && pass "DOTFILES_VERBOSE=1 prints the skip lines" || bad "DOTFILES_VERBOSE=1 printed no skip lines"
 
 # 4b. Claude changes its settings: the change is kept in the private layer.
-python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["testKeptKey"]=True; open(p,"w").write(json.dumps(d, indent=4))' "$LIVE"
+live_json="$(cat "$LIVE")"
+printf '{\n  "testKeptKey": true,%s\n' "${live_json#\{}" >"$LIVE"
 run run3b.log
 grep -q 'kept in your private layer: testKeptKey' "$T/run3b.log" && pass "Claude's change reported" || bad "Claude's change not reported"
 grep -q '"testKeptKey": true' "$LAYER" 2>/dev/null && pass "Claude's change kept in the private layer" || bad "Claude's change lost"
@@ -213,12 +214,12 @@ lx() { # lx <dir>: source setup-lib.sh as on that fake Linux, print the manager,
 for m in apt-get dnf pacman apk; do
   d="$T/linux-$m"; fake_linux "$d" "$m"; out="$(lx "$d")"
   case "$m" in
-    apt-get) want_list="build-essential ca-certificates curl file git procps python3 zsh"
+    apt-get) want_list="build-essential ca-certificates curl file git procps zsh"
       want_log="apt-get install -y -qq --no-install-recommends zsh" ;;
-    dnf) want_list="gcc gcc-c++ make ca-certificates curl file git procps-ng python3 zsh"; want_log="dnf install -y -q zsh" ;;
-    pacman) want_list="base-devel ca-certificates curl file git procps-ng python zsh"
+    dnf) want_list="gcc gcc-c++ make ca-certificates curl file git procps-ng zsh"; want_log="dnf install -y -q zsh" ;;
+    pacman) want_list="base-devel ca-certificates curl file git procps-ng zsh"
       want_log="pacman -S --needed --noconfirm zsh" ;;
-    apk) want_list="bash build-base ca-certificates curl file git python3 zsh"; want_log="apk add -q --no-cache zsh" ;;
+    apk) want_list="bash build-base ca-certificates curl file git zsh"; want_log="apk add -q --no-cache zsh" ;;
   esac
   [[ "$out" == "$m|$want_list|zsh |rc=0" ]] && pass "Linux $m: finds the manager, its list and the missing zsh" \
     || bad "Linux $m: got '$out'"
@@ -226,14 +227,14 @@ for m in apt-get dnf pacman apk; do
     || bad "Linux $m: install command: $(cat "$d/log" 2>/dev/null | tr '\n' ';')"
 done
 d="$T/linux-none"; fake_linux "$d" none; out="$(lx "$d")"
-[[ "$out" == "|cc make curl file git ps python3 zsh|cc make curl file git ps python3 zsh |rc=1" ]] \
+[[ "$out" == "|cc make curl file git ps zsh|cc make curl file git ps zsh |rc=1" ]] \
   && pass "Linux with no known manager: lists the missing commands and fails" || bad "Linux with no manager: got '$out'"
 
 # 12. The os-check skip rule: which OS each changed file is for.
 which_want='dotfiles: macos linux windows
 scripts/setup-lib.sh: macos linux windows
 rust/agent-config/src/lib.rs: macos linux windows
-claude/hooks/guard.py: macos linux windows
+claude/hooks/rust-bin: macos linux windows
 tools.list: macos linux windows
 scripts/tools: macos linux windows
 Brewfile: macos
@@ -320,6 +321,42 @@ if [[ -n "${DOTS_TEST_NETWORK:-}" ]] && command -v mise >/dev/null 2>&1 && [[ "$
   run step50b.log DOTFILES_STEPS=50-node-pnpm
   grep -q 'up to date' "$T/step50b.log" && pass "step 50 on a second run changes nothing" || bad "step 50 run 2 (log: step50b.log): $(tail -n 4 "$T/step50b.log" | tr '\n' '|')"
 fi
+
+# 15b. The old status line link: a dangling ~/.claude/statusline.sh into the repo goes, a link
+#      to somewhere else stays.
+ln -s "$R/claude/statusline.sh" "$H/.claude/statusline.sh"
+run run15b.log
+[[ ! -e "$H/.claude/statusline.sh" && ! -L "$H/.claude/statusline.sh" ]] && pass "the old statusline.sh link into the repo is removed" || bad "old statusline.sh link still there"
+grep -q 'removed the old statusline.sh link' "$T/run15b.log" && pass "its removal is reported" || bad "removal not reported"
+ln -s "$T/my-statusline.sh" "$H/.claude/statusline.sh"
+run run15c.log
+[[ "$(readlink "$H/.claude/statusline.sh")" == "$T/my-statusline.sh" ]] && pass "a statusline.sh link elsewhere is left alone" || bad "a foreign statusline.sh link was touched"
+rm -f "$H/.claude/statusline.sh"
+
+# 16. No python, no binary: ./dotfiles runs with no python3 on PATH, and with no Rust binary a
+#     hook exits 0 silent while a skill call says "Run: dots" and exits 127.
+FP="$T/nopy"; mkdir -p "$FP"
+for t in bash env sh cat grep egrep tr id sed uname dirname basename mktemp rm mkdir rmdir chmod date tail head awk ln cp mv ls find xargs \
+    tar cksum readlink wc sort cut tee touch git stat realpath expr test which diff cmp curl; do
+  p="$(command -v "$t" 2>/dev/null)" && [[ "$p" == /* ]] && ln -sf "$p" "$FP/$t"
+done
+rm -f "$FP/python3" "$FP/python"
+PATH="$FP" command -v python3 >/dev/null 2>&1 && bad "the no-python PATH still finds python3"
+printf 'Test User\ntest@example.com\n' >"$T/stdin"
+if run run16.log PATH="$FP"; then pass "./dotfiles runs with no python3 on PATH"; else bad "./dotfiles without python3 (log: run16.log): $(tail -n 3 "$T/run16.log" | tr '\n' '|')"; fi
+[[ ! -e "$R/rust/agent-config/target" ]] && pass "the temp repo has no Rust binary" || bad "the temp repo already has a Rust build"
+pre='{"tool_name":"Bash","tool_input":{"command":"ls"},"session_id":"t","cwd":"/tmp"}'
+out="$(printf '%s' "$pre" | env HOME="$H" PATH="$FP" bash "$R/claude/hooks/rust-bin" --hook guard pretool 2>"$T/hook.err")"; rc=$?
+[[ "$rc" -eq 0 && -z "$out" ]] && pass "a hook with no binary exits 0 and prints nothing" || bad "hook with no binary: rc=$rc out='$out'"
+out="$(env HOME="$H" PATH="$FP" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev/null)"; rc=$?
+[[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "a skill call with no binary says Run: dots and exits 127" || bad "skill call with no binary: rc=$rc out='$out'"
+out="$(env HOME="$H" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev/null)"; rc=$?
+[[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "python3 on PATH changes nothing: no binary still means Run: dots" || bad "skill call with python3 on PATH: rc=$rc out='$out'"
+out="$(printf '%s' "$pre" | env HOME="$H" bash "$R/claude/hooks/rust-bin" --hook guard pretool 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && -z "$out" ]] && pass "python3 on PATH changes nothing: a hook with no binary stays silent" || bad "hook with python3 on PATH: rc=$rc out='$out'"
+[[ -z "$(git -C "$R" ls-files '*.py')" ]] && pass "no Python file is tracked" || bad "tracked Python files: $(git -C "$R" ls-files '*.py' | head -3 | tr '\n' ' ')"
+[[ -z "$(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh 2>/dev/null)" ]] \
+  && pass "no runtime script calls python" || bad "python still called in: $(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh | tr '\n' ' ')"
 
 if [[ "$fails" -eq 0 ]]; then printf 'ALL PASS (%d checks)\n' "$passes"; exit 0; fi
 KEEP=1

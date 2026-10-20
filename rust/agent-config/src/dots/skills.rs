@@ -1,5 +1,5 @@
-//! The skills step: link each claude/skills/<name> into ~/.claude/skills (the Rust
-//! twin of claude/skill-sync.sh). Additive: skills from other sources stay. Cursor and
+//! The skills step: link each claude/skills/<name> into ~/.claude/skills. Additive:
+//! skills from other sources stay. Cursor and
 //! Opencode read ~/.claude/skills themselves, so nothing is linked for them.
 //! Prints only when it linked or pruned something (and the clashes it left alone).
 
@@ -76,7 +76,7 @@ pub fn sync(repo: &Path) -> (bool, Vec<(String, bool)>) {
     crate::out::capture(|| {
         let _ = fs::create_dir_all(&claude);
         let good = link_each(&claude.join("skills"), &src);
-        if verbose() { plain("✓ skill-sync complete"); }
+        if verbose() { plain("✓ skill links complete"); }
         good
     })
 }

@@ -824,7 +824,71 @@ fn run(cli: Cli) -> i32 {
     0
 }
 
+const FETCH_USAGE: &str = "usage: yt_transcribe fetch <youtube url>";
+
+/// `~/.cache/yt-learn`: the cache of `fetch` (HOME first, like the shell script it replaced).
+fn fetch_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir);
+    home.unwrap_or_else(|| PathBuf::from(".")).join(".cache").join("yt-learn")
+}
+
+/// `fetch <url>`: print the path of a timestamped markdown transcript, `~/.cache/yt-learn/<id>.md`.
+/// A cached, non-empty file is returned at once with no network.
+fn fetch(url: &str) -> i32 {
+    fetch_with(url, &fetch_dir(), &|id| {
+        transcribe_with(id, &[], "base", false, false, &from_captions, &from_whisper).and_then(|t| render(&t, "markdown"))
+    })
+}
+
+fn fetch_with(url: &str, dir: &Path, make: &dyn Fn(&str) -> Result<String, String>) -> i32 {
+    let id = match extract_video_id(url) {
+        Ok(id) => id,
+        Err(e) => return fail(&e),
+    };
+    let out = dir.join(format!("{id}.md"));
+    if out.metadata().is_ok_and(|m| m.is_file() && m.len() > 0) {
+        println!("{}", out.display());
+        return 0;
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return fail(&format!("Cannot make {}: {e}", dir.display()));
+    }
+    let text = match make(&id) {
+        Ok(t) => t,
+        Err(e) => return fail(&e),
+    };
+    let tmp = match tempfile::Builder::new().prefix(&format!(".{id}.")).tempfile_in(dir) {
+        Ok(t) => t,
+        Err(e) => return fail(&format!("Cannot write in {}: {e}", dir.display())),
+    };
+    if let Err(e) = std::fs::write(tmp.path(), format!("{text}\n")) {
+        return fail(&format!("Cannot write {}: {e}", tmp.path().display()));
+    }
+    if tmp.path().metadata().is_ok_and(|m| m.len() == 0) {
+        return fail("transcript came back empty");
+    }
+    if let Err(e) = tmp.persist(&out) {
+        return fail(&format!("Cannot save {}: {e}", out.display()));
+    }
+    println!("{}", out.display());
+    0
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "fetch") {
+        match args.get(1).map(String::as_str) {
+            Some("-h" | "--help") => {
+                println!("{FETCH_USAGE}");
+                std::process::exit(0);
+            }
+            Some(url) if !url.is_empty() => std::process::exit(fetch(url)),
+            _ => {
+                eprintln!("{FETCH_USAGE}");
+                std::process::exit(2);
+            }
+        }
+    }
     std::process::exit(run(Cli::parse()));
 }
 

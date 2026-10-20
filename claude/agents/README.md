@@ -4,7 +4,7 @@ Custom [subagents](https://code.claude.com/docs/en/sub-agents): focused assistan
 delegates to. Each is a Markdown file with YAML frontmatter followed by the system prompt.
 
 Symlinked to `~/.claude/agents` by `./dotfiles`, so a new file here is live on this machine at once.
-Run `dots` on other machines. `scripts/agent-config.py` copies them to `~/.cursor/agents`
+Run `dots` on other machines. `scripts/agent-config` copies them to `~/.cursor/agents`
 and to `~/.config/opencode/agents`.
 
 ## The agents
@@ -36,12 +36,12 @@ same name wins in its repo, which is why these use `task-` names.
 - The body ends with a hand-back shape: a status word on line 1 (`DONE`, `APPROVED`, `PASS`,
   `BLOCKED` ...), then a "Denied or skipped" line, real command output, and a character cap.
   The status word comes first even when the caller sends its own report template.
-- The caller's cap wins when it names one. Guard G5 (`claude/hooks/guard.py`) sends an over-cap
+- The caller's cap wins when it names one. Guard G5 (the `guard` bin, `rust/agent-config/src/bin/guard.rs`) sends an over-cap
   hand-back back to the agent, so the body says "count before you hand back".
 - File content goes through Write or Edit, never a heredoc, `echo >` or `sed -i`. Bash `cat` is not
   a Read. In a worktree, every Bash call is one plain command, not only git.
 - An agent that needs throwaway files but must not touch code gets Write plus a frontmatter
-  `PreToolUse` hook running `guard.py scratch` (see `ui-verifier.md`). Never write `hooks: []`.
+  `PreToolUse` hook running `guard scratch` (see `ui-verifier.md`). Never write `hooks: []`.
 - Git rule for anything that may run in a worktree: one plain git command per Bash call, from the
   worktree root. No `cd … &&`, heredoc or `$()`.
 - No private project names: name the repo kind.
@@ -82,7 +82,7 @@ host, and the Cursor chats. The findings behind each change, with counts:
   verdict first, template after.
 - `echo =====` fails under zsh (22 to 61 errors). Fix: `echo '---'`.
 - ui-verifier needed throwaway scripts (19 refusals in 6 runs) and once wrote a repo file through a
-  Bash heredoc. Fix: Write with the `guard.py scratch` frontmatter hook; no file writes in Bash.
+  Bash heredoc. Fix: Write with the `guard scratch` frontmatter hook; no file writes in Bash.
 
 Same caller prompt twice in a fresh `claude -p` (auto mode, Sonnet 5.5): old files as project
 agents, then the new files with G5 wired. Task kinds are real past tasks.

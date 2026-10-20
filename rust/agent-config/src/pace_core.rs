@@ -1225,4 +1225,801 @@ mod tests {
         refresh_in(&e.p, 5.0, Some(now));
         assert!((e.weight() - WEIGHT).abs() < 1e-12);
     }
+
+    // --- port of claude/hooks/test_pace.py (everything but its CLI class, which is tests/pace.rs) ---
+
+    const WEEK_S: i64 = 7 * DAY;
+
+    fn utc(y: i64, m: i64, d: i64, h: i64, mi: i64) -> i64 {
+        days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60
+    }
+
+    /// Python's `assertAlmostEqual(a, b, places=n)`: round(a - b, n) == 0.
+    fn close(a: f64, b: f64, places: i32) -> bool {
+        (a - b).abs() < 0.5 * 10f64.powi(-places)
+    }
+
+    fn rv(t: i64, id: &str, model: &str, inp: i64, out: i64, cc: i64, cr: i64) -> Value {
+        json!({"type": "assistant", "timestamp": iso(t), "message": {"id": id, "model": model, "role": "assistant",
+            "usage": {"input_tokens": inp, "output_tokens": out, "cache_creation_input_tokens": cc,
+                "cache_read_input_tokens": cr}}})
+    }
+
+    fn rec(t: i64, id: &str) -> Value {
+        rv(t, id, "claude-sonnet-5-5", 1000, 500, 2000, 10000)
+    }
+
+    /// The app's limit message: a synthetic assistant record flagged as an API error.
+    fn hit(t: i64) -> Value {
+        json!({"type": "assistant", "timestamp": iso(t), "isApiErrorMessage": true, "message": {
+            "id": format!("hit{t}"), "model": "<synthetic>", "role": "assistant",
+            "content": [{"type": "text", "text": "You've hit your weekly limit \u{b7} resets Oct 19 at 8am (Europe/Vienna)"}],
+            "usage": {"input_tokens": 0, "output_tokens": 0}}})
+    }
+
+    /// One opus record worth `tokens` x 5 / 1e6 cost units (2000 by default).
+    fn big(t: i64, id: &str, tokens: i64) -> Value {
+        rv(t, id, "claude-opus-4-8", tokens, 0, 0, 0)
+    }
+
+    fn big2000(t: i64, id: &str) -> Value {
+        big(t, id, 400_000_000)
+    }
+
+    struct Pc {
+        _dir: tempfile::TempDir,
+        p: Paths,
+    }
+
+    fn pc() -> Pc {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Paths { cache: dir.path().join("cache"), projects: dir.path().join(".claude/projects") };
+        fs::create_dir_all(&p.cache).unwrap();
+        fs::create_dir_all(p.projects.join("proj")).unwrap();
+        Pc { _dir: dir, p }
+    }
+
+    impl Pc {
+        fn write_in<T: ToString>(&self, name: &str, sub: Option<&str>, recs: &[T], mtime: i64) -> PathBuf {
+            let mut d = self.p.projects.join("proj");
+            if let Some(s) = sub {
+                d = d.join(s).join("subagents");
+            }
+            fs::create_dir_all(&d).unwrap();
+            let path = d.join(name);
+            let mut text = String::new();
+            for r in recs {
+                text.push_str(&r.to_string());
+                text.push('\n');
+            }
+            fs::write(&path, text).unwrap();
+            let f = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            f.set_modified(UNIX_EPOCH + Duration::from_secs(mtime as u64)).unwrap(); // the real clock must not matter
+            path
+        }
+
+        fn lines<T: ToString>(&self, name: &str, recs: &[T]) -> PathBuf {
+            self.write_in(name, None, recs, mon() + DAY)
+        }
+
+        fn c1(&self, updated: i64, used: f64, resets_at: i64) {
+            let v = json!({"updated": updated,
+                "five_hour": {"used_percentage": 1.0, "resets_at": resets_at - 5 * DAY},
+                "seven_day": {"used_percentage": used, "resets_at": resets_at}});
+            write_text(&self.p.file("claude-pace.json"), &v.to_string());
+        }
+
+        fn calib_json(&self) -> Value {
+            read_json(&self.p.file("claude-pace-calib.json")).expect("a calibration file")
+        }
+
+        fn has_calib(&self) -> bool {
+            self.p.file("claude-pace-calib.json").exists()
+        }
+
+        fn weight(&self) -> f64 {
+            get(&load_result(&self.p).expect("a result"), "weight").and_then(pynum).unwrap()
+        }
+
+        fn refresh(&self, budget: f64, now: i64) -> RefreshResult {
+            refresh_in(&self.p, budget, Some(now))
+        }
+
+        fn scan(&self) -> Value {
+            read_json(&self.p.file("claude-pace-scan.json")).expect("a scan file")
+        }
+
+        /// The Python `estimate`: optional seeded week weight, one refresh, the status.
+        fn estimate(&self, now: i64, week_weight: Option<f64>) -> Status {
+            if let Some(w) = week_weight {
+                seed_weight(&self.p, w, None, "seed", None);
+            }
+            self.refresh(5.0, now);
+            status_in(&self.p, Some(now))
+        }
+
+        fn budget_at(&self, now: i64) -> Status {
+            self.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+            self.refresh(5.0, now);
+            status_in(&self.p, Some(now))
+        }
+
+        fn cost_of(&self, model: &str, inp: i64, out: i64, cc: i64, cr: i64) -> f64 {
+            self.lines("a.jsonl", &[rv(mon() + 60, "m1", model, inp, out, cc, cr)]);
+            self.refresh(5.0, mon() + DAY);
+            let weight = self.weight();
+            fs::remove_file(self.p.projects.join("proj/a.jsonl")).unwrap(); // transcripts only grow: start clean per call
+            self.refresh(5.0, mon() + DAY);
+            weight
+        }
+    }
+
+    // TestBudget
+    #[test]
+    fn test_budget_per_weekday() {
+        for (i, want) in [16.7, 33.3, 50.0, 66.7, 83.3, 100.0, 100.0].into_iter().enumerate() {
+            let c = pc();
+            let st = c.budget_at(mon() + i as i64 * DAY + 6 * 3600);
+            assert!(close(st.budget, want, 1), "day {i}: {} vs {want}", st.budget);
+        }
+    }
+
+    #[test]
+    fn test_sunday_stays_at_100() {
+        let c = pc();
+        assert_eq!(c.budget_at(utc(2026, 10, 25, 23, 59)).budget, 100.0);
+    }
+
+    #[test]
+    fn test_week_rollover() {
+        // Monday after 06:00 UTC starts a new week: old messages no longer count.
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        let now = mon() + WEEK_S + 3600;
+        c.refresh(5.0, now);
+        let st = status_in(&c.p, Some(now));
+        assert!(close(st.budget, 16.7, 1), "{}", st.budget);
+        assert_eq!(st.used, Some(0.0));
+        assert_eq!(st.state, "ok");
+    }
+
+    #[test]
+    fn test_monday_before_six_belongs_to_previous_week() {
+        let c = pc();
+        let now = mon() + WEEK_S - 3 * 3600; // next Monday 03:00 UTC
+        assert_eq!(c.budget_at(now).budget, 100.0);
+    }
+
+    #[test]
+    fn test_week_start_from_resets_at() {
+        // Reset on Thursday 12:00: Thursday is day 0 of this week.
+        let c = pc();
+        let thu = utc(2026, 10, 22, 12, 0);
+        let now = thu + 2 * DAY + 3600; // Saturday
+        c.c1(now - 60, 10.0, thu + WEEK_S);
+        let st = status_in(&c.p, Some(now));
+        assert_eq!(st.source.as_deref(), Some("statusline"));
+        assert!(close(st.budget, 50.0, 1), "{}", st.budget); // day index 2 -> 3/6
+        assert_eq!(st.resets_at, Some(thu + WEEK_S));
+    }
+
+    // TestSources
+    #[test]
+    fn test_unknown_without_data() {
+        let c = pc();
+        let st = status_in(&c.p, Some(mon() + 3600));
+        assert_eq!(st.state, "unknown");
+        assert_eq!(st.used, None);
+        assert_eq!(st.source, None);
+    }
+
+    #[test]
+    fn test_fresh_c1_wins() {
+        let c = pc();
+        let now = mon() + 2 * DAY;
+        c.c1(now - 60, 41.2, mon() + WEEK_S);
+        let st = status_in(&c.p, Some(now));
+        assert_eq!(st.source.as_deref(), Some("statusline"));
+        assert_eq!(st.used, Some(41.2));
+        assert_eq!(st.state, "ok"); // budget 50
+        assert_eq!(st.resets_at, Some(mon() + WEEK_S));
+    }
+
+    #[test]
+    fn test_stale_c1_falls_back_to_estimate() {
+        let c = pc();
+        let now = mon() + 2 * DAY;
+        c.c1(now - 7 * 3600, 41.2, mon() + WEEK_S);
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        c.refresh(5.0, now);
+        let st = status_in(&c.p, Some(now));
+        assert_eq!(st.source.as_deref(), Some("estimate"));
+        assert_ne!(st.used, Some(41.2));
+    }
+
+    #[test]
+    fn test_c1_with_past_reset_is_not_fresh() {
+        let c = pc();
+        let now = mon() + 8 * DAY;
+        c.c1(now - 60, 41.2, mon() + WEEK_S);
+        assert_ne!(status_in(&c.p, Some(now)).source.as_deref(), Some("statusline"));
+    }
+
+    #[test]
+    fn test_corrupt_c1_is_ignored() {
+        let c = pc();
+        write_text(&c.p.file("claude-pace.json"), "{not json");
+        assert_eq!(status_in(&c.p, Some(mon())).state, "unknown");
+    }
+
+    #[test]
+    fn test_c1_without_seven_day_is_ignored() {
+        let c = pc();
+        let v = json!({"updated": mon(), "five_hour": {"used_percentage": 3, "resets_at": mon() + 100}});
+        write_text(&c.p.file("claude-pace.json"), &v.to_string());
+        assert_eq!(status_in(&c.p, Some(mon() + 10)).state, "unknown");
+    }
+
+    #[test]
+    fn test_states() {
+        let c = pc();
+        let now = mon() + 2 * DAY; // Wednesday, budget 50
+        for (used, want) in [(10.0, "ok"), (50.0, "ok"), (50.5, "ahead"), (84.9, "ahead"), (85.0, "critical"), (100.0, "critical")] {
+            c.c1(now - 10, used, mon() + WEEK_S);
+            assert_eq!(status_in(&c.p, Some(now)).state, want, "used {used}");
+        }
+    }
+
+    #[test]
+    fn test_critical_even_on_saturday() {
+        let c = pc();
+        let now = mon() + 5 * DAY;
+        c.c1(now - 10, 90.0, mon() + WEEK_S);
+        assert_eq!(status_in(&c.p, Some(now)).state, "critical");
+    }
+
+    #[test]
+    fn test_error_gives_unknown() {
+        // The Python test made `_read_json` raise. Here a cached result whose `files` is not a
+        // number fails inside the status read; the answer is still the "unknown" status.
+        let c = pc();
+        let body = json!({"v": 2, "at": mon(), "ws": fallback_week_start(mon()), "weight": 1.0, "files": "x", "complete": true});
+        write_text(&c.p.file("claude-pace-result.json"), &body.to_string());
+        let st = status_in(&c.p, Some(mon()));
+        assert_eq!((st.state.as_str(), st.used, st.source, st.resets_at), ("unknown", None, None, None));
+        assert!(status_json(&status_in(&c.p, Some(mon()))).contains("\"resets_at\": null"));
+    }
+
+    // TestEstimate
+    #[test]
+    fn test_weight_formula_and_percent() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        let st = c.estimate(mon() + DAY, Some(WEIGHT * 100.0));
+        assert_eq!(st.source.as_deref(), Some("estimate"));
+        assert!(close(st.used.unwrap(), 1.0, 1), "{:?}", st.used);
+    }
+
+    #[test]
+    fn test_default_week_weight() {
+        assert_eq!(DEFAULT_WEEK_WEIGHT, 5860.0);
+    }
+
+    #[test]
+    fn test_cost_per_model_family() {
+        // input 1000, output 500, cache write 2000 (1h), cache read 10000.
+        for (model, (pi, po)) in [("claude-opus-4-8", (5.0, 25.0)), ("claude-sonnet-5-5", (3.0, 15.0)),
+            ("claude-haiku-4-5", (1.0, 5.0)), ("fable-1", (15.0, 75.0))]
+        {
+            let c = pc();
+            let want = (pi * (1000.0 + 2.0 * 2000.0 + 0.1 * 10000.0) + po * 500.0) / 1e6;
+            let got = c.cost_of(model, 1000, 500, 2000, 10000);
+            assert!(close(got, want, 7), "{model}: {got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn test_cache_write_split_5m_and_1h() {
+        let c = pc();
+        let mut r = rv(mon() + 60, "m1", "claude-opus-4-8", 0, 0, 3000, 0);
+        r["message"]["usage"]["cache_creation"] = json!({"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 2000});
+        c.lines("a.jsonl", &[r]);
+        c.refresh(5.0, mon() + DAY);
+        assert!(close(c.weight(), 5.0 * (1.25 * 1000.0 + 2.0 * 2000.0) / 1e6, 7), "{}", c.weight());
+    }
+
+    #[test]
+    fn test_cache_write_without_split_counts_as_1h() {
+        let c = pc();
+        assert!(close(c.cost_of("claude-opus-4-8", 0, 0, 3000, 0), 5.0 * 2.0 * 3000.0 / 1e6, 7));
+    }
+
+    #[test]
+    fn test_old_cache_formats_are_rebuilt_or_ignored() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        write_text(&c.p.file("claude-pace-scan.json"), &json!({"v": 1, "ws": mon(), "files": {}}).to_string());
+        let old = json!({"at": mon() + DAY, "ws": mon(), "weight": 1e9, "files": 5, "complete": true});
+        write_text(&c.p.file("claude-pace-result.json"), &old.to_string());
+        write_text(&c.p.file("claude-pace-calib.json"), &json!({"week_weight": 1.3e9, "updated": mon()}).to_string());
+        assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, "unknown"); // old result ignored
+        assert_eq!(week_weight_in(&c.p), DEFAULT_WEEK_WEIGHT); // old calibration ignored
+        c.refresh(5.0, mon() + DAY);
+        assert!(close(c.weight(), WEIGHT, 7));
+        assert_eq!(c.scan()["v"].as_f64(), Some(SCAN_FORMAT));
+    }
+
+    #[test]
+    fn test_dedupe_streamed_records_last_wins() {
+        let c = pc();
+        let mut recs = vec![];
+        for (dt, out) in [(60, 10), (61, 200), (62, 500)] {
+            recs.push(rv(mon() + dt, "m1", "claude-sonnet-5-5", 1000, out, 2000, 10000));
+        }
+        c.lines("a.jsonl", &recs);
+        c.estimate(mon() + DAY, Some(WEIGHT * 100.0));
+        assert!(close(c.weight(), WEIGHT, 7), "{}", c.weight());
+    }
+
+    #[test]
+    fn test_same_id_in_two_files_counts_per_file() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        c.lines("b.jsonl", &[rec(mon() + 60, "m1")]);
+        c.estimate(mon() + DAY, None);
+        assert!(close(c.weight(), 2.0 * WEIGHT, 7));
+    }
+
+    #[test]
+    fn test_free_and_unknown_models_are_skipped() {
+        let c = pc();
+        let recs = [
+            rv(mon() + 60, "m1", "openai/gpt-oss-120b:free", 1000, 500, 2000, 10000),
+            rv(mon() + 61, "m2", "<synthetic>", 1000, 500, 2000, 10000),
+            rv(mon() + 62, "m3", "claude-opus-4-8", 1000, 500, 2000, 10000),
+            rv(mon() + 63, "m4", "claude-haiku-4-5", 1000, 500, 2000, 10000),
+            rv(mon() + 64, "m5", "fable-1", 1000, 500, 2000, 10000),
+        ];
+        c.lines("a.jsonl", &recs);
+        c.estimate(mon() + DAY, None);
+        let per = |pi: f64, po: f64| (pi * (1000.0 + 2.0 * 2000.0 + 0.1 * 10000.0) + po * 500.0) / 1e6;
+        assert!(close(c.weight(), per(5.0, 25.0) + per(1.0, 5.0) + per(15.0, 75.0), 7));
+    }
+
+    #[test]
+    fn test_old_messages_are_skipped() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() - 60, "old"), rec(mon() + 60, "new")]);
+        c.estimate(mon() + DAY, None);
+        assert!(close(c.weight(), WEIGHT, 7));
+    }
+
+    #[test]
+    fn test_corrupt_and_odd_lines_are_skipped() {
+        let c = pc();
+        let recs = [
+            "{broken".to_string(),
+            String::new(),
+            r#"{"type":"assistant","message":"str"}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"nope","message":{"id":"x","model":"claude-sonnet-5-5","usage":{"output_tokens":5}}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":null,"message":{"usage":null}}"#.to_string(),
+            r#"{"usage": 1}"#.to_string(),
+            rec(mon() + 60, "m1").to_string(),
+        ];
+        c.lines("a.jsonl", &recs);
+        c.estimate(mon() + DAY, None);
+        assert!(close(c.weight(), WEIGHT, 7));
+    }
+
+    #[test]
+    fn test_null_token_fields() {
+        let c = pc();
+        let mut r = rec(mon() + 60, "m1");
+        r["message"]["usage"]["cache_read_input_tokens"] = Value::Null;
+        c.lines("a.jsonl", &[r]);
+        c.estimate(mon() + DAY, None);
+        assert!(close(c.weight(), (3.0 * (1000.0 + 2.0 * 2000.0) + 15.0 * 500.0) / 1e6, 7));
+    }
+
+    #[test]
+    fn test_subagent_files_are_counted() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        c.write_in("agent-1.jsonl", Some("sess1"), &[rec(mon() + 70, "s1")], mon() + DAY);
+        c.estimate(mon() + DAY, None);
+        assert!(close(c.weight(), 2.0 * WEIGHT, 7));
+    }
+
+    #[test]
+    fn test_incremental_scan_reads_only_new_bytes() {
+        let c = pc();
+        let path = c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        c.estimate(mon() + DAY, None);
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str(&format!("{}\n", rec(mon() + 90, "m2")));
+        fs::write(&path, text).unwrap();
+        c.refresh(5.0, mon() + DAY);
+        assert!(close(c.weight(), 2.0 * WEIGHT, 7));
+        let scan = c.scan();
+        let key = path.to_string_lossy().into_owned();
+        assert_eq!(scan["files"][key.as_str()]["offset"].as_u64(), Some(fs::metadata(&path).unwrap().len()));
+    }
+
+    #[test]
+    fn test_partial_last_line_is_left_for_next_time() {
+        let c = pc();
+        let path = c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        let next = rec(mon() + 90, "m2").to_string();
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str(&next[..40]); // no newline yet
+        fs::write(&path, &text).unwrap();
+        c.estimate(mon() + DAY, None);
+        assert!(close(c.weight(), WEIGHT, 7));
+        text.push_str(&next[40..]);
+        text.push('\n');
+        fs::write(&path, text).unwrap();
+        c.refresh(5.0, mon() + DAY);
+        assert!(close(c.weight(), 2.0 * WEIGHT, 7));
+    }
+
+    #[test]
+    fn test_truncated_file_is_rescanned() {
+        let c = pc();
+        let path = c.lines("a.jsonl", &[rec(mon() + 60, "m1"), rec(mon() + 61, "m2")]);
+        c.estimate(mon() + DAY, None);
+        c.lines("a.jsonl", &[rec(mon() + 62, "m3")]);
+        let key = path.to_string_lossy().into_owned();
+        let offset = c.scan()["files"][key.as_str()]["offset"].as_u64().unwrap();
+        assert!(fs::metadata(&path).unwrap().len() < offset);
+        c.refresh(5.0, mon() + DAY);
+        assert!(close(c.weight(), WEIGHT, 7));
+    }
+
+    #[test]
+    fn test_status_uses_cached_result_under_120s() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        let now = mon() + DAY;
+        c.estimate(now, Some(WEIGHT * 10.0));
+        let first = status_in(&c.p, Some(now)).used.unwrap();
+        c.lines("b.jsonl", &[rec(mon() + 70, "m2")]);
+        assert_eq!(status_in(&c.p, Some(now + 30)).used, Some(first)); // no scan in status()
+        c.refresh(5.0, now + 40);
+        assert!(status_in(&c.p, Some(now + 41)).used.unwrap() > first);
+    }
+
+    #[test]
+    fn test_status_ignores_result_from_another_week() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        c.refresh(5.0, mon() + DAY);
+        assert_eq!(status_in(&c.p, Some(mon() + 8 * DAY)).state, "unknown");
+    }
+
+    #[test]
+    fn test_no_transcripts_is_unknown() {
+        let c = pc();
+        c.refresh(5.0, mon() + DAY);
+        assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, "unknown");
+    }
+
+    // TestTimeBudget
+    fn many(n: i64) -> Vec<Value> {
+        (0..n).map(|i| rec(mon() + i, &format!("m{i}"))).collect()
+    }
+
+    #[test]
+    fn test_budget_stops_and_next_call_continues() {
+        let c = pc();
+        c.lines("a.jsonl", &many(1500));
+        let r = c.refresh(0.0, mon() + DAY);
+        assert!(!r.complete);
+        assert!(c.weight() < 1500.0 * WEIGHT);
+        let mut r = r;
+        for _ in 0..20 {
+            r = c.refresh(0.0, mon() + DAY);
+            if r.complete {
+                break;
+            }
+        }
+        assert!(r.complete);
+        assert!(close(c.weight(), 1500.0 * WEIGHT, 7));
+    }
+
+    #[test]
+    fn test_budget_makes_progress_every_call() {
+        let c = pc();
+        c.lines("a.jsonl", &many(1500));
+        c.refresh(0.0, mon() + DAY);
+        let w1 = c.weight();
+        c.refresh(0.0, mon() + DAY);
+        assert!(c.weight() > w1);
+    }
+
+    // TestCalibration
+    fn ten() -> Vec<Value> {
+        (0..10).map(|i| rec(mon() + 60, &format!("m{i}"))).collect()
+    }
+
+    #[test]
+    fn test_fresh_c1_stores_week_weight() {
+        let c = pc();
+        let now = mon() + DAY;
+        c.lines("a.jsonl", &ten());
+        c.c1(now - 10, 10.0, mon() + WEEK_S);
+        c.refresh(5.0, now);
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 10.0 * WEIGHT / 0.10, 7));
+    }
+
+    #[test]
+    fn test_low_usage_does_not_calibrate() {
+        let c = pc();
+        let now = mon() + DAY;
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        c.c1(now - 10, 4.9, mon() + WEEK_S);
+        c.refresh(5.0, now);
+        assert!(!c.has_calib());
+    }
+
+    #[test]
+    fn test_stale_c1_does_not_calibrate() {
+        let c = pc();
+        let now = mon() + DAY;
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        c.c1(now - 7 * 3600, 20.0, mon() + WEEK_S);
+        c.refresh(5.0, now);
+        assert!(!c.has_calib());
+    }
+
+    #[test]
+    fn test_incomplete_scan_does_not_calibrate() {
+        let c = pc();
+        let now = mon() + DAY;
+        c.lines("a.jsonl", &many(1500));
+        c.c1(now - 10, 20.0, mon() + WEEK_S);
+        let r = c.refresh(0.0, now);
+        assert!(!r.complete);
+        assert!(!c.has_calib());
+    }
+
+    #[test]
+    fn test_estimate_uses_calibration() {
+        let c = pc();
+        let now = mon() + DAY;
+        c.lines("a.jsonl", &ten());
+        c.c1(now - 10, 10.0, mon() + WEEK_S);
+        c.refresh(5.0, now);
+        fs::remove_file(c.p.file("claude-pace.json")).unwrap();
+        c.refresh(5.0, now);
+        let st = status_in(&c.p, Some(now));
+        assert_eq!(st.source.as_deref(), Some("estimate"));
+        assert!(close(st.used.unwrap(), 10.0, 1), "{:?}", st.used);
+    }
+
+    #[test]
+    fn test_seed() {
+        let c = pc();
+        let now = mon() + DAY;
+        c.lines("a.jsonl", &ten());
+        assert!(seed_in(&c.p, 25.0, Some(now)));
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 10.0 * WEIGHT / 0.25, 7));
+        assert!(close(status_in(&c.p, Some(now)).used.unwrap(), 25.0, 1));
+    }
+
+    #[test]
+    fn test_seed_needs_a_complete_refresh() {
+        // The Python test mocked `refresh` to report an incomplete scan. Without that seam the
+        // refusal is reached through the other half of the same guard: a week with no usage
+        // (weight 0) stores nothing; the stored case is `test_seed`.
+        let c = pc();
+        assert!(!seed_in(&c.p, 25.0, Some(mon() + DAY)));
+        assert!(!c.has_calib());
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        assert!(seed_in(&c.p, 25.0, Some(mon() + DAY)));
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), WEIGHT / 0.25, 7));
+    }
+
+    #[test]
+    fn test_seed_rejects_bad_values() {
+        let c = pc();
+        for bad in [0.0, -3.0, 101.0, f64::NAN] {
+            assert!(!seed_in(&c.p, bad, Some(mon() + DAY)), "{bad}");
+        }
+        assert!(!c.has_calib());
+    }
+
+    #[test]
+    fn test_corrupt_calibration_uses_default() {
+        let c = pc();
+        write_text(&c.p.file("claude-pace-calib.json"), "zzz");
+        assert_eq!(week_weight_in(&c.p), DEFAULT_WEEK_WEIGHT);
+    }
+
+    // TestLimitHit
+    fn refresh_default(c: &Pc) -> RefreshResult {
+        c.refresh(5.0, mon() + 3 * DAY)
+    }
+
+    #[test]
+    fn test_hit_sets_calibration() {
+        let c = pc();
+        let t0 = mon() + 2 * DAY;
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(t0), big(t0 + 60, "after", 100_000_000)]);
+        refresh_default(&c);
+        let cal = c.calib_json();
+        assert!(close(cal["week_weight"].as_f64().unwrap(), 2000.0, 7)); // the record after the hit is not counted
+        assert_eq!(
+            (cal["source"].as_str(), cal["week_start"].as_i64(), cal["updated"].as_i64()),
+            (Some("limit-hit"), Some(mon()), Some(t0))
+        );
+        assert_eq!(week_weight_in(&c.p), cal["week_weight"].as_f64().unwrap());
+        // 2500 used against a 2000 week: capped at 100 and critical
+        let st = status_in(&c.p, Some(mon() + 3 * DAY));
+        assert_eq!((st.used, st.state.as_str()), (Some(100.0), "critical"));
+    }
+
+    #[test]
+    fn test_hit_in_a_second_file_and_subagent_counts() {
+        let c = pc();
+        let t0 = mon() + 2 * DAY;
+        c.lines("a.jsonl", &[big(mon() + 3600, "b1", 200_000_000)]);
+        c.write_in("agent-1.jsonl", Some("s1"), &[big(mon() + 7200, "b2", 200_000_000)], mon() + DAY);
+        c.lines("b.jsonl", &[hit(t0)]);
+        refresh_default(&c);
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+    }
+
+    #[test]
+    fn test_no_hit_keeps_default() {
+        let c = pc();
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1")]);
+        refresh_default(&c);
+        assert!(!c.has_calib());
+        assert_eq!(week_weight_in(&c.p), DEFAULT_WEEK_WEIGHT);
+    }
+
+    #[test]
+    fn test_a_reply_that_quotes_the_phrase_is_not_a_hit() {
+        let c = pc();
+        let mut quote = rv(mon() + 2 * DAY, "q1", "claude-opus-4-8", 1000, 500, 2000, 10000);
+        quote["message"]["content"] = json!([{"type": "text", "text": "You've hit your weekly limit, they said"}]);
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), quote]);
+        refresh_default(&c);
+        assert!(!c.has_calib());
+    }
+
+    #[test]
+    fn test_phrase_is_case_insensitive_and_system_records_count() {
+        let c = pc();
+        let sysrec = json!({"type": "system", "timestamp": iso(mon() + 2 * DAY), "content": "YOU'VE HIT YOUR WEEKLY LIMIT"});
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), sysrec]);
+        refresh_default(&c);
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+    }
+
+    #[test]
+    fn test_first_hit_of_the_week_wins() {
+        let c = pc();
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + DAY), big2000(mon() + DAY + 60, "b2"), hit(mon() + 3 * DAY)]);
+        refresh_default(&c);
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+    }
+
+    #[test]
+    fn test_cheap_hit_stores_nothing() {
+        let c = pc();
+        c.lines("a.jsonl", &[big(mon() + 3600, "b1", 100_000_000), hit(mon() + DAY)]); // cost 500
+        refresh_default(&c);
+        assert!(!c.has_calib());
+    }
+
+    #[test]
+    fn test_partial_scan_stores_nothing_until_complete() {
+        let c = pc();
+        let mut recs = vec![big2000(mon() + 3600, "b1")];
+        recs.extend((0..1500).map(|i| rec(mon() + 60 + i, &format!("f{i}"))));
+        recs.push(hit(mon() + DAY));
+        c.lines("a.jsonl", &recs);
+        let r = c.refresh(0.0, mon() + 3 * DAY);
+        assert!(!r.complete);
+        assert!(!c.has_calib());
+        for _ in 0..20 {
+            if c.refresh(0.0, mon() + 3 * DAY).complete {
+                break;
+            }
+        }
+        assert!(c.calib_json()["week_weight"].as_f64().unwrap() > 2000.0);
+    }
+
+    #[test]
+    fn test_newer_seed_wins() {
+        let c = pc();
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        seed_weight(&c.p, 3000.0, Some(mon() + 2 * DAY + 600), "seed", None); // after the hit
+        refresh_default(&c);
+        assert_eq!(c.calib_json()["week_weight"].as_f64(), Some(3000.0));
+        assert_eq!(c.calib_json()["source"].as_str(), Some("seed"));
+    }
+
+    #[test]
+    fn test_newer_hit_wins_over_older_seed() {
+        let c = pc();
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        seed_weight(&c.p, 3000.0, Some(mon() + DAY), "seed", None); // before the hit
+        refresh_default(&c);
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+    }
+
+    #[test]
+    fn test_hit_is_stored_once() {
+        let c = pc();
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        refresh_default(&c);
+        let path = c.p.file("claude-pace-calib.json");
+        let stamp = UNIX_EPOCH + Duration::from_secs(1);
+        fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        refresh_default(&c);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp); // not rewritten
+    }
+
+    #[test]
+    fn test_no_hit_this_week_keeps_last_week_calibration() {
+        let c = pc();
+        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        refresh_default(&c);
+        let nxt = mon() + 8 * DAY;
+        c.write_in("b.jsonl", None, &[big(mon() + WEEK_S + 3600, "b9", 100_000_000)], nxt);
+        c.refresh(5.0, nxt);
+        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+        assert!(close(status_in(&c.p, Some(nxt)).used.unwrap(), 500.0 / 2000.0 * 100.0, 7));
+    }
+
+    #[test]
+    fn test_backfill_finds_the_previous_week_hit_once() {
+        let c = pc();
+        let prev = mon() - WEEK_S;
+        c.lines("a.jsonl", &[big2000(prev + 3600, "b1"), hit(prev + 5 * DAY)]);
+        c.lines("b.jsonl", &[big(mon() + 3600, "b2", 100_000_000)]);
+        c.refresh(5.0, mon() + DAY);
+        let cal = c.calib_json();
+        assert!(close(cal["week_weight"].as_f64().unwrap(), 2000.0, 7));
+        assert_eq!((cal["source"].as_str(), cal["week_start"].as_i64()), (Some("limit-hit"), Some(prev)));
+        // this week's cost still counts only this week
+        assert!(close(c.weight(), 500.0, 7));
+    }
+
+    #[test]
+    fn test_backfill_runs_once_without_a_hit() {
+        let c = pc();
+        let prev = mon() - WEEK_S;
+        c.lines("a.jsonl", &[big2000(prev + 3600, "b1")]);
+        c.refresh(5.0, mon() + DAY);
+        let scan = c.scan();
+        assert_eq!((scan["lo"].as_i64(), scan["backfilled"].as_bool()), (Some(prev), Some(true)));
+        c.refresh(5.0, mon() + DAY + 10);
+        let scan = c.scan();
+        assert_eq!((scan["lo"].as_i64(), scan["backfilled"].as_bool()), (Some(mon()), Some(true))); // previous week dropped again
+    }
+
+    #[test]
+    fn test_no_backfill_with_a_warm_calibration() {
+        let c = pc();
+        let prev = mon() - WEEK_S;
+        seed_weight(&c.p, 3000.0, Some(mon()), "seed", None);
+        c.lines("a.jsonl", &[big2000(prev + 3600, "b1"), hit(prev + 5 * DAY)]);
+        c.refresh(5.0, mon() + DAY);
+        assert_eq!(c.calib_json()["week_weight"].as_f64(), Some(3000.0));
+    }
+
+    // TestEpoch
+    #[test]
+    fn test_epoch_forms() {
+        assert_eq!(epoch(Some(&json!(1760860800))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!(1760860800000i64))), Some(1760860800)); // milliseconds
+        assert_eq!(epoch(Some(&json!("1760860800"))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!("2025-10-19T08:00:00Z"))), Some(1760860800));
+        assert_eq!(epoch(Some(&json!(null))), None);
+        assert_eq!(epoch(Some(&json!("junk"))), None);
+        assert_eq!(epoch(Some(&json!(true))), None);
+    }
 }

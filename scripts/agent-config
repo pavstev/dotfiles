@@ -2,21 +2,18 @@
 # ============================================================================
 #  scripts/agent-config — one entry point for the config generator.
 #
-#  Runs the Rust build (rust/agent-config) when there is one, so a machine
-#  needs no Python. The build is made on first use when cargo works, and made
-#  again when lib.rs, main.rs, Cargo.toml or Cargo.lock are newer than the
-#  binary. With no usable binary it falls back to scripts/agent-config.py
-#  (python3). A stale binary is still used when the rebuild fails and there is
-#  no python3.
+#  Runs the Rust build (rust/agent-config). The build is made on first use when
+#  cargo works, and made again when anything under src/ or themes/, Cargo.toml
+#  or Cargo.lock is newer than the binary. A stale binary is still used when the
+#  rebuild fails. With no binary and no cargo it says "Run: dots" and exits 127
+#  (`dots` installs Rust when it is missing).
 #
 #    scripts/agent-config cursor --profile owner
-#    AGENT_CONFIG_IMPL=python scripts/agent-config opencode   # force Python
-#    AGENT_CONFIG_IMPL=rust   scripts/agent-config opencode   # force Rust
-#    scripts/agent-config --bins                              # build every Rust bin, then stop
+#    scripts/agent-config --bins     # build every Rust bin, then stop (always exits 0)
 #
 #  The build makes every bin of the crate (the hooks and the skill tools too), so
-#  `dots` is the one place that builds. claude/hooks/rust-bin only runs a bin that
-#  is newer than the sources and never builds.
+#  `dots` is the one place that builds. claude/hooks/rust-bin only runs the bin
+#  that is there and never builds.
 # ============================================================================
 set -u
 
@@ -30,7 +27,6 @@ TARGET="$CRATE/target"
 EXE=agent-config
 is_windows && EXE=agent-config.exe
 BIN="$TARGET/release/$EXE"
-IMPL="${AGENT_CONFIG_IMPL:-auto}"
 
 stale() {
   [[ ! -x "$BIN" ]] && return 0
@@ -69,30 +65,20 @@ run_rust() {
   exec "$BIN" "$@"
 }
 
-run_python() {
-  have python3 || { echo "agent-config: need the Rust build (cargo) or python3" >&2; exit 1; }
-  exec python3 "$HERE/agent-config.py" "$@"
-}
-
 if [[ "${1:-}" == --bins ]]; then
   [[ -d "$CRATE" ]] || exit 0
   if ! stale || build; then exit 0; fi
-  echo "agent-config: no Rust build (the Python tools run instead)" >&2
+  echo "agent-config: no Rust build. Run: dots" >&2
   exit 0
 fi
 
-[[ "$IMPL" == python ]] && run_python "$@"
-
 if [[ -d "$CRATE" ]]; then
   if ! stale || build; then run_rust "$@"; fi
-  if [[ -x "$BIN" ]] && ! have python3; then
+  if [[ -x "$BIN" ]]; then
     echo "agent-config: rebuild failed, running the older Rust binary" >&2
     run_rust "$@"
   fi
 fi
 
-if [[ "$IMPL" == rust ]]; then
-  echo "agent-config: AGENT_CONFIG_IMPL=rust but the Rust binary is not available" >&2
-  exit 1
-fi
-run_python "$@"
+echo "agent-config: no Rust build and no cargo. Run: dots" >&2
+exit 127

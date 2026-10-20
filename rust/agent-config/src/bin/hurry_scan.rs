@@ -1,5 +1,5 @@
 //! hurry-scan: find out why a Claude Code session is slow, and what to cut.
-//! Port of claude/skills/ps_whatsleft/scripts/hurry-scan.py (the Python is the reference).
+//! Port of the old Python tool hurry-scan.py (deleted; its tests are mapped in tests/PORTED.md).
 //! Read-only: it never changes anything.
 
 use clap::Parser;

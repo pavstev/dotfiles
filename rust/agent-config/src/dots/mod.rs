@@ -156,7 +156,7 @@ pub fn main() -> i32 {
 
     step("Skills");
     let (good, lines) = skills::sync(&repo);
-    if !good { warn("skill-sync.sh reported an issue — skills may be unlinked"); }
+    if !good { warn("the skill sync reported an issue — skills may be unlinked"); }
     if lines.is_empty() { uptodate("skills linked"); } else { out::replay(&lines); }
 
     if verbose() { step("Opencode config -> ~/.config/opencode"); } else { step_end(); }
@@ -272,7 +272,7 @@ fn link_files(repo: &Path) {
                 &home.join(editor_cfg).join(app).join("User").join(f), true);
         }
     }
-    // The Claude and Opencode config below needs no cargo or python3 here: it runs in this
+    // The Claude and Opencode config below needs no cargo here: it runs in this
     // process. Step 05 installs the Linux prerequisites.
     let n = link::take_count();
     if n > 0 { ok(&format!("linked {} files", n)); }
@@ -289,8 +289,13 @@ fn claude_config(repo: &Path, profile: &str) {
     }
     if fs::create_dir_all(&dst).is_err() { warn(&format!("couldn't create {}", dst.display())); }
     // Per item, never the whole folder: Claude Code writes session state in ~/.claude.
-    for d in ["agents", "hooks", "output-styles", "CLAUDE.md", "statusline.sh"] {
+    for d in ["agents", "hooks", "output-styles", "CLAUDE.md"] {
         link::link_item(&src.join(d), &dst.join(d), true);
+    }
+    // The old status line script is gone (`rust-bin statusline` replaced it): drop our link to it.
+    let old_sl = dst.join("statusline.sh");
+    if os::is_symlink(&old_sl) && os::readlink(&old_sl).is_some_and(|t| t.starts_with(&src)) && fs::remove_file(&old_sl).is_ok() {
+        ok("removed the old statusline.sh link");
     }
     let n = link::take_count();
     if n > 0 { ok(&format!("linked {} Claude files", n)); }

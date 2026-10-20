@@ -1,0 +1,1 @@
+{"cwd":"/nonexistent/sample-project/","model":{"display_name":"Sonnet 5.5"},"context_window":{"current_usage":{"input_tokens":100,"cache_creation_input_tokens":2000,"cache_read_input_tokens":50000},"used_percentage":5},"rate_limits":{"five_hour":{"used_percentage":2.5,"resets_at":1790000000}}}

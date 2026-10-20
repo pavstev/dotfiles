@@ -1,5 +1,5 @@
 //! whatsleft-scan: collect proof of what is still open in a Claude Code session.
-//! Port of claude/skills/ps_whatsleft/scripts/whatsleft-scan.py (the Python is the reference).
+//! Port of the old Python tool whatsleft-scan.py (deleted; its tests are mapped in tests/PORTED.md).
 //!
 //! Reads the session transcript (JSONL) and the git state of every repo the session touched.
 //! Prints tagged evidence lines so the agent can build the "me / you" table.
@@ -64,6 +64,18 @@ rx!(
     NOTICE,
     r"(?s)<task-id>(?P<task>[^<]*)</task-id>\s*<tool-use-id>(?P<tool>[^<]*)</tool-use-id>.*?<status>(?P<status>[^<]*)</status>(?:\s*<summary>(?P<summary>[^<]*)</summary>)?"
 );
+// A Bash edit of a file: sed -i, perl -pi / -i (not grep -i, not perl -MFoo). Python ends each branch
+// with a lookahead (?=\s|$); the regex crate has none, and a match that takes the space is as good here.
+rx!(
+    IN_PLACE_EDIT,
+    r"\bsed\s+(?:[^\s|;&]+\s+)*?(?:-[A-Za-z]*i[A-Za-z.]*|--in-place\S*)(?:\s|$)|\bperl\s+(?:[^\s|;&]+\s+)*?-[lpna0-9w]*i(?:\.\S*)?(?:\s|$)"
+);
+rx!(EXIT_CODE, r"exit code:?\s*(-?\d+)");
+rx!(PIPEFAIL, r"\bpipefail\b");
+rx!(REDIRECT, r"\d*>&\d+|&>");
+rx!(PIPE_WORD, r"^(tail|tee|head)\b");
+rx!(TRUE_WORD, r"^true\b");
+rx!(ECHO_WORD, r"^(echo|true)\b");
 rx!(HEREDOC_HEAD, r#"<<-?\s*['"]?(\w+)['"]?[^\n]*\n"#);
 rx!(OUTFILE, r"(?:Output is being written to:|output_file:)\s*(\S+?\.output)");
 rx!(AGENT_ID, r"agentId:\s*(\w+)");
@@ -1459,9 +1471,55 @@ fn heredoc_end(cmd: &str, from: usize, tag: &str) -> Option<usize> {
     None
 }
 
+/// The text that hides the check's exit code ('; echo', '|| true', '| tail'), or "".
+/// Looks only at what follows the check command, up to the first `&&`.
+fn masked_exit(bare: &str, check_end: usize) -> String {
+    let pipe_ok = PIPEFAIL.is_match(bare);
+    let tail = &bare[check_end..];
+    let rest = tail.split("&&").next().unwrap_or("");
+    let rest = REDIRECT.replace_all(rest, " ").into_owned(); // 2>&1 is a redirect, not a separator
+    // ([^;|\n]*)(\|\||;|\n|\|)?\s*(.*) with re.S
+    let Some(at) = rest.find([';', '|', '\n']) else { return String::new() };
+    let after_sep = |n: usize| rest[at + n..].trim_start();
+    let b = rest.as_bytes();
+    if b[at] == b'|' && b.get(at + 1) == Some(&b'|') {
+        return if TRUE_WORD.is_match(after_sep(2)) { "|| true".to_string() } else { String::new() };
+    }
+    if b[at] == b'|' {
+        return match PIPE_WORD.captures(after_sep(1)) {
+            Some(p) if !pipe_ok => format!("| {}", &p[1]),
+            _ => String::new(),
+        };
+    }
+    match ECHO_WORD.captures(after_sep(1)) {
+        Some(p) => format!("; {}", &p[1]),
+        None => String::new(),
+    }
+}
+
+/// How the check at tool use `uid` ended: "failed", "running", "hidden: <mask>" or "passed".
+fn check_state(s: &Session, uid: &str, bare: &str, check_end: usize) -> String {
+    let (is_err, res) = s.result(uid);
+    if is_err {
+        return "failed".into();
+    }
+    if get(&s.uses[uid].inp, "run_in_background") == &Value::Bool(true) || BG_RESULT.is_match(res) {
+        let Some((status, summary)) = s.notices.get(uid) else { return "running".into() };
+        if status.is_empty() {
+            return "running".into();
+        }
+        let nonzero = EXIT_CODE.captures(summary).is_some_and(|c| &c[1] != "0");
+        if status != "completed" || nonzero {
+            return "failed".into();
+        }
+    }
+    let mask = masked_exit(bare, check_end);
+    if mask.is_empty() { "passed".into() } else { format!("hidden: {}", mask) }
+}
+
 fn check_freshness(s: &Session, root: &str) {
     let (mut last_edit, mut last_check): (Option<usize>, Option<usize>) = (None, None);
-    let mut check_failed = false;
+    let mut state = String::new();
     for uid in &s.order {
         let u = &s.uses[uid];
         let fp = first_truthy(&u.inp, &["file_path", "notebook_path"]);
@@ -1470,19 +1528,24 @@ fn check_freshness(s: &Session, root: &str) {
         }
         let cmd = or_blank(get(&u.inp, "command"));
         let bare = strip_heredocs(&cmd);
-        if u.name == "Bash"
-            && CHECK_CMD.is_match(&bare)
-            && (in_repo(u.cwd.as_deref().unwrap_or(""), root) || expanduser_text(&bare).contains(root))
-        {
+        let here = u.name == "Bash" && (in_repo(u.cwd.as_deref().unwrap_or(""), root) || expanduser_text(&bare).contains(root));
+        if here && IN_PLACE_EDIT.is_match(&bare) {
+            last_edit = Some(u.idx);
+        }
+        if here && let Some(m) = CHECK_CMD.find(&bare) {
             last_check = Some(u.idx);
-            check_failed = s.result(uid).0;
+            state = check_state(s, uid, &bare, m.end());
         }
     }
     let Some(le) = last_edit else { return };
     match last_check {
         None => line("ME", "files edited, but no test/lint/check ran in this repo this session"),
         Some(lc) if lc < le => line("ME", "files edited after the last check run — run the checks again"),
-        _ if check_failed => line("ME", "the last check run failed — fix it, then run it again"),
+        _ if state == "failed" => line("ME", "the last check run failed — fix it, then run it again"),
+        _ if state == "running" => line("ME", "the last check is still running: wait for its notice, then read its exit line"),
+        _ if state.starts_with("hidden: ") => {
+            line("ME", &format!("the last check's exit code is hidden ({}): read its log or run it again without it", &state[8..]))
+        }
         _ => line("OK", "a check ran after the last edit, and it passed"),
     }
 }

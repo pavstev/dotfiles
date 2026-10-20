@@ -21,12 +21,12 @@ Example wiring in `settings.json` to run `format-after-edit.sh` after edits:
 The hooks directory is symlinked to `~/.claude/hooks` by `./dotfiles`.
 See `format-after-edit.sh` for a sample.
 
-## guard.py
+## guard
 
-`guard.py` and its Rust twin `guard` (`rust/agent-config`; same checks, tested by `rust/agent-config/tools/run_hook_tests.py`) (Python 3, stdlib only, fail-open: any error exits 0 silently) keeps sessions
-cheap. Deny = message on stderr + exit 2. Warn (the W rows) = exit 0 with
+The `guard` Rust bin (`rust/agent-config/src/bin/guard.rs`; fail-open: any error exits 0 silently)
+keeps sessions cheap. Deny = message on stderr + exit 2. Warn (the W rows) = exit 0 with
 `hookSpecificOutput.additionalContext` on stdout, so the call runs and the model reads the note.
-A deny wins over a warning. Tests: `python3 claude/hooks/test_guard.py`.
+A deny wins over a warning. Tests: `cargo test --test guard` in `rust/agent-config`.
 
 | Guard | Event | Rule |
 |-------|-------|------|
@@ -37,7 +37,7 @@ A deny wins over a warning. Tests: `python3 claude/hooks/test_guard.py`.
 | G5 | PreToolUse `SubagentHandback`; SubagentStop | a subagent's hand-back may not exceed its cap by more than 10 percent; at most 2 denies per agent, then it passes |
 | G6 | Stop; PreToolUse `archive_session` | a hand-off file written this turn (`*/handoffs/*.md`) must be in the reply as a file link plus the `Read <path> and do it.` block (one deny); no archive of this session in the same turn |
 | G7 | PreToolUse `Agent` | deny `general-purpose`, `claude` and a missing `subagent_type`; the message names `worker`, `researcher`, `Explore`, `task-implementer`, `Plan` |
-| G8 | PreToolUse `Agent`; SubagentStop | helpers running at once per session: 3 when pace is `ok` or `unknown`, 1 when `ahead`, 0 when `critical`. Each slot is `{id: tool_use_id, t: time}` in the session state file (plain times from the first version still load). SubagentStop frees the oldest slot (not when its hand-back is denied); `guard.py posttoolfailure` (PostToolUseFailure, matcher `Agent`) frees the slot of the failed call's `tool_use_id`; entries over 90 min old are dropped. `flock` guards parallel calls |
+| G8 | PreToolUse `Agent`; SubagentStop | helpers running at once per session: 3 when pace is `ok` or `unknown`, 1 when `ahead`, 0 when `critical`. Each slot is `{id: tool_use_id, t: time}` in the session state file (plain times from the first version still load). SubagentStop frees the oldest slot (not when its hand-back is denied); `guard posttoolfailure` (PostToolUseFailure, matcher `Agent`) frees the slot of the failed call's `tool_use_id`; entries over 90 min old are dropped. `flock` guards parallel calls |
 | G9 | PreToolUse `Skill`, `EnterPlanMode` | `superpowers:brainstorming` and `superpowers:writing-plans` in the main thread are allowed in plan mode, when pace is `ahead` or `critical`, and when the main model is Opus or Fable (newest assistant `message.model` in the transcript). With a Sonnet or Haiku main model they are denied: on `entrypoint: cli` use EnterPlanMode (opusplan); on `entrypoint: claude-desktop` (no opusplan) send a `Plan` helper or pick Opus. An unknown model or entrypoint is allowed. `EnterPlanMode` is denied when pace is `ahead` or `critical` (Sonnet plans without plan mode) |
 | W3 | PreToolUse browser tools (`mcp__Claude_Browser__*`, `mcp__claude-in-chrome__*`) | warn in a main window: at the 6th browser call of a turn (then every 20th), route checks to `ui-verifier` |
 | W4 | PreToolUse `Agent` | warn: past 15 spawns or 1.5M subagent tokens in a session (the `totalTokens` of each Agent result, and of each background task notification once), a budget note on every 5th spawn |
@@ -52,8 +52,8 @@ cost: the lower of the caller's model and the table's (`Explore`, `claude-code-g
 returned as `permissionDecision: allow` + `updatedInput` (the whole tool input) + a note, on the
 same JSON line as the W notes.
 
-**Pace** comes from `pace.py` in this folder (`pace.status()`; `pace.refresh(budget_s=5)` on each
-UserPromptSubmit). Without the module, or on any error, the state is `unknown`. On a prompt, the
+**Pace** comes from the `pace` module (`rust/agent-config/src/pace_core.rs`: status, and a refresh with a
+5 second budget on each UserPromptSubmit). On any error the state is `unknown`. On a prompt, the
 first time a session's state becomes `ahead`, the guard adds one note (used and budget percent,
 what changes); while `critical` it adds the note on every prompt. The last announced state is kept
 in the session state file, and `unknown` does not reset it.
@@ -111,7 +111,7 @@ folder (callers name report files there). Anything else is denied.
 
 Wired in [`claude/settings.json`](../settings.json) (`hooks`). Each command starts with
 `test -r ~/.claude/hooks/rust-bin || exit 0`, so a missing launcher never blocks a tool.
-`rust-bin --hook guard <mode>` runs the Rust `guard` when it is newer than its sources, else
-`guard.py`; with neither a binary nor `python3` it exits 0, silent. It never builds (`dots` does,
-with `scripts/agent-config --bins`). Force one with `RUST_BIN_IMPL=python|rust`. To go back to
-Python for good, revert the commit that switched the commands. Notes: `rust/MIGRATION.md`.
+`rust-bin --hook guard <mode>` runs the Rust `guard` binary built by `dots`; with no binary it
+exits 0, silent. A skill call (no `--hook`) with no binary says `Run: dots`
+and exits 127. It never builds (`dots` does, with `scripts/agent-config --bins`).
+Notes: `rust/MIGRATION.md`.

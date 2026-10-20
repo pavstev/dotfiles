@@ -1,7 +1,7 @@
 ---
 name: ps:bag-mode
 description: Use when the user is about to close the laptop lid or leave with a Mac while Claude sessions, subagents, or background tasks keep running, or asks which tasks are heavy, how long they will stay heavy, how long the session still needs, or how to keep Claude alive in a bag with Amphetamine.
-allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/scripts/bag-check.sh *) Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin whatsleft_scan *)"
+allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin bag_check *) Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin whatsleft_scan *)"
 ---
 
 # Bag Mode
@@ -13,7 +13,7 @@ Mac only. Run `uname -s` first. If it does not print `Darwin`, tell the user "ba
 ## Steps
 
 1. Get the ETA (see "Estimate the ETA" below).
-2. Run `bash ${CLAUDE_SKILL_DIR}/scripts/bag-check.sh --eta <ETA>`. Example: `--eta 45m`.
+2. Run `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin bag_check --eta <ETA>`. Example: `--eta 45m`.
 3. List this session's own subagents and background tasks. Say which one is slowest.
 4. Cut load. Do not start new subagents. Stop idle background tasks you started. Run the script with `--throttle` to move dev servers and Spotlight to background priority.
 5. Run the check again. Show the report. Give the VERDICT.
@@ -77,7 +77,7 @@ Dots: 🟢 LOW, 🟡 MEDIUM, 🔴 HIGH.
 
 ## Undo
 
-`bash ${CLAUDE_SKILL_DIR}/scripts/bag-check.sh --restore` puts throttled processes back to normal.
+`${CLAUDE_SKILL_DIR}/../../hooks/rust-bin bag_check --restore` puts throttled processes back to normal.
 
 ## Other modes
 

@@ -11,7 +11,7 @@ References consulted (June 2026):
 - Claude Code Skills docs — https://docs.claude.com/en/docs/claude-code/skills
 
 The dev-workflow seeds from that sweep (`ps:go-lint`, `ps:readme-writer`) were deleted on
-2026-10-12 for lack of use. The rest were written for this setup. Each skill is checked by `check.py` against:
+2026-10-12 for lack of use. The rest were written for this setup. Each skill is checked by the `skill_check` bin against:
 
 - Claude Code skills reference — https://code.claude.com/docs/en/skills
 - Anthropic skill authoring best practices — https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices
@@ -20,7 +20,7 @@ The dev-workflow seeds from that sweep (`ps:go-lint`, `ps:readme-writer`) were d
 
 ## ps:hurry-up (merged into ps:whatsleft on 2026-10-12)
 
-Session speed scanner, now `ps_whatsleft/scripts/hurry-scan.py`. Adapted from these public ideas, rewritten for this setup
+Session speed scanner, now the `hurry_scan` bin. Adapted from these public ideas, rewritten for this setup
 (read-only, transcript-based, plain short output, `[ME]`/`[YOU]` split):
 
 - context-budget (ECC) — inventory and flag bloat in agents, skills, rules, MCP — https://claudeskills.info/skills/affaan-m/ecc/context-budget/
@@ -107,7 +107,7 @@ Test runs, sonnet at high, "archive this" in a repo whose CLAUDE.md wants one co
 
 ## ps:whatsleft + ps:hurry-up merge, ps:bag-mode shared ETA (2026-10-12)
 
-whatsleft now leads with the deliverable, prints an ETA line and a Tasks table with stop advice, and takes inline args (`kill dead tasks`, `/askme`). hurry-up's scan lives on as `scripts/hurry-scan.py` (SPEED rows). bag-mode reads its ETA from `whatsleft-scan.py --eta`. Test runs, sonnet at high:
+whatsleft now leads with the deliverable, prints an ETA line and a Tasks table with stop advice, and takes inline args (`kill dead tasks`, `/askme`). hurry-up's scan lives on as the `hurry_scan` bin (SPEED rows). bag-mode reads its ETA from `whatsleft_scan --eta`. Test runs, sonnet at high:
 - whatsleft baseline on "/ps:whatsleft kill dead tasks": killed nothing ("a focus, not a go"), no ETA, no task table, header first.
 - whatsleft with skill: `Deliverable:` first, ETA line, Tasks table, the silent watcher stopped in the same turn, the finished build left alone.
 - bag-mode baseline: own deadline arithmetic. With skill: ran the shared scan, saw it could not see the stated deadlines, added them. Gap closed after the run: add known phases and deadlines to the scan's ETA and say so.
@@ -135,7 +135,7 @@ The scan's process list printed whole command lines, and one held a real API key
 ## ps:harness-optimize (rebuilt 2026-10-14)
 
 Brought back as a transcript-driven review, replacing the old config-only audit removed on 2026-10-12.
-`scripts/harness_stats.py` measures sessions per period (cuts = harness push groups) and per project,
+The `harness_stats` bin measures sessions per period (cuts = harness push groups) and per project,
 clusters tool errors (with a per-day view) and lists unused skills. Ideas from Anthropic's Claude Code
 docs (memory, skills, hooks, prompt caching), the context-engineering and long-running-harness posts,
 skillscope (skill usage from Skill tool_use), and the AGENTS.md studies (arXiv 2602.11988, 2601.20404).
@@ -150,7 +150,7 @@ Test runs, sonnet at high, "did my harness changes help, propose global and per-
 
 ## ps:whatsleft does its own rows, ps:askme asks the rest (2026-10-14)
 
-whatsleft no longer waits for "go". It routes every row through `scripts/route.py` (DO, ASK, YOU, WAIT, KEEP, DONE; the costly questions first, capped at 4), does the DO rows, hands the ASK rows to askme's new hand-off mode, and runs `ps:mic-drop` when nothing is left to ask. The same steps name the Cursor tools (`AskQuestion`, `kill <pid>`). `test_route.py` also checks that the three skills keep pointing at each other; pre-commit runs every `scripts/test_*.py` under `claude/skills/`. Test runs, sonnet at high, one scenario (CSV export, tests, deploy, env var behind an AWS login, idle dev server), in Claude Code and in Cursor:
+whatsleft no longer waits for "go". It routes every row through the `route` bin (DO, ASK, YOU, WAIT, KEEP, DONE; the costly questions first, capped at 4), does the DO rows, hands the ASK rows to askme's new hand-off mode, and runs `ps:mic-drop` when nothing is left to ask. The same steps name the Cursor tools (`AskQuestion`, `kill <pid>`). A test in `route.rs` also checks that the three skills keep pointing at each other; pre-commit runs `cargo test --test skill_bins`. Test runs, sonnet at high, one scenario (CSV export, tests, deploy, env var behind an AWS login, idle dev server), in Claude Code and in Cursor:
 - Baseline: both did read-only checks only, put every decision in a text table, used no question tool, and left lint, tests and the dev server for "go". Both sent the env var to the user without trying a CLI or the browser. Cursor could not resolve `${CLAUDE_SKILL_DIR}`.
 - With skill: both wrote the test, ran lint and tests, committed, asked one question round, and held the push behind the missing production value. Gaps closed after the run: read the user's rules before asking (main vs PR), `prod-config` counts as risky, a push waits on its prerequisites, STOP tasks are a question unless `kill dead tasks`, labels carry the meaning when the tool has no descriptions. Routing then moved into `route.py`, so these rules no longer depend on the agent's reading.
 - With route.py: 5 real route.py rounds, 4 questions in one call, then ps:mic-drop came back clean. Gaps closed after the run: a question that needs another question's answer waits a round, `skip` closes a row (not `done`), an unchecked value is never the recommended option, the short update comes before mic-drop (it may archive the chat).

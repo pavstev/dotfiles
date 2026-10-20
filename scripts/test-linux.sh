@@ -246,8 +246,8 @@ check "no warning files left in /tmp" '! ls /tmp/dots-warn.* 2>/dev/null | grep 
 TOOLS_PATH='export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:$PATH"'
 check "every tool of tools.list is installed" "$TOOLS_PATH"'
   cd ~/dotfiles && bash scripts/tools --check'
-check "git, zsh, python3 and the key tools start" "$TOOLS_PATH"'
-  miss=""; for t in git zsh python3 rg fd bat fzf jq gh mise uv claude; do
+check "git, zsh and the key tools start" "$TOOLS_PATH"'
+  miss=""; for t in git zsh rg fd bat fzf jq gh mise uv claude; do
     command -v "$t" >/dev/null || miss="$miss $t"; done
   [ -z "$miss" ] || { echo "missing:$miss"; exit 1; }
   [ "$(echo "{\"a\":7}" | jq -r .a)" = 7 ] || { echo "jq does not read JSON"; exit 1; }
@@ -266,7 +266,7 @@ check "zsh -ic exit prints nothing" '
 
 check "bash -n on every shell script" '
   cd ~/dotfiles && rc=0
-  for f in dotfiles bootstrap.sh claude/skill-sync.sh claude/statusline.sh claude/hooks/*.sh scripts/*.sh \
+  for f in dotfiles bootstrap.sh claude/hooks/*.sh claude/hooks/rust-bin scripts/*.sh \
            scripts/git-hooks/* claude/skills/*/scripts/*.sh; do
     [ -f "$f" ] || continue
     head -1 "$f" | grep -q "^#!.*sh" && { bash -n "$f" || rc=1; }
@@ -287,25 +287,24 @@ check "Opencode config in a temp HOME" '
   grep -q "\"theme\": \"copper\"" "$H/.config/opencode/tui.json" || exit 1
   grep -q "generated-by: dotfiles" "$H/.config/opencode/AGENTS.md" || exit 1'
 
-check "guard hook tests"        'cd ~/dotfiles && python3 claude/hooks/test_guard.py'
-check "skill check"             'cd ~/dotfiles && python3 claude/skills/check.py'
-check "agent-config tests"      'cd ~/dotfiles && python3 scripts/test_agent_config.py'
-check "cursor guard tests"      'cd ~/dotfiles && python3 cursor/hooks/test_guard_cursor.py'
+# The Rust tests (guard, pace, agent-config, skills) run with `cargo test` on the host, not here.
+check "skill check"             'cd ~/dotfiles && bash claude/hooks/rust-bin skill_check -q'
 check "skill scripts run" '
   set -e -o pipefail
   export PATH="/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:$PATH"
   cd ~/dotfiles
-  out="$(bash "claude/skills/ps_mic-drop/scripts/mic-check.sh" --no-fetch || true)"   # exit 1 = NOT CLEAN, fine
+  rb="bash claude/hooks/rust-bin"
+  out="$($rb mic_check --no-fetch || true)"   # exit 1 = NOT CLEAN, fine
   printf "%s" "$out" | grep -q "VERDICT:"
   bash "claude/skills/ps_handoff/scripts/handoff-path.sh" test-topic | grep -q test-topic
-  python3 "claude/skills/ps_whatsleft/scripts/whatsleft-scan.py" --eta | grep -q VERDICT
-  # hurry-scan exits 1 with this message when the machine has no Claude session yet
-  rc=0; out="$(python3 "claude/skills/ps_whatsleft/scripts/hurry-scan.py" --brief 2>&1)" || rc=$?
+  $rb whatsleft_scan --eta | grep -q VERDICT
+  # hurry_scan exits 1 with this message when the machine has no Claude session yet
+  rc=0; out="$($rb hurry_scan --brief 2>&1)" || rc=$?
   [ "$rc" -eq 0 ] || printf "%s" "$out" | grep -q "No session transcript"
-  hs="claude/skills/ps_harness-optimize/scripts/harness_stats.py"; j="$(mktemp)"
-  python3 "$hs" collect --out "$j" >/dev/null && python3 "$hs" inventory --in "$j" >/dev/null
-  bash "claude/skills/ps_bag-mode/scripts/bag-check.sh" --eta 5m | grep -q "NOT APPLICABLE"
-  echo "{}" | bash claude/statusline.sh >/dev/null'
+  j="$(mktemp)"
+  $rb harness_stats collect --out "$j" >/dev/null && $rb harness_stats inventory --in "$j" >/dev/null
+  $rb bag_check --eta 5m | grep -q "NOT APPLICABLE"
+  echo "{}" | $rb statusline >/dev/null'
 
 # ---- 5. result ---------------------------------------------------------------
 if (( fails == 0 )); then

@@ -17,10 +17,10 @@ shipped app and CLI bundles.
 ## How it runs
 
 - `./dotfiles` picks a profile (`dots`, `settings::profile`), links `~/.claude`,
-  runs `claude/skill-sync.sh`, then the install steps. Step `60-cursor`
+  links the skills, then runs the install steps. Step `60-cursor`
   installs the Cursor CLI if missing, installs the Brewfile editor extensions into Cursor, and
-  runs `scripts/agent-config.py cursor`.
-- `scripts/agent-config.py` (Python 3 stdlib) generates every Cursor file. It never writes
+  runs `scripts/agent-config cursor`.
+- `scripts/agent-config` (the Rust build in `rust/agent-config`) generates every Cursor file. It never writes
   under `~/.claude`.
 - Generated Markdown files carry a `generated-by: dotfiles` marker. A file without the marker
   is the user's: it is left alone and a warning is printed. JSON files are merged key by key;
@@ -45,12 +45,12 @@ exists (saved as `PROFILE` in the settings), else `shared`.
 | `~/.claude/CLAUDE.md` | `~/.cursor/rules/claude-global.mdc` (`alwaysApply: true`) | generate (adds frontmatter + a short tool-name note, which also lists the 7 `subagent_type` values Cursor accepts and tells the agent to run a named agent as `generalPurpose` with "Read ~/.claude/agents/<name>.md first and follow it"; the owner profile adds `owner.md` and writes the file 0600) |
 | `outputStyle` + `output-styles/<name>.md` | `~/.cursor/rules/claude-output-style.mdc` (`alwaysApply: true`) | generate from the active style |
 | project `CLAUDE.md` / `AGENTS.md` | same files | native (Cursor reads both) |
-| `skills/ps_*` | `~/.claude/skills/ps_*` | native compat; `skill-sync.sh` no longer links them into `~/.cursor/skills` (two roots can list them twice) |
+| `skills/ps_*` | `~/.claude/skills/ps_*` | native compat; `dots` no longer links them into `~/.cursor/skills` (two roots can list them twice) |
 | `agents/*.md` | `~/.cursor/agents/*.md` | generate (`model: inherit`, `readonly: true` when tools are read-only); wins over the native `~/.claude/agents` import |
-| `hooks/guard.py` (G3 context ceiling) | `~/.cursor/hooks.json` -> `cursor/hooks/guard_cursor.py` on `subagentStart` (IDE) and `preToolUse` for `Task` (the CLI fires no `subagentStart`) | merge entries; the adapter reuses `guard.py` limits |
+| `guard` (G3 context ceiling) | `~/.cursor/hooks.json` -> `bash <repo>/claude/hooks/rust-bin --hook guard_cursor <mode>` on `subagentStart` (IDE) and `preToolUse` for `Task` (the CLI fires no `subagentStart`) | merge entries; the `guard_cursor` bin keeps the `guard` limits |
 | `permissions.allow/deny` | `~/.cursor/cli-config.json` `permissions` | merge (translated: `Bash(x:*)` -> `Shell(x)`, exact `Bash(x y)` -> `Shell(x:y)`, deny `Read(./p)` -> `Read(**/p)`) |
 | `includeCoAuthoredBy: false`, `attribution` | `cli-config.json` `attribution.attributeCommitsToAgent/PRsToAgent = false` | merge (forced false) |
-| `statusLine` -> `statusline.sh` | `cli-config.json` `statusLine` (CLI only) | merge, same script |
+| `statusLine` -> `rust-bin statusline` | `cli-config.json` `statusLine` (CLI only) | merge, same command |
 | `enabledPlugins` (cloudflare) | Cursor imports Claude plugins | native compat |
 | MCP | `~/.cursor/mcp.json` from `cursor/mcp.json` (`cloudflare-docs`) | merge; on every profile only with `CURSOR_MCP="on"` (`dots settings`) or `DOTFILES_MCP=on` |
 | editor settings, keybindings | `~/Library/Application Support/Cursor/User/*` (macOS), `~/.config/Cursor/User/*` (Linux), `%APPDATA%\Cursor\User\*` (Windows) | link (unchanged) |
@@ -75,7 +75,7 @@ exists (saved as `PROFILE` in the settings), else `shared`.
 | Pylance | Not on Open VSX. Cursor ships its own Python language server. |
 | Custom agents (`~/.cursor/agents`) | Neither the CLI nor the app (3.24.12) offers them to the Task tool. The app watches the folder and caches 2 agents, but a live app chat (2026-10-13) got `Invalid enum value. Expected 'generalPurpose' \| 'explore' \| 'cursor-guide' \| 'ci-investigator' \| 'bugbot' \| 'security-review' \| 'best-of-n-runner', received 'code-reviewer'`. The model then ran `generalPurpose` with the agent's prompt. So the generated rule now says that up front (see the first mapping row), and the stand-in reads `~/.claude/agents/<name>.md`. The generated `~/.cursor/agents` files stay: they do no harm and a project can copy them. Agents in the open project's own `.cursor/agents` do work: a live CLI run with `code-reviewer.md` there got `subagent_type: code-reviewer` accepted (2026-10-13). So copy an agent into a project's `.cursor/agents` to use it there. |
 | Read deny vs the shell | Deny rules stop the Read tool (`Read(**/.env)` denied live), but `cat .env` through the shell still works. Claude Code has the same gap. |
-| Agent frontmatter hooks | `scripts/agent-config.py` copies only `name`, `description` and `readonly` to `~/.cursor/agents`, so the ui-verifier's `guard.py scratch` write hook does not reach Cursor. Guard G5 (hand-back cap) has no Cursor mirror either: Cursor showed no over-cap hand-back yet (2026-10-14). |
+| Agent frontmatter hooks | `scripts/agent-config` copies only `name`, `description` and `readonly` to `~/.cursor/agents`, so the ui-verifier's `guard scratch` write hook does not reach Cursor. Guard G5 (hand-back cap) has no Cursor mirror either: Cursor showed no over-cap hand-back yet (2026-10-14). |
 | Cursor login | Cursor has no login file to ship. The first guided run offers `agent login` and opens Cursor.app to sign in there. |
 
 ## Decisions

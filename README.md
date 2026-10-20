@@ -70,8 +70,8 @@ What is different on Windows:
 - Your own `~/.gitconfig` stays. Only the git name and email are added to it.
 - The macOS-only steps and the zsh setup do not run.
 - `scripts/agent-config` generates the Opencode/Claude/Cursor config. It runs the Rust build in
-  `rust/agent-config` (built on first use when `cargo` is installed), so Python is not needed
-  there. With no `cargo` it falls back to `python3` (install it via WinGet) or the steps warn and skip.
+  `rust/agent-config` (built on first use when `cargo` is installed). Python is not needed
+  anywhere. With no `cargo` the steps warn and skip, and `dots` installs Rust on its next run.
 
 ## Check that it works
 

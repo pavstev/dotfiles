@@ -15,10 +15,10 @@ fn cursor_smoke() {
     let repo = tmp.join("repo");
     fs::create_dir_all(home.join(".cursor")).unwrap();
     fs::create_dir_all(repo.join("claude")).unwrap();
-    fs::create_dir_all(repo.join("cursor/hooks")).unwrap();
+    fs::create_dir_all(repo.join("claude/hooks")).unwrap();
     fs::write(repo.join("claude/CLAUDE.md"), "# H\n").unwrap();
     fs::write(repo.join("claude/settings.json"), "{}\n").unwrap();
-    fs::write(repo.join("cursor/hooks/guard_cursor.py"), "# g\n").unwrap();
+    fs::write(repo.join("claude/hooks/rust-bin"), "# g\n").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_agent-config"))
         .args(["cursor", "--profile", "shared"])
         .env("HOME", &home)
