@@ -12,6 +12,7 @@ pub mod git;
 pub mod install;
 pub mod java;
 pub mod link;
+pub mod looks;
 pub mod menu;
 pub mod os;
 pub mod settings;
@@ -37,6 +38,7 @@ pub fn repo() -> PathBuf {
 fn agent_config(args: &[&str]) -> bool { crate::run_args(args) == 0 }
 
 pub fn main() -> i32 {
+    let started = std::time::Instant::now();
     let repo = repo();
     let r = repo.to_string_lossy().into_owned();
     os::set_env("DOTFILES_REPO", &r);
@@ -141,6 +143,9 @@ pub fn main() -> i32 {
         warn("dots settings asks questions, so run it in a terminal");
     }
 
+    // The look changes are optional: ask once while LOOKS is not set (also after an update).
+    looks::ask_if_unset();
+
     let profile = settings::profile();
     os::set_env("DOTFILES_PROFILE", &profile);
 
@@ -218,18 +223,19 @@ pub fn main() -> i32 {
         n
     };
     os::unset_env("DOTFILES_WARN_FILE");
+    let took = out::duration(started.elapsed().as_secs());
     if nwarn > 0 {
         let w = if nwarn == 1 { "warning" } else { "warnings" };
-        warn(&format!("dotfiles: done with {} {} (profile: {}). Read the ! lines above.", nwarn, w, profile));
+        warn(&format!("dotfiles: done in {} with {} {} (profile: {}). Read the ! lines above.", took, nwarn, w, profile));
     } else {
-        ok(&format!("dotfiles: done (profile: {})", profile));
+        ok(&format!("dotfiles: done in {} (profile: {})", took, profile));
     }
     0
 }
 
 /// Run a command with its output hidden. True when it worked.
 fn quiet(cmd: &mut Command) -> bool {
-    cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// New commits came in: run the new `./dotfiles` for the rest, with the same warn file.
@@ -259,8 +265,23 @@ pub fn links() -> Vec<&'static str> {
         v.push(".config/gh/config.yml");
     } else {
         v.extend([".config/atuin", ".config/bat", ".config/bottom", ".config/fastfetch", ".config/gh/config.yml",
-            ".config/ghostty", ".config/lazygit", ".config/starship.toml", ".config/tealdeer", ".config/yazi",
+            ".config/ghostty", ".config/lazygit", ".config/tealdeer", ".config/yazi",
             ".config/zsh", ".gitconfig", ".zshrc"]);
+        if looks::on("starship") { v.push(".config/starship.toml"); }
+    }
+    v
+}
+
+/// The VS Code and Cursor settings: (repo file, link in $HOME). The repo keeps them under
+/// their Mac path in home/; each OS looks for them in its own place.
+pub fn editor_links(repo: &Path, home: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let editor_cfg = if os::is_macos() { "Library/Application Support" } else if os::is_windows() { "AppData/Roaming" } else { ".config" };
+    let mut v = Vec::new();
+    for app in ["Code", "Cursor"] {
+        for f in ["settings.json", "keybindings.json"] {
+            v.push((repo.join("home/Library/Application Support").join(app).join("User").join(f),
+                home.join(editor_cfg).join(app).join("User").join(f)));
+        }
     }
     v
 }
@@ -271,14 +292,12 @@ fn link_files(repo: &Path) {
     link::take_count();
     if os::is_windows() { git::windows_gitconfig(); }
     for item in links() { link::link_item(&repo.join("home").join(item), &home.join(item), true); }
-    // VS Code and Cursor settings: the repo keeps them under their Mac path in home/. The
-    // same files link to where each OS looks for them.
-    let editor_cfg = if os::is_macos() { "Library/Application Support" } else if os::is_windows() { "AppData/Roaming" } else { ".config" };
-    for app in ["Code", "Cursor"] {
-        for f in ["settings.json", "keybindings.json"] {
-            link::link_item(&repo.join("home/Library/Application Support").join(app).join("User").join(f),
-                &home.join(editor_cfg).join(app).join("User").join(f), true);
-        }
+    // The optional look changes (LOOKS): an item that is off loses our link, and the
+    // file it replaced comes back.
+    let starship = ".config/starship.toml";
+    if !os::is_windows() && !looks::on("starship") { link::unlink_item(&repo.join("home").join(starship), &home.join(starship)); }
+    for (src, dst) in editor_links(repo, &home) {
+        if looks::on("editor") { link::link_item(&src, &dst, true); } else { link::unlink_item(&src, &dst); }
     }
     // The Claude and Opencode config below needs no cargo here: it runs in this
     // process. Step 05 installs the Linux prerequisites.

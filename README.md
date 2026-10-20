@@ -22,6 +22,8 @@
    - 👤 your name and ✉️ your email, for git commits
    - ⚙️ the settings menu: Java, private rules, private words and more. Pick ✅ Done to
      keep the defaults.
+   - 🎨 the looks: the Starship prompt, the VS Code and Cursor settings, the Nerd Font. All
+     are optional. Mark none to keep your own look.
    - ✨ an optional extra: the Claude desktop app
 5. Wait. The first run takes about 20 to 40 minutes.
 6. 🔑 Pick what to sign in to: GitHub, Claude Code, Opencode, Cursor. A browser opens for each one.
@@ -66,7 +68,8 @@ What is different on Windows:
 
 - No Homebrew. The command-line tools in `tools.list` come from mise (installed with WinGet), with
   WinGet and Scoop as fallbacks. Claude Code comes from WinGet (`Anthropic.ClaudeCode`). The shell-only
-  tools (starship, atuin, zoxide and others) are for macOS and Linux.
+  tools (starship, atuin, zoxide and others) are for macOS and Linux. The VS Code and Cursor
+  settings link only when you pick `editor` in the looks.
 - Your own `~/.gitconfig` stays. Only the git name and email are added to it.
 - The macOS-only steps and the zsh setup do not run.
 - `scripts/agent-config` generates the Opencode/Claude/Cursor config. It runs the Rust build in
@@ -86,6 +89,10 @@ What is different on Windows:
 - Edit the files in `~/dotfiles/home/`. Your machine uses the change at once.
 - Run `dots settings` to change a setting: git name, Java, private rules and more. The
   settings stay on this machine, never in git. `settings.example` lists them all.
+- The look changes (Starship prompt, editor settings, Nerd Font) are optional. Turn them on or
+  off with `dots settings` > Looks. Remove them by hand: [docs/guide.md](docs/guide.md#looks-starship-editor-settings-and-the-nerd-font).
+- A long step prints `still working on <step> (1m20s)…` each minute, and the last line is
+  always `dotfiles: done in <time>`.
 - Run `dots doctor` to check the setup. It prints PASS or FAIL per check and names the fix.
 - Working habits are opt-in **presets** (workflow, pace, models, clock, plain-writing,
   no-ai-attribution, ship-to-main). A new install turns on all but `ship-to-main`. Pick them

@@ -189,13 +189,26 @@ pub fn summary(label: &str) {
     }
 }
 
+/// Seconds as a short time: "42s", "6m12s", "1h03m".
+pub fn duration(secs: u64) -> String {
+    if secs < 60 { format!("{}s", secs) }
+    else if secs < 3600 { format!("{}m{:02}s", secs / 60, secs % 60) }
+    else { format!("{}h{:02}m", secs / 3600, secs % 3600 / 60) }
+}
+
 /// A plain line, the way a script prints it (no prefix, no step header).
 pub fn plain(msg: &str) { emit(msg, false); }
 pub fn plain_err(msg: &str) { emit(msg, true); }
 
 #[cfg(test)]
 mod tests {
-    use super::colors_on;
+    use super::{colors_on, duration};
+    #[test]
+    fn durations() {
+        assert_eq!(duration(42), "42s");
+        assert_eq!(duration(372), "6m12s");
+        assert_eq!(duration(3780), "1h03m");
+    }
     #[test]
     fn plain_theme_drops_color() {
         assert!(colors_on(false, false, true));

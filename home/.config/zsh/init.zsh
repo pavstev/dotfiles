@@ -23,7 +23,7 @@ unset _d
 
 # ---- Oh My Zsh -------------------------------------------------------------
 export ZSH="$HOME/.oh-my-zsh"
-ZSH_THEME=""                       # prompt is handled by Starship
+ZSH_THEME=""                       # prompt: Starship, or the plain one below
 DISABLE_AUTO_TITLE="false"
 ENABLE_CORRECTION="false"
 COMPLETION_WAITING_DOTS="true"
@@ -94,8 +94,13 @@ command -v atuin >/dev/null && eval "$(atuin init zsh --disable-up-arrow)"
 command -v zoxide   >/dev/null && eval "$(zoxide init zsh)"            # smart cd  (z <dir>)
 command -v mise     >/dev/null && eval "$(mise activate zsh)"         # runtime versions
 command -v carapace >/dev/null && source <(carapace _carapace zsh)    # multi-shell completions
-command -v starship >/dev/null && eval "$(starship init zsh)"         # prompt (load last)
-# starship reads ~/.config/starship.toml automatically (symlinked from this repo).
+# Prompt (load last). Starship is one of the optional looks (dots settings > Looks): it runs
+# only while dots links ~/.config/starship.toml. Otherwise a plain prompt: folder and %/#.
+if command -v starship >/dev/null && [[ -e $HOME/.config/starship.toml ]]; then
+  eval "$(starship init zsh)"
+else
+  PROMPT='%F{173}%~%f %# '
+fi
 
 # ---- zsh-autosuggestions tuning -------------------------------------------
 ZSH_AUTOSUGGEST_STRATEGY=(history completion)

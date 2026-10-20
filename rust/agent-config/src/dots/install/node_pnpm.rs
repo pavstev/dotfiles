@@ -15,6 +15,8 @@ pub fn step(_repo: &Path) {
         return;
     }
     if os::is_musl() { return; }
+    // corepack asks "download pnpm? [Y/n]" before a download; the commands below hide it.
+    os::set_env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0");
 
     if stdout_of("mise", &["ls", "node"]).lines().any(|l| !l.is_empty()) {
         skip("Node (mise)");

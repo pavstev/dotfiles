@@ -34,10 +34,38 @@ pub fn run_all(_repo: &Path, own_steps: bool) {
         }
         step_end();
         if let Some(f) = install::find(name) {
+            // The sign-in step asks questions: no "still working" lines over them.
+            let ticker = if name == "90-sign-in" { None } else { Some(still_working(name)) };
             f(_repo);
+            drop(ticker);
             step_end();
         }
     }
+}
+
+/// While a step runs, say it is still working: after 20 seconds, then every minute. So a
+/// long download never looks like a frozen terminal. The lines stop when the sender drops.
+fn still_working(name: &'static str) -> std::sync::mpsc::Sender<()> {
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::time::{Duration, Instant};
+    let (tx, rx) = channel::<()>();
+    let start = Instant::now();
+    std::thread::spawn(move || {
+        let mut next = 20;
+        loop {
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Err(RecvTimeoutError::Timeout) => {}
+                _ => return,
+            }
+            let secs = start.elapsed().as_secs();
+            if secs < next { continue; }
+            next += 60;
+            let title = crate::out::step_title();
+            let what = if title.is_empty() { name.to_string() } else { title };
+            info(&format!("still working on {} ({})…", what, crate::out::duration(secs)));
+        }
+    });
+    tx
 }
 
 #[cfg(test)]

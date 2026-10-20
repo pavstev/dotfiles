@@ -162,6 +162,20 @@ run run4b.log
 printf 'PRESETS=""\n' >>"$SETTINGS"
 run run4c.log
 
+# 5b. Looks: off until picked. On links Starship; off removes the link and brings back the
+#     file it replaced.
+SS="$H/.config/starship.toml"
+[[ ! -L "$SS" ]] && pass "no Starship link while LOOKS is not set" || bad "Starship linked while LOOKS is not set"
+printf 'my prompt\n' >"$SS"
+printf 'LOOKS="starship"\n' >>"$SETTINGS"
+run run4d.log
+[[ "$(readlink "$SS")" == "$R/home/.config/starship.toml" ]] && pass "LOOKS=starship links the prompt" || bad "LOOKS=starship did not link the prompt"
+printf 'LOOKS="none"\n' >>"$SETTINGS"
+run run4e.log
+[[ ! -L "$SS" && "$(cat "$SS" 2>/dev/null)" == "my prompt" ]] && pass "LOOKS=none brings back the old file" || bad "LOOKS=none did not restore the old file"
+rm -f "$SS"
+printf 'LOOKS=""\n' >>"$SETTINGS"
+
 # 6. A new commit on origin: the run pulls it and restarts with the new script.
 tgit clone -q "$T/origin.git" "$T/other" &&
   sed 's/^set -u$/set -u; echo "dotfiles: the new shim ran" >\&2/' "$T/other/dotfiles" >"$T/dotfiles.new" &&
@@ -196,12 +210,12 @@ rc=0; DOTFILES_REPO="$T/missing.git" DOTFILES="$T/bs3" HOME="$H2" GIT_CONFIG_GLO
 # 10. The last line: the done line, or the warning count of every step. A test step in the
 #     pull from a missing origin warns once; the count file is gone after the run.
 mkdir -p "$T/tmp"
-[[ "$(tail -n 1 "$T/run3.log")" =~ ^✓\ dotfiles:\ done\ \(profile:\ [a-z]+\)$ ]] && pass "a clean run ends with the done line" \
+[[ "$(tail -n 1 "$T/run3.log")" =~ ^✓\ dotfiles:\ done\ in\ [0-9hms]+\ \(profile:\ [a-z]+\)$ ]] && pass "a clean run ends with the done line" \
   || bad "clean run last line: $(tail -n 1 "$T/run3.log")"
 git -C "$R" remote set-url origin "$T/no-such-origin.git"     # the pull fails: one warning
 run run10.log TMPDIR="$T/tmp"
 git -C "$R" remote set-url origin "$T/origin.git"
-grep -q '^!  dotfiles: done with 1 warning (profile: ' "$T/run10.log" && pass "the last line counts the warnings of a run" \
+grep -q '^!  dotfiles: done in [0-9hms]* with 1 warning (profile: ' "$T/run10.log" && pass "the last line counts the warnings of a run" \
   || bad "warning count line missing (log: run10.log)"
 [[ -z "$(ls "$T/tmp" | grep dots-warn)" ]] && pass "no warning count file left" || bad "warning count file left in TMPDIR"
 
@@ -360,7 +374,7 @@ if [[ "$(uname -s)" == Darwin ]] && command -v brew >/dev/null 2>&1; then
   printf 'brew "no-such-formula-dots-test"\n' >"$R/Brewfile"
   run step20b.log DOTFILES_STEPS=20-brew-bundle
   grep -q 'Some Brewfile entries failed' "$T/step20b.log" && grep -q 'fix-brew-permissions.sh' "$T/step20b.log" \
-    && grep -q 'done with 3 warnings' "$T/step20b.log" && pass "step 20 warns about a failed Brewfile and goes on" \
+    && grep -q 'done in [0-9hms]* with 3 warnings' "$T/step20b.log" && pass "step 20 warns about a failed Brewfile and goes on" \
     || bad "step 20 failing Brewfile (log: step20b.log): $(tail -n 5 "$T/step20b.log" | tr '\n' '|')"
   ! grep -q '^Using \|brew bundle. complete' "$T/step20b.log" && pass "step 20 hides brew's Using lines" || bad "step 20 printed a Using line"
   cp "$T/Brewfile.keep" "$R/Brewfile"

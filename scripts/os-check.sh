@@ -128,17 +128,74 @@ run_linux() {
   return $rc
 }
 
+# UTM answers through Apple Events, and they time out. utmctl then prints "OSStatus error -1712" and
+# still exits 0, or hangs for good. So every call here has a time limit and a check of its output.
+WIN_CLONE="" WIN_UTMCTL="" WIN_UTM_OURS=0
+
+# win_ctl <seconds> <utmctl args...>: prints the output. Fails on a timeout, a non-zero exit
+# or an "OSStatus error" in the output. (macOS has no `timeout`; perl is always there.)
+win_ctl() {
+  local secs="$1" out rc=0
+  shift
+  out="$(perl -e 'alarm shift; exec @ARGV' "$secs" "$WIN_UTMCTL" "$@" 2>&1)" || rc=$?
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+  ((rc == 0)) || return "$rc"
+  ! grep -q 'OSStatus error' <<<"$out"
+}
+
+# win_has <name>: true when `utmctl list` answers and shows the VM. (No pipe into grep -q:
+# with pipefail an early grep exit would fail the pipe.)
+win_has() {
+  local out
+  out="$(win_ctl 20 list 2>/dev/null)" && grep -qw -- "$1" <<<"$out"
+}
+
+# win_listed <name> <seconds>: wait until `utmctl list` shows the VM.
+win_listed() {
+  local end=$((SECONDS + $2))
+  while ((SECONDS < end)); do
+    win_has "$1" && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# win_quit_utm: quit UTM, but only a UTM this run started (a hung one needs the quit).
+win_quit_utm() {
+  local i
+  ((WIN_UTM_OURS)) || return 1
+  osascript -e 'tell application "UTM" to quit' >/dev/null 2>&1 || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x UTM >/dev/null || return 0
+    sleep 1
+  done
+  pkill -x UTM 2>/dev/null || true
+  sleep 1
+}
+
 # win_cleanup: stop and delete the check clone. Never touches win11-golden.
-WIN_CLONE="" WIN_UTMCTL=""
 win_cleanup() {
-  local vm="$WIN_CLONE" i
+  local vm="$WIN_CLONE" i out
   WIN_CLONE=""
   [[ "$vm" == win11-check-* ]] || return 0
   for i in 1 2 3; do
-    "$WIN_UTMCTL" stop "$vm" --kill >/dev/null 2>&1 || true
-    "$WIN_UTMCTL" delete "$vm" >/dev/null 2>&1 && return 0
+    win_ctl 30 stop "$vm" --kill >/dev/null 2>&1 || true
+    win_ctl 30 delete "$vm" >/dev/null 2>&1 || true
+    # Trust the list, not the exit code. A list that gives no answer means UTM hangs.
+    if out="$(win_ctl 20 list 2>/dev/null)"; then
+      grep -qw -- "$vm" <<<"$out" || return 0
+    else
+      win_quit_utm || true
+    fi
     sleep 2
   done
+  echo "WARN  clone $vm is still there. Quit and reopen UTM, then delete it by hand."
+}
+
+# win_exit: the exit trap. Remove the clone, then close a UTM this run opened.
+win_exit() {
+  win_cleanup
+  if ((WIN_UTM_OURS)); then win_quit_utm || true; fi
 }
 
 run_windows() {
@@ -147,10 +204,16 @@ run_windows() {
   u="$(command -v utmctl || echo /Applications/UTM.app/Contents/MacOS/utmctl)"
   if [[ ! -x "$u" ]]; then
     miss+=("Install UTM: brew install --cask utm")
+  else
+    WIN_UTMCTL="$u"
+    pgrep -x UTM >/dev/null || WIN_UTM_OURS=1
+    trap 'win_exit' EXIT
+    trap 'win_exit; exit 130' INT TERM
   fi
-  if [[ ! -x "$u" ]] || ! "$u" list 2>/dev/null | grep -qw "$golden"; then
+  if [[ ! -x "$u" ]] || ! win_has "$golden"; then
     miss+=("Build the Windows 11 Arm64 VM $golden in UTM: bash scripts/win-golden.sh")
     miss+=("  (it needs the Windows ISO in ~/VMs/iso; the script says where to get it)")
+    miss+=("  (or UTM does not answer: quit it and run this again)")
   fi
   [[ -f "$key" ]] || miss+=("The SSH key $key is missing (scripts/win-golden.sh makes it)")
   if ((${#miss[@]})); then
@@ -158,29 +221,47 @@ run_windows() {
     printf '  %s\n' "${miss[@]}"
     return 1
   fi
-  if "$u" status "$golden" 2>/dev/null | grep -qvi stopped; then
+  local st rc
+  st="$(win_ctl 20 status "$golden" 2>&1)" || { echo "FAIL  UTM gave no status for $golden: $st"; return 1; }
+  if ! grep -qi '^stopped' <<<"$st"; then
     echo "FAIL  $golden is not shut down. os-check never starts it: shut it down in UTM"
     return 1
   fi
 
-  WIN_UTMCTL="$u"
-  trap 'win_cleanup' EXIT
-  trap 'win_cleanup; exit 130' INT TERM
   # A clone left by a run that was killed hard.
   local old
-  while IFS= read -r old; do WIN_CLONE="$old"; win_cleanup; done < <("$u" list | awk '$3 ~ /^win11-check-/ {print $3}')
+  while IFS= read -r old; do WIN_CLONE="$old"; win_cleanup; done < <(win_ctl 20 list 2>/dev/null | awk '$3 ~ /^win11-check-/ {print $3}')
 
   local vm="win11-check-$(date +%Y%m%d-%H%M%S)" ip="" end ssh_o
   ssh_o=(-i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no
          -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=5 -o ServerAliveInterval=15)
   echo "== clone $golden to $vm"
+  local try ok=0
+  for try in 1 2; do
+    WIN_CLONE="$vm"
+    if win_ctl 120 clone "$golden" --name "$vm" && win_listed "$vm" 60; then ok=1; break; fi
+    echo "   clone try $try failed"
+    win_cleanup # a half-made clone goes before the next try
+    sleep 5
+  done
+  ((ok)) || { echo "FAIL  couldn't clone $golden (OSStatus error or no clone in the list)"; return 1; }
   WIN_CLONE="$vm"
-  "$u" clone "$golden" --name "$vm" || { echo "FAIL  couldn't clone $golden"; return 1; }
-  "$u" start "$vm" || { echo "FAIL  couldn't start $vm"; return 1; }
+  ok=0
+  for try in 1 2 3; do
+    rc=0
+    win_ctl 60 start "$vm" || rc=$?
+    st="$(win_ctl 20 status "$vm" 2>&1)" || true
+    # "started", or "starting": the IP wait below proves the boot.
+    if grep -qi '^start' <<<"$st"; then ok=1; break; fi
+    echo "   start try $try failed: utmctl exit $rc, status: ${st:-none}"
+    sleep 5
+  done
+  # utmctl exit 142 (OSStatus -609): UTM's Apple Events are stuck. A restart of UTM fixes it.
+  ((ok)) || { echo "FAIL  couldn't start $vm. With no VM running, quit and reopen UTM, then run this again."; return 1; }
   echo "== wait for the guest IP and SSH (5 minutes at most)"
   end=$((SECONDS + 300))
   while ((SECONDS < end)); do
-    ip="$("$u" ip-address "$vm" 2>/dev/null | grep -Eo '^[0-9]+(\.[0-9]+){3}' | head -n1 || true)"
+    ip="$(win_ctl 15 ip-address "$vm" 2>/dev/null | grep -Eo '^[0-9]+(\.[0-9]+){3}' | head -n1 || true)"
     if [[ -n "$ip" ]] && ssh "${ssh_o[@]}" "$user@$ip" 'echo up' 2>/dev/null | grep -q up; then break; fi
     ip=""; sleep 5
   done

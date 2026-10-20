@@ -39,6 +39,10 @@ end tell
 
 pub fn step(_repo: &Path) {
     if !only_macos("Apple Terminal appearance") { return; }
+    if !crate::dots::looks::on("font") {
+        if out::verbose() { out::info("Apple Terminal appearance: off (Looks, in dots settings)"); }
+        return;
+    }
     out::step("Apple Terminal appearance");
     if !os::have("osascript") {
         warn("osascript unavailable — skipping Terminal.");

@@ -188,7 +188,7 @@ ERR_RE='command not found|unbound variable|syntax error|bad substitution|integer
 ERR_RE+='|binary operator expected|too many arguments|No such file or directory|Permission denied'
 ERR_RE+='|Traceback \(most recent call last\)|panicked at'
 # The last line: the done line, with the warning count when a step warned.
-want_last='^✓ dotfiles: done \(profile: shared\)$'
+want_last='^✓ dotfiles: done in [0-9hms]+ \(profile: shared\)$'
 for n in 1 2; do
   errs="$(grep -E "$ERR_RE" "$LOGS/run$n.log" || true)"
   if [[ -z "$errs" ]]; then pass "run $n prints no shell or runtime errors"
@@ -211,12 +211,13 @@ check() { # <label> <command in the container>
 check "links point into the repo" '
   R="$HOME/dotfiles"
   for pair in .zshrc:home/.zshrc .gitconfig:home/.gitconfig .config/zsh:home/.config/zsh \
-      .config/starship.toml:home/.config/starship.toml \
-      ".config/Code/User/settings.json:home/Library/Application Support/Code/User/settings.json" \
-      ".config/Cursor/User/keybindings.json:home/Library/Application Support/Cursor/User/keybindings.json" \
       .claude/CLAUDE.md:claude/CLAUDE.md .claude/hooks:claude/hooks; do
     p="${pair%%:*}"; want="$R/${pair#*:}"
     [ "$(readlink "$HOME/$p")" = "$want" ] && [ -e "$HOME/$p" ] || { echo "bad link: $p -> $(readlink "$HOME/$p") (want $want)"; exit 1; }
+  done
+  # The looks (LOOKS) are off until picked: no Starship or editor links.
+  for p in .config/starship.toml .config/Code/User/settings.json .config/Cursor/User/keybindings.json; do
+    [ ! -L "$HOME/$p" ] || { echo "a look is linked while LOOKS is not set: $p"; exit 1; }
   done
   # settings.json is built (repo base + private layer), so it is a real file, not a link.
   S="$HOME/.claude/settings.json"

@@ -62,9 +62,13 @@ The bootstrap already ran `dotfiles` once. Its questions are:
 
 - the git name and email, for commits
 - the settings menu (presets, plan, time zone and more; step 4)
+- the looks: Starship prompt, VS Code and Cursor settings, Nerd Font (all optional; asked once
+  more after an update when they are not set yet)
 - on a Mac, whether to install the Claude desktop app
 
-`[RUN]` Read the last line of that run if the friend pasted it. It should say `dotfiles: done`.
+`[RUN]` Read the last line of that run if the friend pasted it. It should say `dotfiles: done in <time>`.
+A long step prints `still working on <step> (…)` each minute. No new line for several minutes
+means it is stuck: Ctrl-C, then `bash ~/dotfiles/dotfiles -v`.
 A line with warnings is fine: read the `!` lines above it and report them.
 
 `[RUN]` Run it again to see that nothing changes:

@@ -258,7 +258,8 @@ email, then shows the menu.
 - Names: `GIT_NAME`, `GIT_EMAIL` (written to `~/.gitconfig.local`), `PROFILE`, `CURSOR_MCP`,
   `OPENCODE_MCP`, `OPENCODE_PROJECTS`, `PRESETS` (which `claude/presets/` are linked and merged;
   `claude/presets/README.md`), `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME` (`plain` drops colors and the
-  Opencode theme), `GUARD_OFF`, `GUARD_SHADOW`, `JAVA_HOME` (picked from the Javas found, or typed),
+  Opencode theme), `LOOKS` (the optional look changes: `starship`, `editor`, `font` or `none`;
+  empty asks once at a terminal; `rust/agent-config/src/dots/looks.rs`), `GUARD_OFF`, `GUARD_SHADOW`, `JAVA_HOME` (picked from the Javas found, or typed),
   `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions"), `TEST_HOST` (the SSH host
   for the Linux part of `scripts/os-check.sh`).
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `rust/agent-config/src/lib.rs`,

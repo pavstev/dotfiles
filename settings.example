@@ -31,6 +31,12 @@ WORK_DAYS=""
 # (no colors, no Opencode theme). Empty: copper.
 THEME=""
 
+# The optional look changes, split by spaces: starship (the Starship prompt),
+# editor (the VS Code and Cursor settings: theme, Nerd Font, keys) and font (the Nerd
+# Font and the Apple Terminal look, macOS). none: keep your own look. Empty: not asked
+# yet, so all are off and the next dots run at a terminal asks once.
+LOOKS=""
+
 # Guard check ids to turn off (GUARD_OFF) or to run in shadow mode, which logs what
 # would have blocked and lets it through (GUARD_SHADOW). Split by spaces or commas, for
 # example: G10 G13. Empty: none. The env var of the same name wins for one run.

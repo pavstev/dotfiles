@@ -66,7 +66,7 @@ and fonts go in the `Brewfile`.
 | Area | Tools |
 |------|-------|
 | **Engine** | plain git + [`./dotfiles`](../dotfiles) · [rage](https://github.com/str4d/rage) (age encryption, for manual secrets) |
-| **Shell** | zsh + Oh My Zsh · [Starship](https://starship.rs) · [atuin](https://atuin.sh) (Ctrl-R) · [carapace](https://carapace.sh) · autosuggestions · fast-syntax-highlighting · fzf-tab |
+| **Shell** | zsh + Oh My Zsh · [Starship](https://starship.rs) (optional, see [Looks](#looks-starship-editor-settings-and-the-nerd-font)) · [atuin](https://atuin.sh) (Ctrl-R) · [carapace](https://carapace.sh) · autosuggestions · fast-syntax-highlighting · fzf-tab |
 | **Navigation** | [fzf](https://github.com/junegunn/fzf) · [zoxide](https://github.com/ajeetdsouza/zoxide) · [yazi](https://github.com/sxyazi/yazi) (`y`) · [eza](https://github.com/eza-community/eza) · [bat](https://github.com/sharkdp/bat) |
 | **Search** | [ripgrep](https://github.com/BurntSushi/ripgrep) · [fd](https://github.com/sharkdp/fd) |
 | **System** | [dust](https://github.com/bootandy/dust) · [duf](https://github.com/muesli/duf) · [procs](https://github.com/dalance/procs) · [bottom](https://github.com/ClementTsang/bottom) (`btm`, also `top`) |
@@ -443,10 +443,10 @@ dotfiles/
 | Want to change… | Edit | Then |
 |-----------------|------|------|
 | Shell / aliases | `home/.config/zsh/{init,aliases}.zsh` | live immediately |
-| Prompt | `home/.config/starship.toml` | live immediately |
+| Prompt | `home/.config/starship.toml` (only while Looks has `starship`) | live immediately |
 | Terminal | `home/.config/ghostty/config` | live immediately |
 | Git | `home/.gitconfig` (identity is in `~/.gitconfig.local`, not here) | live immediately |
-| VS Code / Cursor | `home/Library/Application Support/{Code,Cursor}/User/settings.json` | live immediately |
+| VS Code / Cursor | `home/Library/Application Support/{Code,Cursor}/User/settings.json` (only while Looks has `editor`) | live immediately |
 | VS Code extensions | `Brewfile`: add `vscode "publisher.ext-id"` lines | `dots` (the brew step re-runs; 60-cursor.sh adds them to Cursor) |
 | A command-line tool | `tools.list`: add one line | `dots` (step 12 installs it; `scripts/tools --check` lists what is missing) |
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
@@ -458,7 +458,7 @@ dotfiles/
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Opencode rules, agents, permissions, theme | `claude/` (shared source); the palette lives in `rust/agent-config/themes/copper.json` | `dots` (regenerates `~/.config/opencode`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
-| Which habits are on (presets), time zone, plan, work days, theme | `dots settings` (`PRESETS`, `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME`) | `dots` refreshes the links and files; `dots doctor` checks them |
+| Which habits are on (presets), time zone, plan, work days, theme, looks | `dots settings` (`PRESETS`, `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME`, `LOOKS`) | `dots` refreshes the links and files; `dots doctor` checks them |
 | A new preset | `claude/presets/<name>/rules.md` (steps in its README) | `cargo test --test presets` in `rust/agent-config`, then `dots` |
 | Settings: git name, profile, Cursor MCP, Opencode MCP, Opencode projects, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
 
@@ -474,6 +474,39 @@ The tools step and the brew step (macOS) run every time but no-op when nothing's
 steps (Touch ID, git hooks, etc.) detect their own prior state and skip too. Want
 automatic pulls on a given machine? Point your own cron or login hook at `dots`.
 Nothing in this repo does that for you.
+
+## Looks: Starship, editor settings and the Nerd Font
+
+The look changes are optional and off until you pick them. `dots` asks once, at a terminal,
+on a new machine and on the first run after an update. Change it any time with `dots settings`
+and the **Looks** row (the `LOOKS` setting):
+
+| Part | What it changes | OS |
+|------|-----------------|----|
+| `starship` | the Starship prompt (colors, icons). Off: a plain prompt with the folder name | macOS, Linux |
+| `editor` | the VS Code and Cursor settings and keys (theme, Nerd Font, ligatures) | all |
+| `font` | installs the FiraCode Nerd Font and sets the Apple Terminal font | macOS |
+
+When you turn a part off, `dots` removes its links and puts back the file it replaced (the
+newest `*.bak-<timestamp>`). Open a new terminal or restart the editor to see it.
+
+**Remove them by hand** (no `dots` needed). These are links into the repo, so deleting
+them is safe:
+
+```sh
+# macOS and Linux: the prompt
+rm ~/.config/starship.toml
+# macOS: editor settings
+rm ~/Library/Application\ Support/{Code,Cursor}/User/{settings,keybindings}.json
+# Linux: editor settings
+rm ~/.config/{Code,Cursor}/User/{settings,keybindings}.json
+# Windows (Git Bash): editor settings
+rm "$APPDATA"/{Code,Cursor}/User/{settings,keybindings}.json
+```
+
+Then set `LOOKS="none"` with `dots settings`, so the next `dots` run does not link them again.
+Without `~/.config/starship.toml` the shell uses the plain prompt even when Starship is
+installed. Remove Starship itself with `mise uninstall starship` (or your package manager).
 
 ## Uninstall
 
@@ -517,9 +550,17 @@ which can race Claude rewriting `~/.claude` live. Re-run `dots` from a plain she
 **Linux: a step failed at the package manager or Homebrew.** Run `dots` again after fixing the line above it.
 The Homebrew installer needs `sudo` and a user that is not root.
 
-**Icons look like boxes.** The Nerd Font is wired into **both** terminals automatically:
-Ghostty via its config, Apple Terminal via step `75-terminal-appearance`
-(needs Automation permission on first run). Other terminals: set the font to "FiraCode
-Nerd Font Mono".
+**Icons look like boxes.** The Starship prompt needs a Nerd Font. Turn on `font` in
+`dots settings` > Looks (macOS), or set your terminal font to "FiraCode Nerd Font Mono". Or
+turn `starship` off for the plain prompt. Ghostty uses the font from its config; Apple
+Terminal gets it from step `75-terminal-appearance` (needs Automation permission once).
+
+**Starship warns `Unknown key` or `unknown variant`.** Your Starship is older than the
+config. Update it (`mise use -g starship@latest`), or turn `starship` off in Looks.
+
+**`dots` seems stuck.** A step that runs longer than 20 seconds prints
+`still working on <step> (1m20s)…` every minute. The last line is always
+`dotfiles: done in <time>`. No new line for several minutes: press Ctrl-C and run `dots -v`
+to see every command.
 
 **`compinit: insecure directories`.** Run `chmod -R go-w "$(brew --prefix)/share"` once.

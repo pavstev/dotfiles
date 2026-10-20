@@ -59,6 +59,8 @@ pub fn step(repo: &Path) {
         warn("Homebrew missing, so brew bundle is skipped.");
         return;
     }
+    // The Nerd Font is one of the optional looks (LOOKS in the settings).
+    if !crate::dots::looks::on("font") { os::set_env("HOMEBREW_BUNDLE_CASK_SKIP", "font-fira-code-nerd-font"); }
     let a = bundle_run(repo, &repo.join("Brewfile"), "Brewfile");
     let b = bundle_run(repo, &repo.join("Brewfile.local"), "Brewfile.local"); // per-machine extras (gitignored)
     if a || b { ok("Mac apps satisfied"); }

@@ -66,9 +66,11 @@ pub(crate) fn only_macos(what: &str) -> bool {
     false
 }
 
-/// Run a command with its output dropped (`>/dev/null 2>&1`). True when it exits 0.
+/// Run a command with its output dropped (`>/dev/null 2>&1 </dev/null`). True when it exits 0.
+/// No stdin: a hidden question (corepack asks before a download) fails at once instead of
+/// waiting for an answer nobody can see.
 pub(crate) fn quiet(prog: &str, args: &[&str]) -> bool {
-    Command::new(prog).args(args).stdout(Stdio::null()).stderr(Stdio::null())
+    Command::new(prog).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
         .status().map(|s| s.success()).unwrap_or(false)
 }
 
