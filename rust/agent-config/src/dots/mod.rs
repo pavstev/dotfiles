@@ -29,7 +29,9 @@ use std::process::Command;
 /// (rust/agent-config/target/release/dots).
 pub fn repo() -> PathBuf {
     if let Ok(v) = env::var("DOTFILES_REPO") && !v.is_empty() { return PathBuf::from(v); }
+    // `rust-bin` starts the exe as `~/.claude/hooks/../../rust/...`: resolve it, or the root is `~/.claude/hooks/../..`
     env::current_exe().ok()
+        .map(|e| if os::is_windows() { e } else { std::fs::canonicalize(&e).unwrap_or(e) })
         .and_then(|e| e.ancestors().nth(5).map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
 }

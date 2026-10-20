@@ -260,6 +260,31 @@ fn doctor_presets_mismatch_fails() {
     assert!(fx.get("presets").unwrap_err().contains("workflow"));
 }
 
+/// The repo is the same folder under another name (a symlink, a `..`, as `rust-bin` spells it).
+#[cfg(unix)]
+#[test]
+fn doctor_presets_pass_when_the_repo_is_spelled_another_way() {
+    let fx = fixture("doctor-presets-alias");
+    let alias = fx.tmp.join("alias");
+    std::os::unix::fs::symlink(&fx.repo, &alias).unwrap();
+    let r = doctor::checks(&alias, &fx.home).into_iter().find(|c| c.name == "presets").unwrap().result;
+    assert!(r.is_ok(), "{r:?}");
+}
+
+/// The links point into another checkout (a copy of the repo): the check still fails and names them.
+#[cfg(unix)]
+#[test]
+fn doctor_presets_fail_when_the_links_point_into_another_repo() {
+    let fx = fixture("doctor-presets-other");
+    let other = fx.tmp.join("worktree");
+    for n in ["workflow", "clock"] {
+        wr(&other.join("claude/presets").join(n).join("rules.md"), "# copy\n");
+    }
+    let r = doctor::checks(&other, &fx.home).into_iter().find(|c| c.name == "presets").unwrap().result;
+    let why = r.unwrap_err();
+    assert!(why.contains("no link for") && why.contains("clock") && why.contains("workflow"), "{why}");
+}
+
 #[test]
 fn doctor_generated_needs_the_marker() {
     let fx = fixture("doctor-generated");

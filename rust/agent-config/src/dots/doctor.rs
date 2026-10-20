@@ -227,13 +227,15 @@ fn guard_selftest(repo: &Path) -> Result<(), String> {
 fn presets(repo: &Path, home: &Path) -> Result<(), String> {
     let on = crate::presets::enabled_quiet(home, &crate::presets::profile(home));
     let src = repo.join("claude").join("presets");
+    // `repo` can be spelled another way than the links (a `..` in the exe path, a symlinked folder)
+    let src_real = fs::canonicalize(&src).unwrap_or_else(|_| src.clone());
     let want: BTreeSet<String> = on.into_iter().filter(|n| src.join(n).join("rules.md").is_file()).collect();
     let mut have = BTreeSet::new();
     if let Ok(entries) = fs::read_dir(home.join(".claude").join("rules")) {
         for e in entries.filter_map(|e| e.ok()) {
             let file = e.file_name().to_string_lossy().into_owned();
             let Some(name) = file.strip_prefix("preset-").and_then(|r| r.strip_suffix(".md")) else { continue };
-            if os::is_symlink(&e.path()) && fs::read_link(e.path()).is_ok_and(|t| t.starts_with(&src)) { have.insert(name.to_string()); }
+            if os::is_symlink(&e.path()) && fs::read_link(e.path()).is_ok_and(|t| t.starts_with(&src) || fs::canonicalize(&t).is_ok_and(|r| r.starts_with(&src_real))) { have.insert(name.to_string()); }
         }
     }
     let missing: Vec<String> = want.difference(&have).cloned().collect();
