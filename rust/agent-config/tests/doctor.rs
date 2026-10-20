@@ -94,7 +94,7 @@ fn fixture(tag: &str) -> Fx {
     wr(&c.join("CLAUDE.md"), "# Core\n\ncore line\n");
     wr(
         &c.join("settings.json"),
-        r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard pretool"}]}]}, "statusLine": {"type": "command", "command": "bash ~/.claude/hooks/rust-bin statusline"}}"#,
+        r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "test -r ~/.claude/hooks/rust-bin || exit 0; sh ~/.claude/hooks/rust-bin --hook guard pretool"}]}]}, "statusLine": {"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline"}}"#,
     );
     wr(&c.join("presets/workflow/rules.md"), "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n");
     wr(&c.join("presets/clock/rules.md"), "---\nname: clock\ndescription: d\nguard: [G11]\n---\n# Clock\n\nclock line\n");

@@ -2,6 +2,7 @@
 //! Port of the old Python tool hurry-scan.py (deleted; its tests are mapped in tests/PORTED.md).
 //! Read-only: it never changes anything.
 
+use agent_config::pycompat::{basename, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_str, truthy};
 use clap::Parser;
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -40,10 +41,10 @@ static MCP_SERVER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^mcp__(.+?)__
 
 fn home() -> String {
     for k in ["HOME", "USERPROFILE"] {
-        if let Ok(h) = std::env::var(k) {
-            if !h.is_empty() {
-                return h;
-            }
+        if let Ok(h) = std::env::var(k)
+            && !h.is_empty()
+        {
+            return h;
         }
     }
     dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
@@ -53,17 +54,6 @@ fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
 }
 
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
-}
-
 fn num(v: &Value) -> f64 {
     match v {
         Value::Number(n) => n.as_f64().unwrap_or(0.0),
@@ -71,61 +61,8 @@ fn num(v: &Value) -> f64 {
     }
 }
 
-fn py_float(f: f64) -> String {
-    if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
-    }
-    if !f.is_finite() {
-        return if f.is_nan() { "NaN".into() } else if f > 0.0 { "Infinity".into() } else { "-Infinity".into() };
-    }
-    let e = format!("{:e}", f.abs());
-    let (mant, exp) = e.split_once('e').unwrap();
-    let exp: i32 = exp.parse().unwrap();
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let sign = if f < 0.0 { "-" } else { "" };
-    let body = if (-4..16).contains(&exp) {
-        if exp >= 0 {
-            let int_len = exp as usize + 1;
-            if digits.len() <= int_len {
-                format!("{}{}.0", digits, "0".repeat(int_len - digits.len()))
-            } else {
-                format!("{}.{}", &digits[..int_len], &digits[int_len..])
-            }
-        } else {
-            format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
-        }
-    } else {
-        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
-        format!("{}e{}{:02}", m, if exp < 0 { "-" } else { "+" }, exp.abs())
-    };
-    format!("{}{}", sign, body)
-}
-
 fn pyround1(x: f64) -> f64 {
     format!("{:.1}", x).parse().unwrap_or(x)
-}
-
-fn json_str(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
-                let mut buf = [0u16; 2];
-                for u in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{:04x}", u));
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 /// json.dumps(v, indent=2) with ensure_ascii.
@@ -181,52 +118,6 @@ fn dumps_indent(v: &Value, level: usize, out: &mut String) {
     }
 }
 
-fn py_repr_str(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut o = String::new();
-    o.push(q);
-    for c in s.chars() {
-        match c {
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            c if c == q => {
-                o.push('\\');
-                o.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => o.push_str(&format!("\\x{:02x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push(q);
-    o
-}
-
-fn py_repr(v: &Value) -> String {
-    match v {
-        Value::String(s) => py_repr_str(s),
-        Value::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
-        Value::Object(o) => {
-            format!("{{{}}}", o.iter().map(|(k, x)| format!("{}: {}", py_repr_str(k), py_repr(x))).collect::<Vec<_>>().join(", "))
-        }
-        other => py_str(other),
-    }
-}
-
-/// Python str(value) of a JSON value.
-fn py_str(v: &Value) -> String {
-    match v {
-        Value::Null => "None".into(),
-        Value::Bool(b) => if *b { "True".into() } else { "False".into() },
-        Value::Number(n) => {
-            if n.is_i64() || n.is_u64() { n.to_string() } else { py_float(n.as_f64().unwrap_or(0.0)) }
-        }
-        Value::String(s) => s.clone(),
-        other => py_repr(other),
-    }
-}
-
 fn clen(s: &str) -> usize {
     s.chars().count()
 }
@@ -246,100 +137,6 @@ fn load_json(p: &Path) -> Value {
     }
 }
 
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-fn days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        _ => {
-            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 }
-        }
-    }
-}
-
-/// datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp(); a missing offset counts as UTC.
-fn parse_ts(s: &str) -> Option<f64> {
-    let s = s.replace('Z', "+00:00");
-    let b: Vec<char> = s.chars().collect();
-    let num_at = |a: usize, n: usize| -> Option<i64> {
-        let t: String = b.get(a..a + n)?.iter().collect();
-        if t.chars().all(|c| c.is_ascii_digit()) { t.parse().ok() } else { None }
-    };
-    if b.len() < 10 || b[4] != '-' || b[7] != '-' {
-        return None;
-    }
-    let (y, mo, d) = (num_at(0, 4)?, num_at(5, 2)?, num_at(8, 2)?);
-    if !(1..=12).contains(&mo) || y < 1 || d < 1 || d > days_in_month(y, mo) {
-        return None;
-    }
-    let (mut hh, mut mm, mut ss, mut us, mut off) = (0i64, 0i64, 0i64, 0i64, 0i64);
-    if b.len() > 10 {
-        let rest: Vec<char> = b[11..].to_vec();
-        let tz_at = rest.iter().position(|c| *c == '+' || *c == '-');
-        let (time, tz) = match tz_at {
-            Some(i) => (&rest[..i], Some(&rest[i..])),
-            None => (&rest[..], None),
-        };
-        let ts: String = time.iter().collect();
-        let (hms, frac) = match ts.split_once('.') {
-            Some((a, f)) => (a.to_string(), Some(f.to_string())),
-            None => (ts.clone(), None),
-        };
-        let parts: Vec<&str> = hms.split(':').collect();
-        let pn = |x: &str| -> Option<i64> {
-            if x.len() == 2 && x.chars().all(|c| c.is_ascii_digit()) { x.parse().ok() } else { None }
-        };
-        hh = pn(parts.first()?)?;
-        if parts.len() > 1 {
-            mm = pn(parts[1])?;
-        }
-        if parts.len() > 2 {
-            ss = pn(parts[2])?;
-        }
-        if parts.len() > 3 {
-            return None;
-        }
-        if let Some(f) = frac {
-            if f.is_empty() || f.len() > 9 || !f.chars().all(|c| c.is_ascii_digit()) || parts.len() < 3 {
-                return None;
-            }
-            let mut p6 = f.clone();
-            p6.truncate(6);
-            while p6.len() < 6 {
-                p6.push('0');
-            }
-            us = p6.parse().ok()?;
-        }
-        if hh > 23 || mm > 59 || ss > 59 {
-            return None;
-        }
-        if let Some(tz) = tz {
-            let sign = if tz[0] == '-' { -1 } else { 1 };
-            let t: String = tz[1..].iter().collect();
-            let p: Vec<&str> = t.split(':').collect();
-            if p.len() < 2 || p.len() > 3 {
-                return None;
-            }
-            let (th, tm) = (pn(p[0])?, pn(p[1])?);
-            let tsec = if p.len() == 3 { pn(p[2])? } else { 0 };
-            if th > 23 || tm > 59 || tsec > 59 {
-                return None;
-            }
-            off = sign * (th * 3600 + tm * 60 + tsec);
-        }
-    }
-    let secs = days_from_civil(y, mo, d) * 86400 + hh * 3600 + mm * 60 + ss - off;
-    Some((secs * 1_000_000 + us) as f64 / 1e6)
-}
-
 fn tok(chars: i64) -> i64 {
     chars / 4
 }
@@ -357,46 +154,6 @@ fn human(n: f64) -> String {
 
 fn ktok(n: i64) -> String {
     if n >= 1000 { format!("{:.0}k", n as f64 / 1000.0) } else { n.to_string() }
-}
-
-fn dirname(p: &str) -> String {
-    match p.rfind('/') {
-        None => String::new(),
-        Some(i) => {
-            let head = &p[..=i];
-            let t = head.trim_end_matches('/');
-            if t.is_empty() { head.to_string() } else { t.to_string() }
-        }
-    }
-}
-
-fn basename(p: &str) -> String {
-    p.rsplit('/').next().unwrap_or("").to_string()
-}
-
-fn fname(p: &Path) -> String {
-    p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-/// Entries of `dir` whose name does not start with "." (glob "*"), in directory order.
-fn list_dir(dir: &Path) -> Vec<PathBuf> {
-    match fs::read_dir(dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            .map(|e| e.path())
-            .collect(),
-        Err(_) => vec![],
-    }
-}
-
-fn mtime(p: &Path) -> f64 {
-    fs::metadata(p)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
 }
 
 /// Recursive `**` glob: every non-hidden entry under `root` (symlinks followed) for which `pick` is true.
@@ -440,7 +197,7 @@ fn session_hits(prefix: &str) -> Vec<PathBuf> {
 fn newest(v: Vec<PathBuf>) -> Option<PathBuf> {
     let mut best: Option<(f64, PathBuf)> = None;
     for p in v {
-        let m = mtime(&p);
+        let m = mtime(&p).unwrap_or(0.0);
         if best.as_ref().map(|(bm, _)| m > *bm).unwrap_or(true) {
             best = Some((m, p));
         }
@@ -459,13 +216,13 @@ fn find_session(arg: Option<&str>, use_all: bool) -> Option<PathBuf> {
         }
         return session_hits(a).into_iter().next();
     }
-    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID") {
-        if !sid.is_empty() {
-            let want = format!("{}.jsonl", sid);
-            let hit = session_hits(&sid).into_iter().find(|p| fname(p) == want);
-            if hit.is_some() {
-                return hit;
-            }
+    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID")
+        && !sid.is_empty()
+    {
+        let want = format!("{}.jsonl", sid);
+        let hit = session_hits(&sid).into_iter().find(|p| fname(p) == want);
+        if hit.is_some() {
+            return hit;
         }
     }
     if !use_all {
@@ -604,10 +361,10 @@ fn scan_transcript(path: &Path) -> Transcript {
             }
             s.last_ts = Some(ts);
         }
-        if s.cwd.as_deref().map(|c| c.is_empty()).unwrap_or(true) {
-            if let Some(c) = get(&o, "cwd").as_str() {
-                s.cwd = Some(c.to_string());
-            }
+        if s.cwd.as_deref().map(|c| c.is_empty()).unwrap_or(true)
+            && let Some(c) = get(&o, "cwd").as_str()
+        {
+            s.cwd = Some(c.to_string());
         }
         if truthy(get(&o, "isSidechain")) {
             s.sidechain += 1;
@@ -626,10 +383,10 @@ fn scan_transcript(path: &Path) -> Transcript {
             s.attach_by_type.add(&ty, clen(raw) as i64);
             if let Some(names) = get(att, "addedNames").as_array() {
                 for n in names {
-                    if let Some(n) = n.as_str() {
-                        if n.starts_with("mcp__") {
-                            s.mcp_tools.insert(n.to_string());
-                        }
+                    if let Some(n) = n.as_str()
+                        && n.starts_with("mcp__")
+                    {
+                        s.mcp_tools.insert(n.to_string());
                     }
                 }
             }
@@ -665,29 +422,26 @@ fn scan_transcript(path: &Path) -> Transcript {
                     }
                 }
             }
-        } else if t == "user" {
-            if let Some(arr) = get(get(&o, "message"), "content").as_array() {
-                for b in arr {
-                    if !b.is_object() {
-                        continue;
+        } else if t == "user"
+            && let Some(arr) = get(get(&o, "message"), "content").as_array()
+        {
+            for b in arr {
+                if !b.is_object() {
+                    continue;
+                }
+                if let Some("tool_result") = get(b, "type").as_str() {
+                    let (name, summ, t0) =
+                        pending.remove(&get(b, "tool_use_id").to_string()).unwrap_or(("?".into(), String::new(), None));
+                    let size = result_size(get(b, "content"));
+                    s.tool_bytes.add(&name, size as i64);
+                    s.results.push((size, name.clone(), summ.clone()));
+                    if truthy(get(b, "is_error")) {
+                        s.errors += 1;
                     }
-                    match get(b, "type").as_str() {
-                        Some("tool_result") => {
-                            let (name, summ, t0) =
-                                pending.remove(&get(b, "tool_use_id").to_string()).unwrap_or(("?".into(), String::new(), None));
-                            let size = result_size(get(b, "content"));
-                            s.tool_bytes.add(&name, size as i64);
-                            s.results.push((size, name.clone(), summ.clone()));
-                            if truthy(get(b, "is_error")) {
-                                s.errors += 1;
-                            }
-                            if let (Some(t0), Some(ts)) = (t0.filter(|x| *x != 0.0), ts.filter(|x| *x != 0.0)) {
-                                if ts - t0 > 20.0 {
-                                    s.slow.push((ts - t0, name, summ));
-                                }
-                            }
-                        }
-                        _ => {}
+                    if let (Some(t0), Some(ts)) = (t0.filter(|x| *x != 0.0), ts.filter(|x| *x != 0.0))
+                        && ts - t0 > 20.0
+                    {
+                        s.slow.push((ts - t0, name, summ));
                     }
                 }
             }
@@ -1024,11 +778,11 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(50, "you", format!("{} tool hooks run on every tool call", pre), "Each hook adds a process spawn before and after each tool.".into(),
             "Check they are fast. Drop the ones you do not need.");
     }
-    if let Some(e) = &w.effort_env {
-        if ["high", "xhigh", "max"].contains(&e.as_str()) && s.tool_calls.get("Read") + s.tool_calls.get("Bash") > 0 {
-            add(35, "you", format!("Effort is {}", e), "High effort means long thinking before each step.".into(),
-                "Use /effort medium for simple work. Try /fast for quick tasks.");
-        }
+    if let Some(e) = &w.effort_env
+        && ["high", "xhigh", "max"].contains(&e.as_str()) && s.tool_calls.get("Read") + s.tool_calls.get("Bash") > 0
+    {
+        add(35, "you", format!("Effort is {}", e), "High effort means long thinking before each step.".into(),
+            "Use /effort medium for simple work. Try /fast for quick tasks.");
     }
     if s.turns_assistant > 0 && s.think_ms / 1000.0 > 600.0 {
         add(40, "you", format!("{:.0} min spent thinking", s.think_ms / 60000.0), "Long thinking slows every step.".into(),
@@ -1038,12 +792,12 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(40, "me", format!("{} tool errors", s.errors), "Retry loops waste turns.".into(),
             "I will stop, read the error once, and change the plan.");
     }
-    if let Some(load) = m.load.filter(|l| *l != 0.0) {
-        if load > m.cpus as f64 * 0.8 {
-            let top = m.top.iter().map(|(c, _, n)| format!("{} {:.0}%", n, c)).collect::<Vec<_>>().join(", ");
-            add(50, "you", format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus), format!("Top: {}.", top),
-                "Quit the heavy app. Run ps:bag-mode to see more.");
-        }
+    if let Some(load) = m.load.filter(|l| *l != 0.0)
+        && load > m.cpus as f64 * 0.8
+    {
+        let top = m.top.iter().map(|(c, _, n)| format!("{} {:.0}%", n, c)).collect::<Vec<_>>().join(", ");
+        add(50, "you", format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus), format!("Top: {}.", top),
+            "Quit the heavy app. Run ps:bag-mode to see more.");
     }
     f.sort_by(|a, b| b.cmp(a));
     f
@@ -1095,10 +849,10 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
     let hashes = (pct / 5.0) as i64;
     let bar = format!("{}{}", "#".repeat(hashes.max(0) as usize), ".".repeat((20 - hashes).max(0) as usize));
     let mut age = String::new();
-    if let (Some(a), Some(b)) = (s.first_ts, s.last_ts) {
-        if a != 0.0 && b != 0.0 {
-            age = format!(", {:.1}h old", (b - a) / 3600.0);
-        }
+    if let (Some(a), Some(b)) = (s.first_ts, s.last_ts)
+        && a != 0.0 && b != 0.0
+    {
+        age = format!(", {:.1}h old", (b - a) / 3600.0);
     }
     out!("SESSION  {}  ({}{})", basename(&s.path), human(s.bytes as f64), age);
     let style = match &w.output_style {
@@ -1242,7 +996,7 @@ mod tests {
     #[test]
     fn findings_sort_descending_by_tuple() {
         let mk = |s, w, t: &str| Finding { score: s, who: w, title: t.into(), why: String::new(), fix: String::new() };
-        let mut v = vec![mk(50, "me", "a"), mk(50, "you", "a"), mk(70, "me", "z")];
+        let mut v = [mk(50, "me", "a"), mk(50, "you", "a"), mk(70, "me", "z")];
         v.sort_by(|a, b| b.cmp(a));
         assert_eq!(v[0].score, 70);
         assert_eq!(v[1].who, "you");

@@ -7,7 +7,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// The folder for this machine's private files: `~/.config/dotfiles`.
 pub fn conf_dir() -> PathBuf { os::home().join(".config").join("dotfiles") }
+/// The settings file.
 pub fn settings_path() -> PathBuf { conf_dir().join("settings") }
 /// The private rules, free text; never in the repo.
 pub fn owner_md() -> PathBuf { conf_dir().join("owner.md") }
@@ -72,11 +74,13 @@ pub fn set(name: &str, value: &str) -> bool {
     true
 }
 
+/// Sets the file mode. Does nothing on Windows.
 #[cfg(unix)]
 pub fn set_mode(p: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     let _ = fs::set_permissions(p, fs::Permissions::from_mode(mode));
 }
+/// Sets the file mode. Does nothing on Windows.
 #[cfg(not(unix))]
 pub fn set_mode(_p: &Path, _mode: u32) {}
 

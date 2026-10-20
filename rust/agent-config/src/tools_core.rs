@@ -12,21 +12,28 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// An operating system `tools.list` can name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
+    /// macOS.
     Macos,
+    /// Linux, WSL included.
     Linux,
+    /// Windows.
     Windows,
 }
 
 /// The machine a run is for. `musl` is Alpine: glibc binaries do not run there and `apk` does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Host {
+    /// The operating system.
     pub os: Os,
+    /// True on a musl Linux (Alpine).
     pub musl: bool,
 }
 
 impl Host {
+    /// The machine this process runs on.
     pub fn detect() -> Host {
         let os = if cfg!(target_os = "macos") {
             Os::Macos
@@ -52,19 +59,29 @@ impl Host {
     }
 }
 
+/// Where a tool can be installed from. Each one holds its argument (a package or a script).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
+    /// A mise package.
     Mise(String),
+    /// An Alpine package.
     Apk(String),
+    /// A WinGet package.
     Winget(String),
+    /// A Scoop package.
     Scoop(String),
+    /// A crate for `cargo install`.
     Cargo(String),
+    /// A Homebrew formula.
     Brew(String),
+    /// A shell command.
     Sh(String),
+    /// Mise itself, which the resolver installs before anything else.
     Boot(String),
 }
 
 impl Source {
+    /// The source name as `tools.list` spells it (`mise`, `apk`, ...).
     pub fn kind(&self) -> &'static str {
         match self {
             Source::Mise(_) => "mise",
@@ -77,6 +94,7 @@ impl Source {
             Source::Boot(_) => "boot",
         }
     }
+    /// The package or command the source holds.
     pub fn arg(&self) -> &str {
         match self {
             Source::Mise(a) | Source::Apk(a) | Source::Winget(a) | Source::Scoop(a) | Source::Cargo(a) | Source::Brew(a) | Source::Sh(a) | Source::Boot(a) => a,
@@ -90,20 +108,25 @@ impl fmt::Display for Source {
     }
 }
 
+/// One line of `tools.list`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tool {
+    /// The tool's name in the list.
     pub name: String,
     /// Commands that count as "present" (any one).
     pub cmds: Vec<String>,
     /// Extra command names made as links to the first command (`jaq>jq`).
     pub links: Vec<String>,
+    /// The OSes the tool is for.
     pub oses: Vec<Os>,
     /// The OS field had `!musl`: not for Alpine.
     pub no_musl: bool,
+    /// Where to install it from, in the order to try.
     pub sources: Vec<Source>,
 }
 
 impl Tool {
+    /// True if the tool is for this host.
     pub fn applies(&self, host: Host) -> bool {
         self.oses.contains(&host.os) && !(host.musl && self.no_musl)
     }
@@ -198,7 +221,9 @@ pub fn parse(text: &str) -> Result<Vec<Tool>, String> {
 /// What a run found for one tool.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
+    /// Already there: the tool name.
     Present(String),
+    /// Installed now: the tool name, then the source that worked.
     Installed(String, String),
     /// name, then one "kind:arg: reason" per source tried (empty: no source fits this machine).
     Failed(String, Vec<String>),
@@ -301,6 +326,7 @@ pub fn missing(tools: &[Tool], host: Host, env: &dyn Env, only: &[String]) -> Ve
 
 // ---- the real Env ---------------------------------------------------------------------------
 
+/// The home folder (USERPROFILE on Windows).
 pub fn home() -> PathBuf {
     env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
@@ -344,6 +370,7 @@ pub fn full_path() -> std::ffi::OsString {
     env::join_paths(dirs).unwrap_or_default()
 }
 
+/// The first runnable file for `cmd` in `path`, or None.
 pub fn find_in_path(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let exts: Vec<String> = if cfg!(windows) {
         let pe = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
@@ -354,7 +381,7 @@ pub fn find_in_path(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     for d in env::split_paths(path) {
         for e in &exts {
             let p = d.join(format!("{cmd}{e}"));
-            if is_exec(&p) {
+            if crate::pycompat::is_executable(&p) {
                 return Some(p);
             }
         }
@@ -362,21 +389,14 @@ pub fn find_in_path(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     None
 }
 
-#[cfg(unix)]
-fn is_exec(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    p.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
-}
-#[cfg(not(unix))]
-fn is_exec(p: &Path) -> bool {
-    p.is_file()
-}
-
+/// The `Env` that checks PATH and runs the real installers.
 pub struct RealEnv {
+    /// The PATH used to find and run commands.
     pub path: std::ffi::OsString,
 }
 
 impl RealEnv {
+    /// An env over the full PATH (the extra tool folders included).
     pub fn new() -> RealEnv {
         RealEnv { path: full_path() }
     }

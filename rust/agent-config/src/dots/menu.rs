@@ -294,6 +294,8 @@ fn rules_value() -> String {
     if fs::metadata(&md).map(|m| m.len() > 0).unwrap_or(false) { lines_of(&md) } else { s("none") }
 }
 
+/// The `dots settings` menu: shows each setting, asks for changes and saves each one at once.
+/// Needs a terminal. Ends when the user picks Done.
 pub fn run(repo: &Path) {
     step("Settings (they stay on this machine, never in git)");
     info("File: ~/.config/dotfiles/settings. Each change saves at once.");

@@ -1,21 +1,29 @@
 //! mic_check: is this repo really done? Read-only (except `git fetch`). Replaces
 //! claude/skills/ps_mic-drop/scripts/mic-check.sh (same flags, lines and exit codes).
 //!
-//!   mic_check [repo...]            report for each repo (default: current repo)
-//!   mic_check --no-fetch           skip `git fetch` (offline / fast)
-//!   mic_check --note "text" [repo] append an optional leftover (tagged with that repo, default: current)
-//!   mic_check --leftovers          print the leftovers file
-//!   mic_check --since <sha|time> [repo]  also list this session's commits since that sha or time (for squash)
+//! ```text
+//! mic_check [repo...]            report for each repo (default: current repo)
+//! mic_check --no-fetch           skip `git fetch` (offline / fast)
+//! mic_check --note "text" [repo] append an optional leftover (tagged with that repo, default: current)
+//! mic_check --leftovers          print the leftovers file
+//! mic_check --since <sha|time> [repo]  also list this session's commits since that sha or time (for squash)
+//! ```
+//!
 //! Every line is tagged:
-//!   OK    nothing to do
-//!   FIX   mandatory — the session is NOT done until this is gone
-//!   WARN  look at it; fix or note it as a leftover
+//!
+//! ```text
+//! OK    nothing to do
+//! FIX   mandatory: the session is NOT done until this is gone
+//! WARN  look at it; fix or note it as a leftover
+//! ```
+//!
 //! Last line: VERDICT: CLEAN (exit 0) | NOT CLEAN (n mandatory) (exit 1)
 
 #[macro_use]
 #[path = "../quiet_out.rs"]
 mod quiet_out;
 
+use agent_config::pycompat::{civil_from_days, is_executable};
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -88,18 +96,6 @@ fn on_path(name: &str) -> bool {
     std::env::split_paths(&paths).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
 }
 
-fn is_exec(p: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        p.is_file()
-    }
-}
-
 /// `date +%F` (local date). Falls back to the UTC date when `date` is not there.
 fn today() -> String {
     if let Ok(o) = Command::new("date").arg("+%F").stdin(Stdio::null()).output() {
@@ -109,15 +105,7 @@ fn today() -> String {
         }
     }
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let z = secs.div_euclid(86400) + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z.rem_euclid(146097);
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86400));
     format!("{y:04}-{m:02}-{d:02}")
 }
 
@@ -216,10 +204,10 @@ fn checks_for(r: &Path) -> Vec<String> {
         out.push("biome check .".into());
     }
     let hp = git_out(r, &["config", "core.hooksPath"]);
-    let own_hook = !hp.is_empty() && is_exec(&r.join(&hp).join("pre-commit"));
+    let own_hook = !hp.is_empty() && is_executable(&r.join(&hp).join("pre-commit"));
     let default_hook = {
         let p = git_out(r, &["rev-parse", "--git-path", "hooks/pre-commit"]);
-        !p.is_empty() && is_exec(&r.join(p))
+        !p.is_empty() && is_executable(&r.join(p))
     };
     if own_hook || default_hook {
         out.push("git hook run pre-commit  # this repo's own pre-commit hook".into());

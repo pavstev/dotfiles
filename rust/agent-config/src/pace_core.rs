@@ -1,14 +1,15 @@
-//! Weekly usage pace: the Rust port of `claude/hooks/pace.py`. The work days a week (`WORK_DAYS`)
-//! and the default weekly weight (`PLAN`) come from `~/.config/dotfiles/settings`; a calibration
-//! from the status line always wins over the plan. With no plan, no calibration and no fresh
-//! status line the state is `unknown`.
+//! Weekly usage pace, ported from the old `pace.py`. The work days a week (`WORK_DAYS`) and the
+//! default weekly weight (`PLAN`) come from `~/.config/dotfiles/settings`; a calibration from the
+//! status line always wins over the plan. With no plan, no calibration and no fresh status line
+//! the state is `unknown`.
 //!
-//! Included by `src/bin/pace.rs` and the guard with `#[path] mod`. The cache files keep the Python
-//! formats (compact JSON), so both implementations read each other's caches.
+//! Included by `src/bin/pace.rs` and the guard with `#[path] mod`. The cache files keep the
+//! Python formats (compact JSON), so old and new caches read alike.
 //! Sources: the statusline cache (`claude-pace.json`) when fresh, else an estimate from the
 //! transcripts under `$CLAUDE_CONFIG_DIR/projects`. Caches live in `${XDG_CACHE_HOME:-~/.cache}`.
 #![allow(dead_code)] // the guard uses `status` only; the CLI uses the rest
 
+use agent_config::pycompat::{civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float, truthy};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -23,6 +24,7 @@ const WEEK: i64 = 7 * 86400;
 const FORMAT: f64 = 2.0; // cache format: older caches are rebuilt or ignored
 const SCAN_FORMAT: f64 = 3.0; // scan cache: 3 added the weekly-limit hits per file
 const MIN_HIT_COST: f64 = 1000.0; // a limit-hit calibration below this cost comes from a partial scan
+/// The weekly weight of the Pro plan, the base for the other plans.
 pub const DEFAULT_WEEK_WEIGHT: f64 = 5860.0;
 const FRESH_S: i64 = 6 * 3600; // statusline cache is fresh for 6 hours
 const RESULT_TTL_S: i64 = 120; // cached estimate is current for 2 minutes
@@ -30,17 +32,27 @@ const CALIBRATE_MIN: f64 = 5.0; // needs this much reported use to calibrate
 const CRITICAL: f64 = 85.0;
 const CHECK_EVERY: u64 = 200; // lines between clock checks
 
+/// The weekly pace: how much is used against how much the week allows so far.
 pub struct Status {
-    pub state: String, // "ok" | "ahead" | "critical" | "unknown"
+    /// "ok" | "ahead" | "critical" | "unknown"
+    pub state: String,
+    /// Percent of the week used, if known.
     pub used: Option<f64>,
+    /// Percent of the week that should be used by today.
     pub budget: f64,
+    /// Where `used` came from: "statusline" or "estimate".
     pub source: Option<String>,
+    /// When the week resets (epoch seconds), if known.
     pub resets_at: Option<i64>,
 }
 
+/// The outcome of a transcript scan.
 pub struct RefreshResult {
+    /// True if every transcript was scanned within the time budget.
     pub complete: bool,
+    /// The summed weight of this week's usage.
     pub weight: f64,
+    /// How many transcript files were counted.
     pub files: usize,
 }
 
@@ -50,9 +62,13 @@ pub struct RefreshResult {
 /// (`pro`, `max5`, ...; `unknown` when unset) and the work days a week. Tests build one over a temp dir.
 #[derive(Clone)]
 pub struct Paths {
+    /// The cache folder.
     pub cache: PathBuf,
+    /// The folder of the transcripts.
     pub projects: PathBuf,
+    /// The plan name, lowercase.
     pub plan: String,
+    /// Work days a week.
     pub days: i64,
 }
 
@@ -66,6 +82,7 @@ fn home() -> PathBuf {
 }
 
 impl Paths {
+    /// The paths and settings of this machine.
     pub fn from_env() -> Paths {
         let cache = env_nonempty("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache"));
         let base = env_nonempty("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".claude"));
@@ -105,62 +122,6 @@ fn unix_now() -> i64 {
 
 // --- Python-compatible number and JSON text --------------------------------------------------
 
-/// repr(float) of Python.
-pub fn py_float(f: f64) -> String {
-    if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
-    }
-    if !f.is_finite() {
-        return if f.is_nan() { "NaN".into() } else if f > 0.0 { "Infinity".into() } else { "-Infinity".into() };
-    }
-    let e = format!("{:e}", f.abs());
-    let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let sign = if f < 0.0 { "-" } else { "" };
-    let body = if (-4..16).contains(&exp) {
-        if exp >= 0 {
-            let int_len = exp as usize + 1;
-            if digits.len() <= int_len {
-                format!("{}{}.0", digits, "0".repeat(int_len - digits.len()))
-            } else {
-                format!("{}.{}", &digits[..int_len], &digits[int_len..])
-            }
-        } else {
-            format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
-        }
-    } else {
-        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
-        format!("{}e{}{:02}", m, if exp < 0 { "-" } else { "+" }, exp.abs())
-    };
-    format!("{}{}", sign, body)
-}
-
-/// json.dumps of a string (ensure_ascii).
-fn json_str(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
-                let mut buf = [0u16; 2];
-                for u in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{:04x}", u));
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 /// round(x, 1) of Python: the exact decimal value, rounded half to even.
 fn round1(x: f64) -> f64 {
     format!("{:.1}", x).parse().unwrap_or(x)
@@ -186,17 +147,6 @@ fn py_parse_float(s: &str) -> Option<f64> {
         t
     };
     t.parse::<f64>().ok()
-}
-
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_none_or(|f| f != 0.0),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
 }
 
 /// isinstance(v, (int, float)): bools count as numbers in Python.
@@ -238,38 +188,6 @@ fn py_sum(xs: impl Iterator<Item = f64>) -> f64 {
 }
 
 // --- time ------------------------------------------------------------------------------------
-
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        _ => {
-            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 }
-        }
-    }
-}
 
 /// Local (year, month, day) of a unix time.
 #[cfg(all(unix, target_pointer_width = "64"))]
@@ -895,6 +813,7 @@ pub fn refresh_in(p: &Paths, budget_s: f64, now: Option<i64>) -> RefreshResult {
     RefreshResult { complete, weight, files: total }
 }
 
+/// `refresh_in` over this machine's paths.
 pub fn refresh(budget_s: f64, now: Option<i64>) -> RefreshResult {
     refresh_in(&Paths::from_env(), budget_s, now)
 }
@@ -913,6 +832,7 @@ pub fn seed_in(p: &Paths, used: f64, now: Option<i64>) -> bool {
     true
 }
 
+/// `seed_in` over this machine's paths.
 pub fn seed(used: f64, now: Option<i64>) -> bool {
     seed_in(&Paths::from_env(), used, now)
 }
@@ -975,6 +895,7 @@ pub fn status_in(p: &Paths, now: Option<i64>) -> Status {
     out("unknown", None, budget, None, None)
 }
 
+/// `status_in` over this machine's paths.
 pub fn status(now: Option<i64>) -> Status {
     match std::panic::catch_unwind(Paths::from_env) {
         Ok(p) => status_in(&p, now),
@@ -982,25 +903,42 @@ pub fn status(now: Option<i64>) -> Status {
     }
 }
 
+/// The weekly weight on this machine, or None when there is no calibration and no plan.
 pub fn week_weight() -> Option<f64> {
     week_weight_in(&Paths::from_env())
 }
 
-pub fn needs_refresh_in(p: &Paths, now: i64) -> bool {
-    if fresh_c1(p, now).is_some() {
-        return false;
-    }
-    let Some(r) = load_result(p) else { return true };
-    let at = get(&r, "at").and_then(pynum).unwrap_or(0.0);
-    (now as f64 - at).abs() >= RESULT_TTL_S as f64 || get(&r, "ws").and_then(pyint) != Some(week_start(p, now))
+/// True if a scan result is older than RESULT_TTL_S or from another week.
+fn result_stale(p: &Paths, r: &Value, now: i64) -> bool {
+    let at = get(r, "at").and_then(pynum).unwrap_or(0.0);
+    (now as f64 - at).abs() >= RESULT_TTL_S as f64 || get(r, "ws").and_then(pyint) != Some(week_start(p, now))
 }
 
+/// True if the cached estimate is stale and a scan should run.
+pub fn needs_refresh_in(p: &Paths, now: i64) -> bool {
+    fresh_c1(p, now).is_none() && load_result(p).is_none_or(|r| result_stale(p, &r, now))
+}
+
+/// `needs_refresh_in` over this machine's paths.
 pub fn needs_refresh(now: i64) -> bool {
     needs_refresh_in(&Paths::from_env(), now)
 }
 
+/// True if the prompt hook should scan: the last scan is missing, partial or stale. Unlike
+/// `needs_refresh_in` it ignores a fresh status line, because the scan also saves the
+/// status line calibration and the limit-hit one.
+pub fn prompt_needs_refresh_in(p: &Paths, now: i64) -> bool {
+    load_result(p).is_none_or(|r| get(&r, "complete").and_then(Value::as_bool) != Some(true) || result_stale(p, &r, now))
+}
+
+/// `prompt_needs_refresh_in` over this machine's paths.
+pub fn prompt_needs_refresh(now: i64) -> bool {
+    prompt_needs_refresh_in(&Paths::from_env(), now)
+}
+
 // --- CLI text (json.dumps defaults) ----------------------------------------------------------
 
+/// The status as the JSON text the CLI prints.
 pub fn status_json(s: &Status) -> String {
     let used = s.used.map_or("null".to_string(), py_float);
     let source = s.source.as_deref().map_or("null".to_string(), json_str);
@@ -1015,10 +953,12 @@ pub fn status_json(s: &Status) -> String {
     )
 }
 
+/// The scan result as the JSON text the CLI prints.
 pub fn refresh_json(r: &RefreshResult) -> String {
     format!("{{\"complete\": {}, \"weight\": {}, \"files\": {}}}", r.complete, py_float(r.weight), r.files)
 }
 
+/// The new weekly weight as the JSON text the CLI prints.
 pub fn seed_json(week_weight: f64) -> String {
     format!("{{\"week_weight\": {}}}", py_float(week_weight))
 }
@@ -1256,6 +1196,27 @@ mod tests {
         e.c1(now - 10, 10.0, mon() + WEEK);
         refresh_in(&e.p, 5.0, Some(now));
         assert!((week_weight_in(&e.p).unwrap() - 10.0 * WEIGHT / 0.10).abs() < 1e-9);
+    }
+
+    #[test]
+    fn prompt_scans_past_a_fresh_statusline_and_calibrates() {
+        let e = env();
+        let now = mon() + DAY;
+        let recs: Vec<String> = (0..10).map(|i| sonnet(mon() + 60, &format!("m{i}"))).collect();
+        e.write("a.jsonl", &recs);
+        e.c1(now - 10, 10.0, mon() + WEEK);
+        // no scan yet: `pace status` trusts the fresh status line, the prompt scans
+        assert!(!needs_refresh_in(&e.p, now));
+        assert!(prompt_needs_refresh_in(&e.p, now));
+        refresh_in(&e.p, 5.0, Some(now));
+        assert!((week_weight_in(&e.p).unwrap() - 10.0 * WEIGHT / 0.10).abs() < 1e-9);
+        // a complete scan holds for RESULT_TTL_S, then the prompt scans again
+        assert!(!prompt_needs_refresh_in(&e.p, now + RESULT_TTL_S - 1));
+        assert!(prompt_needs_refresh_in(&e.p, now + RESULT_TTL_S));
+        // a partial scan is continued on the next prompt
+        write_text(&e.p.file("claude-pace-result.json"), &json!({"at": now, "ws": mon(), "weight": 1.0, "files": 1, "complete": false}).to_string());
+        assert!(prompt_needs_refresh_in(&e.p, now));
+        assert!(!needs_refresh_in(&e.p, now));
     }
 
     #[test]

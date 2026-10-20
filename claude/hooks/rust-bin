@@ -11,6 +11,8 @@
 #    ~/.claude/hooks/rust-bin spawn --prompt-file p.md # a skill call says "Run: dots", exit 127
 #
 #  Windows (Git Bash) runs <name>.exe. stdin, stdout, stderr and the exit code pass through.
+#  It runs on every hook, so it starts no subshell and no other program: plain POSIX sh,
+#  parameter expansion and `[` only (bash runs it the same).
 # ============================================================================
 set -u
 
@@ -20,15 +22,18 @@ name="${1:-}"
 if [ -z "$name" ]; then echo "usage: rust-bin [--hook] <name> [args...]" >&2; exit 2; fi
 shift
 
-# This file is linked as ~/.claude/hooks/rust-bin; cd -P finds the repo behind the link.
-HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-REPO="$(cd "$HERE/../.." 2>/dev/null && pwd)"
+# This file is linked as ~/.claude/hooks/rust-bin. The kernel resolves <its folder>/../.. through
+# that link, the same as `cd -P` does, so the repo is found without a subshell.
+case "$0" in */*) HERE="${0%/*}" ;; *) HERE=. ;; esac
+REPO="$HERE/../.."
 [ -f "$REPO/rust/agent-config/Cargo.toml" ] || REPO="${DOTFILES_REPO:-$HOME/dotfiles}"
 CRATE="$REPO/rust/agent-config"
 
-# the same test as is_windows in scripts/setup-lib.sh (not sourced: that costs time on every hook)
+# the same test as is_windows in scripts/setup-lib.sh; bash's $OSTYPE saves the `uname` call
 exe="$name"
-case "$(uname -s 2>/dev/null)" in MINGW* | MSYS* | CYGWIN* | Windows_NT) exe="$name.exe" ;; esac
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+  msys* | cygwin* | MINGW* | MSYS* | CYGWIN* | Windows_NT) exe="$name.exe" ;;
+esac
 BIN="$CRATE/target/release/$exe"
 
 if [ -x "$BIN" ]; then exec "$BIN" "$@"; fi

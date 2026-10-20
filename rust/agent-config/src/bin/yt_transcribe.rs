@@ -5,6 +5,7 @@
 //! Needs on PATH: `yt-dlp` always; `ffmpeg` and `whisper-cli` for the Whisper fallback;
 //! `curl` once, to fetch the Whisper model into the user cache folder.
 
+use agent_config::pycompat::{py_is_space, py_strip};
 use clap::{ArgAction, ArgGroup, Parser};
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -71,19 +72,9 @@ enum CapErr {
 // Python-compat helpers (str.strip, urllib.parse, repr)
 // ---------------------------------------------------------------------------
 
-/// Python's `str.isspace` set (Rust's White_Space lacks U+001C to U+001F).
-fn py_space(c: char) -> bool {
-    matches!(c, '\t'..='\r' | '\u{1c}'..='\u{1f}' | ' ' | '\u{85}' | '\u{a0}' | '\u{1680}'
-        | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}')
-}
-
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_space)
-}
-
 /// `" ".join(s.split())`
 fn collapse_ws(s: &str) -> String {
-    s.split(py_space).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+    s.split(py_is_space).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// `urllib.parse.unquote`: percent escapes decode as UTF-8, bad bytes become U+FFFD.
@@ -126,7 +117,7 @@ fn py_repr(s: &str) -> String {
                 let n = c as u32;
                 let hidden = c != ' '
                     && (c.is_control()
-                        || py_space(c)
+                        || py_is_space(c)
                         || matches!(n, 0xad | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0xfeff));
                 if !hidden {
                     out.push(c);

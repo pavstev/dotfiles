@@ -428,7 +428,7 @@ out="$(env HOME="$H" PATH="$FP" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev
 [[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "a skill call with no binary says Run: dots and exits 127" || bad "skill call with no binary: rc=$rc out='$out'"
 out="$(env HOME="$H" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev/null)"; rc=$?
 [[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "python3 on PATH changes nothing: no binary still means Run: dots" || bad "skill call with python3 on PATH: rc=$rc out='$out'"
-out="$(printf '%s' "$pre" | env HOME="$H" bash "$R/claude/hooks/rust-bin" --hook guard pretool 2>&1)"; rc=$?
+out="$(printf '%s' "$pre" | env HOME="$H" sh "$R/claude/hooks/rust-bin" --hook guard pretool 2>&1)"; rc=$?
 [[ "$rc" -eq 0 && -z "$out" ]] && pass "python3 on PATH changes nothing: a hook with no binary stays silent" || bad "hook with python3 on PATH: rc=$rc out='$out'"
 [[ -z "$(git -C "$R" ls-files '*.py')" ]] && pass "no Python file is tracked" || bad "tracked Python files: $(git -C "$R" ls-files '*.py' | head -3 | tr '\n' ' ')"
 [[ -z "$(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh 2>/dev/null)" ]] \

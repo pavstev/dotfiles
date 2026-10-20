@@ -17,7 +17,9 @@ const MARK: &str = "generated-by: dotfiles";
 
 /// One finished check: its name and `Ok`, or the reason it failed.
 pub struct Check {
+    /// The check name printed after `PASS` or `FAIL`.
     pub name: &'static str,
+    /// `Ok`, or why the check failed (with the fix).
     pub result: Result<(), String>,
 }
 

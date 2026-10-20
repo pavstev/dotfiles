@@ -7,6 +7,7 @@
 //! Python code would raise and so fail open, the Rust code returns `Err(Fail)`.
 
 use agent_config::guard_checks::{self as gc, expanduser, is_macos, realpath};
+use agent_config::pycompat::{days_from_civil, truthy};
 use regex::Regex;
 use serde_json::{Map, Value};
 use std::cell::{Cell, RefCell};
@@ -109,17 +110,6 @@ type Res = Result<Option<String>, Fail>;
 static NULL: Value = Value::Null;
 
 // --- Python-flavoured helpers -------------------------------------------------
-
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
-}
 
 /// `v.get(k)` on a dict, None (Null) when missing or not a dict.
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
@@ -335,9 +325,10 @@ fn live_spawns(state: &Map<String, Value>, now: f64) -> Vec<Slot> {
             };
             if let Value::Number(n) = t
                 && let Some(t) = n.as_f64()
-                    && now - t < SPAWN_TTL {
-                        slots.push(Slot { id, t });
-                    }
+                && now - t < SPAWN_TTL
+            {
+                slots.push(Slot { id, t });
+            }
         }
     }
     slots.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
@@ -430,9 +421,10 @@ fn context_size(path: &Value) -> i64 {
     for line in lines {
         if (has(&line, b"compact_boundary") || has(&line, b"isCompactSummary"))
             && let Some(rec) = loads(&line)
-                && (get(&rec, "subtype").as_str() == Some("compact_boundary") || truthy(get(&rec, "isCompactSummary"))) {
-                    return 0;
-                }
+            && (get(&rec, "subtype").as_str() == Some("compact_boundary") || truthy(get(&rec, "isCompactSummary")))
+        {
+            return 0;
+        }
         if !has(&line, b"\"assistant\"") {
             continue;
         }
@@ -597,10 +589,11 @@ fn cron_interval_minutes(cron: &str) -> Option<i64> {
         return gaps.into_iter().min();
     }
     if let Some(h) = STAR_STEP.captures(hour)
-        && DIGITS.is_match(&minute) {
-            let n = big(&h[1]);
-            return if n >= 1 { Some(n.saturating_mul(60)) } else { None };
-        }
+        && DIGITS.is_match(&minute)
+    {
+        let n = big(&h[1]);
+        return if n >= 1 { Some(n.saturating_mul(60)) } else { None };
+    }
     None
 }
 
@@ -647,7 +640,7 @@ fn loop_chain(s: &str, at: usize) -> Option<i64> {
     }
 }
 
-/// Seconds of a leading interval token (30s, 5m, 10min, 1h, 2h30m) or of "every <token>".
+/// Seconds of a leading interval token (30s, 5m, 10min, 1h, 2h30m) or of `every <token>`.
 fn loop_interval_seconds(args: &str) -> Option<i64> {
     let s = args.trim();
     if let Some(v) = loop_chain(s, 0) {
@@ -658,9 +651,10 @@ fn loop_interval_seconds(args: &str) -> Option<i64> {
         let idx = from + rel;
         let boundary = s[..idx].chars().next_back().map(|c| !(c.is_alphanumeric() || c == '_')).unwrap_or(true);
         if boundary
-            && let Some(v) = loop_chain(s, idx + 6) {
-                return Some(v);
-            }
+            && let Some(v) = loop_chain(s, idx + 6)
+        {
+            return Some(v);
+        }
         from = idx + 1;
     }
     None
@@ -878,18 +872,20 @@ fn subagent_prompt(path: Option<&str>) -> Option<String> {
             continue;
         }
         if let Some(text) = text_of(message_content(&rec))
-            && !text.is_empty() {
-                return Some(text);
-            }
+            && !text.is_empty()
+        {
+            return Some(text);
+        }
     }
     None
 }
 
 fn subagent_transcript(data: &Value) -> Option<String> {
     if let Some(atp) = get(data, "agent_transcript_path").as_str()
-        && !atp.is_empty() {
-            return Some(atp.to_string());
-        }
+        && !atp.is_empty()
+    {
+        return Some(atp.to_string());
+    }
     let tp = get(data, "transcript_path").as_str().filter(|s| !s.is_empty())?;
     if tp.contains("/subagents/") {
         return Some(tp.to_string());
@@ -1042,10 +1038,11 @@ fn handoff_this_turn(path: &Path) -> Result<(Option<String>, String), Fail> {
             } else if btype == Some("tool_use") && get(b, "name").as_str() == Some("Write") {
                 let input = obj_or_empty(get(b, "input"))?;
                 if let Some(fp) = get(input, "file_path").as_str()
-                    && HANDOFF_PATH.is_match(fp) {
-                        texts.reverse();
-                        return Ok((Some(fp.to_string()), texts.join("\n")));
-                    }
+                    && HANDOFF_PATH.is_match(fp)
+                {
+                    texts.reverse();
+                    return Ok((Some(fp.to_string()), texts.join("\n")));
+                }
             }
         }
     }
@@ -1089,12 +1086,7 @@ fn timestamp(v: &Value) -> Option<i64> {
     let n = |i: usize| m[i].parse::<i64>().unwrap();
     let (y, mo, d, h, mi, sec) = (n(1), n(2), n(3), n(4), n(5), n(6));
     // days from civil (proleptic Gregorian), the same as calendar.timegm
-    let (y2, m2) = if mo <= 2 { (y - 1, mo + 9) } else { (y, mo - 3) };
-    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
-    let yoe = y2 - era * 400;
-    let doy = (153 * m2 + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146097 + doe - 719468;
+    let days = days_from_civil(y, mo, d);
     let mut secs = days * 86400 + h * 3600 + mi * 60 + sec;
     if let Some(tz) = m.get(7) {
         let tz = tz.as_str();
@@ -1131,9 +1123,10 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
         let btype = get(b, "type").as_str();
         if btype == Some("text") {
             if let Some(text) = get(b, "text").as_str()
-                && in_turn && t.last_text.is_none() {
-                    t.last_text = Some(text.to_string());
-                }
+                && in_turn && t.last_text.is_none()
+            {
+                t.last_text = Some(text.to_string());
+            }
             continue;
         }
         if btype != Some("tool_use") {
@@ -1226,9 +1219,10 @@ fn apply_plan(steps: &mut Vec<(String, String)>, inp: &Value) {
     fn mark(steps: &mut [(String, String)], n: &Value, status: &str) {
         if let Value::Number(num) = n
             && let Some(i) = num.as_i64()
-                && i >= 1 && (i as usize) <= steps.len() {
-                    steps[i as usize - 1].1 = status.to_string();
-                }
+            && i >= 1 && (i as usize) <= steps.len()
+        {
+            steps[i as usize - 1].1 = status.to_string();
+        }
     }
     let done = get(inp, "done");
     match done.as_array() {
@@ -1418,16 +1412,18 @@ fn g6_stop(data: &Value) -> Res {
     let path = get(data, "transcript_path").as_str().ok_or(Fail)?;
     let (fp, mut text) = handoff_this_turn(Path::new(path))?;
     if let Some(last) = get(data, "last_assistant_message").as_str()
-        && !text.contains(last) {
-            text = format!("{}\n{}", text, last);
-        }
+        && !text.contains(last)
+    {
+        text = format!("{}\n{}", text, last);
+    }
     if let Some(fp) = fp
-        && Path::new(&fp).exists() && !handoff_given(&fp, &text) {
-            let name = basename(&fp).to_string();
-            return Ok(Some(format!(
-                "guard: you wrote the hand-off {fp} this turn, but your reply does not give it to the user. End with the file link [{name}]({fp}) and a fenced block that holds only: Read {fp} and do it."
-            )));
-        }
+        && Path::new(&fp).exists() && !handoff_given(&fp, &text)
+    {
+        let name = basename(&fp).to_string();
+        return Ok(Some(format!(
+            "guard: you wrote the hand-off {fp} this turn, but your reply does not give it to the user. End with the file link [{name}]({fp}) and a fenced block that holds only: Read {fp} and do it."
+        )));
+    }
     Ok(None)
 }
 
@@ -1506,15 +1502,17 @@ fn scratch(data: &Value) -> Option<String> {
     let path = path_v.as_str().filter(|s| !s.is_empty())?;
     let mut path = expanduser(path);
     if !path.starts_with('/')
-        && let Some(cwd) = get(data, "cwd").as_str().filter(|s| !s.is_empty()) {
-            path = if cwd.ends_with('/') { format!("{}{}", cwd, path) } else { format!("{}/{}", cwd, path) };
-        }
+        && let Some(cwd) = get(data, "cwd").as_str().filter(|s| !s.is_empty())
+    {
+        path = if cwd.ends_with('/') { format!("{}{}", cwd, path) } else { format!("{}/{}", cwd, path) };
+    }
     let real = realpath(&path);
     let mut roots: Vec<String> = SCRATCH_ROOTS.iter().map(|s| s.to_string()).collect();
     if let Ok(t) = env::var("TMPDIR")
-        && !t.is_empty() {
-            roots.push(t);
-        }
+        && !t.is_empty()
+    {
+        roots.push(t);
+    }
     for root in &roots {
         let trimmed = root.trim_end_matches('/');
         let mut cands = vec![if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() }];
@@ -1594,45 +1592,48 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
     for line in data.split(|&b| b == b'\n') {
         if has(line, b"\"Agent\"")
             && let Some(rec) = loads(line)
-                && let Some(content) = message_content(&rec).as_array() {
-                    for b in content {
-                        if b.is_object()
-                            && get(b, "type").as_str() == Some("tool_use")
-                            && get(b, "name").as_str() == Some("Agent")
-                        {
-                            spawns += 1;
-                        }
-                    }
+            && let Some(content) = message_content(&rec).as_array()
+        {
+            for b in content {
+                if b.is_object()
+                    && get(b, "type").as_str() == Some("tool_use")
+                    && get(b, "name").as_str() == Some("Agent")
+                {
+                    spawns += 1;
                 }
+            }
+        }
         if has(line, b"\"totalTokens\"") && has(line, b"\"toolUseResult\"")
-            && let Some(rec) = loads(line) {
-                let tur = get(&rec, "toolUseResult");
-                if tur.is_object() && num(get(tur, "totalTokens")) != 0.0 {
-                    tokens += num(get(tur, "totalTokens")) as i64;
-                }
+            && let Some(rec) = loads(line)
+        {
+            let tur = get(&rec, "toolUseResult");
+            if tur.is_object() && num(get(tur, "totalTokens")) != 0.0 {
+                tokens += num(get(tur, "totalTokens")) as i64;
             }
+        }
         if has(line, b"\"totalTokens\"") && has(line, b"task-notification")
-            && let Some(rec) = loads(line) {
-                let att = get(&rec, "attachment");
-                let usage = get(att, "usage");
-                if att.is_object() && usage.is_object() && num(get(usage, "totalTokens")) != 0.0 {
-                    let prompt = py_str_or_empty(get(att, "prompt"));
-                    let key = if let Some(m) = TASK_ID.captures(&prompt) {
-                        format!("s{}", &m[1])
-                    } else if truthy(get(att, "delivery_id")) {
-                        let d = get(att, "delivery_id");
-                        match d.as_str() {
-                            Some(s) => format!("s{}", s),
-                            None => format!("n{}", py_str(d)),
-                        }
-                    } else {
-                        format!("n{}", tasks.len())
-                    };
-                    if tasks.insert(key) {
-                        tokens += num(get(usage, "totalTokens")) as i64;
+            && let Some(rec) = loads(line)
+        {
+            let att = get(&rec, "attachment");
+            let usage = get(att, "usage");
+            if att.is_object() && usage.is_object() && num(get(usage, "totalTokens")) != 0.0 {
+                let prompt = py_str_or_empty(get(att, "prompt"));
+                let key = if let Some(m) = TASK_ID.captures(&prompt) {
+                    format!("s{}", &m[1])
+                } else if truthy(get(att, "delivery_id")) {
+                    let d = get(att, "delivery_id");
+                    match d.as_str() {
+                        Some(s) => format!("s{}", s),
+                        None => format!("n{}", py_str(d)),
                     }
+                } else {
+                    format!("n{}", tasks.len())
+                };
+                if tasks.insert(key) {
+                    tokens += num(get(usage, "totalTokens")) as i64;
                 }
             }
+        }
     }
     Ok((spawns, tokens))
 }
@@ -1784,9 +1785,10 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Result<usize, Fail> {
                     }
                 } else if btype == Some("text") && active
                     && let Some(text) = get(b, "text").as_str()
-                        && WORDS.is_match(text) {
-                            return Ok(n);
-                        }
+                    && WORDS.is_match(text)
+                {
+                    return Ok(n);
+                }
             }
         }
         if n > G13_AFTER {
@@ -1856,9 +1858,10 @@ fn session_model(path: Option<&str>) -> Option<String> {
             continue;
         }
         if let Some(m) = get(get(&rec, "message"), "model").as_str()
-            && !m.is_empty() && !m.starts_with('<') {
-                return Some(m.to_lowercase()); // skip "<synthetic>"
-            }
+            && !m.is_empty() && !m.starts_with('<')
+        {
+            return Some(m.to_lowercase()); // skip "<synthetic>"
+        }
     }
     None
 }
@@ -1965,9 +1968,10 @@ fn route_agent(data: &Value, ctx: &Ctx) -> (Option<Value>, Option<String>) {
         let mut m = Value::String(table.to_string());
         let given = ti.get("model").unwrap_or(&NULL);
         if let Some(gr) = model_rank(&py_str_or_empty(given))
-            && gr <= model_rank(table).unwrap() {
-                m = given.clone();
-            }
+            && gr <= model_rank(table).unwrap()
+        {
+            m = given.clone();
+        }
         model = m;
         effort = match ti.get("effort").and_then(|e| e.as_str()) {
             Some(e @ ("low" | "medium")) => e.to_string(),
@@ -2093,8 +2097,15 @@ fn pace_note(st: &PaceSt, last: &Value) -> Option<String> {
 
 /// G3 nudge and pace notes: JSON for stdout (or None); counters live in the per-session state file.
 fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
+    // Rescan the transcripts only when the last scan is partial, older than 2 min or from another
+    // week. A fresh status line does not skip it: the scan also saves the calibration.
     if check_enabled("PACE") {
-        let _ = std::panic::catch_unwind(|| pace::refresh(5.0, None));
+        let _ = std::panic::catch_unwind(|| {
+            let now = now_secs() as i64;
+            if pace::prompt_needs_refresh(now) {
+                pace::refresh(5.0, Some(now));
+            }
+        });
     }
     ctx.reset_pace();
     let st = ctx.pace();

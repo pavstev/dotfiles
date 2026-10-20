@@ -31,7 +31,7 @@ then moves into the private layer, and `dots` prints its name (never its value).
 nothing is lost, the repo stays clean, and the next run prints nothing new. A rewrite that
 only changes the layout counts as no change. To share a kept key with everyone, run
 `scripts/agent-config claude-settings promote <key>` and commit. The copper status line is the
-`statusline` Rust bin, run as `bash ~/.claude/hooks/rust-bin statusline`.
+`statusline` Rust bin, run as `sh ~/.claude/hooks/rust-bin statusline`.
 
 **Skills are the headline.** One source (`claude/skills`), linked everywhere by
 `dots` (the skills step): write once, use in every agent. Skills use the

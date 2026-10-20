@@ -1,4 +1,4 @@
-//! The skills step: link each claude/skills/<name> into ~/.claude/skills. Additive:
+//! The skills step: link each `claude/skills/<name>` into ~/.claude/skills. Additive:
 //! skills from other sources stay. Cursor and
 //! Opencode read ~/.claude/skills themselves, so nothing is linked for them.
 //! Prints only when it linked or pruned something (and the clashes it left alone).

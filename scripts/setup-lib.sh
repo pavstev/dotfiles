@@ -215,14 +215,14 @@ rust_path() {
   export PATH
 }
 
-# A cargo that works and a rustc at least as new as rust-version in Cargo.toml (1.88).
+# A cargo that works and a rustc at least as new as rust-version in Cargo.toml (1.89).
 # RUSTUP_AUTO_INSTALL=0: with no toolchain on this HOME, fail now, never download one.
 rust_ok() {
   RUSTUP_AUTO_INSTALL=0 cargo --version >/dev/null 2>&1 || return 1
   local v; v="$(RUSTUP_AUTO_INSTALL=0 rustc --version 2>/dev/null)" || return 1
   v="${v#rustc }"; v="${v%% *}"
   local major="${v%%.*}" minor="${v#*.}"; minor="${minor%%.*}"
-  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( major > 1 || minor >= 88 ))
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( major > 1 || minor >= 89 ))
 }
 
 # install_rust: a minimal stable toolchain with rustup. On Linux the build tools come first
@@ -286,7 +286,7 @@ ensure_rust_bin() {
     if ! rust_ok; then
       install_rust || { printf '!  %s: Rust could not be installed\n' "$label" >&2; return 1; }
       PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"; export PATH
-      rust_ok || { printf '!  %s: no cargo with Rust 1.88 or newer\n' "$label" >&2; return 1; }
+      rust_ok || { printf '!  %s: no cargo with Rust 1.89 or newer\n' "$label" >&2; return 1; }
     fi
     ! is_windows || win_dlltool
     printf '»» building the Rust %s (the first time takes a few minutes)\n' "$name" >&2

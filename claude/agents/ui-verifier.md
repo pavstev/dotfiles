@@ -11,7 +11,7 @@ hooks:
     - matcher: "Write|Edit|NotebookEdit"
       hooks:
         - type: command
-          command: "test -r ~/.claude/hooks/rust-bin || exit 0; bash ~/.claude/hooks/rust-bin --hook guard scratch"
+          command: "test -r ~/.claude/hooks/rust-bin || exit 0; sh ~/.claude/hooks/rust-bin --hook guard scratch"
 ---
 
 You check UI in a browser and report what you saw. You never change code or settings.

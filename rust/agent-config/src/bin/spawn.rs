@@ -10,6 +10,7 @@
 //! Known gaps: `~user` is not expanded, Unicode digits are not read by `--wait`,
 //! and the help text is the Python 3.9 one at 80 columns.
 
+use agent_config::pycompat::{self, Item, classify_arg, py_is_space, py_splitlines, py_strip, repr_str};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -53,95 +54,9 @@ optional arguments:
 // Python string helpers.
 // ---------------------------------------------------------------------------
 
-/// Python's str.isspace for one char (Unicode White_Space plus \x1c-\x1f).
-fn py_is_space(c: char) -> bool {
-    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
-}
-
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_is_space)
-}
-
 /// " ".join(s.split())
 fn py_flat(s: &str) -> String {
     s.split(py_is_space).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
-}
-
-/// str.splitlines(): splits on more than \n.
-fn py_splitlines(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                out.push(std::mem::take(&mut cur));
-            }
-            '\n' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}' => {
-                out.push(std::mem::take(&mut cur));
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
-fn is_printable(c: char) -> bool {
-    if c == ' ' {
-        return true;
-    }
-    if c.is_control() || c.is_whitespace() {
-        return false;
-    }
-    let u = c as u32;
-    !(matches!(u, 0xAD | 0x600..=0x605 | 0x61C | 0x6DD | 0x70F | 0x180E)
-        || (0x200B..=0x200F).contains(&u)
-        || (0x202A..=0x202E).contains(&u)
-        || (0x2060..=0x206F).contains(&u)
-        || u == 0xFEFF
-        || (0xFFF9..=0xFFFB).contains(&u)
-        || (0xE000..=0xF8FF).contains(&u)
-        || u >= 0xF0000
-        || (u & 0xFFFE) == 0xFFFE
-        || (0xFDD0..=0xFDEF).contains(&u))
-}
-
-/// Python's repr() of a str.
-fn repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if is_printable(c) => out.push(c),
-            c => {
-                let u = c as u32;
-                if u < 0x100 {
-                    out.push_str(&format!("\\x{:02x}", u));
-                } else if u < 0x10000 {
-                    out.push_str(&format!("\\u{:04x}", u));
-                } else {
-                    out.push_str(&format!("\\U{:08x}", u));
-                }
-            }
-        }
-    }
-    out.push(quote);
-    out
 }
 
 /// Python's OSError text: `[Errno 2] No such file or directory: 'path'`.
@@ -310,14 +225,7 @@ fn load_json(path: &str) -> Value {
 
 /// Python truthiness of a JSON value.
 fn truthy(v: Option<&Value>) -> bool {
-    match v {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64().is_none_or(|f| f != 0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
-    }
+    v.is_some_and(pycompat::truthy)
 }
 
 /// Env of the parent session that must not leak into the child.
@@ -508,20 +416,6 @@ const OPTS: &[(&str, usize)] = &[
 const ACTION_NAMES: [&str; 8] =
     ["-h/--help", "--prompt-file", "--prompt", "--dir", "--name", "--mode", "--wait", "--dry-run"];
 
-fn negative_number_like(a: &str) -> bool {
-    // ^-\d+$|^-\d*\.\d+$
-    let Some(r) = a.strip_prefix('-') else { return false };
-    if !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()) {
-        return true;
-    }
-    match r.split_once('.') {
-        Some((a, b)) => {
-            a.chars().all(|c| c.is_ascii_digit()) && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit())
-        }
-        None => false,
-    }
-}
-
 /// int(v) as Python reads it (ASCII digits). Saturates at the i64 range.
 fn py_int(v: &str) -> Option<i64> {
     let t = py_strip(v);
@@ -540,65 +434,6 @@ fn py_int(v: &str) -> Option<i64> {
     Some(if neg { -n } else { n })
 }
 
-enum Item {
-    Pos,
-    Dash,
-    /// action index (None: unknown option), explicit argument
-    Opt(Option<usize>, Option<String>),
-}
-
-fn classify_arg(a: &str) -> Result<Item, String> {
-    let exact = |s: &str| OPTS.iter().find(|(n, _)| *n == s).map(|(_, i)| *i);
-    if a.is_empty() || !a.starts_with('-') {
-        return Ok(Item::Pos);
-    }
-    if let Some(i) = exact(a) {
-        return Ok(Item::Opt(Some(i), None));
-    }
-    if a.chars().count() == 1 {
-        return Ok(Item::Pos);
-    }
-    if let Some((o, v)) = a.split_once('=')
-        && let Some(i) = exact(o)
-    {
-        return Ok(Item::Opt(Some(i), Some(v.to_string())));
-    }
-    let mut hits: Vec<(&str, usize, Option<String>)> = Vec::new();
-    let second = a.chars().nth(1).unwrap();
-    if second == '-' {
-        let (prefix, explicit) = match a.split_once('=') {
-            Some((p, v)) => (p, Some(v.to_string())),
-            None => (a, None),
-        };
-        for (n, i) in OPTS {
-            if n.starts_with(prefix) {
-                hits.push((n, *i, explicit.clone()));
-            }
-        }
-    } else {
-        let short: String = a.chars().take(2).collect();
-        let rest: String = a.chars().skip(2).collect();
-        for (n, i) in OPTS {
-            if *n == short {
-                hits.push((n, *i, Some(rest.clone())));
-            } else if n.starts_with(a) {
-                hits.push((n, *i, None));
-            }
-        }
-    }
-    if hits.len() > 1 {
-        let names: Vec<&str> = hits.iter().map(|h| h.0).collect();
-        return Err(format!("ambiguous option: {} could match {}", a, names.join(", ")));
-    }
-    if let Some((_, i, explicit)) = hits.pop() {
-        return Ok(Item::Opt(Some(i), explicit));
-    }
-    if negative_number_like(a) || a.contains(' ') {
-        return Ok(Item::Pos);
-    }
-    Ok(Item::Opt(None, None))
-}
-
 fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
     let mut items: Vec<Item> = Vec::new();
     let mut after_dd = false;
@@ -609,7 +444,7 @@ fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
             items.push(Item::Dash);
             after_dd = true;
         } else {
-            items.push(classify_arg(a).map_err(ArgExit::Error)?);
+            items.push(classify_arg(a, OPTS).map_err(ArgExit::Error)?);
         }
     }
     let mut args = Args {
@@ -988,7 +823,9 @@ mod tests {
     fn test_failures_name_the_fix() {
         let none = |_: &str| -> Option<String> { None };
         // (trusted, bypass, logged_in), has, which, folder, want
-        let cases: Vec<(bool, bool, bool, bool, bool, Option<&str>, &str)> = vec![
+        /// One failure case: the five flags, the folder, and the text the error must hold.
+        type FailureCase<'a> = (bool, bool, bool, bool, bool, Option<&'a str>, &'a str);
+        let cases: Vec<FailureCase> = vec![
             (true, false, true, false, true, None, "bypass warning"),
             (false, true, true, false, true, None, "not trusted"),
             (true, true, false, false, true, None, "not logged in"),

@@ -546,9 +546,10 @@ fn peel(mut tokens: Vec<String>) -> Vec<String> {
 fn abspath(p: &str, cwd: Option<&str>) -> String {
     let mut p = expanduser(&expandvars(p));
     if !p.starts_with('/')
-        && let Some(c) = cwd.filter(|c| !c.is_empty()) {
-            p = path_join(c, &p);
-        }
+        && let Some(c) = cwd.filter(|c| !c.is_empty())
+    {
+        p = path_join(c, &p);
+    }
     realpath(&p)
 }
 
@@ -586,9 +587,10 @@ fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<St
         let heredoc = heredoc_lines.get(line).copied().unwrap_or(false);
         let name = basename(&toks[0]).to_string();
         if (name == "cd" || name == "pushd")
-            && let Some(d) = toks[1..].iter().find(|t| !t.starts_with('-')) {
-                cwd = Some(abspath(d, cwd.as_deref()));
-            }
+            && let Some(d) = toks[1..].iter().find(|t| !t.starts_with('-'))
+        {
+            cwd = Some(abspath(d, cwd.as_deref()));
+        }
         out.push(Cmd { toks: toks.clone(), extra: Vec::new(), cwd: cwd.clone(), heredoc });
         if depth >= 3 {
             continue;
@@ -706,9 +708,10 @@ fn is_secret(path: &str, cwd: Option<&str>, target: &Target, dir_ok: bool) -> bo
         return false;
     }
     if !p.starts_with('/')
-        && let Some(c) = cwd.filter(|c| !c.is_empty()) {
-            p = path_join(c, &p);
-        }
+        && let Some(c) = cwd.filter(|c| !c.is_empty())
+    {
+        p = path_join(c, &p);
+    }
     if GLOB_CHARS.is_match(&p) {
         let norm = normpath(&p);
         let (d, base) = path_split(&norm);

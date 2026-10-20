@@ -1,10 +1,13 @@
 //! bag_check: is this Mac safe to put in a bag with Claude still running? Replaces
 //! claude/skills/ps_bag-mode/scripts/bag-check.sh (same flags, card and exit codes).
 //!
-//!   bag_check [--eta 45m]    one compact card (about 3 s). ETA = how long the session still needs.
-//!   bag_check --throttle     also drop dev servers / indexers to background priority (reversible)
-//!   bag_check --restore      undo --throttle
-//!   bag_check --watch [N]    repeat the card every N seconds (default 60); the ETA counts down
+//! ```text
+//! bag_check [--eta 45m]    one compact card (about 3 s). ETA = how long the session still needs.
+//! bag_check --throttle     also drop dev servers / indexers to background priority (reversible)
+//! bag_check --restore      undo --throttle
+//! bag_check --watch [N]    repeat the card every N seconds (default 60); the ETA counts down
+//! ```
+//!
 //! ETA formats: 45  45m  2h  1h30m. Always ends with one "VERDICT:" line.
 
 #[macro_use]

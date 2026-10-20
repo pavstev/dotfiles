@@ -919,7 +919,7 @@ fn test_creates_file_with_all_events() {
         let cmd = entry["command"].as_str().unwrap();
         assert!(cmd.starts_with("test -r "), "{cmd}");
         assert!(cmd.contains("|| exit 0;"), "{cmd}"); // a missing script must not deny
-        assert!(cmd.ends_with(&format!("bash {} --hook guard_cursor {}", fx.guard.display(), mode)), "{cmd}");
+        assert!(cmd.ends_with(&format!("sh {} --hook guard_cursor {}", fx.guard.display(), mode)), "{cmd}");
         assert!(!cmd.contains("python"), "{cmd}");
         assert_eq!(entry["timeout"], 10);
         match matcher {
@@ -1014,7 +1014,7 @@ fn test_old_python_entries_are_replaced_by_the_rust_launcher() {
     let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["beforeSubmitPrompt"].as_array().unwrap().iter().map(|e| e["command"].as_str().unwrap().to_string()).collect();
     assert_eq!(cmds.len(), 2, "{cmds:?}");
     assert_eq!(cmds[0], "echo mine");
-    assert!(cmds[1].ends_with(&format!("bash {} --hook guard_cursor prompt", fx.guard.display())), "{cmds:?}");
+    assert!(cmds[1].ends_with(&format!("sh {} --hook guard_cursor prompt", fx.guard.display())), "{cmds:?}");
     assert!(!cmds.iter().any(|c| c.contains("guard_cursor.py") || c.contains("python")), "{cmds:?}");
 }
 
@@ -1395,7 +1395,7 @@ fn test_statusline_added_only_when_launcher_exists() {
     assert!(rj(&cfg_path(&fx)).get("statusLine").is_none());
     wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["statusLine"], json!({"type": "command", "command": "bash ~/.claude/hooks/rust-bin statusline", "padding": 0}));
+    assert_eq!(rj(&cfg_path(&fx))["statusLine"], json!({"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline", "padding": 0}));
 }
 
 #[test]
@@ -1414,13 +1414,22 @@ fn test_old_statusline_sh_command_is_replaced() {
     let old = fx.home.join(".claude").join("statusline.sh");
     wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": old.to_str().unwrap(), "padding": 0}}));
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["statusLine"], json!({"type": "command", "command": "bash ~/.claude/hooks/rust-bin statusline", "padding": 0}));
+    assert_eq!(rj(&cfg_path(&fx))["statusLine"], json!({"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline", "padding": 0}));
     // a second run keeps the new command, and another user command still wins
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "bash ~/.claude/hooks/rust-bin statusline");
+    assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "sh ~/.claude/hooks/rust-bin statusline");
     wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": "~/bin/my-line"}}));
     run_cfg(&fx);
     assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "~/bin/my-line");
+}
+
+#[test]
+fn test_old_bash_statusline_command_is_replaced() {
+    let fx = Fx::new();
+    wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
+    wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": "bash ~/.claude/hooks/rust-bin statusline", "padding": 0}}));
+    run_cfg(&fx);
+    assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "sh ~/.claude/hooks/rust-bin statusline");
 }
 
 #[test]

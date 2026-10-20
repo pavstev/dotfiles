@@ -1,3 +1,6 @@
+//! The `agent-config` library: builds the config other harnesses read from `claude/` (Cursor,
+//! Opencode) and the Claude `settings.json`. It also holds the modules behind the `dots`, `guard`
+//! and `tools` binaries. The `agent-config` bin and `dots` call it; hooks reach it through `rust-bin`.
 use clap::{Parser, Subcommand};
 use regex::Regex;
 use serde_json::Value;
@@ -18,12 +21,15 @@ const USER_RULES_MARK: &str = ".config/dotfiles/cursor-user-rules.sha256";
 const LIVE_REL: &str = ".claude/settings.json";
 const LAYER_REL: &str = ".config/dotfiles/claude-settings.json";
 const LAST_REL: &str = ".config/dotfiles/claude-settings.last.json";
+/// The note placed above the rules in Cursor: how Claude's tool and agent names map to Cursor's.
 pub const CURSOR_NOTE: &str = "> In Cursor, read \"Claude\" as \"the agent\". Claude Code tool names map to Cursor:\n> Agent = Task (subagent), AskUserQuestion = AskQuestion, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where Cursor has an equivalent.\n> Task accepts only these subagent_type values: generalPurpose, explore, cursor-guide,\n> ci-investigator, bugbot, security-review, best-of-n-runner. A named agent from the agents\n> table (code-reviewer, task-implementer, ...) is not one of them. Spawn generalPurpose and put\n> this in the prompt: \"Read ~/.claude/agents/<name>.md first and follow it.\" Plain lookups use explore.\n\n";
 const OPENCODE_NOTE: &str = "> In OpenCode, read \"Claude\" as \"the agent\". Claude Code tool names map to OpenCode:\n> Agent = Task (subagent), AskUserQuestion = `question`, `/ps:*` skills work the same.\n> Rules about Claude-only features apply where OpenCode has an equivalent.\n\n";
 const WRITE_TOOLS: [&str; 5] = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"];
 
 static DRY: AtomicBool = AtomicBool::new(false);
+/// True when this run is a dry run: writers report what they would do and change nothing.
 pub fn dry() -> bool { DRY.load(Ordering::Relaxed) }
+/// Turns the dry run on or off for the whole process.
 pub fn set_dry(v: bool) { DRY.store(v, Ordering::Relaxed); }
 
 fn home_dir() -> PathBuf { env::var("HOME").map(PathBuf::from).ok().filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from(".")) }
@@ -32,12 +38,14 @@ pub mod out;
 pub mod dots;
 pub mod guard_checks;
 pub mod presets;
+pub mod pycompat;
 pub mod tools_cli;
 pub mod tools_core;
 pub use out::{color_enabled, verbose, ok, info, skip, header, summary, warn};
 #[allow(unused_imports)]
 use out::{g, y, d, b, z};
 
+/// The path with the home folder shown as `~`, for messages.
 pub fn tilde(p: &Path) -> String {
     let home = home_dir();
     let s = p.display().to_string();
@@ -47,6 +55,8 @@ pub fn tilde(p: &Path) -> String {
     s
 }
 
+/// The dotfiles repo: `DOTFILES_REPO`, else the repo around `scripts/`, else the nearest parent of
+/// the current folder that has `claude/` and `scripts/`.
 pub fn repo_root() -> PathBuf {
     if let Ok(v) = env::var("DOTFILES_REPO") && !v.is_empty() { return PathBuf::from(v); }
     if let Ok(exe) = env::current_exe()
@@ -60,15 +70,20 @@ pub fn repo_root() -> PathBuf {
     }
     PathBuf::from(".")
 }
+/// The `claude/` folder of the repo, the source of all generated config.
 pub fn claude_dir() -> PathBuf { repo_root().join("claude") }
+/// The `cursor/` folder of the repo (Cursor-only sources such as `mcp.json`).
 pub fn cursor_src_dir() -> PathBuf { repo_root().join("cursor") }
 /// The launcher that Cursor's hooks run: `rust-bin --hook guard_cursor <mode>`.
 pub fn guard_path() -> PathBuf { claude_dir().join("hooks").join("rust-bin") }
 
+/// The file as text, or `None` when it cannot be read.
 pub fn read_text(p: &Path) -> Option<String> { fs::read_to_string(p).ok() }
 
+/// True when the path itself is a symlink (a link to a missing target counts).
 pub fn is_symlink(p: &Path) -> bool { p.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) }
 
+/// The value without one pair of matching quotes, with JSON escapes read for double quotes.
 pub fn unquote(v: &str) -> String {
     let bytes = v.as_bytes();
     if v.len() >= 2 && bytes[0] == bytes[v.len()-1] && (bytes[0] == b'"' || bytes[0] == b'\'') {
@@ -81,6 +96,8 @@ pub fn unquote(v: &str) -> String {
     v.to_string()
 }
 
+/// Splits a Markdown file into its `---` front matter (key to text) and the body.
+/// Text with no front matter gives an empty map and the whole text.
 pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let norm = text.replace("\r\n", "\n");
     let re = Regex::new(r"(?s)^---\n(.*?)\n---\n?(.*)$").unwrap();
@@ -149,6 +166,7 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     (meta, body)
 }
 
+/// The private `owner.md` rules file, only for the `owner` profile and only when it exists.
 pub fn owner_overlay(home: &Path, profile: &str) -> Option<PathBuf> {
     let f = home.join(OWNER_MD);
     if profile == "owner" && f.is_file() { Some(f) } else { None }
@@ -171,6 +189,7 @@ pub fn rules_text(home: &Path, profile: &str) -> String {
     }
 }
 
+/// The text as a YAML value, double-quoted only when plain YAML would misread it.
 pub fn yaml_str(v: &str) -> String {
     if v.contains('\n') || v.contains(": ") || v.contains(" #") || (!v.is_empty() && v.trim() != v)
         || v.chars().next().map(|c| "!&*?|>%@`'\"[]{},#-".contains(c)).unwrap_or(false) {
@@ -180,21 +199,25 @@ pub fn yaml_str(v: &str) -> String {
     }
 }
 
+/// A Cursor `.mdc` rule file that always applies, with the given description and body.
 pub fn mdc(description: &str, body: &str) -> String {
     format!("---\ndescription: {}\nalwaysApply: true\n---\n{}", description, body)
 }
 
+/// The `generated-by` comment that opens a generated file and names its sources.
 pub fn stamp(srcs: &[&str]) -> String {
     let edit = if srcs.len() == 1 { "that file" } else { "those files" };
     format!("<!-- {} (scripts/agent-config) from {}. Edit {}, then run dots. -->\n\n", MARK, srcs.join(" and "), edit)
 }
 
+/// The SHA-256 of the text, in lowercase hex.
 pub fn sha(text: &str) -> String {
     let mut h = Sha256::new();
     h.update(text.as_bytes());
     format!("{:x}", h.finalize())
 }
 
+/// One value from `~/.config/dotfiles/settings` (the last line of that name wins), or an empty string.
 pub fn setting(home: &Path, name: &str) -> String {
     let p = home.join(SETTINGS);
     let data = match fs::read(&p) { Ok(d) => d, Err(_) => return String::new() };
@@ -212,6 +235,7 @@ pub fn setting(home: &Path, name: &str) -> String {
     value
 }
 
+/// The text to paste into Cursor User Rules: the Cursor note, the rules and the reply style.
 pub fn user_rules_text(home: &Path, profile: &str) -> String {
     let mut text = format!("{}{}", CURSOR_NOTE, rules_text(home, profile));
     if let Some((name, _, body)) = output_style(home) {
@@ -235,6 +259,7 @@ pub fn with_presets(home: &Path, base: &Value) -> Value {
     presets::fragments(&repo_root(), &on).iter().fold(base.clone(), |acc, f| merge(&acc, f))
 }
 
+/// The active output style as (name, file, body), or `None` when the style is `default` or not found.
 pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
     let style_name = built_settings(home)
         .get("outputStyle").and_then(|v| v.as_str()).map(|s| s.to_string());
@@ -254,6 +279,8 @@ pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
 }
 
 // Writers
+/// Writes the file through a temp file and a rename, so a reader never sees half a file.
+/// It creates missing folders and sets `mode` (else keeps the old mode, or 0644 for a new file).
 pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), String> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -282,6 +309,8 @@ pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), St
     Ok(())
 }
 
+/// Writes a generated file unless it already matches. A file that is a link or has no
+/// `generated-by` marker is the user's and is left alone with a warning. Honors the dry run.
 pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
     let is_sym = is_symlink(path);
     let has_mark = read_text(path).map(|t| t.contains(MARK)).unwrap_or(false);
@@ -291,16 +320,17 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
     }
     if path.exists()
         && let Some(old) = read_text(path)
-            && old == text {
-                let same_mode = mode.map(|m| fs::metadata(path).map(|md| {
-                    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; md.permissions().mode() & 0o777 == m }
-                    #[cfg(not(unix))] { let _ = (m, md); true }
-                }).unwrap_or(false)).unwrap_or(true);
-                if mode.is_none() || same_mode {
-                    skip(&tilde(path));
-                    return;
-                }
-            }
+        && old == text
+    {
+        let same_mode = mode.map(|m| fs::metadata(path).map(|md| {
+            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; md.permissions().mode() & 0o777 == m }
+            #[cfg(not(unix))] { let _ = (m, md); true }
+        }).unwrap_or(false)).unwrap_or(true);
+        if mode.is_none() || same_mode {
+            skip(&tilde(path));
+            return;
+        }
+    }
     if dry() {
         info(&format!("would write {}", tilde(path)));
         return;
@@ -308,6 +338,7 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
     if let Err(e) = atomic_write(path, text, mode) { warn(&e); } else { ok(&format!("wrote {}", tilde(path))); }
 }
 
+/// Deletes a generated file (one with the `generated-by` marker, not a link) and says why.
 pub fn remove_generated(path: &Path, why: &str) {
     let is_sym = is_symlink(path);
     let has_mark = read_text(path).map(|t| t.contains(MARK)).unwrap_or(false);
@@ -321,6 +352,8 @@ pub fn remove_generated(path: &Path, why: &str) {
     }
 }
 
+/// A JSON object from the file; an empty object when the file is missing, `None` when it is not
+/// valid JSON or not an object.
 pub fn load_json(path: &Path) -> Option<Value> {
     if !path.exists() { return Some(serde_json::json!({})); }
     let data = fs::read_to_string(path).ok()?;
@@ -328,6 +361,8 @@ pub fn load_json(path: &Path) -> Option<Value> {
     if v.is_object() { Some(v) } else { None }
 }
 
+/// Saves `new` over `old` when they differ, after a timestamped `.bak` copy of the old file.
+/// `private` makes the file mode 0600. A link is left alone. Honors the dry run.
 pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
     if new == old {
         skip(&tilde(path));
@@ -359,11 +394,13 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
 fn unix_ts() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 
 // MCP
+/// True when Cursor MCP servers are on (`DOTFILES_MCP`, else the `CURSOR_MCP` setting).
 pub fn mcp_wanted(home: &Path) -> bool {
     let v = env::var("DOTFILES_MCP").unwrap_or_default().trim().to_lowercase();
     let v = if v.is_empty() { setting(home, "CURSOR_MCP").trim().to_lowercase() } else { v };
     matches!(v.as_str(), "1" | "on" | "yes" | "true")
 }
+/// True when Opencode MCP servers are on (`DOTFILES_MCP`, else the `OPENCODE_MCP` setting).
 pub fn opencode_mcp_wanted(home: &Path) -> bool {
     let v = env::var("DOTFILES_MCP").unwrap_or_default().trim().to_lowercase();
     let v = if v.is_empty() { setting(home, "OPENCODE_MCP").trim().to_lowercase() } else { v };
@@ -371,6 +408,8 @@ pub fn opencode_mcp_wanted(home: &Path) -> bool {
 }
 
 // Cursor parts
+/// Writes the Cursor rule files in `~/.cursor/rules` (core rules and reply style), or only checks
+/// them when the rules were pasted into Cursor User Rules.
 pub fn cursor_rules(home: &Path, profile: &str) {
     let rules = home.join(".cursor").join("rules");
     let mark = home.join(USER_RULES_MARK);
@@ -413,6 +452,7 @@ pub fn cursor_rules(home: &Path, profile: &str) {
     write_generated(&target, &mdc(&format!("Reply style \"{}\" (Claude outputStyle)", name), &body), None);
 }
 
+/// Writes `~/.cursor/agents/<name>.md` from `claude/agents/*.md` and removes generated ones whose source is gone.
 pub fn cursor_agents(home: &Path) {
     let dst = home.join(".cursor").join("agents");
     let mut wanted: BTreeSet<String> = BTreeSet::new();
@@ -453,6 +493,7 @@ fn shlex_quote(s: &str) -> String {
     if s.bytes().all(|b| b.is_ascii_alphanumeric() || b".,/:=_-@%+".contains(&b)) { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
 }
 
+/// Puts the guard hook entries into `~/.cursor/hooks.json`, replacing our old ones and keeping the user's.
 pub fn cursor_hooks(home: &Path) {
     let path = home.join(".cursor").join("hooks.json");
     let old = load_json(&path);
@@ -495,7 +536,7 @@ pub fn cursor_hooks(home: &Path) {
         ];
         let mut placed: BTreeMap<&str, usize> = BTreeMap::new();
         for (event, mode, matcher) in hook_events {
-            let mut entry = serde_json::json!({"command": format!("test -r {} || exit 0; bash {} --hook guard_cursor {}", q, q, mode), "timeout": 10});
+            let mut entry = serde_json::json!({"command": format!("test -r {} || exit 0; sh {} --hook guard_cursor {}", q, q, mode), "timeout": 10});
             if let Some(m) = matcher { entry.as_object_mut().unwrap().insert("matcher".to_string(), Value::String(m.to_string())); }
             let hooks = new.get_mut("hooks").unwrap().as_object_mut().unwrap();
             let entries = hooks.entry(event.to_string()).or_insert(serde_json::json!([])).as_array_mut().unwrap();
@@ -509,6 +550,7 @@ pub fn cursor_hooks(home: &Path) {
     save_json(&path, &old, &new, false);
 }
 
+/// Adds the servers of `cursor/mcp.json` that are missing from `~/.cursor/mcp.json`. Opt-in.
 pub fn cursor_mcp(home: &Path) {
     if !mcp_wanted(home) {
         info("MCP servers from cursor/mcp.json are opt-in: turn on Cursor MCP in dots settings");
@@ -522,12 +564,14 @@ pub fn cursor_mcp(home: &Path) {
     let mut new = old.clone();
     let servers = new.as_object_mut().unwrap().entry("mcpServers".to_string()).or_insert(serde_json::json!({}));
     if let Some(servers) = servers.as_object_mut()
-        && let Some(omap) = ours.as_object() {
-            for (name, cfg) in omap { servers.entry(name.clone()).or_insert(cfg.clone()); }
-        }
+        && let Some(omap) = ours.as_object()
+    {
+        for (name, cfg) in omap { servers.entry(name.clone()).or_insert(cfg.clone()); }
+    }
     save_json(&path, &old, &new, false);
 }
 
+/// A Claude permission rule as a Cursor CLI rule (`Shell(cmd)`, `Read(path)`), or `None` when Cursor has no match.
 pub fn translate_permission(rule: &str, kind: &str) -> Option<String> {
     let re = Regex::new(r"^(\w+)\((.*)\)$").unwrap();
     let caps = re.captures(rule.trim())?;
@@ -557,6 +601,8 @@ pub fn translate_permission(rule: &str, kind: &str) -> Option<String> {
     None
 }
 
+/// Merges translated permissions, the no-attribution flags and the status line into
+/// `~/.cursor/cli-config.json`. Rules it added before are tracked in a sidecar file.
 pub fn cursor_cli_config(home: &Path) {
     let path = home.join(".cursor").join("cli-config.json");
     let old = load_json(&path);
@@ -593,20 +639,23 @@ pub fn cursor_cli_config(home: &Path) {
     attr.insert("attributePRsToAgent".to_string(), Value::Bool(false));
     // statusLine: the Rust `statusline` bin, through the launcher (same as claude/settings.json)
     let launcher = home.join(".claude").join("hooks").join("rust-bin");
-    // An older run wrote `~/.claude/statusline.sh`, which is gone: replace that one, keep any other command.
-    let old_statusline = new_mut.get("statusLine").is_some_and(|s| s.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains("statusline.sh")));
-    if (new_mut.get("statusLine").is_none() || old_statusline) && launcher.exists() { new_mut.as_object_mut().unwrap().insert("statusLine".to_string(), serde_json::json!({"type":"command","command": "bash ~/.claude/hooks/rust-bin statusline","padding":0})); }
+    // Older runs wrote `~/.claude/statusline.sh` (gone) and then ran the launcher through bash (slower
+    // to start than sh): replace those two, keep any other command.
+    let old_statusline = new_mut.get("statusLine").is_some_and(|s| s.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains("statusline.sh") || c == "bash ~/.claude/hooks/rust-bin statusline"));
+    if (new_mut.get("statusLine").is_none() || old_statusline) && launcher.exists() { new_mut.as_object_mut().unwrap().insert("statusLine".to_string(), serde_json::json!({"type":"command","command": "sh ~/.claude/hooks/rust-bin statusline","padding":0})); }
     let old_clone = old.clone();
     save_json(&path, &old_clone, &new_mut, true);
     // sidecar
     if !dry()
         && let Some(after) = load_json(&path)
-            && after == new_mut && managed != serde_json::to_value(&added).ok().unwrap_or(Value::Null) {
-                let _ = atomic_write(&side, &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"), None);
-            }
+        && after == new_mut && managed != serde_json::to_value(&added).ok().unwrap_or(Value::Null)
+    {
+        let _ = atomic_write(&side, &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"), None);
+    }
 }
 
 // Opencode
+/// Writes `~/.config/opencode/agents/<name>.md` from `claude/agents/*.md` and removes generated ones whose source is gone.
 pub fn opencode_agents(home: &Path) {
     let dst = home.join(".config").join("opencode").join("agents");
     let mut wanted: BTreeSet<String> = BTreeSet::new();
@@ -684,6 +733,7 @@ fn plugin_bash(windows: bool, found: Option<PathBuf>) -> String {
     }
 }
 
+/// A Claude permission rule as an Opencode (tool, pattern, action) triple, or `None` when Opencode has no match.
 pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, String)> {
     let re = Regex::new(r"^(\w+)\((.*)\)$").unwrap();
     let caps = re.captures(rule.trim())?;
@@ -718,6 +768,8 @@ pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, St
     None
 }
 
+/// Merges translated permissions and (when on) the MCP servers into `~/.config/opencode/opencode.jsonc`.
+/// Rules it added before are tracked in a sidecar file.
 pub fn opencode_config(home: &Path) {
     let path = home.join(".config").join("opencode").join("opencode.jsonc");
     let old = load_json(&path);
@@ -737,15 +789,16 @@ pub fn opencode_config(home: &Path) {
         let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         for r in rules {
             if let Some(rulestr) = r.as_str()
-                && let Some((cat, pat, _eff)) = opencode_permission(rulestr, kind) {
-                    let eff = if cat == "bash" { "allow".to_string() } else { kind.to_string() };
-                    // use opencode_permission's effect? Python uses eff from tuple except bash 'allow' hardcoded; actually tuple eff for read/edit is kind. Keep:
-                    let _ = eff;
-                    if !want.get(&cat).map(|v|v.is_object()).unwrap_or(false) { want.insert(cat.to_string(), serde_json::json!({})); }
-                    // determine effect from tuple last field for non-bash
-                    let effect = opencode_permission(rulestr, kind).unwrap().2;
-                    want.get_mut(&cat).unwrap().as_object_mut().unwrap().insert(pat.clone(), Value::String(effect));
-                }
+                && let Some((cat, pat, _eff)) = opencode_permission(rulestr, kind)
+            {
+                let eff = if cat == "bash" { "allow".to_string() } else { kind.to_string() };
+                // use opencode_permission's effect? Python uses eff from tuple except bash 'allow' hardcoded; actually tuple eff for read/edit is kind. Keep:
+                let _ = eff;
+                if !want.get(&cat).map(|v|v.is_object()).unwrap_or(false) { want.insert(cat.to_string(), serde_json::json!({})); }
+                // determine effect from tuple last field for non-bash
+                let effect = opencode_permission(rulestr, kind).unwrap().2;
+                want.get_mut(&cat).unwrap().as_object_mut().unwrap().insert(pat.clone(), Value::String(effect));
+            }
         }
     }
     want.entry("skill".to_string()).or_insert(serde_json::json!({})).as_object_mut().unwrap().insert("*".to_string(), Value::String("allow".to_string()));
@@ -793,11 +846,13 @@ pub fn opencode_config(home: &Path) {
     save_json(&path, &old, &new, false);
     if !dry()
         && let Some(after) = load_json(&path)
-            && after == new && managed != serde_json::to_value(&want).unwrap_or(Value::Null) {
-                let _ = atomic_write(&side, &(serde_json::to_string_pretty(&want).unwrap_or_default() + "\n"), None);
-            }
+        && after == new && managed != serde_json::to_value(&want).unwrap_or(Value::Null)
+    {
+        let _ = atomic_write(&side, &(serde_json::to_string_pretty(&want).unwrap_or_default() + "\n"), None);
+    }
 }
 
+/// Writes the copper theme file and sets it in `tui.json`, unless the user already names another theme.
 pub fn opencode_theme(home: &Path) {
     if setting(home, "THEME") == "plain" { skip("Opencode theme (THEME=plain)"); return; }
     let themes = home.join(".config").join("opencode").join("themes");
@@ -822,12 +877,13 @@ pub fn opencode_theme(home: &Path) {
     // our own file from an older layout: the palette inline plus a `_dotfiles` marker
     let legacy = old.get("_dotfiles").and_then(|d| d.get("generated")) == Some(&Value::Bool(true));
     if let Some(theme) = old.get("theme")
-        && !theme.is_null() && theme.as_str() != Some("copper") && !legacy {
-            let copperfile = home.join(".config").join("opencode").join("themes").join("copper.json");
-            let shown = match theme { Value::String(s) => s.clone(), other => py_repr(other) };
-            info(&format!("{} uses your Opencode theme ({}); the copper one is in {}", tilde(&path), shown, tilde(&copperfile)));
-            return;
-        }
+        && !theme.is_null() && theme.as_str() != Some("copper") && !legacy
+    {
+        let copperfile = home.join(".config").join("opencode").join("themes").join("copper.json");
+        let shown = match theme { Value::String(s) => s.clone(), other => py_repr(other) };
+        info(&format!("{} uses your Opencode theme ({}); the copper one is in {}", tilde(&path), shown, tilde(&copperfile)));
+        return;
+    }
     // keep every other key of the file; drop the markers of the older layouts
     let mut new = old.clone();
     let obj = new.as_object_mut().unwrap();
@@ -854,8 +910,9 @@ fn py_repr(v: &Value) -> String {
         Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, v)| format!("{}: {}", py_repr(&Value::String(k.clone())), py_repr(v))).collect::<Vec<_>>().join(", ")),
     }
 }
-pub fn opencode_tui(home: &Path) { opencode_theme(home); }
 
+/// Mirrors the global Opencode config and agents into each listed project's `.opencode/` as links.
+/// With no list it reads `DOTFILES_PROJECTS`, then the `OPENCODE_PROJECTS` setting.
 pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
     let projects = projects.unwrap_or_else(|| {
         let v = env::var("DOTFILES_PROJECTS").unwrap_or_default().trim().to_string();
@@ -926,6 +983,7 @@ fn run_part(part: impl FnOnce()) -> bool {
     }
 }
 
+/// The `cursor` command: runs each Cursor part. Returns 1 when a part failed, else 0.
 pub fn cmd_cursor(args: &CursorArgs) -> i32 {
     let home = home_dir();
     header(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), args.profile));
@@ -943,20 +1001,23 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
     if failed > 0 { 1 } else { 0 }
 }
 
+/// Arguments of the `cursor` command.
 #[derive(Parser, Debug)]
 pub struct CursorArgs {
+    /// owner pulls in the private owner.md rules
     #[arg(long, default_value = "shared", value_parser = ["owner", "shared"])]
     pub profile: String,
+    /// report what would change without writing
     #[arg(long)]
     pub dry_run: bool,
 }
 
-// default profile util
+/// The profile of this machine (`owner` or `shared`), from the settings.
 pub fn default_profile() -> String {
     presets::profile(&home_dir())
 }
 
-// User rules command
+/// The command that copies stdin to the clipboard on this OS, or `None` when none is installed.
 pub fn clipboard_command() -> Option<Vec<String>> {
     clipboard_command_in(env::var("PATH").ok().as_deref())
 }
@@ -980,6 +1041,8 @@ fn crate_which(cmd: &str, path: Option<&str>) -> bool {
     false
 }
 
+/// The `user-rules` command: prints the Cursor User Rules text, or with `copy` puts it on the
+/// clipboard and removes the file copies in `~/.cursor/rules`. Returns 1 when there is no clipboard tool.
 pub fn cmd_user_rules(profile: &str, copy: bool, dry_run: bool) -> i32 {
     let _ = dry_run;
     let home = home_dir();
@@ -1010,6 +1073,7 @@ pub fn cmd_user_rules(profile: &str, copy: bool, dry_run: bool) -> i32 {
 }
 
 // Claude settings
+/// The value at a key path in a JSON object, or `None` when any step is missing.
 pub fn get_path(obj: &Value, path: &[&str]) -> Option<Value> {
     let mut cur = obj;
     for k in path {
@@ -1018,17 +1082,19 @@ pub fn get_path(obj: &Value, path: &[&str]) -> Option<Value> {
     }
     Some(cur.clone())
 }
+/// Removes the key at a path, and any parent object that becomes empty.
 pub fn drop_path(obj: &mut Value, path: &[&str]) {
     if path.len() == 1 {
         if let Some(o) = obj.as_object_mut() { o.remove(path[0]); }
         return;
     }
     if let Some(sub) = obj.get_mut(path[0])
-        && sub.is_object() {
-            drop_path(sub, &path[1..]);
-            if sub.as_object().map(|o| o.is_empty()).unwrap_or(false)
-                && let Some(o) = obj.as_object_mut() { o.remove(path[0]); }
-        }
+        && sub.is_object()
+    {
+        drop_path(sub, &path[1..]);
+        if sub.as_object().map(|o| o.is_empty()).unwrap_or(false)
+            && let Some(o) = obj.as_object_mut() { o.remove(path[0]); }
+    }
 }
 
 fn is_union(path: &[String]) -> bool {
@@ -1036,6 +1102,8 @@ fn is_union(path: &[String]) -> bool {
     matches!(joined.as_str(), "permissions.allow" | "permissions.deny" | "permissions.ask" | "permissions.additionalDirectories")
 }
 
+/// The layer laid over the base: objects merge, `null` removes a key, the permission lists join
+/// without repeats, and anything else is replaced.
 pub fn merge(base: &Value, layer: &Value) -> Value { merge_inner(base, layer, &[]) }
 fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
     let mut out = base.clone();
@@ -1062,6 +1130,8 @@ fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
     out
 }
 
+/// What changed in the live settings since the last build, as a patch for the private layer plus
+/// notes (kind, key path, item count) for the user.
 pub fn drift(last: &Value, live: &Value) -> (Value, Vec<(String, Vec<String>, usize)>) { drift_inner(last, live, &[]) }
 fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(String, Vec<String>, usize)>) {
     let mut patch = serde_json::json!({});
@@ -1112,6 +1182,7 @@ fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(Stri
     (patch, notes)
 }
 
+/// The layer with a `drift` patch applied to it.
 pub fn apply_patch(layer: &Value, patch: &Value) -> Value { apply_patch_inner(layer, patch, &[]) }
 fn apply_patch_inner(layer: &Value, patch: &Value, path: &[String]) -> Value {
     let mut out = layer.clone();
@@ -1122,10 +1193,11 @@ fn apply_patch_inner(layer: &Value, patch: &Value, path: &[String]) -> Value {
             let mut p = path.to_vec();
             p.push(k.clone());
             if let Some(ov) = out_obj.get(k).cloned()
-                && ov.is_object() && v.is_object() {
-                    out_obj.insert(k.clone(), apply_patch_inner(&ov, v, &p));
-                    continue;
-                }
+                && ov.is_object() && v.is_object()
+            {
+                out_obj.insert(k.clone(), apply_patch_inner(&ov, v, &p));
+                continue;
+            }
             if is_union(&p) && v.is_array() && out_obj.get(k).map(|x| x.is_array()).unwrap_or(false) {
                 let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();
                 for x in v.as_array().unwrap() { if !arr.contains(x) { arr.push(x.clone()); } }
@@ -1138,8 +1210,11 @@ fn apply_patch_inner(layer: &Value, patch: &Value, path: &[String]) -> Value {
     out
 }
 
+/// The JSON as pretty text with a closing newline.
 pub fn dump(obj: &Value) -> String { serde_json::to_string_pretty(obj).unwrap_or_default() + "\n" }
 
+/// Builds `~/.claude/settings.json` from the repo base, the enabled presets and the private layer.
+/// Changes Claude made to the live file move into the layer first. Returns 1 on invalid JSON.
 pub fn claude_settings_build(home: &Path) -> i32 {
     let base_f = claude_dir().join("settings.json");
     let layer_f = home.join(LAYER_REL);
@@ -1206,6 +1281,7 @@ pub fn claude_settings_build(home: &Path) -> i32 {
     0
 }
 
+/// Moves a dotted key from the private layer into the repo base, then rebuilds the live file.
 pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
     let path: Vec<&str> = dotted.split('.').collect();
     let base_f = claude_dir().join("settings.json");
@@ -1271,6 +1347,7 @@ pub fn claude_settings_demote(home: &Path, dotted: &str) -> i32 {
 }
 
 // CLI args structs
+/// The `agent-config` command line.
 #[derive(Parser, Debug)]
 #[command(
     name = "agent-config",
@@ -1285,10 +1362,12 @@ pub struct Cli {
     /// Override the dotfiles repo root (defaults to the repo this binary ships in).
     #[arg(long, global = true)]
     pub repo: Option<PathBuf>,
+    /// The command to run.
     #[command(subcommand)]
     pub cmd: Commands,
 }
 
+/// The `agent-config` subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// generate and merge Cursor config under ~/.cursor
@@ -1303,6 +1382,7 @@ pub enum Commands {
     Opencode(OpencodeArgs),
 }
 
+/// Arguments of the `user-rules` command.
 #[derive(Parser, Debug)]
 pub struct UserRulesArgs {
     /// owner pulls in the private ~/.config/dotfiles/owner.md rules
@@ -1316,6 +1396,7 @@ pub struct UserRulesArgs {
     pub dry_run: bool,
 }
 
+/// Arguments of the `claude-settings` command.
 #[derive(Parser, Debug)]
 pub struct ClaudeSettingsArgs {
     /// build, promote a dotted key from the private layer into the repo base, or demote one from the live file into the layer
@@ -1328,6 +1409,7 @@ pub struct ClaudeSettingsArgs {
     pub dry_run: bool,
 }
 
+/// Arguments of the `opencode` command.
 #[derive(Parser, Debug)]
 pub struct OpencodeArgs {
     /// owner pulls in the private ~/.config/dotfiles/owner.md rules
@@ -1341,6 +1423,7 @@ pub struct OpencodeArgs {
     pub projects: Option<String>,
 }
 
+/// Runs the `agent-config` command line and returns the exit code.
 pub fn run() -> i32 { run_cli(Cli::parse()) }
 
 /// Run one agent-config command in this process (`dots` does). A panic counts as a failure.
@@ -1413,9 +1496,7 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
     if failed > 0 { 1 } else { 0 }
 }
 
-// needed trait for is_file etc already.
-
-// export opencode_tui etc.
+/// Writes `~/.config/opencode/AGENTS.md`: the rules, enabled presets, owner overlay and reply style.
 pub fn opencode_rules(home: &Path, profile: &str) {
     let path = home.join(".config").join("opencode").join("AGENTS.md");
     if is_symlink(&path) || (path.exists() && !read_text(&path).unwrap_or_default().contains(MARK)) {
@@ -1439,12 +1520,6 @@ pub fn opencode_rules(home: &Path, profile: &str) {
     }
     write_generated(&path, &text, mode);
 }
-
-// clock helper signature not needed.
-pub fn ushr() {}
-
-// impelement cursor hook cmd missing? Provide no-op placeholder not used.
-pub fn no_op() {}
 
 #[cfg(test)]
 mod agent_config_tests;

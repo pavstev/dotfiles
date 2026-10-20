@@ -7,6 +7,7 @@
 //! printable table behind `repr()` is approximate, and the argparse help text is
 //! the Python 3.9 one.
 
+use agent_config::pycompat::{Item, classify_arg, py_strip, repr_str};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
@@ -72,67 +73,6 @@ impl Py {
 
 fn dget<'a>(d: &'a [(String, Py)], key: &str) -> Option<&'a Py> {
     d.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-}
-
-/// Python's str.isspace for one char (Unicode White_Space plus \x1c-\x1f).
-fn py_is_space(c: char) -> bool {
-    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
-}
-
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_is_space)
-}
-
-fn is_printable(c: char) -> bool {
-    if c == ' ' {
-        return true;
-    }
-    if c.is_control() || c.is_whitespace() {
-        return false;
-    }
-    let u = c as u32;
-    // Format (Cf), private use (Co) and non-characters: not printable in Python.
-    !(matches!(u, 0xAD | 0x600..=0x605 | 0x61C | 0x6DD | 0x70F | 0x180E)
-        || (0x200B..=0x200F).contains(&u)
-        || (0x202A..=0x202E).contains(&u)
-        || (0x2060..=0x206F).contains(&u)
-        || u == 0xFEFF
-        || (0xFFF9..=0xFFFB).contains(&u)
-        || (0xE000..=0xF8FF).contains(&u)
-        || u >= 0xF0000
-        || (u & 0xFFFE) == 0xFFFE
-        || (0xFDD0..=0xFDEF).contains(&u))
-}
-
-fn repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if is_printable(c) => out.push(c),
-            c => {
-                let u = c as u32;
-                if u < 0x100 {
-                    out.push_str(&format!("\\x{:02x}", u));
-                } else if u < 0x10000 {
-                    out.push_str(&format!("\\u{:04x}", u));
-                } else {
-                    out.push_str(&format!("\\U{:08x}", u));
-                }
-            }
-        }
-    }
-    out.push(quote);
-    out
 }
 
 /// Python's repr(float).
@@ -978,83 +918,11 @@ fn positive_int(v: &str) -> Result<usize, String> {
     }
 }
 
-fn negative_number_like(a: &str) -> bool {
-    // ^-\d+$|^-\d*\.\d+$
-    let Some(r) = a.strip_prefix('-') else { return false };
-    if !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()) {
-        return true;
-    }
-    match r.split_once('.') {
-        Some((a, b)) => a.chars().all(|c| c.is_ascii_digit()) && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()),
-        None => false,
-    }
-}
-
 // Option names in argparse's registration order: -h, --help, --kill, --cap, --json.
 const OPTS: &[(&str, usize)] = &[("-h", 0), ("--help", 0), ("--kill", 1), ("--cap", 2), ("--json", 3)];
 
 fn action_name(idx: usize) -> &'static str {
     ["-h/--help", "--kill", "--cap", "--json"][idx]
-}
-
-enum Item {
-    Pos,
-    Dash,
-    /// action index (None: unknown option), explicit argument
-    Opt(Option<usize>, Option<String>),
-}
-
-fn classify_arg(a: &str) -> Result<Item, String> {
-    let exact = |s: &str| OPTS.iter().find(|(n, _)| *n == s).map(|(_, i)| *i);
-    if a.is_empty() || !a.starts_with('-') {
-        return Ok(Item::Pos);
-    }
-    if let Some(i) = exact(a) {
-        return Ok(Item::Opt(Some(i), None));
-    }
-    if a.chars().count() == 1 {
-        return Ok(Item::Pos);
-    }
-    if let Some((o, v)) = a.split_once('=')
-        && let Some(i) = exact(o)
-    {
-        return Ok(Item::Opt(Some(i), Some(v.to_string())));
-    }
-    // abbreviations and -hX
-    let mut hits: Vec<(&str, usize, Option<String>)> = Vec::new();
-    let second = a.chars().nth(1).unwrap();
-    if second == '-' {
-        let (prefix, explicit) = match a.split_once('=') {
-            Some((p, v)) => (p, Some(v.to_string())),
-            None => (a, None),
-        };
-        for (n, i) in OPTS {
-            if n.starts_with(prefix) {
-                hits.push((n, *i, explicit.clone()));
-            }
-        }
-    } else {
-        let short: String = a.chars().take(2).collect();
-        let rest: String = a.chars().skip(2).collect();
-        for (n, i) in OPTS {
-            if *n == short {
-                hits.push((n, *i, Some(rest.clone())));
-            } else if n.starts_with(a) {
-                hits.push((n, *i, None));
-            }
-        }
-    }
-    if hits.len() > 1 {
-        let names: Vec<&str> = hits.iter().map(|h| h.0).collect();
-        return Err(format!("ambiguous option: {} could match {}", a, names.join(", ")));
-    }
-    if let Some((_, i, explicit)) = hits.pop() {
-        return Ok(Item::Opt(Some(i), explicit));
-    }
-    if negative_number_like(a) || a.contains(' ') {
-        return Ok(Item::Pos);
-    }
-    Ok(Item::Opt(None, None))
 }
 
 fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
@@ -1067,7 +935,7 @@ fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
             items.push(Item::Dash);
             after_dd = true;
         } else {
-            items.push(classify_arg(a).map_err(ArgExit::Error)?);
+            items.push(classify_arg(a, OPTS).map_err(ArgExit::Error)?);
         }
     }
     let mut args = Args { cap: CAP, ..Default::default() };

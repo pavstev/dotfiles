@@ -5,6 +5,9 @@
 //! Prints tagged evidence lines so the agent can build the "me / you" table.
 //! Read-only, except `git fetch` (skip with --no-fetch).
 
+use agent_config::pycompat::{
+    basename, civil_from_days, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str, truthy,
+};
 use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
@@ -161,10 +164,10 @@ fn line(tag: &str, text: &str) {
 
 fn home() -> String {
     for k in ["HOME", "USERPROFILE"] {
-        if let Ok(h) = std::env::var(k) {
-            if !h.is_empty() {
-                return h;
-            }
+        if let Ok(h) = std::env::var(k)
+            && !h.is_empty()
+        {
+            return h;
         }
     }
     dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
@@ -172,70 +175,6 @@ fn home() -> String {
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
-}
-
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
-}
-
-fn py_float(f: f64) -> String {
-    if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
-    }
-    if !f.is_finite() {
-        return if f.is_nan() { "NaN".into() } else if f > 0.0 { "Infinity".into() } else { "-Infinity".into() };
-    }
-    let e = format!("{:e}", f.abs());
-    let (mant, exp) = e.split_once('e').unwrap();
-    let exp: i32 = exp.parse().unwrap();
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let sign = if f < 0.0 { "-" } else { "" };
-    let body = if (-4..16).contains(&exp) {
-        if exp >= 0 {
-            let int_len = exp as usize + 1;
-            if digits.len() <= int_len {
-                format!("{}{}.0", digits, "0".repeat(int_len - digits.len()))
-            } else {
-                format!("{}.{}", &digits[..int_len], &digits[int_len..])
-            }
-        } else {
-            format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
-        }
-    } else {
-        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
-        format!("{}e{}{:02}", m, if exp < 0 { "-" } else { "+" }, exp.abs())
-    };
-    format!("{}{}", sign, body)
-}
-
-fn json_str(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
-                let mut buf = [0u16; 2];
-                for u in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{:04x}", u));
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 /// json.dumps(v) with Python defaults.
@@ -279,52 +218,6 @@ fn dump(v: &Value, out: &mut String) {
             }
             out.push('}');
         }
-    }
-}
-
-fn py_repr_str(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut o = String::new();
-    o.push(q);
-    for c in s.chars() {
-        match c {
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            c if c == q => {
-                o.push('\\');
-                o.push(c);
-            }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => o.push_str(&format!("\\x{:02x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push(q);
-    o
-}
-
-fn py_repr(v: &Value) -> String {
-    match v {
-        Value::String(s) => py_repr_str(s),
-        Value::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
-        Value::Object(o) => {
-            format!("{{{}}}", o.iter().map(|(k, x)| format!("{}: {}", py_repr_str(k), py_repr(x))).collect::<Vec<_>>().join(", "))
-        }
-        other => py_str(other),
-    }
-}
-
-/// Python str(value) of a JSON value.
-fn py_str(v: &Value) -> String {
-    match v {
-        Value::Null => "None".into(),
-        Value::Bool(b) => if *b { "True".into() } else { "False".into() },
-        Value::Number(n) => {
-            if n.is_i64() || n.is_u64() { n.to_string() } else { py_float(n.as_f64().unwrap_or(0.0)) }
-        }
-        Value::String(s) => s.clone(),
-        other => py_repr(other),
     }
 }
 
@@ -378,183 +271,13 @@ fn expanduser(p: &str) -> String {
     }
 }
 
-fn dirname(p: &str) -> String {
-    match p.rfind('/') {
-        None => String::new(),
-        Some(i) => {
-            let head = &p[..=i];
-            let t = head.trim_end_matches('/');
-            if t.is_empty() { head.to_string() } else { t.to_string() }
-        }
-    }
-}
-
-fn basename(p: &str) -> String {
-    p.rsplit('/').next().unwrap_or("").to_string()
-}
-
-fn fname(p: &Path) -> String {
-    p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-/// str.splitlines()
-fn py_splitlines(s: &str) -> Vec<String> {
-    let mut out = vec![];
-    let mut cur = String::new();
-    let mut it = s.chars().peekable();
-    while let Some(c) = it.next() {
-        match c {
-            '\r' => {
-                if it.peek() == Some(&'\n') {
-                    it.next();
-                }
-                out.push(std::mem::take(&mut cur));
-            }
-            '\n' | '\u{b}' | '\u{c}' | '\u{1c}' | '\u{1d}' | '\u{1e}' | '\u{85}' | '\u{2028}' | '\u{2029}' => {
-                out.push(std::mem::take(&mut cur));
-            }
-            c => cur.push(c),
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
 /// open(path, errors="replace") with universal newlines.
 fn read_text(p: &Path) -> Option<String> {
     fs::read(p).ok().map(|b| String::from_utf8_lossy(&b).replace("\r\n", "\n").replace('\r', "\n"))
 }
 
-fn list_dir(dir: &Path) -> Vec<PathBuf> {
-    match fs::read_dir(dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            .map(|e| e.path())
-            .collect(),
-        Err(_) => vec![],
-    }
-}
-
-fn mtime(p: &Path) -> Option<f64> {
-    fs::metadata(p)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs_f64())
-}
-
 fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
-}
-
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        _ => {
-            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 }
-        }
-    }
-}
-
-/// datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp(); a missing offset counts as UTC.
-fn parse_ts(s: &str) -> Option<f64> {
-    let s = s.replace('Z', "+00:00");
-    let b: Vec<char> = s.chars().collect();
-    let num_at = |a: usize, n: usize| -> Option<i64> {
-        let t: String = b.get(a..a + n)?.iter().collect();
-        if t.chars().all(|c| c.is_ascii_digit()) { t.parse().ok() } else { None }
-    };
-    if b.len() < 10 || b[4] != '-' || b[7] != '-' {
-        return None;
-    }
-    let (y, mo, d) = (num_at(0, 4)?, num_at(5, 2)?, num_at(8, 2)?);
-    if !(1..=12).contains(&mo) || y < 1 || d < 1 || d > days_in_month(y, mo) {
-        return None;
-    }
-    let (mut hh, mut mm, mut ss, mut us, mut off) = (0i64, 0i64, 0i64, 0i64, 0i64);
-    if b.len() > 10 {
-        let rest: Vec<char> = b[11..].to_vec();
-        let tz_at = rest.iter().position(|c| *c == '+' || *c == '-');
-        let (time, tz) = match tz_at {
-            Some(i) => (&rest[..i], Some(&rest[i..])),
-            None => (&rest[..], None),
-        };
-        let ts: String = time.iter().collect();
-        let (hms, frac) = match ts.split_once('.') {
-            Some((a, f)) => (a.to_string(), Some(f.to_string())),
-            None => (ts.clone(), None),
-        };
-        let parts: Vec<&str> = hms.split(':').collect();
-        let pn = |x: &str| -> Option<i64> {
-            if x.len() == 2 && x.chars().all(|c| c.is_ascii_digit()) { x.parse().ok() } else { None }
-        };
-        hh = pn(parts.first()?)?;
-        if parts.len() > 1 {
-            mm = pn(parts[1])?;
-        }
-        if parts.len() > 2 {
-            ss = pn(parts[2])?;
-        }
-        if parts.len() > 3 {
-            return None;
-        }
-        if let Some(f) = frac {
-            if f.is_empty() || f.len() > 9 || !f.chars().all(|c| c.is_ascii_digit()) || parts.len() < 3 {
-                return None;
-            }
-            let mut p6 = f.clone();
-            p6.truncate(6);
-            while p6.len() < 6 {
-                p6.push('0');
-            }
-            us = p6.parse().ok()?;
-        }
-        if hh > 23 || mm > 59 || ss > 59 {
-            return None;
-        }
-        if let Some(tz) = tz {
-            let sign = if tz[0] == '-' { -1 } else { 1 };
-            let t: String = tz[1..].iter().collect();
-            let p: Vec<&str> = t.split(':').collect();
-            if p.len() < 2 || p.len() > 3 {
-                return None;
-            }
-            let (th, tm) = (pn(p[0])?, pn(p[1])?);
-            let tsec = if p.len() == 3 { pn(p[2])? } else { 0 };
-            if th > 23 || tm > 59 || tsec > 59 {
-                return None;
-            }
-            off = sign * (th * 3600 + tm * 60 + tsec);
-        }
-    }
-    let secs = days_from_civil(y, mo, d) * 86400 + hh * 3600 + mm * 60 + ss - off;
-    Some((secs * 1_000_000 + us) as f64 / 1e6)
 }
 
 /// Local calendar fields for a unix time: (year, month, day, hour, minute, second).
@@ -719,12 +442,11 @@ fn find_session(arg: Option<&str>) -> Option<PathBuf> {
         }
         return session_hits(a, false).into_iter().next();
     }
-    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID") {
-        if !sid.is_empty() {
-            if let Some(h) = session_hits(&sid, true).into_iter().next() {
-                return Some(h);
-            }
-        }
+    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID")
+        && !sid.is_empty()
+        && let Some(h) = session_hits(&sid, true).into_iter().next()
+    {
+        return Some(h);
     }
     let enc = NON_ALNUM.replace_all(&cwd_string(), "-").into_owned();
     let mine: Vec<PathBuf> = list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
@@ -775,10 +497,10 @@ fn is_human(obj: &Value, content: &Value) -> bool {
             return false;
         }
     }
-    if let Some(a) = content.as_array() {
-        if a.iter().any(|b| b.is_object() && get(b, "type").as_str() == Some("tool_result")) {
-            return false;
-        }
+    if let Some(a) = content.as_array()
+        && a.iter().any(|b| b.is_object() && get(b, "type").as_str() == Some("tool_result"))
+    {
+        return false;
     }
     !text_of(content).trim().is_empty()
 }
@@ -857,19 +579,19 @@ fn read_session(path: &Path) -> Session {
             }
         }
         let ts = get(&obj, "timestamp").as_str().and_then(parse_ts);
-        if let Some(t) = ts {
-            if t != 0.0 {
-                if !s.start.map(|x| x != 0.0).unwrap_or(false) {
-                    s.start = Some(t);
-                }
-                s.end = Some(t);
+        if let Some(t) = ts
+            && t != 0.0
+        {
+            if !s.start.map(|x| x != 0.0).unwrap_or(false) {
+                s.start = Some(t);
             }
+            s.end = Some(t);
         }
         let sidechain = truthy(get(&obj, "isSidechain"));
-        if let Some(c) = get(&obj, "cwd").as_str().filter(|c| !c.is_empty()) {
-            if !sidechain {
-                s.cwds.insert(c.to_string());
-            }
+        if let Some(c) = get(&obj, "cwd").as_str().filter(|c| !c.is_empty())
+            && !sidechain
+        {
+            s.cwds.insert(c.to_string());
         }
         let empty = Value::Object(Default::default());
         let m = get(&obj, "message");
@@ -959,10 +681,10 @@ fn read_session(path: &Path) -> Session {
             }
         } else if name == "TaskUpdate" {
             let key = or_blank(first_truthy(&inp, &["taskId", "task_id", "id"]));
-            if truthy(get(&inp, "status")) {
-                if let Some(t) = s.tasks.iter_mut().find(|t| t.0 == key) {
-                    t.2 = py_str(get(&inp, "status"));
-                }
+            if truthy(get(&inp, "status"))
+                && let Some(t) = s.tasks.iter_mut().find(|t| t.0 == key)
+            {
+                t.2 = py_str(get(&inp, "status"));
             }
         } else if name == "CronCreate" {
             let key = CRON_ID.captures(&res).map(|m| m[1].to_string()).unwrap_or_else(|| uid.clone());
@@ -1017,17 +739,17 @@ fn section_asks(s: &Session, limit: i64) {
 
 fn section_todos(s: &Session) {
     let mut items: Vec<(String, String)> = vec![];
-    if let Some(todos) = &s.todos {
-        if !todos.is_empty() {
-            for t in todos {
-                let c = first_truthy(t, &["content", "activeForm"]);
-                let c = if truthy(c) { py_str(c) } else { "?".to_string() };
-                let st = match get(t, "status") {
-                    Value::Null => if t.get("status").is_some() { "None".to_string() } else { "?".to_string() },
-                    v => py_str(v),
-                };
-                items.push((c, st));
-            }
+    if let Some(todos) = &s.todos
+        && !todos.is_empty()
+    {
+        for t in todos {
+            let c = first_truthy(t, &["content", "activeForm"]);
+            let c = if truthy(c) { py_str(c) } else { "?".to_string() };
+            let st = match get(t, "status") {
+                Value::Null => if t.get("status").is_some() { "None".to_string() } else { "?".to_string() },
+                v => py_str(v),
+            };
+            items.push((c, st));
         }
     }
     for (_, subj, st) in &s.tasks {
@@ -1135,10 +857,10 @@ fn advise(t: &mut Bg) -> (bool, String) {
         }
         return (false, "server, stop it when work ends".into());
     }
-    if let Some(q) = quiet {
-        if q >= 20.0 && run >= 20.0 {
-            return (false, format!("quiet for {}m, read its output before stopping", q as i64));
-        }
+    if let Some(q) = quiet
+        && q >= 20.0 && run >= 20.0
+    {
+        return (false, format!("quiet for {}m, read its output before stopping", q as i64));
     }
     if run < 5.0 {
         return (false, "just started".into());
@@ -1191,12 +913,12 @@ fn section_background(s: &Session) {
 
 fn hurry_binary() -> Option<PathBuf> {
     let exe = if cfg!(windows) { "hurry_scan.exe" } else { "hurry_scan" };
-    if let Ok(me) = std::env::current_exe() {
-        if let Some(dir) = me.parent() {
-            let p = dir.join(exe);
-            if p.is_file() {
-                return Some(p);
-            }
+    if let Ok(me) = std::env::current_exe()
+        && let Some(dir) = me.parent()
+    {
+        let p = dir.join(exe);
+        if p.is_file() {
+            return Some(p);
         }
     }
     None
@@ -1457,8 +1179,7 @@ fn heredoc_end(cmd: &str, from: usize, tag: &str) -> Option<usize> {
         let nl = p + rel;
         let rest = &cmd[nl + 1..];
         let after_ws = rest.trim_start();
-        if after_ws.starts_with(tag) {
-            let tail = &after_ws[tag.len()..];
+        if let Some(tail) = after_ws.strip_prefix(tag) {
             let tail2 = tail.trim_start_matches([' ', '\t']);
             if tail2.is_empty() || tail2.starts_with('\n') {
                 let consumed = rest.len() - tail2.len();
@@ -1497,7 +1218,7 @@ fn masked_exit(bare: &str, check_end: usize) -> String {
     }
 }
 
-/// How the check at tool use `uid` ended: "failed", "running", "hidden: <mask>" or "passed".
+/// How the check at tool use `uid` ended: `failed`, `running`, `hidden: <mask>` or `passed`.
 fn check_state(s: &Session, uid: &str, bare: &str, check_end: usize) -> String {
     let (is_err, res) = s.result(uid);
     if is_err {

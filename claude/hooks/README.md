@@ -100,4 +100,6 @@ Wired in [`claude/settings.json`](../settings.json) (`hooks`). Each command star
 `rust-bin --hook guard <mode>` runs the Rust `guard` binary built by `dots`; with no binary it
 exits 0, silent. A skill call (no `--hook`) with no binary says `Run: dots`
 and exits 127. It never builds (`dots` does, with `scripts/agent-config --bins`).
+Hooks start it with `sh`, not `bash`, and it starts no subshell or other program: Homebrew bash
+alone takes about 6 ms to start, and a hook runs on every tool call (`rust/agent-config/BENCHMARK.md`).
 Notes: `rust/MIGRATION.md`.

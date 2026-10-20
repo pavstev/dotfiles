@@ -2,11 +2,10 @@
 name = "agent-config"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89" # File::lock (the guard's state file)
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 dirs = "6"
 sha2 = "0.10"
@@ -22,6 +21,15 @@ inquire = { version = "0.9.4", default-features = false, features = ["crossterm"
 
 [target.'cfg(windows)'.dependencies]
 inquire = { version = "0.9.4", default-features = false, features = ["console", "editor"] }
+
+[dev-dependencies]
+serde = "1" # one test pretty-prints with a custom indent
+
+# Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
+# after a pull about 4 times slower, with the same start-up time (BENCHMARK.md). Keep the default
+# panic = "unwind": guard and guard_cursor fail open through catch_unwind.
+[profile.release]
+strip = "symbols"
 
 [[bin]]
 name = "agent-config"
@@ -88,5 +96,5 @@ name = "bag_check"
 path = "src/bin/bag_check.rs"
 
 [[bench]]
-name = "manual"
+name = "hooks"
 harness = false

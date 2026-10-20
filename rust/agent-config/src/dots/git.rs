@@ -18,6 +18,7 @@ fn ok_run(args: &[&str]) -> bool {
         .status().map(|s| s.success()).unwrap_or(false)
 }
 
+/// The commit the repo is on, or "" when git cannot say.
 pub fn head(repo: &Path) -> String {
     out(&["-C", &repo.to_string_lossy(), "rev-parse", "HEAD"]).unwrap_or_default()
 }

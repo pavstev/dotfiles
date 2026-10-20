@@ -22,18 +22,26 @@ fn plain_theme() -> bool {
 /// Colors print when NO_COLOR is unset, the theme is not plain and stdout is a terminal.
 fn colors_on(no_color: bool, plain: bool, tty: bool) -> bool { !no_color && !plain && tty }
 
+/// True when this process prints color codes.
 pub fn color_enabled() -> bool {
     if env::var("NO_COLOR").is_ok() { return false; }
     colors_on(false, plain_theme(), io::stdout().is_terminal())
 }
 fn c(code: &'static str) -> &'static str { if color_enabled() { code } else { "" } }
-pub fn g() -> &'static str { c("\x1b[38;5;108m") } // sage: success
-pub fn y() -> &'static str { c("\x1b[38;5;179m") } // amber: warning
-pub fn d() -> &'static str { c("\x1b[38;5;245m") } // stone: skipped, dim
-pub fn b() -> &'static str { c("\x1b[38;5;73m") } // teal: info
-pub fn a() -> &'static str { c("\x1b[1;38;5;173m") } // copper: step heading
+/// Sage color code for success; empty when color is off.
+pub fn g() -> &'static str { c("\x1b[38;5;108m") }
+/// Amber color code for warnings; empty when color is off.
+pub fn y() -> &'static str { c("\x1b[38;5;179m") }
+/// Stone color code for skipped and dim text; empty when color is off.
+pub fn d() -> &'static str { c("\x1b[38;5;245m") }
+/// Teal color code for info; empty when color is off.
+pub fn b() -> &'static str { c("\x1b[38;5;73m") }
+/// Copper color code for step headings; empty when color is off.
+pub fn a() -> &'static str { c("\x1b[1;38;5;173m") }
+/// The reset code that ends a color; empty when color is off.
 pub fn z() -> &'static str { c("\x1b[0m") }
 
+/// True when `DOTFILES_VERBOSE` is set (`dots -v`): print every line, count nothing.
 pub fn verbose() -> bool { env::var("DOTFILES_VERBOSE").map(|v| !v.is_empty() && v != "0").unwrap_or(false) }
 
 struct Step { title: String, shown: u8, skips: usize }
@@ -120,14 +128,17 @@ pub fn step_end() {
 /// The title of the step in progress, or "" between steps.
 pub fn step_title() -> String { step_state().title.clone() }
 
+/// An info line (`»»`), under the step header.
 pub fn info(msg: &str) { head(); emit(&format!("{}»»{} {}", b(), z(), msg), false); }
 
+/// A success line (`✓`). A message that starts with "wrote ", "updated " or "built " counts as a written file.
 pub fn ok(msg: &str) {
     if msg.starts_with("wrote ") || msg.starts_with("updated ") || msg.starts_with("built ") { WRITTEN.fetch_add(1, Ordering::Relaxed); }
     head();
     emit(&format!("{}✓{} {}", g(), z(), msg), false);
 }
 
+/// A warning line on stderr. It is counted, and appended to `DOTFILES_WARN_FILE` when that is set.
 pub fn warn(msg: &str) {
     head();
     emit(&format!("{}!{}  {}", y(), z(), msg), true);
@@ -198,6 +209,7 @@ pub fn duration(secs: u64) -> String {
 
 /// A plain line, the way a script prints it (no prefix, no step header).
 pub fn plain(msg: &str) { emit(msg, false); }
+/// Like `plain`, on stderr.
 pub fn plain_err(msg: &str) { emit(msg, true); }
 
 #[cfg(test)]

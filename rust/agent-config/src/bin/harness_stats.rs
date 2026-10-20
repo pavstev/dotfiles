@@ -1,6 +1,7 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
 //! Port of the old Python tool harness_stats.py (deleted; its tests are mapped in tests/PORTED.md).
 
+use agent_config::pycompat::{civil_from_days, fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
 use serde_json::{Map, Number, Value};
@@ -61,15 +62,15 @@ macro_rules! out {
 // ---------------------------------------------------------------------------
 
 fn home() -> String {
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            return h;
-        }
+    if let Ok(h) = std::env::var("HOME")
+        && !h.is_empty()
+    {
+        return h;
     }
-    if let Ok(h) = std::env::var("USERPROFILE") {
-        if !h.is_empty() {
-            return h;
-        }
+    if let Ok(h) = std::env::var("USERPROFILE")
+        && !h.is_empty()
+    {
+        return h;
     }
     dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
 }
@@ -97,18 +98,6 @@ fn default_out() -> String {
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
-}
-
-/// Python truthiness of a JSON value.
-fn truthy(v: &Value) -> bool {
-    match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(true),
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        Value::Object(o) => !o.is_empty(),
-    }
 }
 
 /// `x or {}` for an object-ish value.
@@ -139,37 +128,6 @@ fn slice_end(len: usize, n: i64) -> usize {
     if n >= 0 { (n as usize).min(len) } else { (len as i64 + n).max(0) as usize }
 }
 
-/// Python repr(float).
-fn py_float(f: f64) -> String {
-    if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
-    }
-    if !f.is_finite() {
-        return if f.is_nan() { "NaN".into() } else if f > 0.0 { "Infinity".into() } else { "-Infinity".into() };
-    }
-    let e = format!("{:e}", f.abs());
-    let (mant, exp) = e.split_once('e').unwrap();
-    let exp: i32 = exp.parse().unwrap();
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let sign = if f < 0.0 { "-" } else { "" };
-    let body = if (-4..16).contains(&exp) {
-        if exp >= 0 {
-            let int_len = exp as usize + 1;
-            if digits.len() <= int_len {
-                format!("{}{}.0", digits, "0".repeat(int_len - digits.len()))
-            } else {
-                format!("{}.{}", &digits[..int_len], &digits[int_len..])
-            }
-        } else {
-            format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
-        }
-    } else {
-        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
-        format!("{}e{}{:02}", m, if exp < 0 { "-" } else { "+" }, exp.abs())
-    };
-    format!("{}{}", sign, body)
-}
-
 /// Python round(x, nd) for nd >= 0 (correctly rounded, ties to even on the exact value).
 fn pyround(x: f64, nd: usize) -> f64 {
     format!("{:.*}", nd, x).parse().unwrap_or(x)
@@ -178,29 +136,6 @@ fn pyround(x: f64, nd: usize) -> f64 {
 /// Python round(x) -> int.
 fn pyround0(x: f64) -> i64 {
     x.round_ties_even() as i64
-}
-
-fn json_str(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
-                let mut buf = [0u16; 2];
-                for u in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{:04x}", u));
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 /// json.dumps(v) with Python defaults (ensure_ascii, ", " and ": ").
@@ -271,39 +206,6 @@ fn read_text_ignore(p: &Path) -> Option<String> {
     fs::read(p).ok().map(|b| decode_ignore(&b))
 }
 
-// Civil date helpers (proleptic Gregorian), Howard Hinnant's algorithms.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
-}
-
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn days_in_month(y: i64, m: i64) -> i64 {
-    match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        _ => {
-            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 }
-        }
-    }
-}
-
 /// An aware datetime: UTC microseconds plus the original UTC offset in seconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Dt {
@@ -338,79 +240,7 @@ impl Dt {
 
 /// datetime.fromisoformat(s.replace("Z", "+00:00")). A missing offset counts as UTC.
 fn parse_ts(s: &str) -> Option<Dt> {
-    let s = s.replace('Z', "+00:00");
-    let b: Vec<char> = s.chars().collect();
-    let num = |a: usize, n: usize| -> Option<i64> {
-        let t: String = b.get(a..a + n)?.iter().collect();
-        if t.chars().all(|c| c.is_ascii_digit()) { t.parse().ok() } else { None }
-    };
-    if b.len() < 10 || b[4] != '-' || b[7] != '-' {
-        return None;
-    }
-    let (y, mo, d) = (num(0, 4)?, num(5, 2)?, num(8, 2)?);
-    if !(1..=12).contains(&mo) || y < 1 || d < 1 || d > days_in_month(y, mo) {
-        return None;
-    }
-    let (mut hh, mut mm, mut ss, mut us, mut off) = (0, 0, 0, 0i64, 0i64);
-    if b.len() > 10 {
-        // separator at 10, then the time
-        let rest: Vec<char> = b[11..].to_vec();
-        let tz_at = rest.iter().position(|c| *c == '+' || *c == '-');
-        let (time, tz) = match tz_at {
-            Some(i) => (&rest[..i], Some(&rest[i..])),
-            None => (&rest[..], None),
-        };
-        let ts: String = time.iter().collect();
-        let (hms, frac) = match ts.split_once('.') {
-            Some((a, f)) => (a.to_string(), Some(f.to_string())),
-            None => (ts.clone(), None),
-        };
-        let parts: Vec<&str> = hms.split(':').collect();
-        let pn = |x: &str, w: usize| -> Option<i64> {
-            if x.len() == w && x.chars().all(|c| c.is_ascii_digit()) { x.parse().ok() } else { None }
-        };
-        hh = pn(parts.first()?, 2)?;
-        if parts.len() > 1 {
-            mm = pn(parts[1], 2)?;
-        }
-        if parts.len() > 2 {
-            ss = pn(parts[2], 2)?;
-        }
-        if parts.len() > 3 {
-            return None;
-        }
-        if let Some(f) = frac {
-            if f.is_empty() || f.len() > 9 || !f.chars().all(|c| c.is_ascii_digit()) || parts.len() < 3 {
-                return None;
-            }
-            let mut p6 = f.clone();
-            p6.truncate(6);
-            while p6.len() < 6 {
-                p6.push('0');
-            }
-            us = p6.parse().ok()?;
-        }
-        if hh > 23 || mm > 59 || ss > 59 {
-            return None;
-        }
-        if let Some(tz) = tz {
-            let sign = if tz[0] == '-' { -1 } else { 1 };
-            let t: String = tz[1..].iter().collect();
-            let p: Vec<&str> = t.split(':').collect();
-            if p.len() < 2 || p.len() > 3 {
-                return None;
-            }
-            let (th, tm) = (pn(p[0], 2)?, pn(p[1], 2)?);
-            let tsec = if p.len() == 3 { pn(p[2], 2)? } else { 0 };
-            if th > 23 || tm > 59 || tsec > 59 {
-                return None;
-            }
-            off = sign * (th * 3600 + tm * 60 + tsec);
-        }
-    }
-    let days = days_from_civil(y, mo, d);
-    let secs = days * 86400 + hh * 3600 + mm * 60 + ss - off;
-    Some(Dt { micros: secs * 1_000_000 + us, off })
+    parse_ts_micros(s).map(|(micros, off)| Dt { micros, off })
 }
 
 // ---------------------------------------------------------------------------
@@ -525,28 +355,12 @@ fn project_name(folder: &str) -> String {
     if r.is_empty() { "?".into() } else { r }
 }
 
-/// Entries of `dir` whose name does not start with "." (glob "*"), in directory order.
-fn list_dir(dir: &Path) -> Vec<PathBuf> {
-    match fs::read_dir(dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            .map(|e| e.path())
-            .collect(),
-        Err(_) => vec![],
-    }
-}
-
 fn is_dir(p: &Path) -> bool {
     p.is_dir()
 }
 
 fn lexists(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok()
-}
-
-fn fname(p: &Path) -> String {
-    p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 struct DesktopMeta {
@@ -637,12 +451,11 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
         if !o.is_object() {
             continue;
         }
-        if truthy(get(&o, "timestamp")) {
-            if let Some(s) = get(&o, "timestamp").as_str() {
-                if let Some(d) = parse_ts(s) {
-                    times.push(d);
-                }
-            }
+        if truthy(get(&o, "timestamp"))
+            && let Some(s) = get(&o, "timestamp").as_str()
+            && let Some(d) = parse_ts(s)
+        {
+            times.push(d);
         }
         let kind = get(&o, "type").as_str().unwrap_or("");
         let msg = or_empty(get(&o, "message"));
@@ -733,22 +546,22 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
             }
             "user" => {
                 let content = get(msg, "content");
-                if let Some(arr) = content.as_array() {
-                    if arr.iter().any(|x| x.is_object() && get(x, "type").as_str() == Some("tool_result")) {
-                        for x in arr {
-                            if x.is_object() && get(x, "type").as_str() == Some("tool_result") && truthy(get(x, "is_error")) {
-                                let nm = names.get(&get(x, "tool_use_id").to_string()).cloned().unwrap_or_else(|| "?".into());
-                                let e = norm_error(&nm, get(x, "content"));
-                                if e.contains("hook error") {
-                                    r.add("hook_denials".into(), 1);
-                                } else {
-                                    r.add("tool_errors".into(), 1);
-                                }
-                                errors.add(e, 1);
+                if let Some(arr) = content.as_array()
+                    && arr.iter().any(|x| x.is_object() && get(x, "type").as_str() == Some("tool_result"))
+                {
+                    for x in arr {
+                        if x.is_object() && get(x, "type").as_str() == Some("tool_result") && truthy(get(x, "is_error")) {
+                            let nm = names.get(&get(x, "tool_use_id").to_string()).cloned().unwrap_or_else(|| "?".into());
+                            let e = norm_error(&nm, get(x, "content"));
+                            if e.contains("hook error") {
+                                r.add("hook_denials".into(), 1);
+                            } else {
+                                r.add("tool_errors".into(), 1);
                             }
+                            errors.add(e, 1);
                         }
-                        continue;
                     }
+                    continue;
                 }
                 if truthy(get(&o, "isMeta"))
                     || truthy(get(&o, "isCompactSummary"))
@@ -856,14 +669,14 @@ fn cmd_collect(a: &CollectArgs) {
                 errors.update(&ss.errors);
                 let mut md = Value::Object(Map::new());
                 let mp = format!("{}.meta.json", &sf.to_string_lossy()[..sf.to_string_lossy().len() - 6]);
-                if let Some(b) = fs::read(&mp).ok() {
-                    if let Ok(v) = serde_json::from_slice::<Value>(&b) {
-                        let m = get(&v, "model");
-                        smodels.add(if truthy(m) { key_str(m) } else { "inherit".into() }, 1);
-                        let e = get(&v, "effort");
-                        seffort.add(if truthy(e) { key_str(e) } else { "unset".into() }, 1);
-                        md = v;
-                    }
+                if let Ok(b) = fs::read(&mp)
+                    && let Ok(v) = serde_json::from_slice::<Value>(&b)
+                {
+                    let m = get(&v, "model");
+                    smodels.add(if truthy(m) { key_str(m) } else { "inherit".into() }, 1);
+                    let e = get(&v, "effort");
+                    seffort.add(if truthy(e) { key_str(e) } else { "unset".into() }, 1);
+                    md = v;
                 }
                 if ss.first_ctx != 0 {
                     let at = get(&md, "agentType");
@@ -1147,8 +960,7 @@ fn periods_line(cuts: &[Dt]) -> String {
 
 fn cmd_report(a: &ReportArgs) {
     let rows = load(&a.inp);
-    let groups: Groups;
-    if a.by == "project" {
+    let groups: Groups = if a.by == "project" {
         let mut g: Groups = vec![];
         for r in &rows {
             let p = key_str(get(r, "project"));
@@ -1159,12 +971,12 @@ fn cmd_report(a: &ReportArgs) {
         }
         g.sort_by_key(|(_, v)| Reverse(v.len()));
         g.truncate(slice_end(g.len(), a.top));
-        groups = g;
+        g
     } else {
         let (cuts, g) = periods(&rows, &a.cut);
         out!("{}", periods_line(&cuts));
-        groups = g;
-    }
+        g
+    };
     table(&groups);
     out!("\nHigher is better: cache hit %, agent calls w/ effort %, from hand-off. Lower is better for the rest.");
     let small: Vec<&str> = groups.iter().filter(|(_, v)| v.len() < 20).map(|(k, _)| k.as_str()).collect();
@@ -1173,12 +985,15 @@ fn cmd_report(a: &ReportArgs) {
     }
 }
 
+/// Context sizes of the sub-agent spawns, grouped by agent type.
+type SpawnCtxByType = Vec<(String, Vec<Num>)>;
+
 fn cmd_agents(a: &AgentsArgs) {
     let rows = load(&a.inp);
     let (cuts, groups) = periods(&rows, &a.cut);
-    let mut data: Vec<(String, Vec<(String, Vec<Num>)>)> = vec![];
+    let mut data: Vec<(String, SpawnCtxByType)> = vec![];
     for (k, rs) in &groups {
-        let mut by: Vec<(String, Vec<Num>)> = vec![];
+        let mut by: SpawnCtxByType = vec![];
         for r in rs {
             let spawns = get(or_empty(get(r, "sub")), "spawns").as_array().cloned().unwrap_or_default();
             for sp in spawns {

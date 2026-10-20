@@ -37,6 +37,8 @@ pub fn repo() -> PathBuf {
 /// Run one agent-config command in this process. A panic counts as a failure.
 fn agent_config(args: &[&str]) -> bool { crate::run_args(args) == 0 }
 
+/// The `dots` command line: `dots [-v] [settings | doctor]`. Returns the exit code.
+/// It pulls the repo (and restarts on new commits), links files, builds the Claude config and runs the steps.
 pub fn main() -> i32 {
     let started = std::time::Instant::now();
     let repo = repo();

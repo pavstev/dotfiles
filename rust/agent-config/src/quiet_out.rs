@@ -7,6 +7,7 @@
 
 use std::io::Write;
 
+/// Prints to stdout and flushes. On a write error (a closed pipe) it exits 0 at once.
 pub fn emit(args: std::fmt::Arguments) {
     let mut out = std::io::stdout().lock();
     if out.write_fmt(args).and_then(|()| out.flush()).is_err() {

@@ -2831,7 +2831,7 @@ fn ported_map_complete() {
             .map(str::trim)
             .take_while(|l| l.starts_with("#["))
             .collect();
-        if !attrs.iter().any(|a| *a == "#[test]") {
+        if !attrs.contains(&"#[test]") {
             problems.push(format!("{}: `fn {}` in {} has no #[test]", cells[0], rs_name, rs_file));
         }
         if attrs.iter().any(|a| a.starts_with("#[ignore")) {

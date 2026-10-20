@@ -1,3 +1,7 @@
+//! The Cursor hook binary: `rust-bin --hook guard_cursor <mode>`, wired into `~/.cursor/hooks.json`
+//! by `agent-config cursor`. Modes `prompt`, `subagent`, `compact` and `response` keep the context
+//! ceiling (guard G3) from a per-conversation state file. Mode `tool` runs the shared checks
+//! G14 to G17. It fails open: a bad input or a panic exits 0.
 use agent_config::guard_checks as gc;
 use clap::Parser;
 use regex::Regex;
@@ -93,7 +97,7 @@ fn prune_state(dir: &Path) {
             files.push((mt, path));
         }
     }
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|a| std::cmp::Reverse(a.0));
     if files.len() > MAX_STATE_FILES {
         for (_, path) in files.iter().skip(MAX_STATE_FILES) {
             let _ = fs::remove_file(path);
@@ -112,9 +116,10 @@ fn write_state(key: &str, mut st: BTreeMap<String, Value>) {
     let tmp = d.join(format!(".{}.{}.tmp", key, std::process::id()));
     let target = d.join(format!("{}.json", key));
     if let Ok(bytes) = serde_json::to_vec(&st)
-        && fs::write(&tmp, bytes).is_ok() {
-            let _ = fs::rename(&tmp, &target);
-        }
+        && fs::write(&tmp, bytes).is_ok()
+    {
+        let _ = fs::rename(&tmp, &target);
+    }
     prune_state(&d);
 }
 
@@ -248,9 +253,10 @@ fn app_context(data: &Value) -> i64 {
     };
     let mut n = to_int(meta.get("contextTokensUsed"));
     if n == 0
-        && let Some(breakdown) = meta.get("promptTokenBreakdown") {
-            n = to_int(breakdown.get("totalUsedTokens"));
-        }
+        && let Some(breakdown) = meta.get("promptTokenBreakdown")
+    {
+        n = to_int(breakdown.get("totalUsedTokens"));
+    }
     n
 }
 
@@ -339,14 +345,15 @@ fn transcript_context_size(path: &Path) -> i64 {
                 continue;
             }
             if let Some(msg) = rec.get("message")
-                && let Some(usage) = msg.get("usage") {
-                    let total = to_int(usage.get("input_tokens"))
-                        + to_int(usage.get("cache_creation_input_tokens"))
-                        + to_int(usage.get("cache_read_input_tokens"));
-                    if total > 0 {
-                        return total;
-                    }
+                && let Some(usage) = msg.get("usage")
+            {
+                let total = to_int(usage.get("input_tokens"))
+                    + to_int(usage.get("cache_creation_input_tokens"))
+                    + to_int(usage.get("cache_read_input_tokens"));
+                if total > 0 {
+                    return total;
                 }
+            }
         }
     }
     0
@@ -403,9 +410,10 @@ fn emit_out(s: &str) {
 
 fn mode_subagent(data: &Value, key: &str) -> i32 {
     if let Some(tool) = data.get("tool_name").and_then(|v| v.as_str())
-        && !SUBAGENT_TOOLS.contains(&tool) {
-            return 0;
-        }
+        && !SUBAGENT_TOOLS.contains(&tool)
+    {
+        return 0;
+    }
     let st = read_state(key);
     let size = estimate(data, &st);
     if size > SPAWN_CONTEXT {

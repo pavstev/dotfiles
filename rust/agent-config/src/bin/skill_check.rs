@@ -4,10 +4,12 @@
 //! Rules come from the Claude Code skills docs, Anthropic's skill-authoring best practices and
 //! the agentskills.io spec. Exit 1 on any FAIL.
 //!
-//!   skill_check              all skills in claude/skills of this repo
-//!   skill_check ps:askme     one or more skill names or folders
-//!   skill_check <dir>        every skill folder inside <dir>
-//!   skill_check -q           failures only, nothing when all pass
+//! ```text
+//! skill_check              all skills in claude/skills of this repo
+//! skill_check ps:askme     one or more skill names or folders
+//! skill_check <dir>        every skill folder inside <dir>
+//! skill_check -q           failures only, nothing when all pass
+//! ```
 
 #[macro_use]
 #[path = "../quiet_out.rs"]

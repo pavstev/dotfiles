@@ -1,7 +1,9 @@
 //! statusline: the Claude Code status line, copper themed. Reads the session JSON on stdin.
 //! Replaces claude/statusline.sh and needs no `jq`.
 //!
-//! Prints:   <dir>   <git branch>   <model>   ctx <K> <%>   5h <%> · 7d <%>
+//! Prints: `<dir>  <git branch>  <model>  ctx <K> <%>  5h <%> · 7d <%>`
+//! The branch is read from the `HEAD` file, with no git process, in the usual case; `git branch
+//! --show-current` runs only when the repo is not plain (git env vars, reftable, odd layouts).
 //! Context turns copper at 300 K: time to /ps:handoff. Rate limits are absent until the first API
 //! reply; then nothing is printed for them. Writes the pace cache `claude-pace.json` (read by the
 //! pace hook) when the weekly limit is present. `NO_COLOR` set (non-empty) or `THEME=plain` in the
@@ -89,6 +91,9 @@ fn basename(path: &str) -> String {
 }
 
 fn git_branch(cwd: &str) -> String {
+    if let Some(answer) = fast_branch(cwd) {
+        return answer;
+    }
     Command::new("git")
         .args(["-C", cwd, "branch", "--show-current"])
         .stdin(Stdio::null())
@@ -98,6 +103,86 @@ fn git_branch(cwd: &str) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string())
         .unwrap_or_default()
+}
+
+/// Env vars that change how git finds the repo. With one set, only git itself can answer.
+const GIT_ENV: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
+/// The branch without a git process, or `None` when git must answer.
+fn fast_branch(cwd: &str) -> Option<String> {
+    if GIT_ENV.iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())) {
+        return None;
+    }
+    branch_from_head(Path::new(cwd))
+}
+
+/// Find the git dir the way git does for the plain cases and read its HEAD. `Some(answer)` only
+/// when sure; `None` for anything odd (the caller then runs git). Answers `""` for no repo, a
+/// detached HEAD, or a HEAD outside `refs/heads`, as `git branch --show-current` prints nothing.
+///
+/// Known differences from git: git refuses a repo owned by another user (safe.directory) and
+/// prints nothing, while this prints the branch. A branch that is itself a symref is not followed.
+fn branch_from_head(cwd: &Path) -> Option<String> {
+    let cwd = cwd.canonicalize().ok()?;
+    if cwd.components().any(|c| c.as_os_str() == ".git") {
+        return None;
+    }
+    #[cfg(unix)]
+    let dev = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(&cwd).ok()?.dev()
+    };
+    for dir in cwd.ancestors() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if std::fs::metadata(dir).ok()?.dev() != dev {
+                return None; // git stops at a filesystem boundary
+            }
+        }
+        let dot_git = dir.join(".git");
+        let gitdir = match std::fs::metadata(&dot_git) {
+            Ok(m) if m.is_dir() => dot_git,
+            Ok(m) if m.is_file() => {
+                let text = std::fs::read_to_string(&dot_git).ok()?;
+                let path = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+                if path.is_empty() {
+                    return None;
+                }
+                dir.join(path) // an absolute path replaces `dir`
+            }
+            Ok(_) => return None,
+            Err(_) => {
+                // A bare repo has HEAD and objects right here; leave that to git.
+                if dir.join("HEAD").is_file() && dir.join("objects").is_dir() {
+                    return None;
+                }
+                continue;
+            }
+        };
+        return parse_head(&std::fs::read_to_string(gitdir.join("HEAD")).ok()?);
+    }
+    Some(String::new())
+}
+
+/// The branch named by the text of a HEAD file; see `branch_from_head` for the `None` cases.
+fn parse_head(head: &str) -> Option<String> {
+    let head = head.trim_end();
+    if let Some(r) = head.strip_prefix("ref:") {
+        return match r.trim_start().strip_prefix("refs/heads/") {
+            Some("" | ".invalid") => None, // `.invalid` marks a reftable repo
+            Some(name) => Some(name.to_string()),
+            None => Some(String::new()),
+        };
+    }
+    let is_sha = matches!(head.len(), 40 | 64) && head.bytes().all(|b| b.is_ascii_hexdigit());
+    is_sha.then(String::new)
 }
 
 /// Build the line. `branch` is looked up by the caller so tests can pass it in.
@@ -205,4 +290,155 @@ fn main() {
     let mut out = std::io::stdout();
     let _ = out.write_all(line.as_bytes());
     let _ = out.flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// A fake repo: `<root>/.git/HEAD` holding `head`. Returns the root.
+    fn repo(head: &str) -> tempfile::TempDir {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir(t.path().join(".git")).unwrap();
+        fs::write(t.path().join(".git/HEAD"), head).unwrap();
+        t
+    }
+
+    #[test]
+    fn plain_branch() {
+        let t = repo("ref: refs/heads/main\n");
+        assert_eq!(branch_from_head(t.path()), Some("main".into()));
+    }
+
+    #[test]
+    fn branch_with_slash_from_a_subdir() {
+        let t = repo("ref: refs/heads/feat/x\n");
+        let sub = t.path().join("a/b");
+        fs::create_dir_all(&sub).unwrap();
+        assert_eq!(branch_from_head(&sub), Some("feat/x".into()));
+    }
+
+    #[test]
+    fn detached_sha_is_empty() {
+        let t = repo(&format!("{SHA}\n"));
+        assert_eq!(branch_from_head(t.path()), Some(String::new()));
+        let t = repo(&format!("{SHA}{}\n", "0123456789abcdef01234567"));
+        assert_eq!(branch_from_head(t.path()), Some(String::new()));
+    }
+
+    #[test]
+    fn worktree_file_with_relative_gitdir() {
+        let t = tempfile::tempdir().unwrap();
+        let main_git = t.path().join("main/.git/worktrees/w");
+        fs::create_dir_all(&main_git).unwrap();
+        fs::write(main_git.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
+        let wt = t.path().join("w");
+        fs::create_dir(&wt).unwrap();
+        fs::write(wt.join(".git"), "gitdir: ../main/.git/worktrees/w\n").unwrap();
+        assert_eq!(branch_from_head(&wt), Some("wt".into()));
+    }
+
+    #[test]
+    fn worktree_file_with_absolute_gitdir() {
+        let t = tempfile::tempdir().unwrap();
+        let gd = t.path().join("elsewhere");
+        fs::create_dir_all(&gd).unwrap();
+        fs::write(gd.join("HEAD"), "ref: refs/heads/abs\n").unwrap();
+        let wt = t.path().join("w");
+        fs::create_dir(&wt).unwrap();
+        fs::write(wt.join(".git"), format!("gitdir: {}\n", gd.display())).unwrap();
+        assert_eq!(branch_from_head(&wt), Some("abs".into()));
+    }
+
+    #[test]
+    fn bad_gitdir_file_defers_to_git() {
+        let t = tempfile::tempdir().unwrap();
+        fs::write(t.path().join(".git"), "nonsense\n").unwrap();
+        assert_eq!(branch_from_head(t.path()), None);
+    }
+
+    #[test]
+    fn invalid_branch_defers_to_git() {
+        let t = repo("ref: refs/heads/.invalid\n");
+        assert_eq!(branch_from_head(t.path()), None);
+    }
+
+    #[test]
+    fn ref_outside_heads_is_empty() {
+        let t = repo("ref: refs/remotes/x\n");
+        assert_eq!(branch_from_head(t.path()), Some(String::new()));
+    }
+
+    #[test]
+    fn unknown_head_defers_to_git() {
+        let t = repo("garbage\n");
+        assert_eq!(branch_from_head(t.path()), None);
+    }
+
+    #[test]
+    fn git_dir_without_head_defers_to_git() {
+        let t = tempfile::tempdir().unwrap();
+        fs::create_dir(t.path().join(".git")).unwrap();
+        assert_eq!(branch_from_head(t.path()), None);
+    }
+
+    #[test]
+    fn no_repo_is_empty() {
+        // The temp dir may sit under a repo on odd machines; only assert when it does not.
+        let t = tempfile::tempdir().unwrap();
+        let sub = t.path().join("x");
+        fs::create_dir(&sub).unwrap();
+        let got = branch_from_head(&sub);
+        let under_repo = t.path().ancestors().any(|a| a.join(".git").exists());
+        if !under_repo {
+            assert_eq!(got, Some(String::new()));
+        }
+    }
+
+    #[test]
+    fn cwd_inside_git_dir_defers_to_git() {
+        let t = repo("ref: refs/heads/main\n");
+        assert_eq!(branch_from_head(&t.path().join(".git")), None);
+    }
+
+    #[test]
+    fn missing_cwd_defers_to_git() {
+        let t = tempfile::tempdir().unwrap();
+        assert_eq!(branch_from_head(&t.path().join("nope")), None);
+    }
+
+    #[test]
+    fn matches_real_git() {
+        let git = |dir: &Path, args: &[&str]| {
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .stdin(Stdio::null())
+                .output()
+        };
+        let t = tempfile::tempdir().unwrap();
+        let ok = |r: std::io::Result<std::process::Output>| r.map(|o| o.status.success()).unwrap_or(false);
+        if !ok(git(t.path(), &["init", "-q", "-b", "main"])) {
+            return; // no git on PATH
+        }
+        let commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"];
+        assert!(ok(git(t.path(), &commit)));
+        let want = |dir: &Path| {
+            let o = git(dir, &["branch", "--show-current"]).unwrap();
+            String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string()
+        };
+        assert_eq!(branch_from_head(t.path()), Some(want(t.path())));
+        assert!(ok(git(t.path(), &["checkout", "-q", "-b", "feat/y"])));
+        assert_eq!(branch_from_head(t.path()), Some("feat/y".into()));
+        assert_eq!(want(t.path()), "feat/y");
+        assert!(ok(git(t.path(), &["checkout", "-q", "--detach"])));
+        assert_eq!(branch_from_head(t.path()), Some(want(t.path())));
+        assert_eq!(want(t.path()), "");
+    }
 }
