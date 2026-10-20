@@ -23,7 +23,7 @@ changes. The old tools get eaten by faster, prettier ones. The terminal goes **b
 - 🛟 **Override-safe**: a pre-existing config file is **moved aside** to
   `<file>.bak-<timestamp>` before its link goes in, so adopting these defaults on a
   machine that's already set up never costs you your old setup.
-- 🧳 **Portable**: macOS (Apple Silicon and Intel), Linux (Debian, Ubuntu, Fedora, Arch; Alpine without Homebrew), and Windows (Git Bash); machine-specific bits live in gitignored local files.
+- 🧳 **Portable**: macOS (Apple Silicon and Intel), Linux (Debian, Ubuntu, Fedora, Arch, Alpine), and Windows (Git Bash); machine-specific bits live in gitignored local files.
 - 🤖 **AI-ready**: Claude Code skills, agents, hooks, and settings live here and follow you everywhere — Cursor and Opencode read the same source.
 - 🎨 **Coherent**: one warm copper-on-stone palette across Ghostty, Starship, fzf, delta, atuin, and the prompt.
 
@@ -41,25 +41,27 @@ dots -v                                         # the same run, with every line 
 dot                                             # cd into the repo
 ```
 
-Want a new tool? Drop it in the `Brewfile` and run `dots`: the brew step re-runs
-every time and no-ops when nothing's missing.
+Want a new command-line tool? Add one line to [`tools.list`](../tools.list) and run `dots`. Each
+line names the tool, its commands, the OSes it is for and its sources in order (mise first, then
+`apk`, `winget`, `scoop`, `cargo`, `brew`). `scripts/tools --check` lists what is missing. Mac apps
+and fonts go in the `Brewfile`.
 
 ## What's inside
 
 | Area | Tools |
 |------|-------|
-| **Engine** | plain git + [`./dotfiles`](../dotfiles) · [age](https://age-encryption.org) (available for manual secrets) |
+| **Engine** | plain git + [`./dotfiles`](../dotfiles) · [rage](https://github.com/str4d/rage) (age encryption, for manual secrets) |
 | **Shell** | zsh + Oh My Zsh · [Starship](https://starship.rs) · [atuin](https://atuin.sh) (Ctrl-R) · [carapace](https://carapace.sh) · autosuggestions · fast-syntax-highlighting · fzf-tab |
 | **Navigation** | [fzf](https://github.com/junegunn/fzf) · [zoxide](https://github.com/ajeetdsouza/zoxide) · [yazi](https://github.com/sxyazi/yazi) (`y`) · [eza](https://github.com/eza-community/eza) · [bat](https://github.com/sharkdp/bat) |
-| **Search** | [ripgrep](https://github.com/BurntSushi/ripgrep) · [fd](https://github.com/sharkdp/fd) · [ast-grep](https://ast-grep.github.io) |
-| **System** | [dust](https://github.com/bootandy/dust) · [duf](https://github.com/muesli/duf) · [procs](https://github.com/dalance/procs) · [btop](https://github.com/aristocratos/btop) · [glow](https://github.com/charmbracelet/glow) |
+| **Search** | [ripgrep](https://github.com/BurntSushi/ripgrep) · [fd](https://github.com/sharkdp/fd) |
+| **System** | [dust](https://github.com/bootandy/dust) · [duf](https://github.com/muesli/duf) · [procs](https://github.com/dalance/procs) · [bottom](https://github.com/ClementTsang/bottom) (`btm`, also `top`) |
 | **Git** | [delta](https://github.com/dandavison/delta) · [difftastic](https://difftastic.wilfred.me.uk) · [lazygit](https://github.com/jesseduffield/lazygit) · [gh](https://cli.github.com) + [gh-dash](https://github.com/dlvhdr/gh-dash) |
-| **Containers** | [lazydocker](https://github.com/jesseduffield/lazydocker) · [OrbStack](https://orbstack.dev) |
-| **Workflow** | [mise](https://mise.jdx.dev) · [just](https://github.com/casey/just) · [direnv](https://direnv.net) · jq · yq · [xh](https://github.com/ducaale/xh) · [gum](https://github.com/charmbracelet/gum) · hyperfine · tealdeer |
+| **Containers** | [oxker](https://github.com/mrjackwills/oxker) · [OrbStack](https://orbstack.dev) |
+| **Workflow** | [mise](https://mise.jdx.dev) · [just](https://github.com/casey/just) · [jaq](https://github.com/01mf02/jaq) (a `jq` link) · [gum](https://github.com/charmbracelet/gum) · tealdeer |
 | **Python** | [uv](https://docs.astral.sh/uv) · [ruff](https://docs.astral.sh/ruff) · [ty](https://docs.astral.sh/ty) |
 | **JS / TS** | [Biome](https://biomejs.dev) · Node + pnpm via mise |
-| **Go** | [golangci-lint](https://golangci-lint.run) · [air](https://github.com/air-verse/air) |
-| **Rust** | [rustup](https://rustup.rs) · cargo-binstall · [cargo-nextest](https://nexte.st) · [bacon](https://dystroy.org/bacon) |
+| **Go** | [golangci-lint](https://golangci-lint.run) |
+| **Rust** | [rustup](https://rustup.rs) · [cargo-nextest](https://nexte.st) |
 | **Apps** | [Ghostty](https://ghostty.org) · VS Code · [Cursor](https://cursor.com) · [Raycast](https://raycast.com) · [AeroSpace](https://nikitabobko.github.io/AeroSpace) · FiraCode Nerd Font |
 
 > Modern aliases are **interactive-only**: they never leak into scripts. Need the real
@@ -114,7 +116,7 @@ Ships the `ps:*` workflow skills (provenance and test notes in
 ## Cursor
 
 Cursor (the app and the `agent` / `cursor-agent` CLI) uses the same `claude/` source.
-Edit `claude/`, then run `dots`. Step `scripts/install.d/60-cursor.sh` runs only when
+Edit `claude/`, then run `dots`. Step `60-cursor` runs only when
 Cursor is present:
 
 1. It installs the Cursor CLI with the official installer
@@ -148,8 +150,8 @@ Cursor.app so you can sign in there too.
 ## Opencode
 
 Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source.
-Edit `claude/`, then run `dots`. Step `scripts/install.d/58-opencode.sh` verifies the
-`opencode` CLI (installed by the Brewfile), and `agent-config.py opencode` — wired into
+Edit `claude/`, then run `dots`. Step `58-opencode` verifies the
+`opencode` CLI (installed from `tools.list`), and `agent-config.py opencode` — wired into
 `./dotfiles` itself, not into a step, so `dots settings` picks up a changed setting —
 generates what Opencode needs:
 
@@ -201,26 +203,27 @@ claude.ai connectors — Opencode has no hook system. The full mapping and gap t
 The code asks the OS with `is_macos`, `is_linux` and `is_windows` (`scripts/setup-lib.sh`). On Linux:
 
 - **Packages:** step `05-linux-prereqs` installs build tools, `curl`, `file`, `git`, `procps`,
-  `python3` and `zsh` with apt, dnf, pacman or apk (`LINUX_PREREQS` in `scripts/setup-lib.sh`
-  has the names for each). Step `10-homebrew` then installs Homebrew on Linux
-  (`/home/linuxbrew/.linuxbrew`), and `20-brew-bundle` installs the Brewfile from it. A temp
-  copy of the Brewfile drops the lines that only work on macOS (`cask`, `mas`, `tap`,
-  `vscode`). One Brewfile and one tool version on both systems, and no `batcat` or `fdfind`.
+  `python3` and `zsh` with apt, dnf, pacman or apk (`scripts/linux-prereqs.txt`
+  has the names for each). Step `12-tools` then installs the command-line tools of `tools.list`
+  with mise (no Homebrew on Linux): it installs mise first, then each tool from the first source
+  that works. Same tools and versions as macOS, and no `batcat` or `fdfind`. On Alpine the native
+  `apk` package comes first for the tools whose release binaries need glibc.
 - **Skipped on Linux:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
   print nothing (`dots -v` shows `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Fira Code Nerd Font
   are macOS-only too.
 - **Links:** `~/.config/Code/User/*` and `~/.config/Cursor/User/*` link to the same
   files that macOS gets under `~/Library/Application Support`. Ghostty reads
   `~/.config/ghostty` on both.
-- **Shell:** `init.zsh` finds Homebrew on Linux, falls back to `C.UTF-8` when `en_US.UTF-8` is
+- **Shell:** `init.zsh` puts `~/.local/bin` and the mise shims on PATH, falls back to `C.UTF-8` when `en_US.UTF-8` is
   not built, and sets `GIT_EDITOR` to `$EDITOR` in interactive zsh when VS Code is not installed
   (`~/.gitconfig` asks for `code --wait`; git from bash or a hook still uses that).
 - **Not changed:** the login shell. `78-linux-extras` prints the `chsh` line when it is not zsh.
-- **Without `sudo`:** install the packages in `LINUX_PREREQS` (`scripts/setup-lib.sh`) as root,
-  and install Homebrew yourself under `~/.linuxbrew`; `dots` finds it there. Homebrew on Linux
-  needs a user that is not root.
-- **Alpine (musl):** Homebrew needs glibc. Step `10-homebrew` says so once, and the steps that need
-  Homebrew skip. You get the links, the shell and the Claude, Cursor and Opencode config, not the tools.
+- **Without `sudo`:** install the packages in `scripts/linux-prereqs.txt` as root.
+  The tools need no root: mise installs them under your home. Only the `apk` source (Alpine) and the
+  prerequisites use root.
+- **Alpine (musl):** the tools come from `apk` first for the ones that have no musl release (eza, procs,
+  delta, difftastic, fastfetch, ffmpeg, poppler), else from mise. whisper-cpp is not installed on Alpine. A tool with no source that
+  starts on musl is a warning. Needs root or `sudo` for `apk`.
 - **Other distros:** without apt, dnf, pacman or apk, the prerequisites step prints the commands
   to install yourself and carries on.
 - **Skills:** `ps:bag-mode` is for a Mac laptop. On Linux and Windows it says so and stops.
@@ -243,7 +246,7 @@ error, both runs end with the done line, run 2 changes nothing and takes 90 seco
 on every shell script, and the four Python test files. `--keep` leaves the container for a look
 (`podman exec -it dots-test-debian-13 bash`), `--reuse` syncs your edits into it and runs again.
 It runs without a terminal, so the gum menus, the password prompts and the sign-in step are
-not covered. A run takes 15 to 25 minutes; most of it is Homebrew and the Rust build.
+not covered. A run takes 10 to 25 minutes; most of it is the tool downloads and the Rust build.
 
 To run it on another Linux machine, set `TEST_HOST` (an SSH host name) in `dots settings` and run
 `scripts/os-check.sh linux`. It copies the tree there and runs `test-linux.sh` for each image in
@@ -262,9 +265,12 @@ stays clean.
 `./dotfiles` runs on Windows in Git Bash (MSYS/MINGW). Windows is detected with `is_windows`
 (`scripts/setup-lib.sh`); WSL counts as Linux and follows the Linux path.
 
-- **Packages:** no Homebrew on Windows. Two steps run there: `15-winget` (Opencode: `SST.opencode`,
-  then `Anomaly.OpenCode`; and `yt-dlp.yt-dlp` for `ps:yt-learn`) and `57-claude-code` (`Anthropic.ClaudeCode`, then the PowerShell
-  installer). The other Brewfile tools are not installed. Install the ones you want yourself.
+- **Packages:** no Homebrew on Windows. Two steps run there: `12-tools` (mise through WinGet
+  `jdx.mise`, then the tools of `tools.list` marked for Windows, from mise first; WinGet and Scoop
+  are fallback sources: Opencode `SST.opencode`, yt-dlp, ffmpeg, rustup) and `57-claude-code`
+  (`Anthropic.ClaudeCode`, then the PowerShell installer). The shell-only tools (starship, atuin,
+  zoxide, eza, yazi, bottom and others) are for macOS and Linux only; zsh does not run on Windows.
+  mise and its shims go on PATH for the run; open a new Git Bash afterwards.
 - **Links:** real symlinks, so Windows Developer Mode must be on (the script stops with the fix).
   `.claude`, `.config/opencode`, `.config/gh/config.yml` and the VS Code and Cursor settings
   (`%APPDATA%\{Code,Cursor}\User\`) link. `~/.gitconfig` is not linked; the git identity goes to
@@ -284,8 +290,8 @@ This repo is **public**, so plaintext secrets never enter it:
 
 - *Quick + local* → exports in `~/.config/zsh/local.zsh` (gitignored).
 - *Identity* → `~/.gitconfig.local` (gitignored), seeded once by `./dotfiles`.
-- *Portable, if you ever need it* → [age](https://age-encryption.org) is installed for
-  manual encrypt/decrypt of a file; there's no automatic wiring into the link step.
+- *Portable, if you ever need it* → [rage](https://github.com/str4d/rage) (age) is installed for
+  manual encrypt/decrypt of a file (`rage -p`); there's no automatic wiring into the link step.
 
 ## Window management
 
@@ -304,7 +310,7 @@ fullscreen · `⌥⇧ ;` service mode (reload / reset).
 | `z <name>` | Jump to a frequent directory (zoxide) |
 | `y` | Open yazi; `cd`s to where you quit |
 | `ll` · `la` · `lt` | Long · all · tree listing (eza) |
-| `lg` · `lzd` · `ghd` | lazygit · lazydocker · gh-dash |
+| `lg` · `lzd` · `ghd` | lazygit · oxker (Docker) · gh-dash |
 | `git dft` | Structural diff (difftastic) |
 | `dots` · `dotd` | pull + relink + reprovision · preview source changes |
 | `dot` | `cd` into this repo |
@@ -317,7 +323,8 @@ dotfiles/
 ├── AGENTS.md  CLAUDE.md      # how AI agents (Claude/Cursor/Opencode) operate this repo
 ├── bootstrap.sh              # fresh-machine one-liner (macOS, Linux, Windows)
 ├── dotfiles                  # the one command: pull + link + provision
-├── Brewfile                  # every package + VS Code extensions (Brewfile.local for extras)
+├── tools.list                # every command-line tool: name, commands, OSes, sources (the one list)
+├── Brewfile                  # the macOS apps, fonts + VS Code extensions (Brewfile.local for extras)
 ├── claude/                   # Claude config, symlinked into ~/.claude
 │   ├── settings.json  CLAUDE.md  statusline.sh  skill-sync.sh
 │   └── skills/ agents/ hooks/ output-styles/
@@ -335,30 +342,29 @@ dotfiles/
 │       ├── atuin/  aerospace/aerospace.toml
 │       ├── gh/config.yml     # gh CLI aliases + protocol (hosts.yml never linked)
 │       ├── bat/config        # bat style settings
-│       ├── lazygit/config.yml  btop/btop.conf  yazi/yazi.toml
+│       ├── lazygit/config.yml  bottom/bottom.toml  yazi/yazi.toml
 │       └── tealdeer/config.toml  fastfetch/config.jsonc
 │   Library/Application Support/                     (still under home/, shown separately for width)
 │       Code/User/{settings,keybindings}.json         # VS Code: symlinked, edit either side
 │       Cursor/User/{settings,keybindings}.json       # Cursor: same
 ├── scripts/
-│   ├── setup-lib.sh          # shared step helpers (step/info/ok/warn/skip/have/brew_env/link_item),
-│   │                         #   gum prompts (banner/ask_text/ask_one/ask_long) and dotfiles_profile
-│   ├── settings.sh           # the settings menu: first run and `dots settings`
+│   ├── setup-lib.sh          # shell helpers for the few bash scripts (step/info/ok/warn/have, is_*, setting)
 │   ├── agent-config.py       # generates and merges the Cursor and Opencode files
 │   ├── test_agent_config.py  # its unit tests (python3 scripts/test_agent_config.py)
 │   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart, fake Linux
-│   ├── install.d/            # ordered, skip-aware provisioning steps, run by `./dotfiles`:
+│   │                         # (the provisioning steps are Rust: rust/agent-config/src/dots/install/)
+│   │                         # ordered, skip-aware steps, run by `./dotfiles`:
 │   │                         #   05 linux-prereqs (Linux only)
-│   │                         #   → 10 homebrew → 15 winget (Windows only)
+│   │                         #   → 10 homebrew → 12 tools (every OS; mise + tools.list)
 │   │                         #   → 20 brew-bundle → 30 omz → 40 rust → 50 node → 55 gh
 │   │                         #   → 57 claude-code → 58 opencode → 60 cursor → 70 macos → 72 touch-id
 │   │                         #   → 75 terminal → 77 git-hooks → 78 linux-extras → 90 sign-in
-│   │                         #   (70, 72, 75: macOS only; 05, 78: Linux only; 15: Windows only)
+│   │                         #   (10, 20, 70, 72, 75: macOS only; 05, 78: Linux only)
 │   │                         #   (DOTFILES_STEPS="60-cursor" ./dotfiles runs only the named steps;
 │   │                         #    pull, links and skill sync still run)
 │   ├── fix-brew-permissions.sh   # macOS only
 │   ├── test-linux.sh         # runs ./dotfiles twice in a Linux container
-│   └── git-hooks/            # secret scan, private words, push check (install.d/77)
+│   └── git-hooks/            # secret scan, private words, push check (step 77)
 ```
 
 ## Customizing
@@ -370,9 +376,10 @@ dotfiles/
 | Terminal | `home/.config/ghostty/config` | live immediately |
 | Git | `home/.gitconfig` (identity is in `~/.gitconfig.local`, not here) | live immediately |
 | VS Code / Cursor | `home/Library/Application Support/{Code,Cursor}/User/settings.json` | live immediately |
-| VS Code extensions | `Brewfile`: add `vscode "publisher.ext-id"` lines | `dots` (brew step re-runs; 60-cursor.sh adds them to Cursor) |
+| VS Code extensions | `Brewfile`: add `vscode "publisher.ext-id"` lines | `dots` (the brew step re-runs; 60-cursor.sh adds them to Cursor) |
+| A command-line tool | `tools.list`: add one line | `dots` (step 12 installs it; `scripts/tools --check` lists what is missing) |
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
-| bat / lazygit / btop / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
+| bat / lazygit / bottom / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
 | Claude settings (`claude/settings.json`) | the repo base for everyone; your own keys go in `~/.config/dotfiles/claude-settings.json` | `dots` (it builds `~/.claude/settings.json`) |
 | Share a key Claude saved for you | `python3 scripts/agent-config.py claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
@@ -390,7 +397,7 @@ Fully manual, by design: no background process. Pull and reprovision on demand:
 dots        # alias for ./dotfiles: git pull + relink + reprovision
 ```
 
-The brew step runs every time but no-ops when nothing's missing; one-time install
+The tools step and the brew step (macOS) run every time but no-op when nothing's missing; one-time install
 steps (Touch ID, git hooks, etc.) detect their own prior state and skip too. Want
 automatic pulls on a given machine? Point your own cron or login hook at `dots`.
 Nothing in this repo does that for you.
@@ -405,7 +412,7 @@ rm ~/.zshrc ~/.gitconfig ~/.config/starship.toml   # etc. These are symlinks; re
 
 For `~/.claude`, remove the symlinks the same way. Any pre-existing config the link
 step overwrote is backed up as `*.bak-<timestamp>` next to the original path. Restore
-from there. Homebrew packages, Oh My Zsh, and toolchains stay installed.
+from there. The tools (mise), Homebrew apps, Oh My Zsh, and toolchains stay installed.
 
 For Cursor, delete the generated files and our merged entries:
 
@@ -435,7 +442,7 @@ which can race Claude rewriting `~/.claude` live. Re-run `dots` from a plain she
 The Homebrew installer needs `sudo` and a user that is not root.
 
 **Icons look like boxes.** The Nerd Font is wired into **both** terminals automatically:
-Ghostty via its config, Apple Terminal via `scripts/install.d/75-terminal-appearance.sh`
+Ghostty via its config, Apple Terminal via step `75-terminal-appearance`
 (needs Automation permission on first run). Other terminals: set the font to "FiraCode
 Nerd Font Mono".
 

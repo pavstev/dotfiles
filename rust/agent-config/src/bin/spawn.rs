@@ -388,7 +388,7 @@ fn preflight(
     which: &dyn Fn(&str) -> Option<String>,
     tmux_has: &dyn Fn(&str, &str) -> bool,
 ) -> Result<(String, String), String> {
-    let tmux = which("tmux").ok_or("tmux missing: run `brew install tmux` (or `dots`)")?;
+    let tmux = which("tmux").ok_or("tmux missing: run `dots`")?;
     let claude = which("claude").ok_or("claude missing on PATH: install Claude Code")?;
     if !Path::new(folder).is_dir() {
         return Err(format!("folder does not exist: {}", folder));

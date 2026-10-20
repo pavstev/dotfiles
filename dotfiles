@@ -1,346 +1,124 @@
 #!/usr/bin/env bash
 # ============================================================================
-#  ./dotfiles — the one command: pull latest, link files, provision tools.
+#  ./dotfiles: the one command (alias dots): pull latest, link files, provision.
 #
-#  Safe to run repeatedly on any machine, in either role:
-#    - the machine you EDIT on: local commits make the pull a harmless no-op,
-#      then linking/provisioning just re-confirms current state.
-#    - a machine that only PULLS: fast-forwards, links what's new, installs
-#      whatever the Brewfile/toolchain steps are missing.
+#  A thin shim. It runs the Rust `dots` (rust/agent-config/src/dots/), built here
+#  on first use and again when its sources change (about 1 to 2 minutes). With no
+#  Rust it installs one with rustup first (on Windows the GNU host, no Visual Studio).
+#  If Rust cannot be installed or the build fails it says why and exits 1.
+#  Arguments: dots [-v] [settings].
 #
-#  No daemon. Just run it again whenever you want to sync.
-#  `dots settings` (or `dots private`) opens the settings menu
-#  (scripts/settings.sh), then refreshes the links, the Cursor rule and the
-#  Opencode config.
-#  A run prints one short line per step. `dots -v` (or DOTFILES_VERBOSE=1)
-#  prints everything, the way the steps log it.
+#    DOTS_BIN=<path> ./dotfiles    # run this dots binary (tests), no build
 # ============================================================================
-set -uo pipefail
+set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-export REPO
-export DOTFILES="$REPO"
+CRATE="$REPO/rust/agent-config"
+TARGET="$CRATE/target"
+BIN="$TARGET/release/dots"
 
-. "$REPO/scripts/setup-lib.sh" 2>/dev/null \
-  || { printf '!! scripts/setup-lib.sh missing or unreadable — repo incomplete?\n' >&2; exit 1; }
-brew_env   # brew and gum on PATH, also in a bare shell
-# Every warn line also goes to this file (the steps are child processes), so the last line
-# can count them. The run after a pull (exec below) keeps the same file.
-if [[ -z "${DOTFILES_PULLED:-}" || -z "${DOTFILES_WARN_FILE:-}" ]]; then
-  DOTFILES_WARN_FILE="$(mktemp "${TMPDIR:-/tmp}/dots-warn.XXXXXX" 2>/dev/null)" || DOTFILES_WARN_FILE=""
-fi
-export DOTFILES_WARN_FILE
+no_rust() { printf '!  dots: %s\n' "$1" >&2; exit 1; }
 
-ASK_SETTINGS="" OWN_STEPS=""
-for arg in "$@"; do
-  case "$arg" in
-    -v|--verbose) export DOTFILES_VERBOSE=1 ;;
-    settings|private)
-      ASK_SETTINGS=1
-      # Only the Cursor step runs then, to pick up the new settings. Opencode needs no
-      # step: agent-config opencode runs below, on every run, and reads the same file.
-      if [[ -z "${DOTFILES_STEPS+set}" ]]; then export DOTFILES_STEPS=60-cursor; OWN_STEPS=1; fi ;;
-    *) printf 'usage: dots [-v] [settings]\n' >&2; exit 2 ;;
-  esac
-done
+WIN=""
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) WIN=1; BIN="$BIN.exe" ;;
+esac
 
-if [[ -n "${DOTFILES_PULLED:-}" ]]; then
-  ok "pulled the latest version"   # the run before this one printed the step
+if [[ -n "${DOTS_BIN:-}" ]]; then
+  [[ -x "$DOTS_BIN" ]] || no_rust "DOTS_BIN is not a program: $DOTS_BIN" "$@"
+  BIN="$DOTS_BIN"
 else
-  step "Pulling latest"
-  before="$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
-  # No autostash and no password prompt. A pull that would change a file edited
-  # here stops, instead of leaving conflict markers in a live config.
-  if GIT_TERMINAL_PROMPT=0 git -C "$REPO" -c rebase.autoStash=false -c merge.autoStash=false \
-      pull --ff-only --no-rebase --quiet; then
-    # New commits can change this script. Run the new one for the rest.
-    if [[ "$(git -C "$REPO" rev-parse HEAD 2>/dev/null)" != "$before" ]]; then
-      exec env DOTFILES_PULLED=1 bash "$REPO/dotfiles" "$@"
+  # cargo from rustup (~/.cargo/bin) or from Homebrew's keg-only rustup.
+  for d in /home/linuxbrew/.linuxbrew/opt/rustup/bin /usr/local/opt/rustup/bin /opt/homebrew/opt/rustup/bin \
+           "${CARGO_HOME:-$HOME/.cargo}/bin"; do
+    if [[ -d "$d" && ":$PATH:" != *":$d:"* ]]; then PATH="$d:$PATH"; fi
+  done
+  export PATH
+  stale() {
+    [[ ! -x "$BIN" ]] && return 0
+    [[ -n "$(find "$CRATE/src" "$CRATE/Cargo.toml" "$CRATE/Cargo.lock" "$CRATE/themes" \
+      -newer "$BIN" -type f 2>/dev/null | head -1)" ]]
+  }
+  # A fresh machine has no Rust: install a minimal stable toolchain with rustup (into
+  # ~/.cargo and ~/.rustup; step 40 adds clippy and rust-analyzer later). On Linux the
+  # build tools come first (scripts/linux-prereqs.txt; Alpine also needs build-base).
+  install_rust() (
+    set -o pipefail   # a failed download must fail the install, not feed sh nothing
+    . "$REPO/scripts/setup-lib.sh"
+    if is_linux; then
+      [[ "$LINUX_PKG" == apk ]] && LINUX_PREREQS+=(build-base)
+      linux_prereqs || return 1
     fi
-    uptodate "up to date"
-  else
-    warn "couldn't pull (no network, local commits, or a changed file), so this run uses what is here"
-    changed="$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null | cut -c4- | tr '\n' ' ')"
-    if [[ -n "$changed" ]]; then info "changed here: $changed"; fi
-    if [[ " $changed " == *" claude/CLAUDE.md "* ]]; then
-      info "keep your own rules in your private rules (dots settings), not in claude/CLAUDE.md"
-    fi
-  fi
-fi
-
-# Windows needs real symlinks (Developer Mode). Stop first, once, with the fix.
-if is_windows && ! windows_links_ready; then
-  warn "Windows can't make links yet. Turn on Developer Mode:"
-  info "Settings > System > For developers > Developer Mode (On). Then run the same command again."
-  exit 1
-fi
-
-# A person at a terminal gets the guided setup. Its menus need gum.
-if at_terminal && ! have gum && ! is_windows && ! is_musl; then
-  step "Getting ready"
-  if ensure_brew && brew install --quiet gum >/dev/null 2>&1; then
-    ok "menus ready"
-  else
-    warn "couldn't install gum, so the questions use plain text"
-  fi
-fi
-
-# The first run is the one without a settings file (AGENTS.md "Settings").
-step "Git identity"
-FIRST_RUN=""
-if [[ ! -f "$DOTFILES_SETTINGS" ]]; then
-  FIRST_RUN=1
-  if is_macos; then machine="Mac"
-  elif is_windows; then machine="Windows machine"
-  else machine="Linux machine"
-  fi
-  if is_windows; then
-    banner "🦴 dotfiles" "This sets up your $machine for Claude Code and Opencode." \
-      "It asks for your name and email, then takes about 5 minutes."
-  else
-    banner "🦴 dotfiles" "This sets up your $machine for Claude Code, Cursor and Opencode." \
-      "A few questions first, then about 20 to 40 minutes of installs." \
-      "Use ↑ ↓ to move and Enter to pick."
-  fi
-fi
-name="$(setting GIT_NAME)" email="$(setting GIT_EMAIL)"
-# --includes: also read ~/.gitconfig.local, which ~/.gitconfig includes.
-[[ -n "$name" ]] || name="$(git config --global --includes user.name 2>/dev/null || true)"
-[[ -n "$email" ]] || email="$(git config --global --includes user.email 2>/dev/null || true)"
-[[ -n "$name" ]] || name="$(ask_text "👤 Your name, for git commits" "Jane Doe")" || name=""
-[[ -n "$email" ]] || email="$(ask_email "✉️  Your email, for git commits" "jane@example.com")" || email=""
-if [[ -n "$name" && -n "$email" ]]; then
-  [[ "$(setting GIT_NAME)" == "$name" ]] || set_setting GIT_NAME "$name" || warn "couldn't save GIT_NAME"
-  [[ "$(setting GIT_EMAIL)" == "$email" ]] || set_setting GIT_EMAIL "$email" || warn "couldn't save GIT_EMAIL"
-  git_identity "$name" "$email"
-else
-  warn "no git name or email given. Run dots settings in a terminal to set them."
-fi
-export DOTFILES_FIRST_RUN="$FIRST_RUN"
-
-# The settings menu (scripts/settings.sh): on the first run at a terminal, or any
-# time with: dots settings
-if [[ -n "$FIRST_RUN" && -z "$ASK_SETTINGS" ]] && is_windows; then
-  info "Change settings later with: bash ~/dotfiles/dotfiles settings"
-elif [[ -n "$FIRST_RUN$ASK_SETTINGS" ]] && at_terminal; then
-  bash "$REPO/scripts/settings.sh" || warn "settings not finished. Run: dots settings"
-elif [[ -n "$ASK_SETTINGS" ]]; then
-  warn "dots settings asks questions, so run it in a terminal"
-fi
-
-PROFILE="$(dotfiles_profile)"
-export DOTFILES_PROFILE="$PROFILE"
-
-# An optional extra, offered once: on the first run, at a terminal. "No" comes first.
-if is_macos && [[ -n "$FIRST_RUN" ]] && at_terminal && [[ ! -d /Applications/Claude.app ]]; then
-  step "Extras"
-  no="⏭️  No, skip it" app="🖥️  Yes, install the Claude desktop app"
-  if [[ "$(ask_one "✨ Install the Claude desktop app too?" "$no" "$app")" == "$app" ]]; then
-    if spin "Installing the Claude app" brew install --cask --quiet claude; then
-      ok "Claude desktop app installed"
+    printf '»» installing Rust with rustup (about a minute)\n' >&2
+    rlog="$(mktemp "${TMPDIR:-/tmp}/dots-rustup.XXXXXX")"
+    if is_windows && ! have rustup; then
+      # The GNU host brings its own linker, so no Visual Studio Build Tools. It also runs on
+      # Windows on Arm (x64 emulation).
+      host=x86_64-pc-windows-gnu
+      rdir="$(mktemp -d "${TMPDIR:-/tmp}/dots-rustup.XXXXXX")"
+      curl --proto '=https' --tlsv1.2 -fsSL -o "$rdir/rustup-init.exe" \
+          "https://static.rust-lang.org/rustup/dist/$host/rustup-init.exe" 2>"$rlog" &&
+        "$rdir/rustup-init.exe" -y --profile minimal --no-modify-path --default-host "$host" \
+          --default-toolchain stable --component llvm-tools >>"$rlog" 2>&1
+      rc=$?; rm -rf "$rdir"; (exit $rc)
+    elif have rustup; then
+      rustup toolchain install stable --profile minimal >"$rlog" 2>&1 && rustup default stable >>"$rlog" 2>&1
     else
-      warn "couldn't install the Claude app. Try later: brew install --cask claude"
-    fi
-  fi
-fi
-
-step "Linking files"
-export DOTFILES_LINK_QUIET=1
-LINK_COUNT=0
-# Explicit allow-list: relative paths under home/ map 1:1 to the same
-# relative path under $HOME. Anything NOT listed here is never touched —
-# secrets and per-machine state (gh hosts.yml, atuin data dir, VS Code/
-# Cursor caches, Raycast tokens, Docker/OrbStack/Cloudflared state, …)
-# simply live outside this list.
-LINKS=()
-# AeroSpace is a Mac window manager.
-if is_macos; then LINKS+=(".config/aerospace"); fi
-if is_windows; then
-  # No zsh, Homebrew or terminal tools here: link only what Windows uses.
-  LINKS+=(".config/gh/config.yml")
-  windows_gitconfig
-else
-  LINKS+=(
-    ".config/atuin"
-    ".config/bat"
-    ".config/btop"
-    ".config/fastfetch"
-    ".config/gh/config.yml"
-    ".config/ghostty"
-    ".config/lazygit"
-    ".config/starship.toml"
-    ".config/tealdeer"
-    ".config/yazi"
-    ".config/zsh"
-    ".gitconfig"
-    ".zshrc"
+      curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs 2>"$rlog" |
+        sh -s -- -y --profile minimal --no-modify-path --default-toolchain stable >>"$rlog" 2>&1
+    fi || { printf '!  the Rust install failed (log: %s)\n' "$rlog" >&2; return 1; }
+    rm -f "$rlog"
   )
-fi
-for item in "${LINKS[@]}"; do
-  link_item "$REPO/home/$item" "$HOME/$item"
-done
-
-# VS Code and Cursor settings: the repo keeps them under their Mac path in home/.
-# The same files link to where each OS looks for them.
-if is_macos; then editor_cfg="Library/Application Support"
-elif is_windows; then editor_cfg="AppData/Roaming"
-else editor_cfg=".config"; fi
-for app in Code Cursor; do
-  for f in settings.json keybindings.json; do
-    link_item "$REPO/home/Library/Application Support/$app/User/$f" "$HOME/$editor_cfg/$app/User/$f"
-  done
-done
-
-# The settings build and the Opencode config below run agent-config, which needs cargo or
-# python3. A fresh Linux has neither until step 05 installs python3, so install
-# the prerequisites now (step 05 then skips).
-if is_linux && ! have cargo && ! have python3; then
-  step "Linux prerequisites"
-  linux_prereqs || warn "prerequisites missing, so the Claude and Opencode config may not build. Fix the error above, then run dots again."
-fi
-
-(( LINK_COUNT > 0 )) && ok "linked $LINK_COUNT files"
-LINK_COUNT=0
-
-step "Claude config"
-if verbose; then info "profile: $PROFILE (AGENTS.md \"Profiles\")"; fi
-CLAUDE_SRC="$REPO/claude"
-CLAUDE_DST="$HOME/.claude"
-if [[ -d "$CLAUDE_SRC" ]]; then
-  mkdir -p "$CLAUDE_DST" 2>/dev/null || warn "couldn't create $CLAUDE_DST"
-  # Per-item, never the whole dir — Claude Code recreates ~/.claude and
-  # writes session state there.
-  for d in agents hooks output-styles; do
-    link_item "$CLAUDE_SRC/$d" "$CLAUDE_DST/$d"
-  done
-  for f in CLAUDE.md statusline.sh; do
-    link_item "$CLAUDE_SRC/$f" "$CLAUDE_DST/$f"
-  done
-  (( LINK_COUNT > 0 )) && ok "linked $LINK_COUNT Claude files"
-  unset DOTFILES_LINK_QUIET
-  step_end   # the agent-config lines below print their own count
-  # settings.json is built, not linked: the repo base plus the private layer
-  # (~/.config/dotfiles/claude-settings.json). Claude writes this file itself; what
-  # it changed since the last build moves into the private layer first.
-  "$REPO/scripts/agent-config" claude-settings build \
-    || warn "couldn't build ~/.claude/settings.json, so it stays as it was"
-  # The owner's private rules (never in the repo) load as a Claude user rule.
-  rule="$CLAUDE_DST/rules/owner.md"
-  if [[ "$PROFILE" == owner && -f "$OWNER_MD" ]]; then
-    link_item "$OWNER_MD" "$rule"
-  else
-    if [[ "$PROFILE" == owner ]]; then
-      warn "owner profile, but no private rules on this machine. Add them with: dots settings"
+  # A cargo that works and a rustc at least as new as rust-version in Cargo.toml (1.88).
+  # RUSTUP_AUTO_INSTALL=0: with no toolchain on this HOME, fail now, never download one.
+  rust_ok() {
+    RUSTUP_AUTO_INSTALL=0 cargo --version >/dev/null 2>&1 || return 1
+    local v; v="$(RUSTUP_AUTO_INSTALL=0 rustc --version 2>/dev/null)" || return 1
+    v="${v#rustc }"; v="${v%% *}"
+    local major="${v%%.*}" minor="${v#*.}"; minor="${minor%%.*}"
+    [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( major > 1 || minor >= 88 ))
+  }
+  # Windows GNU Rust: windows-sys links with raw-dylib, so rustc runs dlltool.exe from PATH.
+  # The GNU one in rustup needs an assembler that rustup does not ship. LLVM's (llvm-ar from
+  # llvm-tools, under the name dlltool) needs none. It goes in ~/.cargo/dlltool, first on
+  # PATH for this build and for the build of the other bins that dots starts.
+  win_dlltool() {
+    local b h d="${CARGO_HOME:-$HOME/.cargo}/dlltool"
+    b="$(RUSTUP_AUTO_INSTALL=0 rustc --print sysroot 2>/dev/null)" || return 0
+    h="$(RUSTUP_AUTO_INSTALL=0 rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+    b="$(cygpath -u "$b")/lib/rustlib/$h/bin"
+    [[ -f "$b/llvm-ar.exe" ]] || rustup component add llvm-tools >/dev/null 2>&1 || return 0
+    if [[ ! -f "$d/dlltool.exe" || "$b/llvm-ar.exe" -nt "$d/dlltool.exe" ]]; then
+      mkdir -p "$d" && cp "$b"/*.dll "$d/" && cp "$b/llvm-ar.exe" "$d/dlltool.exe" || return 0
     fi
-    if [[ -L "$rule" && "$(readlink "$rule")" == "$OWNER_MD" ]]; then
-      rm -f "$rule" && ok "removed the owner rules link"
+    PATH="$d:$PATH"
+  }
+  if stale; then
+    if ! rust_ok; then
+      install_rust || no_rust "Rust could not be installed" "$@"
+      PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+      rust_ok || no_rust "no cargo with Rust 1.88 or newer" "$@"
     fi
-  fi
-else
-  warn "$CLAUDE_SRC missing — skipping Claude config link"
-fi
-
-step "Skills"
-if [[ -x "$REPO/claude/skill-sync.sh" ]]; then
-  # It prints only when it linked or pruned something. No output means up to date.
-  skills_out="$("$REPO/claude/skill-sync.sh" 2>&1)" || { warn "skill-sync.sh reported an issue — skills may be unlinked"; }
-  if [[ -n "$skills_out" ]]; then printf '%s\n' "$skills_out"; else uptodate "skills linked"; fi
-else
-  warn "claude/skill-sync.sh missing or not executable — skipping"
-fi
-
-if verbose; then step "Opencode config -> ~/.config/opencode"; else step_end; fi
-# Opencode reads ~/.claude/skills natively (skill-sync above links them), so every
-# ps:* skill already works in Opencode, in every project. What remains: the global
-# rules file, the agents mirrored from claude/agents, the copper theme, and
-# permissions and opt-in MCP servers merged into ~/.config/opencode/opencode.jsonc.
-# They are generated/merged, never linked, so the user's own values win.
-if [[ -x "$REPO/scripts/agent-config" ]]; then
-  if is_windows; then
-    # One line instead of eleven; the whole output only when something fails.
-    oc_log="$(mktemp "${TMPDIR:-/tmp}/dots-oc.XXXXXX")"
-    if "$REPO/scripts/agent-config" opencode --profile "$PROFILE" >"$oc_log" 2>&1; then
-      if [[ "$(grep -c '^✓' "$oc_log")" -gt 0 ]] && ! verbose; then
-        ok "Opencode config written ($(grep -c '^✓' "$oc_log") files)"
-      else
-        cat "$oc_log"
-      fi
+    [[ -z "$WIN" ]] || win_dlltool
+    printf '»» building the Rust setup (the first time takes a few minutes)\n' >&2
+    log="$(mktemp "${TMPDIR:-/tmp}/dots-build.XXXXXX")"
+    if RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$TARGET" \
+        --manifest-path "$CRATE/Cargo.toml" --bin dots >"$log" 2>&1; then
+      touch "$BIN"   # cargo leaves it alone when only another bin's source changed
+      rm -f "$log"
     else
-      cat "$oc_log"; warn "agent-config opencode reported an issue, see above"
+      no_rust "the Rust build failed (log: $log)" "$@"
     fi
-    rm -f "$oc_log"
-  else
-    "$REPO/scripts/agent-config" opencode --profile "$PROFILE" \
-      || warn "agent-config opencode reported an issue, see above"
+  elif [[ -n "$WIN" ]] && command -v rustc >/dev/null 2>&1; then
+    win_dlltool
   fi
-else
-  warn "scripts/agent-config missing or not executable — skipping Opencode config"
 fi
 
-if [[ -d "$REPO/scripts/install.d" ]]; then
-  # DOTFILES_STEPS="60-cursor ..." runs only the named steps (for temp-HOME tests),
-  # also the ones in SKIP_STEPS: the env wins for one run. Else SKIP_STEPS in the
-  # settings names steps that never run on this machine (also in dots settings).
-  skip_steps=" "
-  if [[ -z "${DOTFILES_STEPS:-}" || -n "$OWN_STEPS" ]]; then skip_steps=" $(setting SKIP_STEPS) "; fi
-  musl=""; is_musl && musl=1
-  for f in "$REPO"/scripts/install.d/*.sh; do
-    [[ -f "$f" ]] || continue
-    s="$(basename "$f" .sh)"
-    if [[ -n "${DOTFILES_STEPS:-}" && " $DOTFILES_STEPS " != *" $s "* ]]; then
-      continue
-    fi
-    # Windows has no Homebrew, zsh or mise: it runs only the steps that work there.
-    if is_windows && [[ -z "${DOTFILES_STEPS:-}" && " 15-winget 57-claude-code " != *" $s "* ]]; then
-      continue
-    fi
-    # musl (Alpine) has no Homebrew: skip the steps that need it (step 10 says why, once).
-    if [[ -n "$musl" && -z "${DOTFILES_STEPS:-}" &&
-          " 20-brew-bundle 40-rust-toolchain 50-node-pnpm 55-gh-extensions 58-opencode " == *" $s "* ]]; then
-      continue
-    fi
-    if [[ "$skip_steps" == *" $s "* ]]; then
-      info "$s skipped (Steps to skip, in dots settings)"
-      continue
-    fi
-    bash "$f" || warn "$s.sh exited non-zero — see output above"
-  done
-fi
-
-step_end
-brew_env   # step 10 can install it during this run
-# Step 40 can bring the Rust toolchain during this run, so build the Rust tools now. It is a
-# no-op when they are fresh. A HOME with no toolchain (a temp HOME, a bare box) skips it.
-if [[ -z "${DOTFILES_STEPS:-}" ]] && have cargo && RUSTUP_AUTO_INSTALL=0 cargo --version >/dev/null 2>&1; then
-  "$REPO/scripts/agent-config" --bins
-fi
-if is_windows; then
-  if [[ -n "$FIRST_RUN" ]]; then
-    banner "✅ All set" "Close this window and open a new Git Bash." \
-      "Claude Code: run claude (it asks you to sign in the first time)." \
-      "Opencode: run opencode auth login once, then opencode." \
-      "Skills: type /ps: in Claude Code to see them." \
-      "Update later: bash ~/dotfiles/dotfiles"
-  fi
-elif ! have brew; then
-  # musl: step 10 already said that Homebrew cannot run here
-  is_musl || warn "Homebrew is missing, so the apps and tools did not install. Fix the error above, then run dots again."
-elif [[ -n "$FIRST_RUN" ]]; then
-  is_macos && new_shell="Open a new Terminal window." || new_shell="Open a new terminal, or run: exec zsh"
-  banner "✅ All set" "$new_shell" \
-    "Claude Code: run claude, then type /ps: to see the skills." \
-    "Opencode: run opencode, then type /ps: to see the same skills." \
-    "Cursor: open the chat, then type /ps: to see the same skills."
-fi
-nwarn=0
-if [[ -n "$DOTFILES_WARN_FILE" ]]; then
-  nwarn="$(wc -l <"$DOTFILES_WARN_FILE" 2>/dev/null | tr -d ' ')"
-  rm -f "$DOTFILES_WARN_FILE"
-  DOTFILES_WARN_FILE=""
-fi
-if ((${nwarn:-0} > 0)); then
-  ((nwarn == 1)) && w=warning || w=warnings
-  warn "dotfiles: done with $nwarn $w (profile: $PROFILE). Read the ! lines above."
-else
-  ok "dotfiles: done (profile: $PROFILE)"
-fi
+export DOTFILES_REPO="$REPO"
+[[ -n "$WIN" ]] || exec "$BIN" "$@"
+# Windows locks a running .exe, so the restart after a pull could not rebuild dots.exe.
+# Run a copy of it instead.
+run="$(mktemp -d "${TMPDIR:-/tmp}/dots-run.XXXXXX")" || exit 1
+trap 'rm -rf "$run"' EXIT
+cp "$BIN" "$run/dots.exe" || no_rust "couldn't copy $BIN" "$@"
+"$run/dots.exe" "$@"

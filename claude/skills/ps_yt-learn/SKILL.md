@@ -14,7 +14,7 @@ Get the transcript, read it, write one short note the user can act on. The trans
 1. Run `bash ${CLAUDE_SKILL_DIR}/scripts/fetch.sh "<url>"`. It prints the path of a timestamped markdown file. A rerun reads the cache.
    - It runs the `yt_transcribe` Rust bin, which `dots` builds. If it says there is no binary, tell the user to run `dots` (needs `cargo`) and stop.
    - Captions need `yt-dlp`. With no captions it falls back to Whisper, which needs `ffmpeg` and `whisper-cli` and downloads a model once (tiny 75 MB, base 142 MB).
-   - If it fails, show the `error:` line as is. It names the install line for the user's OS: macOS and Linux `brew install yt-dlp ffmpeg whisper-cpp`, Windows `winget install yt-dlp.yt-dlp` and `winget install Gyan.FFmpeg`. Stop there.
+   - If it fails, show the `error:` line as is. It names the install line for the user's OS: macOS and Linux `dots` (it installs them from `tools.list`), Windows `winget install yt-dlp.yt-dlp` and `winget install Gyan.FFmpeg`. Stop there.
 2. Read the file. Over about 60,000 characters: read it in chunks, note the key points per chunk, then merge. Never paste the transcript in chat.
 3. Write the note in the shape below. Quote timestamps like `[12:30]`.
 4. If the user gave a goal, tie each idea to it. If not, keep it general.

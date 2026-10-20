@@ -1,0 +1,9 @@
+# bottom (btm): the system monitor, replacing btop. Symlinked from this repo.
+# Run `btm`; the shell aliases it as `top`. Options: https://clementtsang.github.io/bottom/stable/configuration/config-file/
+
+[flags]
+rate = "2s"               # refresh every 2 seconds
+avg_cpu = true            # show the average CPU next to each core
+
+[processes]
+default_memory_value = true   # memory as a size, not a percent

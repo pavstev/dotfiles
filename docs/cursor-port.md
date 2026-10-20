@@ -16,8 +16,8 @@ shipped app and CLI bundles.
 
 ## How it runs
 
-- `./dotfiles` picks a profile (`scripts/setup-lib.sh` `dotfiles_profile`), links `~/.claude`,
-  runs `claude/skill-sync.sh`, then the install steps. Step `scripts/install.d/60-cursor.sh`
+- `./dotfiles` picks a profile (`dots`, `settings::profile`), links `~/.claude`,
+  runs `claude/skill-sync.sh`, then the install steps. Step `60-cursor`
   installs the Cursor CLI if missing, installs the Brewfile editor extensions into Cursor, and
   runs `scripts/agent-config.py cursor`.
 - `scripts/agent-config.py` (Python 3 stdlib) generates every Cursor file. It never writes

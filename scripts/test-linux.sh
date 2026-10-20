@@ -14,9 +14,9 @@
 #    2. starts a container, copies this working tree in as a git repo with no remote
 #       (git-ignored files stay out), pipes a git name and email to ./dotfiles
 #    3. run 1: ./dotfiles. Run 2: ./dotfiles again, which must change nothing
-#    4. checks: no shell errors, the last line, run 2 time, `dots -v`, links, tools, the Rust
-#       tools, `zsh -ic exit` prints nothing, bash -n, the unit tests. On musl (Alpine) there is no Homebrew, so the brew tools are
-#       not checked and its one warning is expected.
+#    4. checks: no shell errors, the last line, run 2 time, `dots -v`, links, tools (every tool of
+#       tools.list, from mise or the fallback source, and the jq link), the Rust tools,
+#       `zsh -ic exit` prints nothing, bash -n, the unit tests. No Homebrew on any Linux.
 #    5. removes the container (the base image stays, for speed)
 #  Exit 0 only when every check passes.
 #
@@ -144,11 +144,9 @@ STATE='cd ~; { find ~ -maxdepth 5 -type l -printf "%p -> %l\n" 2>/dev/null | sor
   rustup toolchain list 2>/dev/null; mise ls 2>/dev/null
   gh extension list 2>/dev/null; } | md5sum'
 
-# musl (Alpine): Homebrew cannot run, so step 10 warns once and the last line counts it.
 MUSL=0
 cx 'compgen -G "/lib/ld-musl-*" >/dev/null' && MUSL=1
 OK_WARN='^$'
-((MUSL)) && OK_WARN='^!  (Homebrew needs glibc|dotfiles: done with 1 warning )'
 
 # ---- 3. run 1 and run 2 ------------------------------------------------------
 note "run 1 (fresh): ./dotfiles on $IMAGE ($RT, logs in $LOGS)"
@@ -191,7 +189,6 @@ ERR_RE+='|binary operator expected|too many arguments|No such file or directory|
 ERR_RE+='|Traceback \(most recent call last\)|panicked at'
 # The last line: the done line, with the warning count when a step warned.
 want_last='^✓ dotfiles: done \(profile: shared\)$'
-((MUSL)) && want_last='^!  dotfiles: done with 1 warning \(profile: shared\)'
 for n in 1 2; do
   errs="$(grep -E "$ERR_RE" "$LOGS/run$n.log" || true)"
   if [[ -z "$errs" ]]; then pass "run $n prints no shell or runtime errors"
@@ -244,20 +241,25 @@ if (( rc3 == 0 && lines3 > lines2 )) && [[ -z "$unexpected" ]]; then pass "dots 
 else bad "dots -v: exit $rc3, $lines3 lines (run 2: $lines2), warnings: ${unexpected:-none}"; fi
 check "no warning files left in /tmp" '! ls /tmp/dots-warn.* 2>/dev/null | grep .'
 
-tools="git zsh python3 brew rg fd bat eza fzf zoxide starship atuin jq gh delta lazygit mise uv claude"
-((MUSL)) && tools="git zsh python3"
-check "the CLI tools are on PATH" "
-  export PATH=\"/home/linuxbrew/.linuxbrew/bin:\$HOME/.linuxbrew/bin:\$HOME/.local/bin:\$PATH\"
-  miss=''; for t in $tools; do command -v \"\$t\" >/dev/null || miss=\"\$miss \$t\"; done
-  [ -z \"\$miss\" ] || { echo \"missing:\$miss\"; exit 1; }"
+# The tool list: tools.list is the one list; no Homebrew on Linux. `scripts/tools --check` lists what is missing
+# for this OS. A few tools then run, and jq (a link to jaq) reads JSON like jq.
+TOOLS_PATH='export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:$PATH"'
+check "every tool of tools.list is installed" "$TOOLS_PATH"'
+  cd ~/dotfiles && bash scripts/tools --check'
+check "git, zsh, python3 and the key tools start" "$TOOLS_PATH"'
+  miss=""; for t in git zsh python3 rg fd bat fzf jq gh mise uv claude; do
+    command -v "$t" >/dev/null || miss="$miss $t"; done
+  [ -z "$miss" ] || { echo "missing:$miss"; exit 1; }
+  [ "$(echo "{\"a\":7}" | jq -r .a)" = 7 ] || { echo "jq does not read JSON"; exit 1; }
+  rg --version >/dev/null && fzf --version >/dev/null && gh --version >/dev/null'
+check "scripts/tools is quiet on a second run" "$TOOLS_PATH"'
+  cd ~/dotfiles && out="$(bash scripts/tools 2>&1)"; case "$out" in "• Tools: "*" up to date") ;; *) printf "%s\n" "$out" | head -5; exit 1 ;; esac'
 
-# The Rust tools: dots builds them once the toolchain is there (not on musl: no Homebrew rustup).
-if ((MUSL == 0)); then
-  check "the Rust tools are built and run" '
-    B=~/dotfiles/rust/agent-config/target/release
-    for b in agent-config guard yt_transcribe; do [ -x "$B/$b" ] || { echo "missing: $B/$b"; exit 1; }; done
-    [ "$(bash ~/dotfiles/claude/hooks/rust-bin yt_transcribe --print-id https://youtu.be/dQw4w9WgXcQ)" = dQw4w9WgXcQ ]'
-fi
+# The Rust tools: dots builds them once the toolchain is there (rustup comes from tools.list).
+check "the Rust tools are built and run" '
+  B=~/dotfiles/rust/agent-config/target/release
+  for b in agent-config guard yt_transcribe tools; do [ -x "$B/$b" ] || { echo "missing: $B/$b"; exit 1; }; done
+  [ "$(bash ~/dotfiles/claude/hooks/rust-bin yt_transcribe --print-id https://youtu.be/dQw4w9WgXcQ)" = dQw4w9WgXcQ ]'
 
 check "zsh -ic exit prints nothing" '
   out="$(zsh -ic exit 2>&1 </dev/null)"; [ -z "$out" ] || { printf "%s\n" "$out" | head -10; exit 1; }'
@@ -265,7 +267,7 @@ check "zsh -ic exit prints nothing" '
 check "bash -n on every shell script" '
   cd ~/dotfiles && rc=0
   for f in dotfiles bootstrap.sh claude/skill-sync.sh claude/statusline.sh claude/hooks/*.sh scripts/*.sh \
-           scripts/install.d/*.sh scripts/git-hooks/* claude/skills/*/scripts/*.sh; do
+           scripts/git-hooks/* claude/skills/*/scripts/*.sh; do
     [ -f "$f" ] || continue
     head -1 "$f" | grep -q "^#!.*sh" && { bash -n "$f" || rc=1; }
   done; exit $rc'

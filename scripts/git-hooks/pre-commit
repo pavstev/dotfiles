@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pre-commit checks for the dotfiles repo: skill lint, private words, symlinks,
 # and a scan for added lines that look like a credential.
-# Wired via: git config core.hooksPath scripts/git-hooks  (done by scripts/install.d/77-dotfiles-git-hooks.sh)
+# Wired via: git config core.hooksPath scripts/git-hooks  (done by step 77-dotfiles-git-hooks)
 #
 # False positive? Add a `grep -Fv 'your-literal-string'` exclusion before exit 1,
 # or annotate the line with  # scan-allowlist  to skip it.

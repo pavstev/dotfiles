@@ -14,16 +14,16 @@ Checked against Opencode v2.0.25. Sources: the Opencode docs on
 
 ## How it runs
 
-- `brew "opencode"` is already in the Brewfile, so step `20-brew-bundle` installs the CLI
-  (step `58-opencode.sh` verifies it and skips when present).
-- `./dotfiles` picks a profile (`scripts/setup-lib.sh` `dotfiles_profile`), links `~/.claude`,
+- `opencode` is a line in `tools.list`, so step `12-tools` installs the CLI
+  (step `58-opencode` verifies it and skips when present).
+- `./dotfiles` picks a profile (`dots`, `settings::profile`), links `~/.claude`,
   runs `claude/skill-sync.sh`, then step `agent-config.py opencode` (wired into `dotfiles`
-  right after skill sync). That step is not in `install.d`, so it runs on every `dots`,
+  right after skill sync). That step is not an install step, so it runs on every `dots`,
   including `dots settings`.
-- Step `90-sign-in.sh` offers `opencode auth login` on the first run when
+- Step `90-sign-in` offers `opencode auth login` on the first run when
   `opencode auth list` says `No authenticated integrations`.
-- On Windows there is no Homebrew; step `15-winget.sh` installs the `opencode` CLI via
-  `winget install SST.opencode` when `winget` is available (warns and continues otherwise).
+- On Windows there is no Homebrew; step `12-tools` installs the `opencode` CLI through mise, or
+  `winget install SST.opencode` as the fallback (warns and continues otherwise).
 - `scripts/agent-config.py` (Python 3 stdlib) generates every Opencode file. It never writes
   under `~/.claude`. Generated Markdown carries `generated-by: dotfiles`; JSON merges keep the
   user's values and back up before a change.
@@ -144,6 +144,6 @@ leaves a `opencode.jsonc.bak-<timestamp>` next to it.
 
 ## Windows
 
-Opencode works the same on Windows (Git Bash). The CLI comes from WinGet (`SST.opencode`, step
-`15-winget.sh`) instead of Homebrew, and the clipboard uses `clip.exe`. Config is generated into
+Opencode works the same on Windows (Git Bash). The CLI comes from mise or WinGet (`SST.opencode`, step
+`12-tools`) instead of Homebrew, and the clipboard uses `clip.exe`. Config is generated into
 `~/.config/opencode` the same as on macOS and Linux. No settings are Windows-specific.

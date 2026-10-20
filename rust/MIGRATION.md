@@ -22,7 +22,7 @@ Every Python tool now has a Rust binary in `rust/agent-config/src/bin/` (or `mai
 `scripts/agent-config` is the entry point for `agent-config`. It runs the Rust build (made on first
 use when `cargo` works, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes)
 and falls back to `agent-config.py`. `AGENT_CONFIG_IMPL=python|rust` forces one. `dotfiles` and
-`scripts/install.d/60-cursor.sh` call the shim. `scripts/agent-config --bins` builds every bin and
+step `60-cursor` call the shim. `scripts/agent-config --bins` builds every bin and
 always exits 0 (`dots` can use it; a failed build leaves the Python files in charge).
 
 `claude/hooks/rust-bin [--hook] <name> [args]` is the launcher for hooks and skills. It runs
@@ -34,6 +34,20 @@ and the skills `ps:spawn`, `ps:whatsleft`, `ps:bag-mode`, `ps:harness-optimize` 
 four more skills call it. `ps_yt-learn/scripts/fetch.sh` calls it for `yt_transcribe`.
 
 Undo the hook switch: `git revert <the hooks commit>` (or, for one session, `RUST_BIN_IMPL=python`).
+
+## The setup itself: `dots`
+
+`./dotfiles` is a shim for the Rust bin `dots` (`src/dots/`, shared output in `src/out.rs`). It
+pulls, links, runs the settings menu (inquire prompts), syncs skills, runs agent-config in
+process, and runs the install steps (`src/dots/install/`, listed in `STEPS`). Step 12-tools runs
+the tool resolver in process (`src/tools_cli.rs`, `src/tools_core.rs`). There is no bash setup.
+With no Rust, the shim installs a minimal stable toolchain with rustup (Linux: the packages of
+`scripts/linux-prereqs.txt` first; Windows: the `x86_64-pc-windows-gnu` host with `llvm-tools`,
+whose LLVM dlltool the build needs). When that or the build fails, it says why and exits 1. On
+Windows the shim runs a copy of `dots.exe`, so the restart after a pull can rebuild it (not yet
+covered by `os-check windows`: the throwaway clone has no new commit to pull). Windows prompts use
+inquire's console backend, because crossterm crashed `dots.exe` before `main`.
+`scripts/test-dotfiles.sh` builds `dots` and runs its checks with it.
 
 ## Known gaps (accepted)
 

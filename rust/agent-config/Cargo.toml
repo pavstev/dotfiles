@@ -2,6 +2,7 @@
 name = "agent-config"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -12,6 +13,15 @@ sha2 = "0.10"
 tempfile = "3"
 walkdir = "2"
 regex = "1"
+
+# The prompt backend. crossterm pulls winapi 0.3, whose GNU import libraries clash with the
+# raw-dylib ones of windows-sys: on windows-gnu the linked exe crashes before main. So Windows
+# uses the console backend.
+[target.'cfg(not(windows))'.dependencies]
+inquire = { version = "0.9.4", default-features = false, features = ["crossterm", "editor"] }
+
+[target.'cfg(windows)'.dependencies]
+inquire = { version = "0.9.4", default-features = false, features = ["console", "editor"] }
 
 [[bin]]
 name = "agent-config"
@@ -50,8 +60,16 @@ name = "yt_transcribe"
 path = "src/bin/yt_transcribe.rs"
 
 [[bin]]
+name = "dots"
+path = "src/bin/dots.rs"
+
+[[bin]]
 name = "pace"
 path = "src/bin/pace.rs"
+
+[[bin]]
+name = "tools"
+path = "src/bin/tools.rs"
 
 [[bench]]
 name = "manual"

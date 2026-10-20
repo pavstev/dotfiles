@@ -1,0 +1,9 @@
+# The packages that the Rust build and the dotfiles steps need, per
+# package manager. Read by scripts/setup-lib.sh (LINUX_PREREQS) and by the Rust `dots`
+# (step 05). One line per manager: "<manager>: <package> ...". "other" lists commands
+# for a Linux with none of these managers; the user installs them.
+apt-get: build-essential ca-certificates curl file git procps python3 zsh
+dnf: gcc gcc-c++ make ca-certificates curl file git procps-ng python3 zsh
+pacman: base-devel ca-certificates curl file git procps-ng python zsh
+apk: bash build-base ca-certificates curl file git python3 zsh
+other: cc make curl file git ps python3 zsh

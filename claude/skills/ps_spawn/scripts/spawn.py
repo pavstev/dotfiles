@@ -95,7 +95,7 @@ def preflight(folder, mode, name, env, which=shutil.which, tmux_has=None):
     """Return (claude_path, tmux_path). Raise CheckFailed with the fix."""
     tmux = which("tmux")
     if not tmux:
-        raise CheckFailed("tmux missing: run `brew install tmux` (or `dots`)")
+        raise CheckFailed("tmux missing: run `dots`")
     claude = which("claude")
     if not claude:
         raise CheckFailed("claude missing on PATH: install Claude Code")

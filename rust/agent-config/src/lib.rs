@@ -5,10 +5,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const MARK: &str = "generated-by: dotfiles";
 const OWNER_MD: &str = ".config/dotfiles/owner.md";
@@ -28,40 +28,14 @@ pub fn set_dry(v: bool) { DRY.store(v, Ordering::Relaxed); }
 
 fn home_dir() -> PathBuf { env::var("HOME").map(PathBuf::from).ok().filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from(".")) }
 
-pub fn color_enabled() -> bool {
-    if env::var("NO_COLOR").is_ok() { return false; }
-    io::stdout().is_terminal()
-}
-fn g() -> &'static str { if color_enabled() { "\x1b[38;5;108m" } else { "" } }
-fn y() -> &'static str { if color_enabled() { "\x1b[38;5;179m" } else { "" } }
-fn d() -> &'static str { if color_enabled() { "\x1b[38;5;245m" } else { "" } }
-fn b() -> &'static str { if color_enabled() { "\x1b[38;5;73m" } else { "" } }
-fn z() -> &'static str { if color_enabled() { "\x1b[0m" } else { "" } }
-static SKIPPED: AtomicUsize = AtomicUsize::new(0);
-static WRITTEN: AtomicUsize = AtomicUsize::new(0);
-// DOTFILES_VERBOSE=1 prints every line; otherwise one count line per command (see summary).
-pub fn verbose() -> bool { env::var("DOTFILES_VERBOSE").map(|v| !v.is_empty() && v != "0").unwrap_or(false) }
-pub fn ok(msg: &str) {
-    if msg.starts_with("wrote ") || msg.starts_with("updated ") || msg.starts_with("built ") { WRITTEN.fetch_add(1, Ordering::Relaxed); }
-    println!("{}✓{} {}", g(), z(), msg);
-}
-pub fn info(msg: &str) { println!("{}»»{} {}", b(), z(), msg); }
-pub fn skip(msg: &str) {
-    if verbose() { println!("{}•{} {} {}(already set up, skipping){}", d(), z(), msg, d(), z()); }
-    else { SKIPPED.fetch_add(1, Ordering::Relaxed); }
-}
-/// The line that says what a command reads. Verbose runs only.
-pub fn header(msg: &str) { if verbose() { info(msg); } }
-/// The count line for the files that were up to date, e.g. "Opencode config: 12 up to date, 1 written".
-pub fn summary(label: &str) {
-    let skipped = SKIPPED.swap(0, Ordering::Relaxed);
-    let written = WRITTEN.swap(0, Ordering::Relaxed);
-    if !verbose() && skipped > 0 {
-        let more = if written > 0 { format!(", {} written", written) } else { String::new() };
-        println!("{}•{} {}: {} up to date{}", d(), z(), label, skipped, more);
-    }
-}
-pub fn warn(msg: &str) { eprintln!("{}!{}  {}", y(), z(), msg); }
+pub mod out;
+pub mod dots;
+pub mod tools_cli;
+pub mod tools_core;
+pub use out::{color_enabled, verbose, ok, info, skip, header, summary, warn};
+#[allow(unused_imports)]
+use out::{g, y, d, b, z};
+
 pub fn tilde(p: &Path) -> String {
     let home = home_dir();
     let s = p.display().to_string();
@@ -1196,8 +1170,19 @@ pub struct OpencodeArgs {
     pub projects: Option<String>,
 }
 
-pub fn run() -> i32 {
-    let cli = Cli::parse();
+pub fn run() -> i32 { run_cli(Cli::parse()) }
+
+/// Run one agent-config command in this process (`dots` does). A panic counts as a failure.
+pub fn run_args(args: &[&str]) -> i32 {
+    let argv = std::iter::once("agent-config").chain(args.iter().copied());
+    let cli = match Cli::try_parse_from(argv) {
+        Ok(c) => c,
+        Err(e) => { warn(e.to_string().trim_end()); return 2; }
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cli(cli))).unwrap_or(1)
+}
+
+fn run_cli(cli: Cli) -> i32 {
     if let Some(r) = cli.repo { unsafe { env::set_var("DOTFILES_REPO", r); } }
     let (rc, label) = match cli.cmd {
         Commands::Cursor(a) => { set_dry(a.dry_run); (cmd_cursor_dispatch(&a), "Cursor config") }

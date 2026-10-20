@@ -30,8 +30,7 @@
 ## Set up Linux
 
 This works on Debian, Ubuntu, Fedora and Arch, on x86_64 and arm64. You need a normal user
-that can run `sudo`. Alpine gets the links and the config, but not the Homebrew tools
-(Homebrew needs glibc).
+that can run `sudo`. Alpine works too: the tools come from mise and `apk`.
 
 1. Open a terminal.
 2. Paste this line, then press Enter:
@@ -58,16 +57,16 @@ they are missing.
    ```
 
 3. Answer the two questions (git name and email).
-4. Wait about 5 minutes. The run installs Claude Code and Opencode with WinGet and links your config.
+4. Wait about 10 minutes. The run installs mise, the tools, Claude Code and Opencode, and links your config.
    If it says "Windows can't make links yet", turn on Settings > System > For developers >
    Developer Mode, then paste the same line again.
 5. Close the window and open a new Git Bash. Run `claude`.
 
 What is different on Windows:
 
-- No Homebrew. Claude Code (`Anthropic.ClaudeCode`), Opencode (`SST.opencode`) and `yt-dlp` come from
-  WinGet.
-  The other Brewfile tools are not installed. Add the ones you want yourself.
+- No Homebrew. The command-line tools in `tools.list` come from mise (installed with WinGet), with
+  WinGet and Scoop as fallbacks. Claude Code comes from WinGet (`Anthropic.ClaudeCode`). The shell-only
+  tools (starship, atuin, zoxide and others) are for macOS and Linux.
 - Your own `~/.gitconfig` stays. Only the git name and email are added to it.
 - The macOS-only steps and the zsh setup do not run.
 - `scripts/agent-config` generates the Opencode/Claude/Cursor config. It runs the Rust build in

@@ -51,20 +51,17 @@ OUT="$REPO/.os-check"
 mkdir -p "$OUT"
 
 # ---- which OS a changed file is for ----------------------------------------
-RE_ALL='^(dotfiles|bootstrap\.sh|scripts/(setup-lib|settings|os-check)\.sh|scripts/agent-config|rust/|claude/(settings\.json|skill-sync\.sh|hooks/))'
-RE_STEP='^scripts/install\.d/'
-RE_WIN='^scripts/install\.d/(15|57)-|\.psm?1$|(^|/)(windows|winget|scoop)|^home/\.config/(gh|opencode)/|^home/Library/Application Support/|^\.gitattributes$'
-RE_LINUX='^(Brewfile|home/|scripts/test-linux\.sh)'
-RE_LINUX_NOT='^scripts/install\.d/(15|70|72|75)-'
+RE_ALL='^(dotfiles|bootstrap\.sh|tools\.list|scripts/(setup-lib|settings|os-check)\.sh|scripts/(agent-config|tools)|rust/|claude/(settings\.json|skill-sync\.sh|hooks/))'
+RE_WIN='\.psm?1$|(^|/)(windows|winget|scoop)|^home/\.config/(gh|opencode)/|^home/Library/Application Support/|^\.gitattributes$'
+RE_LINUX='^(home/|scripts/test-linux\.sh)'
 RE_MAC='^(Brewfile|home/|scripts/(test-dotfiles|fix-brew-permissions)\.sh)'
-RE_MAC_NOT='^scripts/install\.d/(05|15|78)-'
 
 wants() { # wants <os> <file>
   [[ "$2" =~ $RE_ALL ]] && return 0
   case "$1" in
     windows) [[ "$2" =~ $RE_WIN ]] ;;
-    linux) [[ "$2" =~ $RE_LINUX ]] || { [[ "$2" =~ $RE_STEP ]] && ! [[ "$2" =~ $RE_LINUX_NOT ]]; } ;;
-    macos) [[ "$2" =~ $RE_MAC ]] || { [[ "$2" =~ $RE_STEP ]] && ! [[ "$2" =~ $RE_MAC_NOT ]]; } ;;
+    linux) [[ "$2" =~ $RE_LINUX ]] ;;
+    macos) [[ "$2" =~ $RE_MAC ]] ;;
   esac
 }
 
@@ -211,6 +208,7 @@ echo "RUN2_EXIT=$?"
 for p in .claude/CLAUDE.md .claude/hooks .config/gh/config.yml; do
   if [ -L ~/"$p" ] && [ -e ~/"$p" ]; then echo "LINK_OK $p"; else echo "LINK_BAD $p"; fi
 done
+if [ ! -L ~/.gitconfig ] && git config --global --get-all include.path | grep -q gitconfig.local; then echo GITCONFIG_OK; else echo GITCONFIG_BAD; fi
 pwsh_out="$(pwsh -Command exit 2>&1)"; echo "PWSH_EXIT=$?"
 [ -z "$pwsh_out" ] && echo PWSH_QUIET || { echo PWSH_NOISY; printf '%s\n' "$pwsh_out"; }
 for n in 1 2; do echo "=== run$n.log"; cat ~/run$n.log; done
@@ -222,7 +220,9 @@ GUEST
   for m in RUN1_EXIT RUN2_EXIT; do
     grep -qx "$m=0" <<<"$out" || { echo "FAIL  $m is not 0 (log lines above)"; rc=1; }
   done
+  if grep -q 'uses the bash setup' <<<"$out"; then echo "FAIL  a run fell back to the bash setup (log lines above)"; rc=1; fi
   if grep -q '^LINK_BAD' <<<"$out"; then echo "FAIL  a link is missing: $(grep '^LINK_BAD' <<<"$out" | tr '\n' ' ')"; rc=1; fi
+  grep -qx GITCONFIG_OK <<<"$out" || { echo "FAIL  ~/.gitconfig is a link or lacks the include of ~/.gitconfig.local"; rc=1; }
   grep -qx PWSH_QUIET <<<"$out" || { echo "FAIL  pwsh -Command exit prints an error or did not run"; rc=1; }
   ((rc)) || echo "ok: both runs exit 0, the links are there, pwsh is quiet"
   return $rc

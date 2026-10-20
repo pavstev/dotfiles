@@ -35,19 +35,14 @@ command -v fd    >/dev/null && alias find='fd'
 command -v dust  >/dev/null && alias du='dust'
 command -v duf   >/dev/null && alias df='duf'
 command -v procs >/dev/null && alias ps='procs'
-command -v btop  >/dev/null && alias top='btop'
-# (sd is great for simple find/replace but its syntax differs from sed, so
-#  it's left un-aliased — call it as `sd 'find' 'replace' file`.)
+command -v btm   >/dev/null && alias top='btm'
 
 # ---- handy tool shortcuts --------------------------------------------------
 command -v lazygit    >/dev/null && alias lg='lazygit'
-command -v lazydocker >/dev/null && alias lzd='lazydocker'
+command -v oxker      >/dev/null && alias lzd='oxker'      # Docker TUI
 command -v gh         >/dev/null && alias ghd='gh dash'    # gh-dash extension
 command -v just       >/dev/null && alias j='just'
 command -v yazi       >/dev/null && alias ya='yazi'       # `y` (function) cd's on quit
-command -v glow       >/dev/null && alias md='glow'        # render Markdown
-command -v xh         >/dev/null && alias http='xh'
-command -v btop       >/dev/null && alias btm='btop'
 command -v tldr       >/dev/null && alias help='tldr'
 command -v fastfetch  >/dev/null && alias ff='fastfetch'
 

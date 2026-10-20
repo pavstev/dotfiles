@@ -470,13 +470,13 @@ fn install_hint(tool: &str) -> String {
     let win = cfg!(windows);
     match tool {
         "yt-dlp" if win => "winget install yt-dlp.yt-dlp".into(),
-        "yt-dlp" => "`brew install yt-dlp` (macOS, Linux)".into(),
+        "yt-dlp" => "run `dots` (it installs yt-dlp from tools.list)".into(),
         "ffmpeg" if win => "winget install Gyan.FFmpeg".into(),
-        "ffmpeg" => "`brew install ffmpeg` (macOS, Linux), or `sudo apt install ffmpeg` (Debian, Ubuntu)".into(),
+        "ffmpeg" => "run `dots` (it installs ffmpeg from tools.list)".into(),
         "whisper-cli" if win => {
             "download whisper-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases and put whisper-cli.exe on PATH".into()
         }
-        "whisper-cli" => "`brew install whisper-cpp` (macOS, Linux)".into(),
+        "whisper-cli" => "run `dots` (it installs whisper-cpp from tools.list; Alpine has no build)".into(),
         other => format!("install {other}"),
     }
 }
