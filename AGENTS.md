@@ -31,7 +31,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`). The Cursor guard adapter is the Rust bin `guard_cursor`. |
 | `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes). With no binary and no `cargo` it says "Run: dots" and exits 127. `--bins` builds every bin and always exits 0. The CLI: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
 | `claude/hooks/rust-bin` | launcher for hooks and skills: runs the Rust bin (`.exe` on Windows) when it exists, with no freshness check; never builds. With no binary, `--hook` fails open (exit 0, silent) and a skill call says "Run: dots" and exits 127. Notes: `rust/MIGRATION.md`. |
-| `docs/guide.md`, `docs/cursor-port.md`, `docs/opencode-port.md` | the user guide; the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
+| `docs/` | the user docs, one page per question (index: `docs/README.md`; `docs/guide.md` maps the old guide sections to them); `cursor-port.md` and `opencode-port.md` are the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
 | `tools.list` | THE list of command-line tools: `name \| commands \| OSes \| sources in order` (mise, apk, winget, scoop, cargo, brew, sh). Add a tool = add a line. Nothing else lists tools. |
 | `scripts/tools`, `scripts/tools-env.sh` | `scripts/tools` is a shim over the Rust bin `tools` (`rust/agent-config/src/tools_core.rs`, `tools_cli.rs`, `bin/tools.rs`). It finds Rust, or installs it with rustup, builds the bin when it is missing or stale (`ensure_rust_bin` in `scripts/setup-lib.sh`, the same code as `./dotfiles`), then runs it. The bin installs mise first when needed, then the tools. `--check`, `--only a,b`, `--list`, `-q`, `-v`. `TOOLS_BIN=<path>` runs a given bin (tests). `tools-env.sh` puts the mise, cargo and WinGet dirs on PATH. |
 | `Brewfile` | the macOS apps only: casks, the tap, the font, `vscode` lines (per-machine extras in the ignored `Brewfile.local`). |
@@ -97,7 +97,7 @@ dir of its own). New skill: copy `claude/skills/_template/`, keep folder name ==
 
 `claude/` is the source for Cursor too: edit it, then run `dots`. Step `60-cursor` runs only when
 Cursor is present: it installs the CLI, the Brewfile `vscode` extensions, and runs
-`scripts/agent-config cursor`. What Cursor gets: `docs/guide.md` "Cursor" and
+`scripts/agent-config cursor`. What Cursor gets: `docs/ai-agents.md` "Cursor" and
 `docs/cursor-port.md`.
 
 - Generated Markdown carries a `generated-by: dotfiles` marker. A file without it is the user's.
@@ -140,11 +140,11 @@ Edit `claude/`, then run `dots`. Step `58-opencode` (`dots/install/opencode.rs`)
   name without the marker is the user's and stays.
 
 Opencode does not get output-style switching or connectors, and runs only part of Claude's guard
-checks: G14 to G17 are tested there (table: [`docs/guide.md`](docs/guide.md#where-each-guard-check-runs)).
+checks: G14 to G17 are tested there (table: [`docs/ai-agents.md`](docs/ai-agents.md#where-each-guard-check-runs)).
 Full mapping and gap table:
 [`docs/opencode-port.md`](docs/opencode-port.md). The peer Cursor doc is
-[`docs/cursor-port.md`](docs/cursor-port.md); the full user reference is
-[`docs/guide.md`](docs/guide.md).
+[`docs/cursor-port.md`](docs/cursor-port.md); the user docs start at
+[`docs/README.md`](docs/README.md).
 
 ## Platforms
 
@@ -212,8 +212,9 @@ on Linux: the tools come from mise.
   the generated config steps warn and skip, and `dots` installs Rust on its next run.
 - **Test VM (Mac only):** `scripts/os-check.sh windows` clones the UTM VM `win11-golden`
   (Windows 11 Arm64, OpenSSH Server, Developer Mode, Git, PowerShell 7), starts the clone,
-  copies the tree over SSH, runs `./dotfiles` twice in Git Bash, checks both exit codes, the
-  links and `pwsh -Command exit`, then deletes the clone, also after a failure. It never starts
+  copies the tree over SSH, runs `./dotfiles` twice in Git Bash, then once more after a pull that
+  brings a Rust change (the restart rebuilds dots.exe), checks the exit codes, the links and
+  `pwsh -Command exit`, then deletes the clone, also after a failure. It never starts
   the golden VM. Build the golden VM once with `bash scripts/win-golden.sh` (needs UTM and the
   Windows ISO in `~/VMs/iso`; the script reads your SSH key at run time). The VM, its answer
   file and its login stay in `~/VMs`, outside the repo.

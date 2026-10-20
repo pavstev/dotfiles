@@ -15,6 +15,19 @@ use crate::tools_core::{self as core, Env, Host, Outcome, RealEnv, Source};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+
+/// The tools whose failure this process already reported. `dots` runs `run` twice (step 12, then a
+/// quiet pass after step 40), and the second pass must not warn about the same tool again.
+static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// True the first time `name` fails in this process.
+fn first_failure(name: &str) -> bool {
+    let mut w = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    if w.iter().any(|n| n == name) { return false; }
+    w.push(name.to_string());
+    true
+}
 
 fn color() -> bool {
     std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
@@ -164,6 +177,7 @@ pub fn run(args: Vec<String>) -> u8 {
                 println!("{} {} installed {}", green("✓"), n, dim(&format!("({src})")));
             }
             Outcome::Failed(n, tried) => {
+                if !first_failure(n) { continue; }
                 failed += 1;
                 let why = if tried.is_empty() { "no source fits this machine".to_string() } else { tried.join("; ") };
                 out::warn(&format!("{n} did not install: {why}"));
@@ -183,4 +197,16 @@ pub fn run(args: Vec<String>) -> u8 {
         out::warn(&format!("{} {} missing. Fix the error above, then run dots again.", failed, if failed == 1 { "tool is" } else { "tools are" }));
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_failure;
+
+    #[test]
+    fn a_failed_tool_warns_once_per_process() {
+        assert!(first_failure("warn-once-test-tool"));
+        assert!(!first_failure("warn-once-test-tool"));
+        assert!(first_failure("warn-once-other-tool"));
+    }
 }

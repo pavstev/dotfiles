@@ -16,7 +16,8 @@
 #           or --host), else with local podman or docker.
 #  Windows: a throwaway clone of the UTM VM win11-golden (built once by
 #           scripts/win-golden.sh). It starts the clone, copies the tree over SSH, runs
-#           ./dotfiles twice in Git Bash, checks both exit codes, the links and
+#           ./dotfiles twice in Git Bash, then a third time after a pull that brings a
+#           Rust change (restart and dots.exe rebuild), checks the exit codes, the links and
 #           `pwsh -Command exit`, then deletes the clone, also after a failure.
 #           The golden VM is never started.
 #  Logs go to .os-check/<os>.log (Linux: also .os-check/linux-logs/). Each run has its own
@@ -272,7 +273,7 @@ run_windows() {
   pack | ssh "${ssh_o[@]}" "$user@$ip" 'rmdir /s /q "%USERPROFILE%\dotfiles" 2>nul & mkdir "%USERPROFILE%\dotfiles" & tar -xf - -C "%USERPROFILE%\dotfiles"' ||
     { echo "FAIL  couldn't copy the tree to the VM"; return 1; }
 
-  echo "== run ./dotfiles twice in Git Bash"
+  echo "== run ./dotfiles 3 times in Git Bash (the 3rd after a pull)"
   local out
   out="$(ssh "${ssh_o[@]}" "$user@$ip" '"C:\Program Files\Git\bin\bash.exe" -l -s' 2>&1 <<'GUEST'
 cd ~/dotfiles || exit 1
@@ -286,26 +287,35 @@ printf 'Test User\ntest@example.com\n' | ./dotfiles >~/run1.log 2>&1
 echo "RUN1_EXIT=$?"
 ./dotfiles </dev/null >~/run2.log 2>&1
 echo "RUN2_EXIT=$?"
+# run 3: a pull brings a Rust change, so dots restarts and rebuilds dots.exe while its copy runs.
+printf '\n// os-check pull test\n' >>rust/agent-config/src/dots/mod.rs
+git -c user.name=test -c user.email=test@example.com commit -qam 'pull test' && git push -q origin main && git reset -q --hard HEAD~1
+./dotfiles </dev/null >~/run3.log 2>&1
+echo "RUN3_EXIT=$?"
+[ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && echo PULL_OK || echo PULL_BAD
+grep -q 'pulled the latest version' ~/run3.log && echo RESTART_OK || echo RESTART_BAD
 for p in .claude/CLAUDE.md .claude/hooks .config/gh/config.yml; do
   if [ -L ~/"$p" ] && [ -e ~/"$p" ]; then echo "LINK_OK $p"; else echo "LINK_BAD $p"; fi
 done
 if [ ! -L ~/.gitconfig ] && git config --global --get-all include.path | grep -q gitconfig.local; then echo GITCONFIG_OK; else echo GITCONFIG_BAD; fi
 pwsh_out="$(pwsh -Command exit 2>&1)"; echo "PWSH_EXIT=$?"
 [ -z "$pwsh_out" ] && echo PWSH_QUIET || { echo PWSH_NOISY; printf '%s\n' "$pwsh_out"; }
-for n in 1 2; do echo "=== run$n.log"; cat ~/run$n.log; done
+for n in 1 2 3; do echo "=== run$n.log"; cat ~/run$n.log; done
 GUEST
   )" || true
   printf '%s\n' "$out"
 
   local rc=0 m
-  for m in RUN1_EXIT RUN2_EXIT; do
+  for m in RUN1_EXIT RUN2_EXIT RUN3_EXIT; do
     grep -qx "$m=0" <<<"$out" || { echo "FAIL  $m is not 0 (log lines above)"; rc=1; }
   done
   if grep -q 'uses the bash setup' <<<"$out"; then echo "FAIL  a run fell back to the bash setup (log lines above)"; rc=1; fi
   if grep -q '^LINK_BAD' <<<"$out"; then echo "FAIL  a link is missing: $(grep '^LINK_BAD' <<<"$out" | tr '\n' ' ')"; rc=1; fi
   grep -qx GITCONFIG_OK <<<"$out" || { echo "FAIL  ~/.gitconfig is a link or lacks the include of ~/.gitconfig.local"; rc=1; }
   grep -qx PWSH_QUIET <<<"$out" || { echo "FAIL  pwsh -Command exit prints an error or did not run"; rc=1; }
-  ((rc)) || echo "ok: both runs exit 0, the links are there, pwsh is quiet"
+  grep -qx PULL_OK <<<"$out" || { echo "FAIL  run 3 did not pull the new commit"; rc=1; }
+  grep -qx RESTART_OK <<<"$out" || { echo "FAIL  run 3 did not restart after the pull"; rc=1; }
+  ((rc)) || echo "ok: the 3 runs exit 0 (the 3rd pulls, restarts and rebuilds dots.exe), the links are there, pwsh is quiet"
   return $rc
 }
 

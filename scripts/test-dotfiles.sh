@@ -381,12 +381,21 @@ if [[ "$(uname -s)" == Darwin ]] && command -v brew >/dev/null 2>&1; then
 fi
 
 # 15. Step 50 (Node + pnpm) downloads Node, so it runs only with DOTS_TEST_NETWORK=1 and a mise on PATH.
+#     Node, mise and corepack stay in the temp HOME: no real mise shims on PATH, so `corepack enable`
+#     cannot write links into the real Node bin folder.
 if [[ -n "${DOTS_TEST_NETWORK:-}" ]] && command -v mise >/dev/null 2>&1 && [[ "$(uname -s)" == Darwin ]]; then
-  run step50.log DOTFILES_STEPS=50-node-pnpm
+  node_path="$(dirname "$(command -v mise)")"
+  for d in ${PATH//:/ }; do case "$d" in *mise*|*/.local/share/*) ;; *) node_path="$node_path:$d" ;; esac; done
+  real_pnpm="$(mise which pnpm 2>/dev/null || true)"; real_pnpm_to="$(readlink "$real_pnpm" 2>/dev/null || true)"
+  iso=(PATH="$node_path" MISE_DATA_DIR="$H/.local/share/mise" MISE_CONFIG_DIR="$H/.config/mise"
+       MISE_CACHE_DIR="$H/.cache/mise" COREPACK_HOME="$H/.cache/node/corepack")
+  run step50.log DOTFILES_STEPS=50-node-pnpm "${iso[@]}"
   grep -q 'node + pnpm ready\|Node + pnpm (via mise): 2 up to date' "$T/step50.log" && ! grep -q '^!' "$T/step50.log" && pass "step 50 makes Node and pnpm ready" \
     || bad "step 50 (log: step50.log): $(tail -n 5 "$T/step50.log" | tr '\n' '|')"
-  run step50b.log DOTFILES_STEPS=50-node-pnpm
+  run step50b.log DOTFILES_STEPS=50-node-pnpm "${iso[@]}"
   grep -q 'up to date' "$T/step50b.log" && pass "step 50 on a second run changes nothing" || bad "step 50 run 2 (log: step50b.log): $(tail -n 4 "$T/step50b.log" | tr '\n' '|')"
+  [[ "$(readlink "$real_pnpm" 2>/dev/null || true)" == "$real_pnpm_to" ]] && pass "step 50 leaves the real pnpm link alone" \
+    || bad "step 50 changed the real pnpm link $real_pnpm"
 fi
 
 # 15b. The old status line link: a dangling ~/.claude/statusline.sh into the repo goes, a link
