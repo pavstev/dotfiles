@@ -20,6 +20,7 @@
 #           Rust change (restart and dots.exe rebuild), checks the exit codes, the links and
 #           `pwsh -Command exit`, then deletes the clone, also after a failure.
 #           The golden VM is never started.
+#  The OSes run at the same time. Each result line prints when its OS ends.
 #  Logs go to .os-check/<os>.log (Linux: also .os-check/linux-logs/). Each run has its own
 #  container names and remote folder (OS_CHECK_ID), so two checkouts can run at once.
 #  Exit 0 when every OS that ran passed.
@@ -39,7 +40,7 @@ while (($#)); do
     --since) SINCE="${2:?--since needs a git ref}"; shift ;;
     --host) HOST="${2:?--host needs an SSH host}"; shift ;;
     --which) shift; WHICH=("$@"); break ;;
-    -h | --help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h | --help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
   shift
@@ -319,24 +320,69 @@ GUEST
   return $rc
 }
 
+# Tests only: OS_CHECK_STUB=<file> is sourced here and may replace run_<os> (scripts/test-dotfiles.sh).
+[[ -z "${OS_CHECK_STUB:-}" ]] || . "$OS_CHECK_STUB"
+
 # ---- run and sum up ------------------------------------------------------
-fails=0 lines=()
+# Every OS runs at the same time in the background, each into its own log.
+
+# bg_run <os>: one background job. The `||` keeps set -e off inside run_<os>, as in a plain call.
+# The Windows exit trap (it deletes the clone) runs when this job exits.
+bg_run() {
+  local rc=0
+  "run_$1" || rc=$?
+  exit "$rc"
+}
+
+# result <os> <rc>: print the result line of one OS and count a failure.
+result() {
+  local why
+  why="$(grep -m1 -E '^(FAIL|skip)' "$OUT/$1.log" || tail -n 1 "$OUT/$1.log" || true)"
+  case $2 in
+    0) echo "PASS  $1" ;;
+    2) echo "SKIP  $1: ${why#skip: }" ;;
+    *) echo "FAIL  $1: ${why#FAIL  }"; fails=$((fails + 1)) ;;
+  esac
+}
+
+# stop_all: on Ctrl-C or TERM, stop the jobs and their commands. A background job ignores Ctrl-C,
+# so it gets TERM. The Windows job then deletes its clone, and this waits for that.
+stop_all() {
+  local p
+  for p in ${pids[@]+"${pids[@]}"}; do
+    [[ -n "$p" ]] || continue
+    pkill -TERM -P "$p" 2>/dev/null || true
+    kill -TERM "$p" 2>/dev/null || true
+  done
+  wait
+}
+
+fails=0 oses=() pids=()
+trap 'stop_all; exit 130' INT TERM
 for os in "${targets[@]}"; do
-  log="$OUT/$os.log"
   if ! need "$os"; then
-    lines+=("SKIP  $os: no $os change since $SINCE (--force runs it)")
+    echo "SKIP  $os: no $os change since $SINCE (--force runs it)"
     continue
   fi
   printf '»» %s check, log: .os-check/%s.log\n' "$os" "$os"
-  rc=0
-  "run_$os" >"$log" 2>&1 || rc=$?
-  why="$(grep -m1 -E '^(FAIL|skip)' "$log" || tail -n 1 "$log" || true)"
-  case $rc in
-    0) lines+=("PASS  $os") ;;
-    2) lines+=("SKIP  $os: ${why#skip: }") ;;
-    *) lines+=("FAIL  $os: ${why#FAIL  }"); fails=$((fails + 1)) ;;
-  esac
+  bg_run "$os" >"$OUT/$os.log" 2>&1 &
+  oses+=("$os") pids+=("$!")
 done
-printf '%s\n' "${lines[@]}"
+
+# Print each result as soon as its job ends (bash 3.2 on macOS has no `wait -n`).
+left=${#pids[@]}
+while ((left)); do
+  for i in "${!pids[@]}"; do
+    p="${pids[$i]}"
+    [[ -n "$p" ]] || continue
+    kill -0 "$p" 2>/dev/null && continue
+    rc=0
+    wait "$p" || rc=$?
+    result "${oses[$i]}" "$rc"
+    pids[$i]="" left=$((left - 1))
+  done
+  if ((left)); then sleep 1; fi
+done
+trap - INT TERM
 ((fails)) && { printf 'RESULT: %s failed. Logs: .os-check/\n' "$fails"; exit 1; }
 printf 'RESULT: pass. Logs: .os-check/\n'

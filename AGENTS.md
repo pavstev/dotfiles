@@ -67,7 +67,8 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   changed (`--force` runs one anyway, `--since <ref>` widens the diff): macOS with
   `test-dotfiles.sh`, Linux with `test-linux.sh` on the `TEST_HOST` SSH host (or local podman or
   docker), Windows in a throwaway clone of the UTM VM `win11-golden` (built once with
-  `scripts/win-golden.sh`; see "Windows"). Logs: `.os-check/` (Linux per
+  `scripts/win-golden.sh`; see "Windows"). The OSes run at the same time, and each result line
+  prints when its OS ends. Logs: `.os-check/` (Linux per
   image: `.os-check/linux-logs/`). Each run has its own container names and host folder, so two
   worktrees can run it at once. `--which FILE...` prints the OSes a file is for. A new path rule
   needs a line in the map test of `test-dotfiles.sh` (section 12).

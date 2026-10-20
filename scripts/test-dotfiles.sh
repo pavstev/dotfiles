@@ -282,6 +282,30 @@ which_got="$(bash "$REPO/scripts/os-check.sh" --which $(printf '%s\n' "$which_wa
 [[ "$which_got" == "$which_want" ]] && pass "os-check maps each file to the right OS" \
   || bad "os-check map differs: $(diff <(printf '%s\n' "$which_want") <(printf '%s\n' "$which_got") | grep '^[<>]' | head -3 | tr '\n' ' ')"
 
+# 12b. The os-check run, in the clean temp tree with fake OS checks (OS_CHECK_STUB). No change
+#      skips every OS. With --force the 3 run at the same time, so the fastest result prints first.
+out="$(bash "$T/src/scripts/os-check.sh" 2>&1)"; rc=$?
+want='SKIP  macos: no macos change since HEAD (--force runs it)
+SKIP  linux: no linux change since HEAD (--force runs it)
+SKIP  windows: no windows change since HEAD (--force runs it)
+RESULT: pass. Logs: .os-check/'
+[[ "$out|$rc" == "$want|0" ]] && pass "os-check skips every OS with no change" || bad "os-check skip run: rc=$rc, got '$out'"
+cat >"$T/os-stub.sh" <<'EOF'
+run_macos() { sleep 3; echo ok; }
+run_linux() { echo "FAIL  boom"; return 1; }
+run_windows() { sleep 1; echo "skip: no UTM here"; return 2; }
+EOF
+out="$(OS_CHECK_STUB="$T/os-stub.sh" bash "$T/src/scripts/os-check.sh" --force 2>&1)"; rc=$?
+want='»» macos check, log: .os-check/macos.log
+»» linux check, log: .os-check/linux.log
+»» windows check, log: .os-check/windows.log
+FAIL  linux: boom
+SKIP  windows: no UTM here
+PASS  macos
+RESULT: 1 failed. Logs: .os-check/'
+[[ "$out|$rc" == "$want|1" ]] && pass "os-check runs the OSes at once and prints each result as it ends" \
+  || bad "os-check --force with fake checks: rc=$rc, got '$out'"
+
 # 13. The tool list: scripts/tools (a shim over the Rust `tools` bin) with a fake mise. No network,
 #     nothing installs for real. (cargo test covers the Rust resolver; this covers the shim:
 #     arguments, TOOLS_LIST, the exit codes, and the one copy of the install-Rust code.)
