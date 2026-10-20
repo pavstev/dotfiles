@@ -30,6 +30,8 @@ fn home_dir() -> PathBuf { env::var("HOME").map(PathBuf::from).ok().filter(|p| !
 
 pub mod out;
 pub mod dots;
+pub mod guard_checks;
+pub mod presets;
 pub mod tools_cli;
 pub mod tools_core;
 pub use out::{color_enabled, verbose, ok, info, skip, header, summary, warn};
@@ -152,10 +154,18 @@ pub fn owner_overlay(home: &Path, profile: &str) -> Option<PathBuf> {
     if profile == "owner" && f.is_file() { Some(f) } else { None }
 }
 
+fn has_preset_rules(home: &Path, profile: &str) -> bool {
+    !presets::rules_text(&repo_root(), &presets::enabled_quiet(home, profile)).is_empty()
+}
+
+/// The rules for Cursor and Opencode: the core, the enabled presets, then the private overlay.
 pub fn rules_text(home: &Path, profile: &str) -> String {
-    let text = read_text(&claude_dir().join("CLAUDE.md")).unwrap_or_default();
-    if let Some(extra) = owner_overlay(home, profile) {
-        format!("{}\n\n{}", text.trim_end_matches('\n'), read_text(&extra).unwrap_or_default())
+    let mut text = read_text(&claude_dir().join("CLAUDE.md")).unwrap_or_default();
+    let on = presets::enabled(home, profile);
+    let extra = presets::rules_text(&repo_root(), &on);
+    if !extra.is_empty() { text = format!("{}\n\n{}\n", text.trim_end_matches('\n'), extra); }
+    if let Some(overlay) = owner_overlay(home, profile) {
+        format!("{}\n\n{}", text.trim_end_matches('\n'), read_text(&overlay).unwrap_or_default())
     } else {
         text
     }
@@ -204,15 +214,29 @@ pub fn setting(home: &Path, name: &str) -> String {
 
 pub fn user_rules_text(home: &Path, profile: &str) -> String {
     let mut text = format!("{}{}", CURSOR_NOTE, rules_text(home, profile));
-    if let Some((_, _, body)) = output_style() {
-        let name = output_style().unwrap().0;
+    if let Some((name, _, body)) = output_style(home) {
         text = format!("{}\n\n# Reply style: {}\n\n{}", text.trim_end_matches('\n'), name, body);
     }
     text
 }
 
-pub fn output_style() -> Option<(String, PathBuf, String)> {
-    let style_name = (load_json(&claude_dir().join("settings.json")).unwrap_or(serde_json::json!({})))
+/// The settings Claude runs with: the built `~/.claude/settings.json`, else what a build would write
+/// (repo base, enabled presets' fragments, private layer), so Cursor and Opencode work without Claude.
+pub fn built_settings(home: &Path) -> Value {
+    if home.join(LIVE_REL).is_file() && let Some(v) = load_json(&home.join(LIVE_REL)) { return v; }
+    let base = load_json(&claude_dir().join("settings.json")).unwrap_or(serde_json::json!({}));
+    let layer = load_json(&home.join(LAYER_REL)).unwrap_or(serde_json::json!({}));
+    merge(&with_presets(home, &base), &layer)
+}
+
+/// The repo base with the settings fragments of the enabled presets merged over it, in order.
+pub fn with_presets(home: &Path, base: &Value) -> Value {
+    let on = presets::enabled_quiet(home, &presets::profile(home));
+    presets::fragments(&repo_root(), &on).iter().fold(base.clone(), |acc, f| merge(&acc, f))
+}
+
+pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
+    let style_name = built_settings(home)
         .get("outputStyle").and_then(|v| v.as_str()).map(|s| s.to_string());
     let name = match style_name { Some(s) if s.to_lowercase() != "default" => s, _ => return None };
     let dir = claude_dir().join("output-styles");
@@ -368,19 +392,14 @@ pub fn cursor_rules(home: &Path, profile: &str) {
     };
     let _ = desc;
     let mut src_labels: Vec<&str> = vec!["claude/CLAUDE.md"];
+    if has_preset_rules(home, profile) { src_labels.push("claude/presets"); }
     if overlay.is_some() { src_labels.push("~/.config/dotfiles/owner.md"); }
     let body = format!("{}{}{}", stamp(&src_labels), CURSOR_NOTE, rules_text(home, profile));
     write_generated(&rules.join("claude-global.mdc"), &mdc(&desc, &body), mode);
 
     let target = rules.join("claude-output-style.mdc");
     // update desc variable not used; recompute desc label
-    if let Some((name, _f, sbody)) = output_style() {
-        let body = format!("{}# Reply style: {}\n\n{}", stamp(&["claude/output-styles/placeholder.md"]), name, sbody);
-        let _ = body;
-        // need proper stamp with filename; redo below
-    }
-    // output style handling separately:
-    let style = output_style();
+    let style = output_style(home);
     if style.is_none() {
         remove_generated(&target, "its source is gone");
         return;
@@ -458,13 +477,32 @@ pub fn cursor_hooks(home: &Path) {
     let q = shlex_quote(guard_path().to_str().unwrap_or(""));
     let guard = guard_path();
     if guard.is_file() {
-        let hook_events = [("beforeSubmitPrompt", "prompt", None::<&str>), ("subagentStart", "subagent", None), ("preToolUse", "subagent", Some("^(Task|Subagent|mcp_task)$")), ("preCompact", "compact", None), ("afterAgentResponse", "response", None)];
+        // `tool` mode runs the shared checks G14-G17 (src/bin/guard_cursor.rs). preToolUse carries the
+        // deny checks for the shell, read and grep tools; beforeShellExecution and beforeMCPExecution
+        // carry G16, because Cursor enforces `ask` only on those two (docs: cursor.com/docs/hooks).
+        // beforeReadFile carries G15 for reads with the documented `file_path`, so a renamed
+        // `tool_input` key on preToolUse cannot skip the secrets check.
+        let hook_events = [
+            ("beforeSubmitPrompt", "prompt", None::<&str>),
+            ("subagentStart", "subagent", None),
+            ("preToolUse", "subagent", Some("^(Task|Subagent|mcp_task)$")),
+            ("preToolUse", "tool", Some("^(Shell|Read|Grep)$")),
+            ("beforeShellExecution", "tool", None),
+            ("beforeMCPExecution", "tool", None),
+            ("beforeReadFile", "tool", None),
+            ("preCompact", "compact", None),
+            ("afterAgentResponse", "response", None),
+        ];
+        let mut placed: BTreeMap<&str, usize> = BTreeMap::new();
         for (event, mode, matcher) in hook_events {
             let mut entry = serde_json::json!({"command": format!("test -r {} || exit 0; bash {} --hook guard_cursor {}", q, q, mode), "timeout": 10});
             if let Some(m) = matcher { entry.as_object_mut().unwrap().insert("matcher".to_string(), Value::String(m.to_string())); }
             let hooks = new.get_mut("hooks").unwrap().as_object_mut().unwrap();
             let entries = hooks.entry(event.to_string()).or_insert(serde_json::json!([])).as_array_mut().unwrap();
-            let idx = slots.get(event).copied().unwrap_or(entries.len());
+            // an event can hold several of our entries: each goes after the ones placed before it
+            let done = placed.entry(event).or_insert(0);
+            let idx = slots.get(event).map(|s| s + *done).unwrap_or(entries.len());
+            *done += 1;
             if idx <= entries.len() { entries.insert(idx, entry); } else { entries.push(entry); }
         }
     }
@@ -611,6 +649,25 @@ pub fn opencode_agents(home: &Path) {
     }
 }
 
+/// The guard plugin text (`opencode_plugin.ts.tmpl`) with the launcher path filled in.
+const OPENCODE_PLUGIN: &str = include_str!("opencode_plugin.ts.tmpl");
+
+/// Write `~/.config/opencode/plugins/dots-guard.ts`: Opencode's before-tool hook runs the Rust guard
+/// (`rust-bin --hook guard pretool`) and a deny or ask throws, which blocks the call. A file with
+/// that name and no `generated-by` marker is the user's and stays. Without the launcher the generated
+/// plugin is removed.
+pub fn opencode_plugin(home: &Path) {
+    let path = home.join(".config").join("opencode").join("plugins").join("dots-guard.ts");
+    let guard = guard_path();
+    if !guard.is_file() {
+        remove_generated(&path, "the guard launcher is missing");
+        return;
+    }
+    // a JSON string is a valid TypeScript string literal
+    let literal = serde_json::to_string(&guard.to_string_lossy()).unwrap_or_else(|_| "\"\"".into());
+    write_generated(&path, &OPENCODE_PLUGIN.replace("__RUST_BIN__", &literal), None);
+}
+
 pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, String)> {
     let re = Regex::new(r"^(\w+)\((.*)\)$").unwrap();
     let caps = re.captures(rule.trim())?;
@@ -726,6 +783,7 @@ pub fn opencode_config(home: &Path) {
 }
 
 pub fn opencode_theme(home: &Path) {
+    if setting(home, "THEME") == "plain" { skip("Opencode theme (THEME=plain)"); return; }
     let themes = home.join(".config").join("opencode").join("themes");
     let text = include_str!("../themes/copper.json").to_string();
     let path = themes.join("copper.json");
@@ -879,11 +937,7 @@ pub struct CursorArgs {
 
 // default profile util
 pub fn default_profile() -> String {
-    let home = home_dir();
-    let mut p = env::var("DOTFILES_PROFILE").unwrap_or_default();
-    if p.is_empty() { p = setting(&home, "PROFILE"); }
-    if p.is_empty() && home.join(OWNER_MD).is_file() { p = "owner".to_string(); }
-    if p == "owner" || p == "shared" { p } else { "shared".to_string() }
+    presets::profile(&home_dir())
 }
 
 // User rules command
@@ -1082,7 +1136,7 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         warn(&format!("{} is not valid JSON. Fix it; ~/.claude/settings.json left as it is.", tilde(bad)));
         return 1;
     }
-    let base = base.unwrap();
+    let base = with_presets(home, &base.unwrap());
     let mut layer = layer.unwrap();
     let was_link = is_symlink(&live_f);
     let mut notes = Vec::new();
@@ -1163,7 +1217,42 @@ pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
     claude_settings_build(home)
 }
 
-// default profile already above.
+/// The reverse of promote: copy a key's value from the live `~/.claude/settings.json` into the
+/// private layer, so it stays when the repo base drops it. A note and no change when the live file
+/// lacks the key.
+pub fn claude_settings_demote(home: &Path, dotted: &str) -> i32 {
+    let path: Vec<&str> = dotted.split('.').collect();
+    let live_f = home.join(LIVE_REL);
+    let layer_f = home.join(LAYER_REL);
+    let live = load_json(&live_f);
+    let layer = load_json(&layer_f);
+    if live.is_none() || layer.is_none() {
+        warn("the live settings or the private layer is not valid JSON; nothing moved");
+        return 1;
+    }
+    let (live, layer) = (live.unwrap(), layer.unwrap());
+    let Some(value) = get_path(&live, &path) else {
+        info(&format!("{} is not in {}; nothing to keep", dotted, tilde(&live_f)));
+        return 0;
+    };
+    if get_path(&layer, &path).as_ref() == Some(&value) {
+        skip(&format!("{} (already in your private layer)", dotted));
+        return 0;
+    }
+    let mut patch = value;
+    for k in path.iter().rev() { let key = *k; patch = serde_json::json!({ key: patch }); }
+    let new_layer = merge(&layer, &patch);
+    if dry() {
+        info(&format!("would copy {} to {}", dotted, tilde(&layer_f)));
+        return 0;
+    }
+    if let Err(e) = atomic_write(&layer_f, &dump(&new_layer), Some(0o600)) {
+        warn(&format!("could not write {}: {}", tilde(&layer_f), e));
+        return 1;
+    }
+    ok(&format!("copied {} to {}", dotted, tilde(&layer_f)));
+    0
+}
 
 // CLI args structs
 #[derive(Parser, Debug)]
@@ -1213,10 +1302,10 @@ pub struct UserRulesArgs {
 
 #[derive(Parser, Debug)]
 pub struct ClaudeSettingsArgs {
-    /// build, or promote a dotted key from the private layer into the repo base
-    #[arg(value_parser = ["build", "promote"])]
+    /// build, promote a dotted key from the private layer into the repo base, or demote one from the live file into the layer
+    #[arg(value_parser = ["build", "promote", "demote"])]
     pub action: String,
-    /// promote: the dotted key to move to the repo, e.g. permissions.allow
+    /// promote or demote: the dotted key to move, e.g. permissions.allow
     pub key: Option<String>,
     /// report what would change without writing
     #[arg(long)]
@@ -1274,6 +1363,12 @@ fn cmd_claude_settings_dispatch(a: &ClaudeSettingsArgs) -> i32 {
             return 2;
         };
         claude_settings_promote(&home, key)
+    } else if a.action == "demote" {
+        let Some(key) = a.key.as_deref().filter(|k| !k.is_empty()) else {
+            warn("demote needs a key, e.g. enabledPlugins");
+            return 2;
+        };
+        claude_settings_demote(&home, key)
     } else {
         claude_settings_build(&home)
     }
@@ -1284,8 +1379,9 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
     let home = home_dir();
     header(&format!("Opencode config from {} (profile: {})", tilde(&claude_dir()), a.profile));
     let projects = a.projects.as_ref().filter(|s| !s.is_empty()).map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>());
-    let parts: [Box<dyn FnOnce() + '_>; 5] = [
+    let parts: [Box<dyn FnOnce() + '_>; 6] = [
         Box::new(|| opencode_agents(&home)),
+        Box::new(|| opencode_plugin(&home)),
         Box::new(|| opencode_config(&home)),
         Box::new(|| opencode_rules(&home, &a.profile)),
         Box::new(|| opencode_theme(&home)),
@@ -1312,6 +1408,7 @@ pub fn opencode_rules(home: &Path, profile: &str) {
     }
     let overlay = owner_overlay(home, profile);
     let mut srcs: Vec<&str> = vec!["claude/CLAUDE.md"];
+    if has_preset_rules(home, profile) { srcs.push("claude/presets"); }
     let mut mode: Option<u32> = None;
     if overlay.is_some() {
         srcs.push("~/.config/dotfiles/owner.md");
@@ -1321,7 +1418,7 @@ pub fn opencode_rules(home: &Path, profile: &str) {
     }
     let stamp_line = stamp(&srcs);
     let mut text = format!("{}{}{}", stamp_line, OPENCODE_NOTE, rules_text(home, profile));
-    if let Some((name, _, sbody)) = output_style() {
+    if let Some((name, _, sbody)) = output_style(home) {
         text = format!("{}\n\n# Reply style: {}\n\n{}", text.trim_end_matches('\n'), name, sbody);
     }
     write_generated(&path, &text, mode);

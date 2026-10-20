@@ -126,8 +126,14 @@ Edit `claude/`, then run `dots`. Step `58-opencode` (`dots/install/opencode.rs`)
 - **Projects:** `OPENCODE_PROJECTS` paths get `.opencode/opencode.jsonc` symlinked to the
   global one and `.opencode/agents/*.md` symlinked to the global agents.
 
-Opencode does not get Claude's guard hooks, output-style switching, or connectors
-(Opencode has no hook system). Full mapping and gap table:
+- **Guard plugin:** `~/.config/opencode/plugins/dots-guard.ts` (generated, marked; source
+  `rust/agent-config/src/opencode_plugin.ts.tmpl`) runs `rust-bin --hook guard pretool` before every
+  shell, read, grep and MCP call and throws on a deny or an ask (a plugin cannot ask). A file of that
+  name without the marker is the user's and stays.
+
+Opencode does not get output-style switching or connectors, and runs only part of Claude's guard
+checks: G14 to G17 are tested there (table: [`docs/guide.md`](docs/guide.md#where-each-guard-check-runs)).
+Full mapping and gap table:
 [`docs/opencode-port.md`](docs/opencode-port.md). The peer Cursor doc is
 [`docs/cursor-port.md`](docs/cursor-port.md); the full user reference is
 [`docs/guide.md`](docs/guide.md).
@@ -236,7 +242,9 @@ links, the Cursor rule and the Opencode config. The first run (no file) asks git
 email, then shows the menu.
 
 - Names: `GIT_NAME`, `GIT_EMAIL` (written to `~/.gitconfig.local`), `PROFILE`, `CURSOR_MCP`,
-  `OPENCODE_MCP`, `OPENCODE_PROJECTS`, `JAVA_HOME` (picked from the Javas found, or typed),
+  `OPENCODE_MCP`, `OPENCODE_PROJECTS`, `PRESETS` (which `claude/presets/` are linked and merged;
+  `claude/presets/README.md`), `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME` (`plain` drops colors and the
+  Opencode theme), `GUARD_OFF`, `GUARD_SHADOW`, `JAVA_HOME` (picked from the Javas found, or typed),
   `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions"), `TEST_HOST` (the SSH host
   for the Linux part of `scripts/os-check.sh`).
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `rust/agent-config/src/lib.rs`,
@@ -253,8 +261,10 @@ email, then shows the menu.
   default clone URL (`DOTFILES_REPO` in `bootstrap.sh`, the README one-liner). Session notes,
   hand-offs and ledgers stay in the ignored `.agents/`.
 - **Private words:** `PRIVATE_PROJECTS`, `PRIVATE_WORDS`, the git email, the full git name and that
-  name as one word (a word in the origin URL is left out). The git hooks block a staged file name,
-  added line or commit message that holds one. The pre-push hook checks every pushed commit the
+  name as one word (a word in the origin URL is left out). A word of 4 letters or fewer matches
+  whole words only. The hooks also block this user's home paths (`/Users/<user>`, `/home/<user>`,
+  `C:\Users\<user>`) and warn, without blocking, when the word list is empty. The git hooks block
+  a staged file name, added line or commit message that holds one. The pre-push hook checks every pushed commit the
   same way (cherry-pick, rebase and `--no-verify` skip the commit hooks) and stops a push that
   brings a second history.
 - **Theme:** warm Claude copper-on-stone. Refine it; never swap palettes.

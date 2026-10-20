@@ -80,26 +80,12 @@ In auto mode a subagent hands back through the `SubagentHandback` tool, and Suba
 `last_assistant_message`. In other modes SubagentStop carries the text. So G5 hooks both (tested
 live with Claude Code 2.1.296).
 
-Replay on real past calls (2026-10-14, every transcript on this Mac):
-
-- G1 brief check: 1,472 Agent calls. After the deadline-and-cap rule began (2026-10-12, about
-  11:00 UTC), 2 of 474 are denied, both in the first hour and both "report per the brief" prompts
-  with no cap of their own. Before the rule, 922 of 998 lacked a deadline, a cap or both.
-- G5: 1,423 hand-backs replayed through the script. Since the rule, 162 of 449 are denied. A hand
-  check of all 162: 155 are over every character number in the prompt, 4 are over the default cap
-  of a prompt with no character cap, and 3 are over the hand-back cap but under a second cap the
-  caller gave for text about something else or for "if the notes file is refused". The 2-deny limit
-  bounds the cost of those 3.
-- Scratch mode: 148 real writes by browser-check subagents. 133 scratch or report-folder writes
-  pass; the 15 denied ones are code and docs edits (`src/lib/*.ts`, `README.md`, a test file).
-
-Not built: a Bash fixer for worktree refusals. Re-measured 2026-10-15 over 7 days: 417 refusals,
-86 percent in subagents (59 percent in one repo's own agents). 392 of 404 refusal streaks end on
-the next call, so a hook deny in place of the harness refusal saves nothing. None of the 417 has
-the one shape a hook could rewrite without changing what runs (`cd <root> && <one command>`): they
-are heredoc scripts, pipes and chains. The harness check runs after PreToolUse hooks and is a safety
-check, so the hook does not try to get around it. The rule text carries the fix instead:
-`claude/CLAUDE.md` rule 18 and the `worker` and `task-implementer` bodies.
+Not built: a Bash fixer for worktree refusals. A hook deny in place of the harness refusal saves
+nothing, because a refusal streak ends on the next call anyway. Almost no refusal has the one shape
+a hook could rewrite without changing what runs (`cd <root> && <one command>`): they are heredoc
+scripts, pipes and chains. The harness check runs after PreToolUse hooks and is a safety check, so
+the hook does not try to get around it. The rule text carries the fix instead: the
+plain-worktree-commands rule in `claude/CLAUDE.md` and the `worker` and `task-implementer` bodies.
 
 ### Scratch mode
 

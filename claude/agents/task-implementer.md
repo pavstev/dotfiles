@@ -49,7 +49,7 @@ worktree path or the current checkout). If the task text is missing or unclear, 
 
 ## Basics (every helper)
 
-- In a worktree: one plain command per Bash call, from the worktree root (rule 18). Report files
+- In a worktree: one plain command per Bash call, from the worktree root (the plain-worktree-commands rule). Report files
   go inside the worktree.
 - Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
 - Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.
@@ -69,7 +69,7 @@ Line 1: one of `DONE`, `DONE_WITH_CONCERNS`, `BLOCKED`, `NEEDS_CONTEXT`. Then:
 Commit: <sha> <subject>
 Denied or skipped: <commands the harness refused, or checks you did not run, or "none">
 Ran: <command> -> <real last result line>   (one line per check)
-Not verified: <what only a browser, a device or the owner can check>
+Not verified: <what only a browser, a device or the user can check>
 Concerns: <only for DONE_WITH_CONCERNS>
 ```
 

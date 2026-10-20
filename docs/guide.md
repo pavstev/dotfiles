@@ -171,15 +171,36 @@ generates what Opencode needs:
    in `dots settings`, or `DOTFILES_MCP=on`).
 4. **Per project:** paths in `OPENCODE_PROJECTS` (`~` allowed) each get a `.opencode/` that
    symlinks the global config and agents. What the project already has wins, always.
+5. **Guard plugin:** `~/.config/opencode/plugins/dots-guard.ts` (generated, with the marker)
+   runs the same Rust guard before every shell, read, grep and MCP call. Opencode cannot ask
+   through a plugin, so a deny and an ask both block the call. If the guard cannot run, the
+   call goes through and the plugin warns once per session.
 
 `AGENTS.md` is the one worth explaining: Opencode reads it as its global instructions and only
 falls back to `~/.claude/CLAUDE.md` when it is missing. Generating it is what carries the owner
 rules and the output style into Opencode, since `CLAUDE.md` alone has neither.
 
-What Opencode does *not* get: Claude's guard hooks and output-style switching, and the
-claude.ai connectors — Opencode has no hook system. The full mapping and gap table is in
+What Opencode does *not* get: output-style switching and the claude.ai connectors, and most
+of the guard checks (see the table below). The full mapping and gap table is in
 [`docs/opencode-port.md`](opencode-port.md). The first run offers `opencode auth login`
 (`opencode auth list` says so until one is saved).
+
+### Where each guard check runs
+
+One Rust library (`guard_checks`) holds the shared checks, so the three apps run the same code.
+A check also needs its preset on (`dots settings`), and `GUARD_OFF` turns one off in every app.
+
+| Check | Claude Code | Cursor | Opencode |
+|-------|-------------|--------|----------|
+| G14 BSD `sed -i` on macOS | deny | deny (`preToolUse`, shell) | deny (plugin) |
+| G15 reading `local.zsh`, printing command lines | deny | deny (`preToolUse`, shell, read, grep) | deny (plugin) |
+| G16 text with a private word or a secret leaving the machine | ask | ask (`beforeShellExecution`, `beforeMCPExecution`) | blocked, no ask |
+| G17 assistant attribution in a commit, PR or issue (preset `no-ai-attribution`) | deny | deny (`preToolUse`, shell) | deny (plugin) |
+| G3 context ceiling | yes | yes (`guard_cursor`, other modes) | no |
+| G1, G2, G4 to G13, pace, router | yes | no (see the gaps in `docs/cursor-port.md`) | not tested |
+
+The Opencode plugin runs the whole `guard pretool` hook, so a Claude check that looks at a shell
+command (for example G2) can also fire there. Only G14 to G17 are tested in Opencode.
 
 ## Multi-machine
 

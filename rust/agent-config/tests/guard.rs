@@ -161,7 +161,9 @@ impl G {
         let ho = dir.join("repo/.agents/handoffs/2026-10-14-x.md");
         std::fs::create_dir_all(ho.parent().unwrap()).unwrap();
         std::fs::write(&ho, "# Task").unwrap();
-        G { _tmp: tmp, dir, ho: ho.to_string_lossy().into_owned() }
+        let g = G { _tmp: tmp, dir, ho: ho.to_string_lossy().into_owned() };
+        g.set(""); // the fake pace below assumes the old fixed plan and week
+        g
     }
 
     fn d(&self) -> String {
@@ -203,7 +205,8 @@ impl G {
     fn run_env(&self, mode: &str, stdin: &str, env: &[(&str, &str)]) -> R {
         let d = self.d();
         let cache = self.join("cache");
-        let mut e: Vec<(&str, &str)> = vec![("TMPDIR", &d)];
+        // the owner profile turns every preset on, so the ported tests keep their meaning
+        let mut e: Vec<(&str, &str)> = vec![("TMPDIR", &d), ("DOTFILES_PROFILE", "owner")];
         if mode == "scratch" {
             e.push(("HOME", SCRATCH_HOME));
         } else {
@@ -1780,7 +1783,8 @@ fn test_g10_dirty_file_touched_this_turn() {
     let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), g.say("done")];
     let res = g.g10(&recs, &repo, json!({}));
     assert_deny(&res, "G10: this turn left work in work: 1 uncommitted file(s), 0 unpushed commit(s).");
-    assert!(res.2.contains("Rule 13: commit and push now, unless the user said not to."), "{res:?}");
+    assert!(res.2.contains("The ship-to-main preset asks: commit and push now, unless the user said not to."), "{res:?}");
+    assert!(!res.2.contains("Rule "), "{res:?}");
     // Edit and NotebookEdit count as well
     let q = g.write_file(&repo, "base.txt", "changed");
     assert_deny(&g.g10(&[human("x"), tu("Edit", json!({"file_path": q}), "u1")], &repo, json!({})), "1 uncommitted");
@@ -1892,7 +1896,7 @@ fn test_g11_long_turn_without_a_clock() {
     let g = G::new();
     let recs = [human_at(12 * 60 + 10, "go"), g.say("All done.")];
     assert_deny(&g.stop_run(&recs, json!({})),
-        "G11: this turn ran 12 min. Rule 12: give the clock as a Vienna time (HH:MM) and one estimate with a range.");
+        "G11: this turn ran 12 min. The clock preset asks: give the clock as a local time (HH:MM) and one estimate with a range.");
     assert_allow(&g.stop_run(&[human_at(5 * 60, "go"), g.say("All done.")], json!({})));
     assert_allow(&g.stop_run(&[human("no stamp"), g.say("All done.")], json!({})));
 }
@@ -2589,6 +2593,192 @@ fn test_g13_fail_open() {
     assert_allow(&g.run("posttool", &json!({"transcript_path": "/no/such", "tool_use_id": "u8"})));
 }
 
+// --- presets, GUARD_OFF setting, local time (Task 8) ---
+
+/// `(preset, ids)` from the `guard:` front matter of every `claude/presets/*/rules.md`.
+fn preset_guards() -> Vec<(String, Vec<String>)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../claude/presets");
+    let mut out = Vec::new();
+    for e in fs::read_dir(&dir).expect("claude/presets") {
+        let e = e.unwrap();
+        let Ok(text) = fs::read_to_string(e.path().join("rules.md")) else { continue };
+        let ids = text
+            .lines()
+            .find_map(|l| l.strip_prefix("guard:"))
+            .map(|l| {
+                l.trim().trim_start_matches('[').trim_end_matches(']').split(',').map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()).collect()
+            })
+            .unwrap_or_default();
+        out.push((e.file_name().to_string_lossy().into_owned(), ids));
+    }
+    out.sort();
+    out
+}
+
+impl G {
+    /// The settings file: the pace fixtures' plan and week, then `text` (the last line of a name wins).
+    fn set(&self, text: &str) {
+        let base = "PLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\n";
+        self.write(&self.join(".config/dotfiles/settings"), &format!("{base}{text}"));
+    }
+
+    /// Every preset on except `off`, as a PRESETS setting.
+    fn presets_except(&self, off: &str) {
+        let names: Vec<String> = preset_guards().into_iter().map(|p| p.0).filter(|n| n != off).collect();
+        self.set(&format!("PRESETS=\"{}\"\n", names.join(" ")));
+    }
+
+    /// An input that trips check `id`, run in this world.
+    fn trigger(&self, id: &str) -> R {
+        match id {
+            "G1" => self.pre("Agent", json!({"model": "sonnet", "effort": "high", "prompt": "Build it."})),
+            "G2" => self.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 600}), 150_000),
+            "G3" => self.pre_ctx("Agent", ok_agent(), 600_000),
+            "G4" => {
+                let recs = [human("start"), assistant_b(1000, json!([ask_block("a1", "q?")])), tool_result("a1"),
+                    assistant_b(1000, json!([ask_block("a2", "q?")]))];
+                self.ask(&recs, Some("a2"), "q?")
+            }
+            "G5" => self.handback(&"x".repeat(9000)),
+            "G6" => {
+                let recs = [human("hand off"), self.write_ho("w1", None), tool_result("w1"), self.say("written")];
+                self.archive(&recs, "self")
+            }
+            "G7" => self.pre("Agent", merge(ok_agent(), json!({"subagent_type": "general-purpose"}))),
+            "G8" => {
+                let t = now_secs();
+                let slots: Vec<Value> = (0..3).map(|i| json!({"id": format!("a{i}"), "t": t - 5.0})).collect();
+                self.write(&self.state_dir().join("s8.json").to_string_lossy(), &json!({"spawns": slots}).to_string());
+                self.agent("s8")
+            }
+            "G9" => self.skill("superpowers:writing-plans", S::new()),
+            "G10" => {
+                let repo = self.make_repo(true);
+                let p = self.write_file(&repo, "new.txt", "x");
+                let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), self.say("done")];
+                self.g10(&recs, &repo, json!({}))
+            }
+            "G11" => self.stop_run(&[human_at(12 * 60, "go"), self.say("All done.")], json!({})),
+            "G12" => {
+                let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), self.say("x")];
+                self.stop_run(&recs, json!({}))
+            }
+            "G13" => self.post(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8)),
+            "PACE" => {
+                let path = self.transcript_named(&[human("hi"), assistant(1000)], "pace.jsonl");
+                let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "pc", "transcript_path": path, "prompt": "go"});
+                self.inproc("prompt", &data, Some(fake_pace("ahead", 62.0, 50.0)))
+            }
+            "ROUTER" => self.pre("Agent", json!({"prompt": BRIEF})),
+            // core: a secret shape needs no setting, so the trigger works in any world
+            "G16" => self.pre_bash(&format!("gh pr create --title t --body \"{}\"", gh_token()), &[]),
+            "G17" => self.pre_bash(&format!("git commit -m \"x\" -m \"{}\"", attr_line()), &[]),
+            other => panic!("no trigger for {other}"),
+        }
+    }
+}
+
+fn fired(res: &R) -> bool {
+    res.0 == 2 || !res.1.is_empty()
+}
+
+#[test]
+fn each_check_off_with_its_preset() {
+    let mut covered = 0;
+    for (preset, ids) in preset_guards() {
+        for id in &ids {
+            let on = G::new();
+            assert!(fired(&on.trigger(id)), "{id} did not fire with every preset on");
+            let off = G::new();
+            off.presets_except(&preset);
+            let res = off.trigger(id);
+            assert!(!fired(&res), "{id} still fires with the {preset} preset off: {res:?}");
+            covered += 1;
+        }
+    }
+    assert_eq!(covered, 16, "workflow 9, pace 2, models 2, ship-to-main 1, clock 1, no-ai-attribution 1");
+}
+
+#[test]
+fn core_checks_ignore_presets() {
+    let g = G::new();
+    g.set("PRESETS=\"none\"\n");
+    assert!(fired(&g.trigger("G16")), "G16 is core: no preset turns it off");
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
+    assert_deny(&g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]), "G14");
+    assert_deny(&g.pre("Read", json!({"file_path": "~/.config/zsh/local.zsh"})), "G15");
+}
+
+#[test]
+fn guard_off_setting() {
+    let g = G::new();
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
+    let run = || g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]);
+    assert_deny(&run(), "G14");
+    g.set("GUARD_OFF=\"G14\"\n");
+    assert_allow(&run());
+    g.set("GUARD_OFF=\"g13, G14\"\n");
+    assert_allow(&run());
+}
+
+#[test]
+fn guard_off_env_wins() {
+    let g = G::new();
+    g.set("GUARD_OFF=\"G14\"\n");
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
+    let res = g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "")]);
+    assert_deny(&res, "G14");
+    let res = g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "G13")]);
+    assert_deny(&res, "G14");
+}
+
+#[test]
+fn a_broken_settings_file_leaves_every_check_on() {
+    let g = G::new();
+    g.set("PRESETS=\"nonsense\"\nGUARD_OFF=\n\u{0}\u{0}garbage");
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
+    assert_deny(&g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]), "G14");
+}
+
+#[test]
+fn clock_says_local_time() {
+    let g = G::new();
+    let res = g.stop_run(&[human_at(12 * 60, "go"), g.say("All done.")], json!({}));
+    assert_deny(&res, "local time (HH:MM)");
+    assert!(!res.2.contains("Rule "), "{res:?}");
+    assert!(!res.2.contains("Asia/") && !res.2.contains("Europe/"), "{res:?}"); // no zone set, none named
+}
+
+#[test]
+fn clock_names_timezone() {
+    let g = G::new();
+    g.set("TIMEZONE=\"Asia/Tokyo\"\n");
+    let res = g.stop_run(&[human_at(12 * 60, "go"), g.say("All done.")], json!({}));
+    assert_deny(&res, "local time (HH:MM) in Asia/Tokyo");
+}
+
+#[test]
+fn clock_bad_timezone_falls_back_to_the_system_zone() {
+    let g = G::new();
+    for bad in ["Mars/Olympus_Mons", "not a zone", "../../etc/passwd"] {
+        g.set(&format!("TIMEZONE=\"{bad}\"\n"));
+        let res = g.stop_run(&[human_at(12 * 60, "go"), g.say("All done.")], json!({}));
+        assert_deny(&res, "local time (HH:MM) and one estimate");
+        assert!(!res.2.contains(bad), "{res:?}");
+    }
+}
+
+#[test]
+fn router_off_keeps_agent_input() {
+    let g = G::new();
+    let (ti, out) = g.route("worker", None, None);
+    assert!(out.is_some(), "the router rewrites a bare call: {ti}"); // control
+    g.presets_except("models");
+    let (_, out) = g.route("worker", None, None);
+    assert!(out.is_none(), "{out:?}");
+}
+
 #[test]
 fn ported_map_complete() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2655,4 +2845,790 @@ fn ported_map_complete() {
         }
     }
     assert!(problems.is_empty(), "PORTED.md problems:\n{}", problems.join("\n"));
+}
+
+// --- Task 10: guard_checks module, G16 outbound check, shadow mode ---
+
+use agent_config::guard_checks::{self as gc, Verdict};
+
+/// A word no real person owns. Tests that need a private word use it.
+const WORD: &str = "zebrafish";
+
+/// Secret-looking strings are built here, so the repo's own scanners never see them whole.
+fn gh_token() -> String {
+    format!("gh{}_{}", "p", "A1".repeat(18))
+}
+
+fn anthropic_key() -> String {
+    format!("sk-{}-{}", "ant", "api03-abcdefghijklmnopqrstuvwxyz")
+}
+
+fn pem_header() -> String {
+    format!("-----BEGIN {} KEY-----", "RSA PRIVATE")
+}
+
+fn bash_in(cmd: &str) -> Value {
+    json!({"command": cmd})
+}
+
+fn is_ask(v: &Verdict) -> bool {
+    matches!(v, Verdict::Ask(_))
+}
+
+/// G16 in process, with the test word as the only private word.
+fn g16_cmd(cmd: &str, dir: &Path) -> Verdict {
+    gc::g16_outbound("Bash", &bash_in(cmd), dir, &[WORD.to_string()])
+}
+
+/// G16 as the hook runs it: the stdout JSON of an `ask`, or None when the call goes through.
+fn ask_reason(res: &R) -> Option<String> {
+    assert_eq!(res.0, 0, "{res:?}");
+    if res.1.is_empty() {
+        return None;
+    }
+    let v = json_out(res);
+    let out = &v["hookSpecificOutput"];
+    assert_eq!(out["hookEventName"], "PreToolUse", "{res:?}");
+    assert_eq!(out["permissionDecision"], "ask", "{res:?}");
+    Some(out["permissionDecisionReason"].as_str().unwrap().to_string())
+}
+
+impl G {
+    /// A pretool call in a cwd that is this world's temp dir (not a repo), so no repo identity leaks in.
+    fn pre_bash(&self, cmd: &str, env: &[(&str, &str)]) -> R {
+        let data = json!({"hook_event_name": "PreToolUse", "session_id": format!("s{}", next_sid()),
+            "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.d()});
+        self.run_with("pretool", &data, env)
+    }
+
+    fn pre_mcp(&self, tool: &str, input: Value) -> R {
+        let data = json!({"hook_event_name": "PreToolUse", "session_id": format!("s{}", next_sid()),
+            "tool_name": tool, "tool_input": input, "cwd": self.d()});
+        self.run("pretool", &data)
+    }
+
+    fn shadow_log(&self) -> String {
+        std::fs::read_to_string(self.join("cache/dots-guard-shadow.log")).unwrap_or_default()
+    }
+}
+
+#[test]
+fn g14_g15_unchanged() {
+    let msg14 = "G14: BSD sed -i on macOS differs from GNU sed and breaks files. Use the Edit tool, or python3 for bulk edits.";
+    assert_eq!(gc::g14_sed("sed -i '' s/a/b/ f", true), Verdict::Deny(msg14.into()));
+    assert_eq!(gc::g14_sed("cd x && sudo sed -i.bak s/a/b/ f", true), Verdict::Deny(msg14.into()));
+    assert_eq!(gc::g14_sed("sed -i s/a/b/ f", false), Verdict::Allow);
+    assert_eq!(gc::g14_sed("gsed -i s/a/b/ f; sed -n 1p f", true), Verdict::Allow);
+    let file = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
+    assert_eq!(gc::g15_secrets("Read", &json!({"file_path": "~/.config/zsh/local.zsh"})), Verdict::Deny(file.into()));
+    assert_eq!(gc::g15_secrets("Bash", &json!({"command": "cat ~/.config/zsh/local.zsh"})), Verdict::Deny(file.into()));
+    assert!(matches!(gc::g15_secrets("Bash", &json!({"command": "ps aux"})), Verdict::Deny(m) if m.starts_with("G15")));
+    assert_eq!(gc::g15_secrets("Bash", &json!({"command": "ls -la"})), Verdict::Allow);
+    assert_eq!(gc::g15_secrets("Edit", &json!({"file_path": "~/.config/zsh/local.zsh"})), Verdict::Allow);
+}
+
+#[test]
+fn g16_clean_body_allows() {
+    let dir = tempfile::tempdir().unwrap();
+    for cmd in [
+        "gh pr create --title t --body \"a clean body\"",
+        "gh pr comment 3 --body 'looks good'",
+        "gh issue create --title 'x' --body-file -  <<'EOF'\nnothing private\nEOF",
+        "curl -X POST -d '{\"a\": 1}' https://example.test/x",
+        "gh api repos/o/r/issues -f title=hello",
+    ] {
+        assert_eq!(g16_cmd(cmd, dir.path()), Verdict::Allow, "{cmd}");
+    }
+}
+
+#[test]
+fn g16_private_word_asks() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = g16_cmd(&format!("gh pr create --title t --body \"fixes the {WORD} bug\""), dir.path());
+    match v {
+        Verdict::Ask(m) => {
+            assert!(m.starts_with("G16"), "{m}");
+            assert!(m.contains("a private word"), "{m}");
+            assert!(!m.contains(WORD), "the message must not echo the word: {m}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn g16_secret_shape_asks() {
+    let dir = tempfile::tempdir().unwrap();
+    for (secret, kind) in [
+        (gh_token(), "GitHub token"),
+        (anthropic_key(), "Anthropic API key"),
+        (format!("xox{}-1234567890-abcdef", "b"), "Slack token"),
+        (format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP"), "AWS access key id"),
+        (pem_header(), "private key"),
+    ] {
+        let v = g16_cmd(&format!("gh issue comment 1 --body \"found {secret} here\""), dir.path());
+        match v {
+            Verdict::Ask(m) => {
+                assert!(m.contains(&format!("a secret shape ({kind})")), "{m}");
+                assert!(!m.contains(&secret), "the message must not echo the match ({kind}): {m}");
+            }
+            other => panic!("{kind}: {other:?}"),
+        }
+    }
+    // an ordinary word that merely contains "sk-" is not a key
+    assert_eq!(g16_cmd("gh pr comment 1 --body 'rename task-implementer to risk-assessment'", dir.path()), Verdict::Allow);
+}
+
+#[test]
+fn g16_unreadable_body_file_asks() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::create_dir(d.join("adir")).unwrap();
+    std::fs::write(d.join("big.md"), vec![b'a'; 1_100_000]).unwrap();
+    for cmd in [
+        "gh pr create --body-file missing.md",
+        "gh pr create --body-file adir",
+        "gh pr create --body-file big.md",
+        "gh pr create --body-file -",
+        "cat b.md | gh pr create --body-file -",
+        "gh pr create --body-file \"$HOME/x.md\"",
+    ] {
+        assert!(is_ask(&g16_cmd(cmd, d)), "{cmd}");
+    }
+}
+
+#[test]
+fn g16_clean_body_file_allows_fast() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("body.md"), "a plain sentence about nothing in particular. ".repeat(110)).unwrap();
+    assert!(std::fs::metadata(dir.path().join("body.md")).unwrap().len() >= 5000);
+    let words: Vec<String> = ["zebrafish", "quincyzed", "alpha-proj", "beta-proj", "gamma", "quincy@example.test"]
+        .iter().map(|s| s.to_string()).collect();
+    let input = bash_in("gh pr create --title t --body-file body.md");
+    let start = std::time::Instant::now();
+    let v = gc::g16_outbound("Bash", &input, dir.path(), &words);
+    let took = start.elapsed();
+    assert_eq!(v, Verdict::Allow);
+    assert!(took < std::time::Duration::from_millis(50), "took {took:?}");
+}
+
+#[test]
+fn g16_body_file_with_a_word_asks_relative_to_cwd() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/b.md"), format!("hello {WORD}")).unwrap();
+    assert!(is_ask(&g16_cmd("gh pr create --body-file sub/b.md", dir.path())));
+    assert!(is_ask(&g16_cmd("cd sub && gh pr create -F b.md", dir.path())));
+    std::fs::write(dir.path().join("sub/b.md"), "hello").unwrap();
+    assert_eq!(g16_cmd("gh pr create --body-file sub/b.md", dir.path()), Verdict::Allow);
+}
+
+#[test]
+fn g16_mcp_send_private_word_asks() {
+    let g = G::new();
+    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
+    let res = g.pre_mcp("mcp__slack__send_message", json!({"channel": "c", "text": format!("about {WORD}")}));
+    let why = ask_reason(&res).expect("an ask");
+    assert!(why.starts_with("G16") && why.contains("a private word") && !why.contains(WORD), "{why}");
+    assert_eq!(ask_reason(&g.pre_mcp("mcp__slack__send_message", json!({"text": "all clear"}))), None);
+    // a tool that is not a send tool never asks
+    assert_eq!(ask_reason(&g.pre_mcp("mcp__slack__list_channels", json!({"q": WORD}))), None);
+    let v = gc::g16_outbound("mcp__mail__create_draft", &json!({"body": {"parts": [format!("x {WORD}")]}}), Path::new("."), &[WORD.into()]);
+    assert!(is_ask(&v), "{v:?}");
+}
+
+#[test]
+fn g16_curl_get_allows() {
+    let dir = tempfile::tempdir().unwrap();
+    for cmd in [
+        "curl https://example.test/x",
+        "curl -s -H 'Accept: application/json' https://example.test/zebrafish",
+        "wget https://example.test/x -O out",
+        "gh pr view 1",
+        "gh api repos/x/y",
+        "gh api repos/zebrafish/y/issues",
+        "gh issue list --search zebrafish",
+        "echo zebrafish > notes.txt",
+        "git log --grep zebrafish",
+    ] {
+        assert_eq!(g16_cmd(cmd, dir.path()), Verdict::Allow, "{cmd}");
+    }
+}
+
+#[test]
+fn g16_short_word_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |body: &str| gc::g16_outbound("Bash", &bash_in(&format!("gh pr comment 1 --body \"{body}\"")), dir.path(), &["abc".to_string()]);
+    assert!(is_ask(&run("abc ok")));
+    assert!(is_ask(&run("see ABC, ok")));
+    assert!(is_ask(&run("x-abc-y")));
+    assert_eq!(run("abcdef"), Verdict::Allow);
+    assert_eq!(run("xabc"), Verdict::Allow);
+    assert_eq!(run("abc_def"), Verdict::Allow);
+    // five letters or more match anywhere
+    let long = gc::g16_outbound("Bash", &bash_in("gh pr comment 1 --body \"abcdefg\""), dir.path(), &["abcde".to_string()]);
+    assert!(is_ask(&long));
+}
+
+#[test]
+fn g16_shadow_allows_and_logs() {
+    let g = G::new();
+    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
+    let cmd = format!("gh pr create --title t --body \"{WORD} {}\"", gh_token());
+    assert!(ask_reason(&g.pre_bash(&cmd, &[])).is_some(), "control: it asks without shadow");
+    let res = g.pre_bash(&cmd, &[("GUARD_SHADOW", "G16")]);
+    assert_allow(&res);
+    let log = g.shadow_log();
+    assert_eq!(log.lines().count(), 1, "{log:?}");
+    assert!(log.contains(" G16 ask "), "{log:?}");
+    assert!(!log.contains(WORD) && !log.contains(&gh_token()), "the log must not hold the match: {log:?}");
+    // the setting works too, and the env var (even empty) wins over it
+    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\nGUARD_SHADOW=\"g13, G16\"\n"));
+    assert_allow(&g.pre_bash(&cmd, &[]));
+    assert!(ask_reason(&g.pre_bash(&cmd, &[("GUARD_SHADOW", "")])).is_some());
+    assert_eq!(g.shadow_log().lines().count(), 2);
+}
+
+#[test]
+fn g16_is_core_and_has_an_off_switch() {
+    let g = G::new();
+    g.set(&format!("PRESETS=\"none\"\nPRIVATE_WORDS=\"{WORD}\"\n"));
+    let cmd = format!("gh issue create --title t --body 'about {WORD}'");
+    assert!(ask_reason(&g.pre_bash(&cmd, &[])).is_some(), "core: presets do not switch it off");
+    assert_allow(&g.pre_bash(&cmd, &[("GUARD_OFF", "G16")]));
+    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\nGUARD_OFF=\"G16\"\n"));
+    assert_allow(&g.pre_bash(&cmd, &[]));
+}
+
+#[test]
+fn g16_clean_call_through_the_hook_allows_without_noise() {
+    let g = G::new();
+    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
+    assert_allow(&g.pre_bash("gh pr create --title t --body 'all clear'", &[]));
+    assert_allow(&g.pre_bash("gh pr view 4", &[]));
+}
+
+#[test]
+fn g16_command_shapes_ask() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    std::fs::write(d.join("f.md"), format!("hello {WORD}")).unwrap();
+    let w = WORD;
+    let cases: Vec<String> = vec![
+        format!("/usr/bin/gh pr create --body \"{w}\""),
+        format!("command gh pr create --body \"{w}\""),
+        format!("env X=1 gh pr create --body \"{w}\""),
+        format!("X=1 gh issue comment 2 --body \"{w}\""),
+        format!("sudo -u bob gh pr edit 1 --body \"{w}\""),
+        format!("bash -c \"gh pr create --body '{w}'\""),
+        format!("sh -c 'gh pr create --body \"{w}\"'"),
+        format!("echo go && gh pr create --body \"{w}\""),
+        format!("echo go; gh pr review 1 --body \"{w}\""),
+        format!("echo go | gh issue create --body \"{w}\""),
+        format!("echo go || gh pr comment 1 -b \"{w}\""),
+        format!("(cd x; gh pr comment 1 -b \"{w}\")"),
+        format!("echo $(gh pr create --body \"{w}\")"),
+        format!("gh -R o/r pr create --body \"{w}\""),
+        format!("gh pr create --body={w}"),
+        "gh pr create --body-file f.md".to_string(),
+        "gh pr create -F f.md".to_string(),
+        "gh pr create --body-file=f.md".to_string(),
+        "gh api repos/o/r/issues -F body=@f.md".to_string(),
+        format!("gh api repos/o/r/issues -f body={w}"),
+        format!("gh api repos/o/r/issues -F body={w}"),
+        format!("gh api --method=POST repos/o/r/issues -f body={w}"),
+        format!("gh api -XPOST repos/o/r/issues -f body={w}"),
+        format!("gh api -X post repos/o/r/issues -f body={w}"),
+        format!("gh api --method PATCH repos/o/r/issues/1 --raw-field body={w}"),
+        format!("gh api -X PUT repos/o/r/x -f body={w}"),
+        "gh api repos/o/r/issues --input f.md".to_string(),
+        "curl --data-binary @f.md https://example.test/x".to_string(),
+        format!("curl --data-urlencode \"q={w}\" https://example.test/x"),
+        "curl --data-urlencode q@f.md https://example.test/x".to_string(),
+        format!("curl --json '{{\"a\": \"{w}\"}}' https://example.test/x"),
+        "curl --json @f.md https://example.test/x".to_string(),
+        "curl -d@f.md https://example.test/x".to_string(),
+        "curl -d @f.md https://example.test/x".to_string(),
+        format!("curl -sd \"{w}\" https://example.test/x"),
+        format!("curl --data \"{w}\" https://example.test/x"),
+        format!("curl --data-raw \"{w}\" https://example.test/x"),
+        "curl --form \"file=@f.md\" https://example.test/x".to_string(),
+        "curl -F file=@f.md https://example.test/x".to_string(),
+        format!("curl -F \"note={w}\" https://example.test/x"),
+        "curl -T f.md https://example.test/x".to_string(),
+        "curl --upload-file f.md https://example.test/x".to_string(),
+        "curl --data-bin @f.md https://example.test/x".to_string(),
+        format!("wget --post-data=\"{w}\" https://example.test/x"),
+        format!("wget --post-data \"{w}\" https://example.test/x"),
+        "wget --post-file=f.md https://example.test/x".to_string(),
+        "wget --body-file=f.md https://example.test/x".to_string(),
+        format!("gh pr create --title t --body-file - <<'EOF'\nthe {w} line\nEOF"),
+        format!("gh pr create --title t --body \"$(cat <<'EOF'\nthe {w} line\nEOF\n)\""),
+        format!("cat <<EOF | gh pr create --body-file -\n{w}\nEOF"),
+        "gh pr create --body-file - < f.md".to_string(),
+        format!("gh pr create --body-file - <<< \"{w}\""),
+        format!("gh release create v1 --notes \"{w}\""),
+    ];
+    for cmd in &cases {
+        let v = g16_cmd(cmd, d);
+        assert!(is_ask(&v), "{cmd:?} -> {v:?}");
+    }
+}
+
+#[test]
+fn g16_cannot_read_the_body_asks() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    for cmd in [
+        "gh pr create --body \"$(cat f.md)\"",
+        "gh pr create --body $(cat f.md)",
+        "gh pr create --body `cat f.md`",
+        "gh pr create --body \"$MSG\"",
+        "gh pr comment 1 --body \"${MSG}\"",
+        "gh api repos/o/r/issues -f body=\"$(cat f.md)\"",
+        "gh api repos/o/r/issues -f body=$(cat f.md)",
+        "curl -d \"$(cat f.md)\" https://example.test/x",
+        "curl -d \"$PAYLOAD\" https://example.test/x",
+        "curl --data-binary @- https://example.test/x",
+        "echo hi | curl -d @- https://example.test/x",
+        "curl -T - https://example.test/x",
+        "gh api repos/o/r/issues --input -",
+        "wget --post-file=/dev/stdin https://example.test/x",
+        "wget --post-data=\"$X\" https://example.test/x",
+        "curl -d @$HOME/x.md https://example.test/x",
+    ] {
+        let v = g16_cmd(cmd, d);
+        assert!(is_ask(&v), "{cmd:?} -> {v:?}");
+    }
+    // the heredoc-substitution idiom with a clean body is fine: the heredoc is scanned
+    assert_eq!(g16_cmd("gh pr create --title t --body \"$(cat <<'EOF'\nclean text\nEOF\n)\"", d), Verdict::Allow);
+    // a variable in a header is not a body
+    assert_eq!(g16_cmd("curl -H \"Authorization: Bearer $TOK\" https://example.test/x", d), Verdict::Allow);
+}
+
+#[test]
+fn g16_a_heredoc_elsewhere_in_the_command_is_scanned_when_it_sends() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let w = WORD;
+    assert!(is_ask(&g16_cmd(&format!("cat > n.md <<EOF\n{w}\nEOF\ngh pr create --body-file n.md"), d)));
+    // no outbound call: a heredoc with the word is just a local file
+    assert_eq!(g16_cmd(&format!("cat > n.md <<EOF\n{w}\nEOF\ngh pr view 1"), d), Verdict::Allow);
+}
+
+#[test]
+fn private_words_sources() {
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".config/dotfiles")).unwrap();
+    std::fs::write(
+        home.path().join(".config/dotfiles/settings"),
+        "PRIVATE_PROJECTS=\"alpha-proj, Beta-Proj\"\nPRIVATE_WORDS=\"gamma delta\"\nGIT_NAME=\"Quincy Zed\"\nGIT_EMAIL=\"quincy@example.test\"\n",
+    ).unwrap();
+    std::fs::write(home.path().join(".gitconfig"), "[user]\n\tname = Dana Quill\n\temail = dana@example.test\n").unwrap();
+    let words = gc::private_words_at(home.path(), Some(work.path()));
+    for want in ["alpha-proj", "beta-proj", "gamma", "delta", "quincy zed", "quincyzed", "quincy@example.test",
+                 "dana quill", "danaquill", "dana@example.test"] {
+        assert!(words.iter().any(|w| w == want), "{want} missing from {words:?}");
+    }
+    let mut dedup = words.clone();
+    dedup.sort();
+    dedup.dedup();
+    assert_eq!(dedup.len(), words.len(), "{words:?}");
+    // a handle that is part of the origin URL is left out, as the bash hook does
+    let run_git = |args: &[&str]| {
+        let st = std::process::Command::new("git").args(args).current_dir(work.path())
+            .env("HOME", home.path()).output().unwrap();
+        assert!(st.status.success(), "{args:?}");
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["remote", "add", "origin", "https://github.com/quincyzed/x.git"]);
+    let words = gc::private_words_at(home.path(), Some(work.path()));
+    assert!(!words.iter().any(|w| w == "quincyzed"), "{words:?}");
+    assert!(words.iter().any(|w| w == "dana quill"), "{words:?}");
+    // an empty world has no words
+    let empty = tempfile::tempdir().unwrap();
+    assert!(gc::private_words_at(empty.path(), Some(empty.path())).is_empty());
+}
+
+// --- Task 11: G17 attribution check ---
+
+/// The lines G17 refuses, built at run time so this file holds none of them whole.
+fn attr_line() -> String {
+    format!("Co-authored-{}: Claude Opus <noreply@{}>", "by", "anthropic.com")
+}
+
+fn attr_generated() -> String {
+    format!("Generated {} [Claude Code](https://claude.com/claude-code)", "with")
+}
+
+fn g17_cmd(cmd: &str, dir: &Path) -> Verdict {
+    gc::g17_attribution(cmd, dir)
+}
+
+fn is_deny(v: &Verdict) -> bool {
+    matches!(v, Verdict::Deny(m) if m.starts_with("G17"))
+}
+
+impl G {
+    /// A Bash call in this world's temp dir; the hook's answer.
+    fn g17(&self, cmd: &str, env: &[(&str, &str)]) -> R {
+        self.pre_bash(cmd, env)
+    }
+}
+
+#[test]
+fn g17_inline_trailer_denied() {
+    let g = G::new();
+    let a = attr_line();
+    let res = g.g17(&format!("git commit -m \"x\" -m \"{a}\""), &[]);
+    assert_deny(&res, "G17");
+    assert!(!res.2.contains(&a) && !res.2.to_lowercase().contains("noreply"), "the message must not echo the line: {res:?}");
+    assert_deny(&g.g17(&format!("git commit -m \"fix\n\n{}\"", attr_generated()), &[]), "G17");
+    assert_deny(&g.g17("git commit -m \"fix noreply@anthropic.com\"", &[]), "G17");
+}
+
+#[test]
+fn g17_message_file_denied() {
+    let g = G::new();
+    let a = attr_line();
+    g.write(&g.join("msg.txt"), &format!("subject\n\n{a}\n"));
+    g.write(&g.join("clean.txt"), "subject only\n");
+    assert_deny(&g.g17("git commit -F msg.txt", &[]), "G17");
+    assert_deny(&g.g17("git commit --file=msg.txt", &[]), "G17");
+    assert_deny(&g.g17("git commit --file msg.txt", &[]), "G17");
+    assert_deny(&g.g17("git commit -aF msg.txt", &[]), "G17");
+    assert_deny(&g.g17("git commit -Fmsg.txt", &[]), "G17");
+    assert_deny(&g.g17("git tag -a v1 -F msg.txt", &[]), "G17");
+    assert_deny(&g.g17("git notes add -F msg.txt", &[]), "G17");
+    assert_allow(&g.g17("git commit -F clean.txt", &[]));
+    // the file is made in the same command, or comes in on stdin: the command text is what counts
+    assert_deny(&g.g17(&format!("printf '%s' \"{a}\" > m2.txt && git commit -F m2.txt"), &[]), "G17");
+    assert_deny(&g.g17(&format!("echo \"{a}\" | git commit -F -"), &[]), "G17");
+    assert_deny(&g.g17(&format!("git commit -F - <<'EOF'\nsubject\n\n{a}\nEOF"), &[]), "G17");
+    assert_deny(&g.g17(&format!("git commit -m \"$(cat <<'EOF'\nsubject\n\n{a}\nEOF\n)\""), &[]), "G17");
+    assert_allow(&g.g17("git commit -F - <<'EOF'\nsubject\nEOF", &[]));
+}
+
+#[test]
+fn g17_gh_body_denied() {
+    let g = G::new();
+    let (a, gen_) = (attr_line(), attr_generated());
+    g.write(&g.join("body.md"), &format!("text\n{gen_}\n"));
+    for cmd in [
+        format!("gh pr create --title t --body \"{gen_}\""),
+        format!("gh pr create --body \"x\n{a}\""),
+        format!("gh pr edit 3 --body \"{gen_}\""),
+        format!("gh pr comment 3 -b \"{gen_}\""),
+        format!("gh issue create --title t --body \"{a}\""),
+        format!("gh release create v1 --notes \"{gen_}\""),
+        "gh pr create --body-file body.md".to_string(),
+        "gh release create v1 --notes-file body.md".to_string(),
+        "gh pr create -F body.md".to_string(),
+        format!("gh pr create --body-file - <<'EOF'\n{gen_}\nEOF"),
+        format!("echo \"{gen_}\" | gh pr create --body-file -"),
+    ] {
+        assert_deny(&g.g17(&cmd, &[]), "G17");
+    }
+    assert_allow(&g.g17("gh pr create --title t --body 'a clean body'", &[]));
+}
+
+#[test]
+fn g17_echo_allowed() {
+    let g = G::new();
+    let (a, gen_) = (attr_line(), attr_generated());
+    for cmd in [
+        format!("echo \"{a}\""),
+        // not `.`: the world's HOME is its cwd, and G15 rightly refuses a recursive search over HOME
+        format!("grep -r \"{gen_}\" work"),
+        "git log --grep \"Co-authored-by\"".to_string(),
+        format!("git log --grep \"{a}\""),
+        format!("git commit -m \"clean\" && echo \"{a}\""),
+        "git status".to_string(),
+        "git commit -m 'fix the parser'".to_string(),
+        "gh pr view 3".to_string(),
+        "gh api repos/o/r".to_string(),
+        "curl https://example.test/x".to_string(),
+        format!("printf '%s' \"{a}\" > notes.txt"),
+    ] {
+        assert_allow(&g.g17(&cmd, &[]));
+    }
+}
+
+#[test]
+fn g17_preset_off_allows() {
+    let g = G::new();
+    let cmd = format!("git commit -m \"x\" -m \"{}\"", attr_line());
+    assert_deny(&g.g17(&cmd, &[]), "G17"); // control
+    g.presets_except("no-ai-attribution");
+    assert_allow(&g.g17(&cmd, &[]));
+    let g = G::new();
+    assert_allow(&g.g17(&cmd, &[("GUARD_OFF", "G17")]));
+}
+
+#[test]
+fn g17_git_dash_c_denied() {
+    let g = G::new();
+    let a = attr_line();
+    for cmd in [
+        format!("git -C repo commit -m \"x\" -m \"{a}\""),
+        format!("git -c user.name=x commit -m \"{a}\""),
+        format!("git -c user.name=x -C repo -c core.editor=true commit --amend -m \"{a}\""),
+        format!("git --no-pager commit -m \"{a}\""),
+        format!("git --git-dir=.git commit -m \"{a}\""),
+        format!("git commit --amend -m \"{a}\""),
+        format!("git commit --trailer \"{a}\""),
+        format!("git commit --trailer=\"{a}\""),
+        format!("git commit --trailer \"{}\"", a.replace(": ", "=")),
+        format!("git commit -m \"{}\"", a.to_uppercase()),
+        format!("git commit -m \"{}\"", a.to_lowercase()),
+        format!("git merge -m \"{a}\" topic"),
+        format!("git revert -m 1 --no-edit HEAD && git commit -m \"{a}\""),
+        format!("git notes add -m \"{a}\""),
+        format!("git tag -a v1 -m \"{a}\""),
+        format!("/usr/bin/git commit -m \"{a}\""),
+        format!("env GIT_AUTHOR_NAME=x git commit -m \"{a}\""),
+        format!("cd repo && git commit -m \"{a}\""),
+        format!("bash -c \"git commit -m '{a}'\""),
+    ] {
+        assert_deny(&g.g17(&cmd, &[]), "G17");
+    }
+}
+
+#[test]
+fn g17_shadow_allows_and_logs() {
+    let g = G::new();
+    let cmd = format!("git commit -m \"{}\"", attr_line());
+    assert_allow(&g.g17(&cmd, &[("GUARD_SHADOW", "G17")]));
+    let log = g.shadow_log();
+    assert!(log.contains(" G17 deny "), "{log:?}");
+    assert!(!log.to_lowercase().contains("noreply") && !log.to_lowercase().contains("claude"), "{log:?}");
+}
+
+#[test]
+fn g17_library_verdicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = attr_line();
+    assert!(is_deny(&g17_cmd(&format!("git commit -m \"{a}\""), dir.path())));
+    assert_eq!(g17_cmd(&format!("echo \"{a}\""), dir.path()), Verdict::Allow);
+    assert_eq!(g17_cmd("", dir.path()), Verdict::Allow);
+    // a message file read relative to the cwd, and relative to `-C`
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(dir.path().join("sub/m.txt"), &a).unwrap();
+    assert!(is_deny(&g17_cmd("git -C sub commit -F m.txt", dir.path())));
+    assert!(is_deny(&g17_cmd("cd sub && git commit -F m.txt", dir.path())));
+    assert_eq!(g17_cmd("git commit -F m.txt && true", &dir.path().join("sub").join("x")), Verdict::Allow);
+}
+
+// --- Fix round 1: quote, parse and MCP name bypasses ---
+
+fn input_of(cmd: &str) -> Value {
+    json!({"command": cmd})
+}
+
+#[test]
+fn g16_odd_quoting_and_unparsable_pieces_ask() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let w = WORD;
+    for cmd in [
+        format!("g''h pr create --body {w}"),
+        format!("cur''l -d {w} https://x.y"),
+        format!("\"gh\" pr create --body {w}"),
+        format!("gh pr create --body {w} # it's"),
+        format!("gh pr create --body $'it\\'s {w}'"),
+        "gh pr create --body clean # it's".to_string(),
+        "curl https://x.y # it's".to_string(),
+    ] {
+        let v = g16_cmd(&cmd, d);
+        assert!(is_ask(&v), "{cmd:?} -> {v:?}");
+        assert!(gc::g16_applies("Bash", &input_of(&cmd)), "{cmd:?}");
+    }
+    for cmd in ["echo it's fine", "ls", "echo 'a' # it's here"] {
+        assert_eq!(g16_cmd(cmd, d), Verdict::Allow, "{cmd}");
+        assert!(!gc::g16_applies("Bash", &input_of(cmd)), "{cmd}");
+    }
+}
+
+/// Tool names an assistant can use to send text out, in the shapes MCP servers use.
+const SEND_NAMES: &[&str] = &[
+    "send_message", "create_draft", "reply", "forward", "post_message", "create_comment", "create_issue",
+    "create_pull_request", "update_issue", "add_comment", "publish", "write_message", "chat_postMessage",
+    "sendEmail", "SendMessage", "upload_file", "slack_post", "tweet", "notify", "submit_review",
+    "add_issue_comment", "push_files", "create_or_update_file", "createDraft", "gmail_draft", "createIssue",
+    "CreateIssue", "updatePullRequest",
+];
+
+#[test]
+fn g16_mcp_send_names_ask() {
+    for name in SEND_NAMES {
+        let tool = format!("mcp__srv__{name}");
+        assert!(gc::g16_applies(&tool, &json!({})), "{tool}");
+        let v = gc::g16_outbound(&tool, &json!({"body": format!("about {WORD}")}), Path::new("."), &[WORD.into()]);
+        assert!(is_ask(&v), "{tool} -> {v:?}");
+    }
+    for name in ["list_channels", "get_issue", "search_files", "read_file", "list_pull_requests"] {
+        assert!(!gc::g16_applies(&format!("mcp__srv__{name}"), &json!({})), "{name}");
+    }
+}
+
+#[test]
+fn the_hook_matcher_covers_every_send_name() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../claude/settings.json");
+    let settings: Value = serde_json::from_str(&fs::read_to_string(root).unwrap()).unwrap();
+    let matcher = settings["hooks"]["PreToolUse"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|h| h.to_string().contains("guard pretool"))
+        .map(|h| h["matcher"].as_str().unwrap().to_string())
+        .next()
+        .unwrap();
+    // the harness matches a tool name against the whole matcher, and its regex has no (?i)
+    let re = regex::Regex::new(&format!("^(?:{matcher})$")).unwrap();
+    for name in SEND_NAMES {
+        assert!(re.is_match(&format!("mcp__srv__{name}")), "the matcher misses {name}");
+    }
+    for name in ["list_channels", "get_issue", "read_file"] {
+        assert!(!re.is_match(&format!("mcp__srv__{name}")), "{name}");
+    }
+}
+
+#[test]
+fn g16_heredoc_must_belong_to_the_sending_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    // a heredoc for another command does not make `-F -` readable
+    assert!(is_ask(&g16_cmd("cat <<EOF >/dev/null\nhello\nEOF\necho x | gh pr create --body-file -", d)));
+    assert!(is_ask(&g16_cmd("cat > n.md <<EOF\nhello\nEOF\ngh issue create --body-file -", d)));
+    assert!(is_ask(&g16_cmd("cat <<EOF >/dev/null\nhello\nEOF\ncurl -d @- https://x.y", d)));
+    // its own heredoc, on its own line, is scanned
+    assert_eq!(g16_cmd("gh pr create --body-file - <<EOF\nclean\nEOF", d), Verdict::Allow);
+    assert_eq!(g16_cmd("cat <<EOF | gh pr create --body-file -\nclean\nEOF", d), Verdict::Allow);
+    assert!(is_ask(&g16_cmd(&format!("gh pr create --body-file - <<EOF\n{WORD}\nEOF"), d)));
+}
+
+#[test]
+fn g16_curl_and_wget_urls_and_config_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (w, sk) = (WORD, gh_token());
+    std::fs::write(d.join("cfg.txt"), format!("data = \"{w}\"\n")).unwrap();
+    std::fs::write(d.join("clean.txt"), "silent\n").unwrap();
+    for cmd in [
+        format!("curl 'https://x.y/?k={sk}'"),
+        format!("curl -d x 'https://h.io/?k={sk}'"),
+        format!("curl -X POST 'https://x.y/?k={sk}'"),
+        format!("curl --url 'https://x.y/?k={sk}'"),
+        format!("curl --url-query k={sk} https://x.y"),
+        format!("curl --url-query=k={w} https://x.y"),
+        format!("curl --url-q k={w} https://x.y"),
+        format!("wget 'https://x.y/?k={sk}'"),
+        format!("curl 'https://x.y/?q={w}'"),
+        format!("wget 'https://x.y/?q={w}' -O out"),
+        format!("gh api 'repos/a/b/issues?body={w}' -X POST"),
+        "curl -K cfg.txt".to_string(),
+        "curl --config cfg.txt".to_string(),
+        "curl --conf cfg.txt https://x.y".to_string(),
+        "curl -sK cfg.txt".to_string(),
+        "curl -K missing.txt".to_string(),
+        "echo 'url = x' | curl -K -".to_string(),
+    ] {
+        let v = g16_cmd(&cmd, d);
+        assert!(is_ask(&v), "{cmd:?} -> {v:?}");
+    }
+    for cmd in [
+        "curl -K clean.txt".to_string(),
+        format!("curl https://x.y/{w}"),
+        format!("curl https://x.y/{w}/issues"),
+        "curl 'https://x.y/?q=ok'".to_string(),
+        format!("wget https://x.y/{w}.tar -O out"),
+        format!("gh api 'repos/a/{w}/issues?state=open'"),
+    ] {
+        assert_eq!(g16_cmd(&cmd, d), Verdict::Allow, "{cmd}");
+    }
+}
+
+#[test]
+fn g16_more_gh_verbs() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let w = WORD;
+    std::fs::write(d.join("body.txt"), format!("about {w}")).unwrap();
+    std::fs::write(d.join("clean.txt"), "silent").unwrap();
+    for cmd in [
+        format!("gh repo create x --description {w}"),
+        format!("gh repo create x -d {w}"),
+        format!("gh repo create {w} --private"),
+        format!("gh repo edit --description {w}"),
+        format!("gh repo edit --homepage https://x.y/{w}"),
+        "gh release upload v1 body.txt".to_string(),
+        "gh release upload v1 body.txt#label".to_string(),
+        "gh release upload v1 clean.txt missing.bin".to_string(),
+        format!("gh workflow run w.yml -f x={w}"),
+        format!("gh workflow run w.yml -F x={w}"),
+        format!("gh workflow run w.yml --raw-field x={w}"),
+        "gh workflow run w.yml -F x=@body.txt".to_string(),
+        "gh workflow run w.yml --json".to_string(),
+        format!("gh discussion create --body {w}"),
+        format!("gh label create x --description {w}"),
+        format!("gh label create x -d {w} -c ff0000"),
+    ] {
+        let v = g16_cmd(&cmd, d);
+        assert!(is_ask(&v), "{cmd:?} -> {v:?}");
+    }
+    for cmd in [
+        "gh release upload v1 clean.txt",
+        "gh repo edit --description clean",
+        "gh repo create x -d clean --private",
+        "gh workflow run w.yml -f x=1 -r main",
+        "gh workflow run w.yml -F x=@clean.txt",
+        "gh pr create -d --title t --body clean",
+        "gh repo view",
+        "gh workflow list",
+        "gh label list",
+    ] {
+        assert_eq!(g16_cmd(cmd, d), Verdict::Allow, "{cmd}");
+    }
+}
+
+#[test]
+fn g17_odd_quoting_and_unparsable_pieces_deny() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let a = attr_line();
+    for cmd in [
+        format!("git commit -m '{a}' # it's"),
+        format!("git commit -m $'it\\'s {a}'"),
+        format!("git commit -m$'a\\n{a}'"),
+        format!("g''it commit -m \"{a}\""),
+        format!("\"git\" commit -m \"{a}\""),
+        format!("gh pr create --body \"{a}\" # it's"),
+        format!("g''h pr create --body \"{a}\""),
+    ] {
+        let v = g17_cmd(&cmd, d);
+        assert!(is_deny(&v), "{cmd:?} -> {v:?}");
+    }
+    for cmd in ["echo it's fine", "ls", "git commit -m 'clean' # it's", "git status # it's"] {
+        assert_eq!(g17_cmd(cmd, d), Verdict::Allow, "{cmd}");
+    }
+}
+
+#[test]
+fn g17_generated_with_needs_the_assistant_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    for cmd in [
+        "git commit -m 'feat: settings generated with agent-config into ~/.claude'",
+        "git commit -m 'docs: the file is generated with a script that mentions claude later'",
+        "gh pr create --body 'Generated with the hooks, see claude/ folder'",
+    ] {
+        assert_eq!(g17_cmd(cmd, d), Verdict::Allow, "{cmd}");
+    }
+    for cmd in [
+        "git commit -m 'Generated with Claude Code'",
+        "git commit -m 'generated  with   claude'",
+        "git commit -m 'Generated with [Claude Code](https://claude.com/claude-code)'",
+    ] {
+        assert!(is_deny(&g17_cmd(cmd, d)), "{cmd}");
+    }
 }

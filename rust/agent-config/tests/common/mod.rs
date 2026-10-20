@@ -2,7 +2,7 @@
 //!
 //! Every run gets its own `HOME` and `XDG_CACHE_HOME` under the temp dir (a fresh `temp_home` when
 //! the caller passes no `HOME`), `NO_COLOR=1`, and none of the variables that change a hook's
-//! behavior (`GUARD_OFF`, `GUARD_PLATFORM`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CONFIG_DIR`, `TZ`)
+//! behavior (`GUARD_OFF`, `GUARD_SHADOW`, `GUARD_PLATFORM`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CONFIG_DIR`, `TZ`)
 //! unless the caller sets them. A test never reads the real home of the machine it runs on.
 #![allow(dead_code)] // each test file uses a part of this
 
@@ -41,8 +41,8 @@ pub fn iso_utc(epoch: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-const CLEARED: [&str; 11] = [
-    "GUARD_OFF", "GUARD_PLATFORM", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "TZ",
+const CLEARED: [&str; 12] = [
+    "GUARD_OFF", "GUARD_SHADOW", "GUARD_PLATFORM", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "TZ",
     "DOTFILES_REPO", "DOTFILES_PROFILE", "DOTFILES_MCP", "DOTFILES_PROJECTS", "DOTFILES_VERBOSE", "DOTFILES_WARN_FILE",
 ];
 

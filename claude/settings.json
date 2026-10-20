@@ -1,7 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "cleanupPeriodDays": 365,
-  "model": "opusplan",
   "effortLevel": "high",
   "autoCompactWindow": 350000,
   "modelSettings": {
@@ -16,14 +15,7 @@
     }
   },
   "subagentPromptCacheTtl": "1h",
-  "env": {
-    "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"
-  },
   "includeCoAuthoredBy": false,
-  "attribution": {
-    "commit": "",
-    "pr": ""
-  },
   "permissions": {
     "allow": [
       "Bash(git status:*)",
@@ -49,8 +41,6 @@
       "SearchPlugins",
       "SuggestSkills",
       "mcp__Claude_Code_iOS_Simulator__*",
-      "mcp__45831831-e75c-46d3-a3ed-84c1cb884d7b__*",
-      "mcp__a16997c4-316a-4f39-816e-0b9b5ac48d05__*",
       "mcp__claude_ai_Google_Drive__*",
       "mcp__claude_ai_PDF_Viewer__*",
       "mcp__plugin_pdf-viewer_pdf__*",
@@ -66,7 +56,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Agent|EnterPlanMode|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session|mcp__Claude_Browser__.*|mcp__claude-in-chrome__.*|Bash|Read|Grep",
+        "matcher": "Agent|EnterPlanMode|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session|mcp__Claude_Browser__.*|mcp__claude-in-chrome__.*|Bash|Read|Grep|mcp__.*([Ss]end|[Pp]ost|[Rr]eply|[Ff]orward|[Cc]omment|[Cc]reate_?[Ii]ssue|[Uu]pdate_?[Ii]ssue|[Cc]reate_?[Pp]ull_?[Rr]equest|[Uu]pdate_?[Pp]ull_?[Rr]equest|[Pp]ush_?[Ff]iles|[Cc]reate_?[Oo]r_?[Uu]pdate_?[Ff]ile|[Pp]ublish|[Uu]pload|[Ss]ubmit_?[Rr]eview|[Dd]raft|[Mm]essage|[Tt]weet|[Nn]otify).*",
         "hooks": [
           {
             "type": "command",
@@ -133,58 +123,6 @@
       }
     ]
   },
-  "enabledPlugins": {
-    "cloudflare@cloudflare": false,
-    "data@synced": false,
-    "brightdata-plugin@synced": false,
-    "cowork-plugin-management@synced": false,
-    "cowork-plugin-management@inline": false,
-    "productivity@synced": false,
-    "productivity@inline": false,
-    "pdf-viewer@synced": false,
-    "pdf-viewer@inline": false,
-    "jev@synced": false,
-    "jev@inline": false,
-    "adversarial-review@synced": false,
-    "adversarial-review@inline": false,
-    "engineering@synced": false,
-    "engineering@inline": false,
-    "design@synced": false,
-    "design@inline": false,
-    "desktop-commander@synced": false,
-    "desktop-commander@inline": false
-  },
-  "skillOverrides": {
-    "anthropic-skills:spark": "user-invocable-only",
-    "anthropic-skills:spark-persona-exec-assistant": "user-invocable-only",
-    "anthropic-skills:spark-recipe-inbox-zero": "user-invocable-only",
-    "anthropic-skills:spark-recipe-invitation-manager": "user-invocable-only",
-    "anthropic-skills:spark-recipe-label-organize": "user-invocable-only",
-    "productivity:memory-management": "user-invocable-only",
-    "productivity:start": "user-invocable-only",
-    "productivity:task-management": "user-invocable-only",
-    "productivity:update": "user-invocable-only",
-    "cowork-plugin-management:cowork-plugin-customizer": "user-invocable-only",
-    "cowork-plugin-management:create-cowork-plugin": "user-invocable-only",
-    "desktop-commander:ai-tools-setup": "user-invocable-only",
-    "desktop-commander:computer-health-check": "user-invocable-only",
-    "desktop-commander:knowledge-base": "user-invocable-only",
-    "desktop-commander:obsidian-vault": "user-invocable-only",
-    "engineering:incident-response": "user-invocable-only",
-    "engineering:standup": "user-invocable-only",
-    "pdf-viewer:annotate": "user-invocable-only",
-    "pdf-viewer:fill-form": "user-invocable-only",
-    "pdf-viewer:sign": "user-invocable-only"
-  },
-  "extraKnownMarketplaces": {
-    "cloudflare": {
-      "source": {
-        "source": "github",
-        "repo": "cloudflare/skills"
-      }
-    }
-  },
-  "outputStyle": "ELI5",
   "skipWorkflowUsageWarning": true,
   "theme": "dark",
   "inputNeededNotifEnabled": true,

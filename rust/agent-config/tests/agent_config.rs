@@ -289,6 +289,71 @@ fn test_opencode_agents_no_agents_dir_is_fine() {
     assert!(!fx.odir().join("agents").exists());
 }
 
+// --- opencode guard plugin ------------------------------------------------------
+
+fn plugin_path(fx: &Fx) -> PathBuf {
+    fx.odir().join("plugins").join("dots-guard.ts")
+}
+
+#[test]
+fn opencode_plugin_written_with_marker() {
+    let fx = Fx::new("ac-oc-plugin-written");
+    let (rc, _, err) = fx.ac(&["opencode", "--profile", "shared"]);
+    assert_eq!(rc, 0, "{err}");
+    let text = rd(&plugin_path(&fx));
+    assert!(text.contains(MARK), "{text}");
+    assert!(text.contains("export default"), "{text}");
+    assert!(text.contains("\"execute.before\""), "{text}");
+    assert!(!text.contains("__RUST_BIN__"), "the launcher path was not filled in");
+    // a second run changes nothing
+    let (_, out, _) = fx.ac(&["opencode", "--profile", "shared"]);
+    assert!(!out.contains("wrote") && !out.contains("updated"), "{out}");
+}
+
+#[test]
+fn opencode_plugin_names_rust_bin() {
+    let fx = Fx::new("ac-oc-plugin-bin");
+    fx.ac(&["opencode", "--profile", "shared"]);
+    let text = rd(&plugin_path(&fx));
+    let launcher = fx.claude.join("hooks").join("rust-bin");
+    let literal = serde_json::to_string(launcher.to_str().unwrap()).unwrap();
+    assert!(text.contains(&format!("const RUST_BIN: string = {literal}")), "{text}");
+    assert!(text.contains("[RUST_BIN, \"--hook\", \"guard\", \"pretool\"]"), "{text}");
+    assert!(!text.contains("python"), "{text}");
+}
+
+#[test]
+fn opencode_plugin_cache_key_holds_the_call_input() {
+    // Inner calls of Opencode's `execute` tool can share one call id. A verdict cached by id and tool
+    // alone would let a second `shell` call in the same `execute` reuse the first (clean) verdict.
+    let fx = Fx::new("ac-oc-plugin-key");
+    fx.ac(&["opencode", "--profile", "shared"]);
+    let text = rd(&plugin_path(&fx));
+    let key = text.lines().find(|l| l.contains("const key =")).unwrap_or_else(|| panic!("no key line: {text}"));
+    assert!(key.contains("JSON.stringify(input.input"), "the cache key must hold the call input: {key}");
+    assert!(key.contains("input.tool"), "{key}");
+}
+
+#[test]
+fn opencode_plugin_left_alone_without_marker() {
+    let fx = Fx::new("ac-oc-plugin-user");
+    wr(&plugin_path(&fx), "// my own plugin\nexport default { id: \"mine\", setup() {} }\n");
+    let (rc, _, err) = fx.ac(&["opencode", "--profile", "shared"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(rd(&plugin_path(&fx)), "// my own plugin\nexport default { id: \"mine\", setup() {} }\n");
+    assert!(err.contains("not ours"), "{err}");
+}
+
+#[test]
+fn opencode_plugin_removed_when_the_launcher_is_gone() {
+    let fx = Fx::new("ac-oc-plugin-gone");
+    fx.ac(&["opencode", "--profile", "shared"]);
+    assert!(plugin_path(&fx).is_file());
+    fs::remove_file(fx.claude.join("hooks").join("rust-bin")).unwrap();
+    fx.ac(&["opencode", "--profile", "shared"]);
+    assert!(!plugin_path(&fx).exists());
+}
+
 // --- opencode config ----------------------------------------------------------
 
 fn oc_cfg(fx: &Fx) -> PathBuf {

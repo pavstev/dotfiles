@@ -43,6 +43,82 @@ fn edit_profile() {
     ]);
 }
 
+/// The presets that are on: a toggle list (Space marks one). Saved as `all`, `none` or the names.
+fn edit_presets() {
+    let all: Vec<String> = crate::presets::ALL.iter().map(|n| n.to_string()).collect();
+    let profile = settings::profile();
+    let home = super::os::home();
+    let on = crate::presets::enabled_quiet(&home, &profile);
+    let picked: Vec<String> = if ask::fancy() {
+        let marked: Vec<usize> = all.iter().enumerate().filter(|(_, n)| on.contains(n)).map(|(i, _)| i).collect();
+        match ask::many("🧰 Presets (working habits) that are on: Space marks one · Enter saves · Esc keeps", &all, &marked) {
+            Some(v) => v,
+            None => { info("presets: not changed"); return; }
+        }
+    } else {
+        info(&format!("presets: {} (or all, or none)", all.join(" ")));
+        let Some(v) = ask::value("🧰 Presets that are on, split by spaces", &crate::presets::summary(&home, &profile), "all") else { return };
+        let w = words(&v);
+        if w == "all" { all.clone() } else if w == "none" || w.is_empty() { Vec::new() } else { w.split(' ').map(String::from).collect() }
+    };
+    let mut out: Vec<String> = Vec::new();
+    for n in picked {
+        if all.contains(&n) { out.push(n); } else { warn(&format!("no preset named {}, so it is left out", n)); }
+    }
+    let v = if out.len() == all.len() { s("all") } else if out.is_empty() { s("none") } else { out.join(" ") };
+    if settings::set("PRESETS", &v) { ok(&format!("presets: {}", v)); }
+}
+
+fn edit_plan() {
+    let now = or(settings::get("PLAN"), "unknown");
+    pick_value("📊 Claude plan (sets the weekly pace budget)", "PLAN", &now, &[
+        ("pro", "pro", "plan: pro"),
+        ("max5: Max, 5x", "max5", "plan: max5"),
+        ("max20: Max, 20x", "max20", "plan: max20"),
+        ("team", "team", "plan: team"),
+        ("api: pay per use", "api", "plan: api"),
+        ("unknown: no pace budget", "unknown", "plan: unknown"),
+    ]);
+}
+
+/// An IANA zone name such as Europe/Berlin: letters, digits and `_ + - /`, no `..`.
+pub fn valid_zone(v: &str) -> bool {
+    !v.contains("..") && !v.starts_with('/')
+        && v.chars().all(|c| c.is_ascii_alphanumeric() || "_+-/".contains(c))
+}
+
+fn edit_zone() {
+    let Some(v) = ask::value("🕒 Time zone (an IANA name; empty: the system zone)", &settings::get("TIMEZONE"), "Europe/Berlin") else { return };
+    if !valid_zone(v.trim()) { warn("that is not a time zone name, so it is not changed"); return; }
+    if settings::set("TIMEZONE", v.trim()) { ok(&format!("time zone: {}", or(v.trim().to_string(), "the system zone"))); }
+}
+
+const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+/// Work days: names or ranges split by spaces or commas, e.g. `mon-fri`, `mon-sat`, `sun-thu`.
+pub fn valid_work_days(v: &str) -> bool {
+    let w = words(&v.to_lowercase());
+    !w.is_empty() && w.split(' ').all(|part| {
+        let mut it = part.split('-');
+        let (a, b, rest) = (it.next(), it.next(), it.next());
+        rest.is_none() && a.is_some_and(|x| DAYS.contains(&x)) && b.is_none_or(|x| DAYS.contains(&x))
+    })
+}
+
+fn edit_work_days() {
+    let Some(v) = ask::value("📅 Work days, e.g. mon-fri or mon-sat (empty: mon-fri)", &settings::get("WORK_DAYS"), "mon-fri") else { return };
+    let v = v.trim().to_lowercase();
+    if !v.is_empty() && !valid_work_days(&v) { warn("those are not work days (use mon, tue, ... or a range like mon-fri), so it is not changed"); return; }
+    if settings::set("WORK_DAYS", &v) { ok(&format!("work days: {}", or(v, "mon-fri"))); }
+}
+
+fn edit_theme() {
+    pick_value("🎨 Theme for the status line, dots output and Opencode", "THEME", &or(settings::get("THEME"), "copper"), &[
+        ("🟠 copper: warm colors", "copper", "theme: copper"),
+        ("⚪ plain: no colors", "plain", "theme: plain"),
+    ]);
+}
+
 /// on or off. Like agent-config: 1, on, yes or true is on.
 fn on_off(name: &str) -> &'static str {
     if matches!(settings::get(name).to_lowercase().as_str(), "1" | "on" | "yes" | "true") { "on" } else { "off" }
@@ -230,6 +306,11 @@ pub fn run(repo: &Path) {
             row("👤 ", "Git name", &or(settings::get("GIT_NAME"), "not set")),
             row("📧 ", "Git email", &or(settings::get("GIT_EMAIL"), "not set")),
             row("🧩 ", "Profile", &settings::profile()),
+            row("🧰 ", "Presets", &crate::presets::summary(&super::os::home(), &settings::profile())),
+            row("📊 ", "Plan", &or(settings::get("PLAN"), "unknown")),
+            row("🕒 ", "Time zone", &or(settings::get("TIMEZONE"), "system")),
+            row("📅 ", "Work days", &or(settings::get("WORK_DAYS"), "mon-fri")),
+            row("🎨 ", "Theme", &or(settings::get("THEME"), "copper")),
             row("🔌 ", "Cursor MCP", on_off("CURSOR_MCP")),
             row("🔌 ", "Opencode MCP", on_off("OPENCODE_MCP")),
             row("☕ ", "Java", &java_value()),
@@ -250,17 +331,22 @@ pub fn run(repo: &Path) {
             0 => edit_git_name(),
             1 => edit_git_email(),
             2 => edit_profile(),
-            3 => edit_mcp(),
-            4 => edit_opencode_mcp(),
-            5 => edit_java(repo),
-            6 => edit_steps(),
-            7 => edit_words("PRIVATE_PROJECTS", "📁 Private project names, split by spaces. The git hooks keep them out of commits.",
+            3 => edit_presets(),
+            4 => edit_plan(),
+            5 => edit_zone(),
+            6 => edit_work_days(),
+            7 => edit_theme(),
+            8 => edit_mcp(),
+            9 => edit_opencode_mcp(),
+            10 => edit_java(repo),
+            11 => edit_steps(),
+            12 => edit_words("PRIVATE_PROJECTS", "📁 Private project names, split by spaces. The git hooks keep them out of commits.",
                 "acme-app side-project", "private projects"),
-            8 => edit_words("OPENCODE_PROJECTS", "📂 Opencode project paths, split by spaces (folders whose .opencode/ mirrors dots; ~ works)",
+            13 => edit_words("OPENCODE_PROJECTS", "📂 Opencode project paths, split by spaces (folders whose .opencode/ mirrors dots; ~ works)",
                 "~/code/my-app ~/code/another-one", "Opencode projects"),
-            9 => edit_words("TEST_HOST", "🧪 SSH host for the Linux check of scripts/os-check.sh (empty: this machine)",
+            14 => edit_words("TEST_HOST", "🧪 SSH host for the Linux check of scripts/os-check.sh (empty: this machine)",
                 "my-linux-box", "test host"),
-            10 => edit_words("PRIVATE_WORDS", "🚫 More private words, split by spaces. Your git name and email count already.",
+            15 => edit_words("PRIVATE_WORDS", "🚫 More private words, split by spaces. Your git name and email count already.",
                 "client-name nickname", "private words"),
             _ => edit_rules(),
         }
@@ -278,6 +364,13 @@ mod tests {
         assert_eq!(row("x", "N", "a, b,c"), "xN                  a b c");
         let long = "x".repeat(60);
         assert_eq!(row("", "N", &long).chars().count(), 18 + 1 + 48);
+    }
+    #[test]
+    fn zones_and_days() {
+        assert!(valid_zone("Europe/Berlin") && valid_zone("") && valid_zone("Etc/GMT+1"));
+        assert!(!valid_zone("../etc") && !valid_zone("a b") && !valid_zone("/x"));
+        assert!(valid_work_days("mon-fri") && valid_work_days("Mon, tue wed") && valid_work_days("sun-thu"));
+        assert!(!valid_work_days("") && !valid_work_days("monday") && !valid_work_days("mon-fri-sat"));
     }
     #[test]
     fn word_lists() {

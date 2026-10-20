@@ -38,7 +38,7 @@ Done means: nothing mandatory left, everything committed and pushed, no conflict
 
 | Scan warns | I do |
 |---|---|
-| not on main | Work lands on main as one commit (global rule 13). The user or the repo said PR → open a PR instead. Unsure which → ask. |
+| not on main | Work lands on main as one commit (the ship-to-main rule, when that preset is on). The user or the repo said PR → open a PR instead. Unsure which → ask. |
 | local-only branch, stash | Look inside. Ours and needed → push or apply. Old → `--note` it. Never delete it. |
 | extra worktree | Agent worktree, branch merged into main, tree clean → `git worktree remove <path>` (or `mcp__ccd_host__clean_up_worktrees`). Not merged → look inside, `--note` it. |
 | processes from this repo | Ours and not needed → stop. Not ours → leave. Judge by the scan line and `/bin/ps -o pid=,ppid=,user=,lstart=,ucomm= -p <pid>`. Never print a full command line (`ps` with `args`, `command` or `comm`, `pgrep -fl`): it can hold keys. |

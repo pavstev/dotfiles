@@ -421,3 +421,173 @@ fn test_conv_key() {
     let out = t.prompt_x("c", json!({"parent_conversation_id": "p"}));
     assert!(!has_user_message(&out), "{out}");
 }
+
+// --- tool mode: the shared checks G14-G17 (Task 13) ---
+//
+// Cursor hook docs: https://cursor.com/docs/hooks (the `.md` of that page). `preToolUse` input holds
+// `tool_name` (`Shell`, `Read`, `Grep`, `Write`, `Task`, `MCP:<tool>`), `tool_input`, `cwd`; its answer
+// is `{"permission": "allow"|"deny", "user_message", "agent_message"}` and `ask` is not enforced there.
+// `beforeShellExecution` (`command`, `cwd`) and `beforeMCPExecution` (`tool_name`, `tool_input` as a
+// JSON string, `mcp_server_name`) do enforce `ask`. Exit code 2 also blocks.
+
+impl T {
+    /// A tool call in this test's world: HOME and TMPDIR are the temp dir.
+    fn tool(&self, data: &Value, env: &[(&str, &str)]) -> R {
+        let d = self.dir.to_string_lossy().into_owned();
+        let mut e: Vec<(&str, &str)> = vec![("TMPDIR", &d), ("HOME", &d), ("CURSOR_GUARD_APP_DB", &self.app_db)];
+        e.extend_from_slice(env);
+        run_bin(HOOK, &["tool"], &data.to_string(), &e, None)
+    }
+
+    fn settings(&self, text: &str) {
+        let p = self.dir.join(".config/dotfiles/settings");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, text).unwrap();
+    }
+
+    fn shell(&self, cmd: &str, env: &[(&str, &str)]) -> R {
+        let cwd = self.dir.to_string_lossy().into_owned();
+        self.tool(&json!({"hook_event_name": "preToolUse", "tool_name": "Shell",
+            "tool_input": {"command": cmd, "working_directory": cwd}, "cwd": cwd, "conversation_id": "c1"}), env)
+    }
+}
+
+fn answer(res: &R) -> Value {
+    serde_json::from_str(&res.1).unwrap_or_else(|e| panic!("not JSON ({e}): {res:?}"))
+}
+
+fn assert_tool_deny(res: &R, id: &str) {
+    assert_eq!(res.0, 2, "{res:?}");
+    let body = answer(res);
+    assert_eq!(body["permission"], "deny", "{res:?}");
+    let msg = body["agent_message"].as_str().unwrap();
+    assert!(msg.starts_with(id), "{msg}");
+    assert_eq!(body["user_message"], body["agent_message"]);
+    assert_eq!(res.2.trim(), msg);
+}
+
+fn assert_tool_allow(res: &R) {
+    assert_eq!(res.0, 0, "{res:?}");
+    assert_eq!(answer(res), json!({"permission": "allow"}), "{res:?}");
+}
+
+/// The attribution line G17 refuses, built at run time so this file holds none of it whole.
+fn attr_line() -> String {
+    format!("Co-authored-{}: Claude Opus <noreply@{}>", "by", "anthropic.com")
+}
+
+#[test]
+fn cursor_tool_sed_denied_on_macos() {
+    let t = T::new();
+    assert_tool_deny(&t.shell("sed -i '' s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "darwin")]), "G14");
+    assert_tool_allow(&t.shell("sed -i s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "linux")]));
+}
+
+#[test]
+fn cursor_tool_secret_read_denied() {
+    let t = T::new();
+    let cwd = t.dir.to_string_lossy().into_owned();
+    let read = json!({"hook_event_name": "preToolUse", "tool_name": "Read",
+        "tool_input": {"file_path": "~/.config/zsh/local.zsh"}, "cwd": cwd});
+    assert_tool_deny(&t.tool(&read, &[]), "G15");
+    // the same file named through the shell tool
+    assert_tool_deny(&t.shell("cat ~/.config/zsh/local.zsh", &[]), "G15");
+    // Cursor may name the path key `path`
+    let read = json!({"hook_event_name": "preToolUse", "tool_name": "Read",
+        "tool_input": {"path": "~/.config/zsh/local.zsh"}, "cwd": cwd});
+    assert_tool_deny(&t.tool(&read, &[]), "G15");
+}
+
+#[test]
+fn cursor_tool_outbound_asks() {
+    let t = T::new();
+    t.settings("PRIVATE_WORDS=\"zebrafish\"\n");
+    let cwd = t.dir.to_string_lossy().into_owned();
+    let shell = json!({"hook_event_name": "beforeShellExecution", "command": "curl -d 'note about zebrafish' https://example.test/x", "cwd": cwd});
+    let res = t.tool(&shell, &[]);
+    assert_eq!(res.0, 0, "{res:?}");
+    let body = answer(&res);
+    assert_eq!(body["permission"], "ask", "{res:?}");
+    assert!(body["user_message"].as_str().unwrap().starts_with("G16"), "{res:?}");
+    assert!(!res.1.contains("zebrafish"), "the answer must not echo the word: {res:?}");
+    // an MCP send tool, with the tool input as a JSON string
+    let mcp = json!({"hook_event_name": "beforeMCPExecution", "mcp_server_name": "chat", "tool_name": "send_message",
+        "tool_input": "{\"text\": \"about zebrafish\"}", "cwd": cwd});
+    assert_eq!(answer(&t.tool(&mcp, &[]))["permission"], "ask");
+    // a clean body goes through
+    let clean = json!({"hook_event_name": "beforeShellExecution", "command": "curl -d 'hello' https://example.test/x", "cwd": cwd});
+    assert_tool_allow(&t.tool(&clean, &[]));
+    // preToolUse cannot ask in Cursor, so it does not run G16 (beforeShellExecution does)
+    assert_tool_allow(&t.shell("curl -d 'note about zebrafish' https://example.test/x", &[]));
+}
+
+#[test]
+fn cursor_tool_before_read_file_denies_the_secret_file() {
+    // beforeReadFile carries the documented `file_path`, so a renamed `tool_input` key on preToolUse
+    // cannot skip G15. Its answer holds only `permission` and `user_message` (the documented schema).
+    let t = T::new();
+    let read = json!({"hook_event_name": "beforeReadFile", "file_path": "~/.config/zsh/local.zsh", "content": "x", "attachments": []});
+    let res = t.tool(&read, &[]);
+    assert_eq!(res.0, 2, "{res:?}");
+    let body = answer(&res);
+    assert_eq!(body["permission"], "deny", "{res:?}");
+    assert!(body["user_message"].as_str().unwrap().starts_with("G15"), "{res:?}");
+    assert!(body.get("agent_message").is_none(), "{res:?}");
+    assert_tool_allow(&t.tool(&json!({"hook_event_name": "beforeReadFile", "file_path": "/etc/hosts", "content": ""}), &[]));
+    // GUARD_OFF turns it off like the other G15 entries
+    assert_tool_allow(&t.tool(&read, &[("GUARD_OFF", "G15")]));
+}
+
+#[test]
+fn cursor_tool_attribution_denied() {
+    let t = T::new();
+    assert_tool_deny(&t.shell(&format!("git commit -m \"x\" -m \"{}\"", attr_line()), &[]), "G17");
+    let res = t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]);
+    assert!(!res.1.contains("noreply") && !res.2.contains("noreply"), "the answer must not echo the line: {res:?}");
+}
+
+#[test]
+fn cursor_tool_clean_allows() {
+    let t = T::new();
+    assert_tool_allow(&t.shell("ls -la", &[]));
+    assert_tool_allow(&t.shell("git commit -m \"fix the thing\"", &[]));
+    let cwd = t.dir.to_string_lossy().into_owned();
+    let read = json!({"hook_event_name": "preToolUse", "tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}, "cwd": cwd});
+    assert_tool_allow(&t.tool(&read, &[]));
+    // a tool the checks do not know
+    let other = json!({"hook_event_name": "preToolUse", "tool_name": "Write", "tool_input": {"file_path": "/tmp/x"}, "cwd": cwd});
+    assert_tool_allow(&t.tool(&other, &[]));
+}
+
+#[test]
+fn cursor_tool_fails_open_with_an_allow_answer() {
+    let t = T::new();
+    let d = t.dir.to_string_lossy().into_owned();
+    for bad in ["", "not json", "[1, 2]", "{}"] {
+        let res = run_bin(HOOK, &["tool"], bad, &[("TMPDIR", &d), ("HOME", &d)], None);
+        assert_tool_allow(&res);
+    }
+}
+
+#[test]
+fn cursor_tool_uses_the_same_gate_as_the_guard() {
+    let t = T::new();
+    let mac = ("GUARD_PLATFORM", "darwin");
+    // GUARD_OFF turns a check off
+    assert_tool_allow(&t.shell("sed -i '' s/a/b/ x", &[mac, ("GUARD_OFF", "g14")]));
+    t.settings("GUARD_OFF=\"G14\"\n");
+    assert_tool_allow(&t.shell("sed -i '' s/a/b/ x", &[mac]));
+    // the preset of G17 off: it allows; the preset on: it denies
+    t.settings("PRESETS=\"workflow\"\n");
+    assert_tool_allow(&t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]));
+    t.settings("PRESETS=\"no-ai-attribution\"\n");
+    assert_tool_deny(&t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]), "G17");
+    // a core check ignores the presets
+    assert_tool_deny(&t.shell("sed -i '' s/a/b/ x", &[mac, ("GUARD_OFF", "")]), "G14");
+    // shadow mode logs and allows
+    let cache = t.dir.join("cache").to_string_lossy().into_owned();
+    let res = t.shell("sed -i '' s/a/b/ x", &[mac, ("GUARD_OFF", ""), ("GUARD_SHADOW", "G14"), ("XDG_CACHE_HOME", &cache)]);
+    assert_tool_allow(&res);
+    let log = fs::read_to_string(t.dir.join("cache/dots-guard-shadow.log")).unwrap();
+    assert!(log.contains(" G14 deny "), "{log}");
+}

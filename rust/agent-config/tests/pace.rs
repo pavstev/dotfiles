@@ -21,7 +21,15 @@ impl Case {
         let home = temp_home("pace");
         fs::create_dir_all(home.join("cache")).unwrap();
         fs::create_dir_all(home.join(".claude/projects/proj")).unwrap();
-        Case { home }
+        let c = Case { home };
+        c.settings("PLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\n"); // the old fixed numbers
+        c
+    }
+
+    fn settings(&self, text: &str) {
+        let f = self.home.join(".config/dotfiles/settings");
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(f, text).unwrap();
     }
 
     fn run_cli(&self, args: &[&str]) -> (i32, String, String) {
@@ -72,6 +80,41 @@ fn test_status_cli_estimates_from_transcripts() {
     let d: Value = serde_json::from_str(&out).unwrap();
     assert_eq!(d["source"], "estimate");
     assert!(!d["used"].is_null(), "{d}");
+}
+
+#[test]
+fn plan_unset_is_unknown_without_cache() {
+    let c = Case::new();
+    c.write_record("a.jsonl", now() - 60, "m1");
+    for text in ["", "PLAN=\"api\"\n", "PLAN=\"unknown\"\n", "PLAN=\"nonsense\"\n"] {
+        c.settings(text);
+        let (rc, out, err) = c.run_cli(&["status"]);
+        assert_eq!(rc, 0, "{err}");
+        let d: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(d["state"], "unknown", "{text:?}: {d}");
+        assert!(d["used"].is_null() && d["source"].is_null(), "{text:?}: {d}");
+    }
+    c.settings("PLAN=\"max5\"\n");
+    let (_, out, _) = c.run_cli(&["status"]);
+    let d: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(d["source"], "estimate", "{d}");
+}
+
+#[test]
+fn work_days_from_the_setting_change_the_budget() {
+    let c = Case::new();
+    let budget = |text: &str| -> f64 {
+        c.settings(text);
+        let (_, out, _) = c.run_cli(&["status"]);
+        serde_json::from_str::<Value>(&out).unwrap()["budget"].as_f64().unwrap()
+    };
+    // today is day idx of the week: the budget is (idx+1).min(days)/days
+    let mon_sat = budget("PLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\n");
+    let mon_fri = budget("PLAN=\"pro\"\nWORK_DAYS=\"mon-fri\"\n");
+    let unset = budget("PLAN=\"pro\"\n");
+    assert_eq!(mon_fri, unset, "mon-fri is the default");
+    assert!(mon_fri >= mon_sat, "{mon_fri} vs {mon_sat}"); // fewer days: never a smaller budget
+    assert!([20.0, 40.0, 60.0, 80.0, 100.0].contains(&mon_fri), "{mon_fri}");
 }
 
 #[test]

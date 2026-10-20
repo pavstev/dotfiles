@@ -882,10 +882,14 @@ fn test_dry_run() {
 
 // --- cursor_hooks -------------------------------------------------------------
 
-const HOOK_EVENTS: [(&str, &str, Option<&str>); 5] = [
+const HOOK_EVENTS: [(&str, &str, Option<&str>); 9] = [
     ("beforeSubmitPrompt", "prompt", None),
     ("subagentStart", "subagent", None),
     ("preToolUse", "subagent", Some("^(Task|Subagent|mcp_task)$")),
+    ("preToolUse", "tool", Some("^(Shell|Read|Grep)$")),
+    ("beforeShellExecution", "tool", None),
+    ("beforeMCPExecution", "tool", None),
+    ("beforeReadFile", "tool", None),
     ("preCompact", "compact", None),
     ("afterAgentResponse", "response", None),
 ];
@@ -906,8 +910,11 @@ fn test_creates_file_with_all_events() {
     assert_eq!(got, want);
     for (event, mode, matcher) in HOOK_EVENTS {
         let entries = data["hooks"][event].as_array().unwrap();
-        assert_eq!(entries.len(), 1, "{event}");
-        let entry = &entries[0];
+        let want = HOOK_EVENTS.iter().filter(|e| e.0 == event).count();
+        assert_eq!(entries.len(), want, "{event}");
+        // our entries sit in the order of HOOK_EVENTS
+        let nth = HOOK_EVENTS.iter().filter(|e| e.0 == event).position(|e| e.1 == mode && e.2 == matcher).unwrap();
+        let entry = &entries[nth];
         let cmd = entry["command"].as_str().unwrap();
         assert!(cmd.starts_with("test -r "), "{cmd}");
         assert!(cmd.contains("|| exit 0;"), "{cmd}"); // a missing script must not deny
@@ -932,7 +939,27 @@ fn test_user_entries_and_keys_are_kept() {
     assert_eq!(data["extra"], true);
     assert_eq!(data["hooks"]["stop"], json!([mine]));
     assert_eq!(data["hooks"]["preToolUse"][0], mine);
-    assert_eq!(data["hooks"]["preToolUse"].as_array().unwrap().len(), 2);
+    assert_eq!(data["hooks"]["preToolUse"].as_array().unwrap().len(), 3); // the user's, subagent, tool
+}
+
+#[test]
+fn cursor_hooks_json_uses_rust_bin() {
+    let fx = Fx::new();
+    call(|| cursor_hooks(&fx.home));
+    let text = rd(&hooks_path(&fx));
+    assert!(text.contains("rust-bin --hook guard_cursor"), "{text}");
+    assert!(!text.contains("python"), "{text}");
+    let data = rj(&hooks_path(&fx));
+    // the tool mode runs on the shell, MCP and read events, and the entries keep their order on a rerun
+    let modes = |event: &str| -> Vec<String> {
+        data["hooks"][event].as_array().unwrap().iter().map(|e| e["command"].as_str().unwrap().rsplit(' ').next().unwrap().to_string()).collect()
+    };
+    assert_eq!(modes("preToolUse"), ["subagent", "tool"]);
+    assert_eq!(modes("beforeShellExecution"), ["tool"]);
+    assert_eq!(modes("beforeMCPExecution"), ["tool"]);
+    assert_eq!(modes("beforeReadFile"), ["tool"]);
+    call(|| cursor_hooks(&fx.home));
+    assert_eq!(rj(&hooks_path(&fx)), data);
 }
 
 #[test]

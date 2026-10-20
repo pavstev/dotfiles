@@ -1,4 +1,7 @@
-//! Weekly usage pace for the Pro plan: the Rust port of `claude/hooks/pace.py`.
+//! Weekly usage pace: the Rust port of `claude/hooks/pace.py`. The work days a week (`WORK_DAYS`)
+//! and the default weekly weight (`PLAN`) come from `~/.config/dotfiles/settings`; a calibration
+//! from the status line always wins over the plan. With no plan, no calibration and no fresh
+//! status line the state is `unknown`.
 //!
 //! Included by `src/bin/pace.rs` and the guard with `#[path] mod`. The cache files keep the Python
 //! formats (compact JSON), so both implementations read each other's caches.
@@ -43,10 +46,14 @@ pub struct RefreshResult {
 
 // --- paths and JSON files --------------------------------------------------------------------
 
-/// Where the caches and the transcripts live. Tests build one over a temp dir.
+/// Where the caches and the transcripts live, and the two settings that shape the numbers: the plan
+/// (`pro`, `max5`, ...; `unknown` when unset) and the work days a week. Tests build one over a temp dir.
+#[derive(Clone)]
 pub struct Paths {
     pub cache: PathBuf,
     pub projects: PathBuf,
+    pub plan: String,
+    pub days: i64,
 }
 
 fn env_nonempty(k: &str) -> Option<String> {
@@ -62,7 +69,14 @@ impl Paths {
     pub fn from_env() -> Paths {
         let cache = env_nonempty("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache"));
         let base = env_nonempty("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".claude"));
-        Paths { cache, projects: base.join("projects") }
+        // the settings file is read once per process
+        static SETTINGS: OnceLock<(String, i64)> = OnceLock::new();
+        let (plan, days) = SETTINGS.get_or_init(|| {
+            let h = home();
+            let plan = agent_config::setting(&h, "PLAN").trim().to_lowercase();
+            (if plan.is_empty() { "unknown".to_string() } else { plan }, work_days(&agent_config::setting(&h, "WORK_DAYS")))
+        });
+        Paths { cache, projects: base.join("projects"), plan: plan.clone(), days: *days }
     }
 
     fn file(&self, name: &str) -> PathBuf {
@@ -406,9 +420,31 @@ fn week_start(p: &Paths, now: i64) -> i64 {
     c1_reset(p, now).map_or_else(|| fallback_week_start(now), |e| e - WEEK)
 }
 
-fn budget_for(now: i64, ws: i64) -> f64 {
+/// Work days a week from the `WORK_DAYS` setting: `mon-fri` 5, `mon-sat` 6, `mon-sun` 7, anything else 5.
+pub fn work_days(spec: &str) -> i64 {
+    match spec.trim().to_lowercase().as_str() {
+        "mon-sat" => 6,
+        "mon-sun" => 7,
+        _ => 5,
+    }
+}
+
+/// The share of the week that should be used by today, in percent: one `days`-th per work day.
+fn budget_for(now: i64, ws: i64, days: i64) -> f64 {
+    let days = days.max(1);
     let idx = (local_day(now) - local_day(ws)).max(0);
-    (idx + 1).min(6) as f64 / 6.0 * 100.0
+    (idx + 1).min(days) as f64 / days as f64 * 100.0
+}
+
+/// The default weekly weight of a plan (pro and team 5860, max5 five times that, max20 twenty times),
+/// or None when the plan is `api`, `unknown` or not a plan: then only a calibration gives a weight.
+pub fn plan_weight(plan: &str) -> Option<f64> {
+    match plan.trim().to_lowercase().as_str() {
+        "pro" | "team" => Some(DEFAULT_WEEK_WEIGHT),
+        "max5" => Some(DEFAULT_WEEK_WEIGHT * 5.0),
+        "max20" => Some(DEFAULT_WEEK_WEIGHT * 20.0),
+        _ => None,
+    }
 }
 
 // --- calibration -----------------------------------------------------------------------------
@@ -417,13 +453,15 @@ fn calib(p: &Paths) -> Option<Value> {
     read_json(&p.file("claude-pace-calib.json"))
 }
 
-fn week_weight_in(p: &Paths) -> f64 {
+/// The weekly weight: a valid calibration, else the plan's default, else None (no way to tell).
+fn week_weight_in(p: &Paths) -> Option<f64> {
     let c = calib(p);
     let w = c.as_ref().filter(|c| num_eq(get(c, "v"), FORMAT)).and_then(|c| get(c, "week_weight"));
-    match w {
-        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite() && *f > 0.0).unwrap_or(DEFAULT_WEEK_WEIGHT),
-        _ => DEFAULT_WEEK_WEIGHT,
-    }
+    let calibrated = match w {
+        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite() && *f > 0.0),
+        _ => None,
+    };
+    calibrated.or_else(|| plan_weight(&p.plan))
 }
 
 /// When the stored calibration was made (epoch), or 0 when there is none.
@@ -902,7 +940,7 @@ fn out(state: &str, used: Option<f64>, budget: f64, source: Option<&str>, resets
 
 fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
     let ws = week_start(p, now);
-    let budget = budget_for(now, ws);
+    let budget = budget_for(now, ws, p.days);
     if let Some((used, resets)) = fresh_c1(p, now) {
         return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("statusline"), Some(resets)));
     }
@@ -915,9 +953,12 @@ fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
         };
         if positive {
             let weight = get(&r, "weight").and_then(pynum).ok_or(())?;
-            let raw = weight / week_weight_in(p) * 100.0;
-            let used = if raw < 100.0 { raw } else { 100.0 };
-            return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("estimate"), c1_reset(p, now)));
+            // no calibration and no plan weight (api, unknown): nothing to divide by, so no estimate
+            if let Some(total) = week_weight_in(p) {
+                let raw = weight / total * 100.0;
+                let used = if raw < 100.0 { raw } else { 100.0 };
+                return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("estimate"), c1_reset(p, now)));
+            }
         }
     }
     Ok(out("unknown", None, budget, None, None))
@@ -930,7 +971,7 @@ pub fn status_in(p: &Paths, now: Option<i64>) -> Status {
     if let Ok(Ok(s)) = attempt {
         return s;
     }
-    let budget = std::panic::catch_unwind(|| budget_for(now, fallback_week_start(now))).unwrap_or(0.0);
+    let budget = std::panic::catch_unwind(|| budget_for(now, fallback_week_start(now), p.days)).unwrap_or(0.0);
     out("unknown", None, budget, None, None)
 }
 
@@ -941,7 +982,7 @@ pub fn status(now: Option<i64>) -> Status {
     }
 }
 
-pub fn week_weight() -> f64 {
+pub fn week_weight() -> Option<f64> {
     week_weight_in(&Paths::from_env())
 }
 
@@ -1022,7 +1063,12 @@ mod tests {
 
     fn env() -> Env {
         let dir = tempfile::tempdir().unwrap();
-        let p = Paths { cache: dir.path().join("cache"), projects: dir.path().join("projects") };
+        let p = Paths {
+            cache: dir.path().join("cache"),
+            projects: dir.path().join("projects"),
+            plan: "pro".into(),
+            days: 6,
+        };
         fs::create_dir_all(p.projects.join("proj")).unwrap();
         Env { _dir: dir, p }
     }
@@ -1191,7 +1237,7 @@ mod tests {
         assert_eq!(get(&c, "source").and_then(Value::as_str), Some("limit-hit"));
         assert_eq!(get(&c, "week_weight").and_then(Value::as_f64), Some(2000.0));
         assert_eq!(get(&c, "updated").and_then(Value::as_i64), Some(t0));
-        assert_eq!(week_weight_in(&e.p), 2000.0);
+        assert_eq!(week_weight_in(&e.p), Some(2000.0));
     }
 
     #[test]
@@ -1205,11 +1251,11 @@ mod tests {
         }
         assert!(!e.p.file("claude-pace-calib.json").exists());
         assert!(seed_in(&e.p, 25.0, Some(now)));
-        assert!((week_weight_in(&e.p) - 10.0 * WEIGHT / 0.25).abs() < 1e-9);
+        assert!((week_weight_in(&e.p).unwrap() - 10.0 * WEIGHT / 0.25).abs() < 1e-9);
         assert!((status_in(&e.p, Some(now)).used.unwrap() - 25.0).abs() < 0.05);
         e.c1(now - 10, 10.0, mon() + WEEK);
         refresh_in(&e.p, 5.0, Some(now));
-        assert!((week_weight_in(&e.p) - 10.0 * WEIGHT / 0.10).abs() < 1e-9);
+        assert!((week_weight_in(&e.p).unwrap() - 10.0 * WEIGHT / 0.10).abs() < 1e-9);
     }
 
     #[test]
@@ -1221,7 +1267,7 @@ mod tests {
         write_text(&e.p.file("claude-pace-calib.json"), r#"{"week_weight":1.3e9,"updated":1}"#);
         let now = mon() + DAY;
         assert_eq!(status_in(&e.p, Some(now)).state, "unknown");
-        assert_eq!(week_weight_in(&e.p), DEFAULT_WEEK_WEIGHT);
+        assert_eq!(week_weight_in(&e.p), Some(DEFAULT_WEEK_WEIGHT));
         refresh_in(&e.p, 5.0, Some(now));
         assert!((e.weight() - WEIGHT).abs() < 1e-12);
     }
@@ -1253,7 +1299,7 @@ mod tests {
     fn hit(t: i64) -> Value {
         json!({"type": "assistant", "timestamp": iso(t), "isApiErrorMessage": true, "message": {
             "id": format!("hit{t}"), "model": "<synthetic>", "role": "assistant",
-            "content": [{"type": "text", "text": "You've hit your weekly limit \u{b7} resets Oct 19 at 8am (Europe/Vienna)"}],
+            "content": [{"type": "text", "text": "You've hit your weekly limit \u{b7} resets Oct 19 at 8am (Europe/Berlin)"}],
             "usage": {"input_tokens": 0, "output_tokens": 0}}})
     }
 
@@ -1273,7 +1319,12 @@ mod tests {
 
     fn pc() -> Pc {
         let dir = tempfile::tempdir().unwrap();
-        let p = Paths { cache: dir.path().join("cache"), projects: dir.path().join(".claude/projects") };
+        let p = Paths {
+            cache: dir.path().join("cache"),
+            projects: dir.path().join(".claude/projects"),
+            plan: "pro".into(),
+            days: 6,
+        };
         fs::create_dir_all(&p.cache).unwrap();
         fs::create_dir_all(p.projects.join("proj")).unwrap();
         Pc { _dir: dir, p }
@@ -1505,6 +1556,103 @@ mod tests {
         assert_eq!(DEFAULT_WEEK_WEIGHT, 5860.0);
     }
 
+    // Work days and plan come from the settings (the fixtures above are pro and mon-sat)
+    #[test]
+    fn work_days_names() {
+        assert_eq!(work_days("mon-fri"), 5);
+        assert_eq!(work_days("mon-sat"), 6);
+        assert_eq!(work_days("mon-sun"), 7);
+        assert_eq!(work_days(" MON-SAT "), 6);
+        assert_eq!(work_days(""), 5);
+        assert_eq!(work_days("tue-sat"), 5);
+    }
+
+    #[test]
+    fn budget_mon_fri_day_one_is_20() {
+        assert_eq!(budget_for(mon(), mon(), 5), 20.0);
+        assert_eq!(budget_for(mon() + 2 * DAY, mon(), 5), 60.0);
+    }
+
+    #[test]
+    fn budget_caps_at_100_on_day_six_of_five() {
+        assert_eq!(budget_for(mon() + 4 * DAY, mon(), 5), 100.0);
+        assert_eq!(budget_for(mon() + 5 * DAY, mon(), 5), 100.0);
+        assert_eq!(budget_for(mon() + 6 * DAY, mon(), 5), 100.0);
+        assert_eq!(budget_for(mon() + 6 * DAY, mon(), 7), 100.0);
+        assert!(close(budget_for(mon(), mon(), 7), 14.3, 1));
+    }
+
+    #[test]
+    fn mon_sat_matches_old_budget() {
+        let mut x: u64 = 0x2545F4914F6CDD1D; // a fixed xorshift: 300 values, the same on every run
+        for _ in 0..300 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let ws = mon() + (x % 3) as i64 * WEEK_S;
+            let now = ws - DAY + (x >> 8) as i64 % (10 * DAY);
+            let old = {
+                let idx = (local_day(now) - local_day(ws)).max(0);
+                (idx + 1).min(6) as f64 / 6.0 * 100.0
+            };
+            assert_eq!(budget_for(now, ws, work_days("mon-sat")), old, "now {now} ws {ws}");
+        }
+    }
+
+    #[test]
+    fn plan_weights() {
+        assert_eq!(plan_weight("pro"), Some(5860.0));
+        assert_eq!(plan_weight("team"), Some(5860.0));
+        assert_eq!(plan_weight("max5"), Some(29300.0));
+        assert_eq!(plan_weight("max20"), Some(117200.0));
+        assert_eq!(plan_weight("MAX5"), Some(29300.0));
+        for none in ["api", "unknown", "", "max100"] {
+            assert_eq!(plan_weight(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn plan_max5_weight() {
+        let e = env();
+        let p = Paths { plan: "max5".into(), ..e.p.clone() };
+        assert_eq!(week_weight_in(&p), Some(29300.0));
+    }
+
+    #[test]
+    fn calibration_beats_plan() {
+        let e = env();
+        let p = Paths { plan: "max5".into(), ..e.p.clone() };
+        seed_weight(&p, 2000.0, Some(mon()), "seed", None);
+        assert_eq!(week_weight_in(&p), Some(2000.0));
+        let api = Paths { plan: "api".into(), ..e.p.clone() };
+        assert_eq!(week_weight_in(&api), Some(2000.0)); // a calibration also rescues an unknown plan
+    }
+
+    #[test]
+    fn plan_api_is_unknown_without_cache() {
+        let c = pc();
+        c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
+        let api = Paths { plan: "unknown".into(), ..c.p.clone() };
+        refresh_in(&api, 5.0, Some(mon() + DAY));
+        let st = status_in(&api, Some(mon() + DAY));
+        assert_eq!((st.state.as_str(), st.used, st.source), ("unknown", None, None));
+        // the same transcripts on a known plan give an estimate
+        let pro = Paths { plan: "pro".into(), ..c.p.clone() };
+        assert_eq!(status_in(&pro, Some(mon() + DAY)).source.as_deref(), Some("estimate"));
+        // a fresh statusline cache needs no plan
+        c.c1(mon() + DAY - 60, 41.2, mon() + WEEK_S);
+        let st = status_in(&api, Some(mon() + DAY));
+        assert_eq!((st.source.as_deref(), st.used), (Some("statusline"), Some(41.2)));
+    }
+
+    #[test]
+    fn budget_follows_the_work_days_of_the_paths() {
+        let c = pc();
+        let five = Paths { days: 5, ..c.p.clone() };
+        assert_eq!(status_in(&five, Some(mon())).budget, 20.0);
+        assert_eq!(status_in(&c.p, Some(mon())).budget, 16.7); // the fixture is mon-sat
+    }
+
     #[test]
     fn test_cost_per_model_family() {
         // input 1000, output 500, cache write 2000 (1h), cache read 10000.
@@ -1543,7 +1691,7 @@ mod tests {
         write_text(&c.p.file("claude-pace-result.json"), &old.to_string());
         write_text(&c.p.file("claude-pace-calib.json"), &json!({"week_weight": 1.3e9, "updated": mon()}).to_string());
         assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, "unknown"); // old result ignored
-        assert_eq!(week_weight_in(&c.p), DEFAULT_WEEK_WEIGHT); // old calibration ignored
+        assert_eq!(week_weight_in(&c.p), Some(DEFAULT_WEEK_WEIGHT)); // old calibration ignored
         c.refresh(5.0, mon() + DAY);
         assert!(close(c.weight(), WEIGHT, 7));
         assert_eq!(c.scan()["v"].as_f64(), Some(SCAN_FORMAT));
@@ -1832,7 +1980,7 @@ mod tests {
     fn test_corrupt_calibration_uses_default() {
         let c = pc();
         write_text(&c.p.file("claude-pace-calib.json"), "zzz");
-        assert_eq!(week_weight_in(&c.p), DEFAULT_WEEK_WEIGHT);
+        assert_eq!(week_weight_in(&c.p), Some(DEFAULT_WEEK_WEIGHT));
     }
 
     // TestLimitHit
@@ -1852,7 +2000,7 @@ mod tests {
             (cal["source"].as_str(), cal["week_start"].as_i64(), cal["updated"].as_i64()),
             (Some("limit-hit"), Some(mon()), Some(t0))
         );
-        assert_eq!(week_weight_in(&c.p), cal["week_weight"].as_f64().unwrap());
+        assert_eq!(week_weight_in(&c.p), cal["week_weight"].as_f64());
         // 2500 used against a 2000 week: capped at 100 and critical
         let st = status_in(&c.p, Some(mon() + 3 * DAY));
         assert_eq!((st.used, st.state.as_str()), (Some(100.0), "critical"));
@@ -1875,7 +2023,7 @@ mod tests {
         c.lines("a.jsonl", &[big2000(mon() + 3600, "b1")]);
         refresh_default(&c);
         assert!(!c.has_calib());
-        assert_eq!(week_weight_in(&c.p), DEFAULT_WEEK_WEIGHT);
+        assert_eq!(week_weight_in(&c.p), Some(DEFAULT_WEEK_WEIGHT));
     }
 
     #[test]

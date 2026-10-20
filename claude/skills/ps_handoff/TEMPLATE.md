@@ -40,7 +40,7 @@ The next session updates these lines after each phase, or the ledger it names.
 - <style and tools this repo uses>
 
 ## Phases
-1. <phase> | model: <plan phase: Opus 5.5 (app) or opusplan (CLI) / build or review: Sonnet 5.5 (app) or sonnet (CLI)> | effort: high | <minutes>
+1. <phase> | model: <plan phase: Opus (app) or opusplan (CLI) / build or review: Sonnet (app) or sonnet (CLI)> | effort: high | <minutes>
    reads: <files or State lines this phase needs> | writes: <files, commits or State lines it changes>
 2. <phase> | model: <...> | effort: high | <minutes> | parallel with: <phase numbers, or "none">
    reads: <...> | writes: <...>

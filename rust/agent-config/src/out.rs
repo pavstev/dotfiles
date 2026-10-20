@@ -10,12 +10,21 @@
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Write};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// `THEME=plain` in the dotfiles settings: no color codes at all. Read once per process.
+fn plain_theme() -> bool {
+    static PLAIN: OnceLock<bool> = OnceLock::new();
+    *PLAIN.get_or_init(|| crate::setting(&crate::home_dir(), "THEME") == "plain")
+}
+
+/// Colors print when NO_COLOR is unset, the theme is not plain and stdout is a terminal.
+fn colors_on(no_color: bool, plain: bool, tty: bool) -> bool { !no_color && !plain && tty }
 
 pub fn color_enabled() -> bool {
     if env::var("NO_COLOR").is_ok() { return false; }
-    io::stdout().is_terminal()
+    colors_on(false, plain_theme(), io::stdout().is_terminal())
 }
 fn c(code: &'static str) -> &'static str { if color_enabled() { code } else { "" } }
 pub fn g() -> &'static str { c("\x1b[38;5;108m") } // sage: success
@@ -183,3 +192,15 @@ pub fn summary(label: &str) {
 /// A plain line, the way a script prints it (no prefix, no step header).
 pub fn plain(msg: &str) { emit(msg, false); }
 pub fn plain_err(msg: &str) { emit(msg, true); }
+
+#[cfg(test)]
+mod tests {
+    use super::colors_on;
+    #[test]
+    fn plain_theme_drops_color() {
+        assert!(colors_on(false, false, true));
+        assert!(!colors_on(false, true, true));
+        assert!(!colors_on(true, false, true));
+        assert!(!colors_on(false, false, false));
+    }
+}

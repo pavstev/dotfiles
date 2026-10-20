@@ -42,7 +42,7 @@ earlier findings. If the task text or the diff range is missing, say so in one l
 
 ## Basics (every helper)
 
-- In a worktree: one plain command per Bash call, from the worktree root (rule 18). Report files
+- In a worktree: one plain command per Bash call, from the worktree root (the plain-worktree-commands rule). Report files
   go inside the worktree.
 - Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
 - Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.

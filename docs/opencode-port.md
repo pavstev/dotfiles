@@ -95,13 +95,43 @@ keys; the docs example lists `syntaxBracket`, which no shipped theme has, and om
 `syntaxNumber` and `syntaxType`, which all of them have. `COPPER_THEME` in
 `rust/agent-config/themes/copper.json` follows the shipped themes, and a test pins that key set.
 
+## Guard plugin
+
+`agent-config opencode` writes `~/.config/opencode/plugins/dots-guard.ts` (marker
+`generated-by: dotfiles`; a file of that name without the marker is yours and is left alone; the
+file is removed when `claude/hooks/rust-bin` is gone). The source text is
+`rust/agent-config/src/opencode_plugin.ts.tmpl`. Which check runs in which app is in the table
+in [`docs/guide.md`](guide.md#where-each-guard-check-runs).
+
+- **Shape (Opencode 2.0.30):** a default export `{ id, setup(ctx) }` that calls
+  `ctx.tool.hook("execute.before", async (input) => ...)`. The older
+  `export const X = async () => ({"tool.execute.before": ...})` form is refused. `setup` can run
+  twice, so the plugin keeps its state at module level and caches the verdict per call.
+- **Blocking:** a throw in the hook blocks the call and the model sees the error text. Verified live:
+  `sed -i '' ...` came back as `G14: BSD sed -i on macOS ...` and nothing ran.
+- **Input:** `input.tool`, `input.input` (the args), `input.sessionID`, `input.id`.
+- **Tool names seen live:** `shell` (arg `command`; Claude's `Bash`), `read` (arg `path`),
+  `grep` (args `pattern`, `path`), `glob`, `execute`, and MCP tools as `<server>_<tool>`
+  (for example `chat_send_message`), which the plugin turns into `mcp__<server>__<tool>`.
+  The `execute` tool runs inner calls (`tools.chat.send_message(...)`), and each inner call fires
+  the hook again. The plugin skips `execute` itself and keys its verdict cache by call id, tool name
+  and the call input, because an inner call can share the id of the call that holds it (two inner
+  calls of one tool must not share a verdict). Verified live: a send tool
+  with a private word was blocked and a clean one went through.
+- **Answer:** exit code 2 (a deny) throws the guard's stderr text; an `ask` throws its reason with a
+  note that Opencode cannot ask. A missing launcher, a crash or an answer that is not JSON allows the
+  call and writes one `console.warn` per session.
+- **Settings:** the checks read `~/.config/dotfiles/settings` of the user that runs
+  Opencode, so the same presets, `GUARD_OFF` and `GUARD_SHADOW` apply as in Claude Code.
+
 ## Gaps
 
 | Claude feature | Why Opencode cannot match it |
 |----------------|------------------------------|
-| Guard hooks (G1–G6, W1–W4 in the `guard` bin) | Opencode has no hook system; the guard's model+effort/deadline, polling, context-ceiling, one-question, hand-back-cap, and scratch rules don't run there |
+| Guard checks other than G14 to G17 (model+effort/deadline, polling, context ceiling, one question, hand-back cap, scratch) | The plugin sends only shell, read, grep and MCP calls, so rules about subagents, questions and hand-backs never see their events. A rule that looks at a shell command may fire; it is not tested. |
+| Asking before a call (G16) | A plugin cannot ask. An `ask` blocks the call and the message says so. |
 | Output styles (`outputStyle`, `output-styles/`) | No output-style feature. The active style is appended to `AGENTS.md` as text; switching means editing `outputStyle` and running `dots`. |
-| `claude/` hooks directory | Opencode runs no hooks |
+| `claude/` hooks directory | Not read. Opencode loads plugins from `~/.config/opencode/plugins/`; the guard plugin is generated there. |
 | `mode: primary` agents | All ported agents are `subagent`; there's no ported primary agent to set as `default_agent` |
 | Claude AI connectors (Linear, Sentry, Gmail…) | Tied to the claude.ai account; not portable |
 | Claude Code plugins (`enabledPlugins`) | Opencode reads Claude skills and prompts, not plugins |

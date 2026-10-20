@@ -6,15 +6,16 @@
 //! Python semantics are mirrored on purpose (truthiness, `str()`, char-based lengths). Where the
 //! Python code would raise and so fail open, the Rust code returns `Err(Fail)`.
 
+use agent_config::guard_checks::{self as gc, expanduser, is_macos, realpath};
 use regex::Regex;
 use serde_json::{Map, Value};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[path = "../pace_core.rs"]
@@ -48,7 +49,6 @@ const CLOCK_TURN_MIN: i64 = 10;
 const G13_AFTER: usize = 8;
 const PLAN_TOOL: &str = "mcp__ccd_turn__update_plan";
 const WRAP_TOOL: &str = "mcp__ccd_turn__wrap_up";
-const SECRET_FILE: &str = "~/.config/zsh/local.zsh";
 
 const MSG_SCRATCH: &str = "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.";
 const MSG_POLL: &str = "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
@@ -57,10 +57,6 @@ const MSG_HEAVY_TAIL: &str = "subagent loads every tool and skill (about 60K tok
 const MSG_PLAN_GATE: &str = "guard: plans run on Opus only in plan mode (opusplan). Call EnterPlanMode first, then save the plan file after you approve it (autopilot: send a `Plan` helper instead).";
 const MSG_PLAN_GATE_APP: &str = "guard: in the desktop app plan mode does not switch a Sonnet session to Opus. For this plan, send a `Plan` helper (Opus by the router), or pick Opus in the model menu.";
 const MSG_G13: &str = "G13: 8 tool calls with no text. Write one short status line for the user now, then go on.";
-const MSG_G14: &str = "G14: BSD sed -i on macOS differs from GNU sed and breaks files. Use the Edit tool, or python3 for bulk edits.";
-const MSG_G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
-const MSG_G15_SEARCH: &str = "G15: this search can reach local.zsh (API keys). Exclude it: `rg -g '!local.zsh' ...` or `grep --exclude=local.zsh ...`.";
-const MSG_G15_PS: &str = "G15: this prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, or `ps -o pid=,etime=,ucomm= -p <pid>`.";
 
 static DEADLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)deadline|time ?(?:box|limit)|stop at|\d+ ?-?(?:m|mins?|minutes?|h|hrs?|hours?)\b").unwrap()
@@ -105,7 +101,6 @@ static GIT_COMMIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b[^;&|\
 static WORDS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w{2,}").unwrap());
 static ENTRYPOINT: LazyLock<regex::bytes::Regex> =
     LazyLock::new(|| regex::bytes::Regex::new(r#""entrypoint"\s*:\s*"([^"]*)""#).unwrap());
-static GLOB_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[*?\[]").unwrap());
 
 /// Python would have raised here: the whole hook fails open.
 struct Fail;
@@ -254,19 +249,49 @@ fn now_secs() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
-/// macOS rules (BSD sed, case-folded paths, ps). GUARD_PLATFORM=darwin|linux|win32 overrides the build
-/// target, so a Linux run can test the macOS branches (the Python hook tests set it from sys.platform).
-fn is_macos() -> bool {
-    match env::var("GUARD_PLATFORM") {
-        Ok(p) if !p.is_empty() => p == "darwin",
-        _ => cfg!(target_os = "macos"),
-    }
+// The check list (`gc::REGISTRY`) and the gate (`gc::Gate`) live in `guard_checks`: one copy for the
+// guard and the Cursor adapter.
+
+/// What a hook run reads from the settings: read once per process.
+struct Cfg {
+    gate: gc::Gate,
+    zone: Option<String>,
 }
 
-/// GUARD_OFF="G10,G13" (env, comma or space list) turns those checks off.
-fn check_off(gid: &str) -> bool {
-    let off = env::var("GUARD_OFF").unwrap_or_default().to_uppercase();
-    off.split(|c: char| c.is_whitespace() || c == ',').any(|p| p == gid.to_uppercase())
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).or_else(dirs::home_dir)
+}
+
+/// An IANA-looking name that this machine knows (shape only where there is no zoneinfo folder).
+fn valid_zone(z: &str) -> bool {
+    let shape = !z.is_empty()
+        && z.len() <= 64
+        && !z.contains("..")
+        && !z.starts_with('/')
+        && z.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'));
+    let root = Path::new("/usr/share/zoneinfo");
+    shape && (!root.is_dir() || root.join(z).is_file())
+}
+
+fn load_cfg() -> Cfg {
+    let all_on = || Cfg { gate: gc::Gate::all_on(), zone: None };
+    let Some(home) = home_dir() else { return all_on() };
+    std::panic::catch_unwind(|| {
+        let zone = Some(agent_config::setting(&home, "TIMEZONE").trim().to_string()).filter(|z| valid_zone(z));
+        Cfg { gate: gc::Gate::load(&home), zone }
+    })
+    .unwrap_or_else(|_| all_on())
+}
+
+fn cfg() -> &'static Cfg {
+    static CFG: OnceLock<Cfg> = OnceLock::new();
+    CFG.get_or_init(load_cfg)
+}
+
+/// True when check `id` runs: it is not in `GUARD_OFF` (env, else the setting; a comma or space
+/// list) and its preset is on. `core` checks ignore the presets.
+fn check_enabled(id: &str) -> bool {
+    cfg().gate.enabled(id)
 }
 
 /// Locked read-modify-write of the per-session state file (the keys count, pace, spawns).
@@ -652,7 +677,10 @@ struct PaceSt {
 }
 
 fn pace_status() -> PaceSt {
-    let st = std::panic::catch_unwind(|| pace::status(None)).ok();
+    if !check_enabled("PACE") {
+        return PaceSt { state: "unknown".into(), used: None, budget: None }; // no pace: caps stay at the base
+    }
+    let st =std::panic::catch_unwind(|| pace::status(None)).ok();
     match st {
         Some(s) if matches!(s.state.as_str(), "ok" | "unknown" | "ahead" | "critical") => {
             PaceSt { state: s.state, used: s.used, budget: Some(s.budget) }
@@ -1339,7 +1367,7 @@ fn g10_commit(data: &Value, t: &Turn) -> Res {
         return Ok(None);
     }
     Ok(Some(format!(
-        "G10: this turn left work in {}: {} uncommitted file(s), {} unpushed commit(s). Rule 13: commit and push now, unless the user said not to. If the work is not finished, say what is left.",
+        "G10: this turn left work in {}: {} uncommitted file(s), {} unpushed commit(s). The ship-to-main preset asks: commit and push now, unless the user said not to. If the work is not finished, say what is left.",
         basename(&top),
         dirty,
         unpushed
@@ -1358,9 +1386,10 @@ fn g11_clock(data: &Value, t: &Turn) -> Res {
     let Some(start) = t.start else { return Ok(None) };
     let minutes = ((now_secs() - start as f64) / 60.0).floor() as i64;
     if minutes >= CLOCK_TURN_MIN && !CLOCK.is_match(&final_reply(data, t)) {
+        let zone = cfg().zone.as_ref().map(|z| format!(" in {z}")).unwrap_or_default();
         return Ok(Some(format!(
-            "G11: this turn ran {} min. Rule 12: give the clock as a Vienna time (HH:MM) and one estimate with a range.",
-            minutes
+            "G11: this turn ran {} min. The clock preset asks: give the clock as a local time (HH:MM){} and one estimate with a range.",
+            minutes, zone
         )));
     }
     Ok(None)
@@ -1407,7 +1436,9 @@ fn stop(data: &Value) -> Res {
     if truthy(get(data, "stop_hook_active")) || !truthy(get(data, "transcript_path")) {
         return Ok(None);
     }
-    if let Ok(Some(m)) = g6_stop(data) {
+    if check_enabled("G6")
+        && let Ok(Some(m)) = g6_stop(data)
+    {
         return Ok(Some(m));
     }
     if !is_main_thread(data) {
@@ -1415,7 +1446,7 @@ fn stop(data: &Value) -> Res {
     }
     type TurnCheck = fn(&Value, &Turn) -> Res;
     let checks: [(&str, TurnCheck); 3] = [("G10", g10_commit), ("G11", g11_clock), ("G12", g12_open_steps)];
-    let active: Vec<_> = checks.into_iter().filter(|(gid, _)| !check_off(gid)).collect();
+    let active: Vec<_> = checks.into_iter().filter(|(gid, _)| check_enabled(gid)).collect();
     if active.is_empty() {
         return Ok(None);
     }
@@ -1458,7 +1489,7 @@ fn subagentstop(data: &Value) -> Res {
         spawn_done(data);
         return Ok(None);
     }
-    let msg = check_handback(data, get(data, "last_assistant_message"));
+    let msg = if check_enabled("G5") { check_handback(data, get(data, "last_assistant_message")) } else { None };
     if msg.is_none() {
         spawn_done(data); // the helper is really done; a denied hand-back keeps its slot
     }
@@ -1466,68 +1497,6 @@ fn subagentstop(data: &Value) -> Res {
 }
 
 // --- scratch mode -------------------------------------------------------------
-
-fn expanduser(p: &str) -> String {
-    if !p.starts_with('~') {
-        return p.to_string();
-    }
-    let i = p.find('/').unwrap_or(p.len());
-    if i != 1 {
-        return p.to_string(); // ~user form: left as is
-    }
-    let home = env::var("HOME")
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
-    let Some(home) = home else { return p.to_string() };
-    let home = home.trim_end_matches('/');
-    let out = format!("{}{}", home, &p[i..]);
-    if out.is_empty() { "/".to_string() } else { out }
-}
-
-/// Like Python's non-strict os.path.realpath: resolve symlinks of the existing prefix, normalise
-/// `..` as it goes, append the rest.
-fn realpath(p: &str) -> String {
-    let abs = if p.starts_with('/') {
-        p.to_string()
-    } else {
-        let cwd = env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".to_string());
-        format!("{}/{}", cwd, p)
-    };
-    let mut resolved = String::from("/");
-    let mut todo: VecDeque<String> = abs.split('/').map(String::from).collect();
-    let mut links = 0;
-    while let Some(c) = todo.pop_front() {
-        if c.is_empty() || c == "." {
-            continue;
-        }
-        if c == ".." {
-            if let Some(idx) = resolved.rfind('/') {
-                resolved.truncate(if idx == 0 { 1 } else { idx });
-            }
-            continue;
-        }
-        let cand = if resolved == "/" { format!("/{}", c) } else { format!("{}/{}", resolved, c) };
-        let is_link = fs::symlink_metadata(&cand).map(|m| m.file_type().is_symlink()).unwrap_or(false);
-        if is_link && links < 40 {
-            links += 1;
-            match fs::read_link(&cand) {
-                Ok(t) => {
-                    let t = t.to_string_lossy().into_owned();
-                    if t.starts_with('/') {
-                        resolved = String::from("/");
-                    }
-                    for comp in t.split('/').rev() {
-                        todo.push_front(comp.to_string());
-                    }
-                }
-                Err(_) => resolved = cand,
-            }
-        } else {
-            resolved = cand;
-        }
-    }
-    resolved
-}
 
 /// Allow a write only under a temp or scratchpad folder; None = allow.
 fn scratch(data: &Value) -> Option<String> {
@@ -1708,447 +1677,6 @@ fn w4_budget(data: &Value, ctx: &Ctx) -> Res {
     Ok(None)
 }
 
-// --- helpers shared by G14 and G15: shell splitting and Python path functions ----
-
-/// `os.path.normpath` for posix paths.
-fn normpath(p: &str) -> String {
-    if p.is_empty() {
-        return ".".to_string();
-    }
-    let initial = if p.starts_with("//") && !p.starts_with("///") { 2 } else if p.starts_with('/') { 1 } else { 0 };
-    let mut out: Vec<&str> = Vec::new();
-    for c in p.split('/') {
-        if c.is_empty() || c == "." {
-            continue;
-        }
-        if c != ".." || (initial == 0 && out.is_empty()) || out.last() == Some(&"..") {
-            out.push(c);
-        } else if !out.is_empty() {
-            out.pop();
-        }
-    }
-    let body = out.join("/");
-    let s = format!("{}{}", "/".repeat(initial), body);
-    if s.is_empty() { ".".to_string() } else { s }
-}
-
-/// `os.path.split`.
-fn path_split(p: &str) -> (String, String) {
-    let i = p.rfind('/').map(|x| x + 1).unwrap_or(0);
-    let (mut head, tail) = (p[..i].to_string(), p[i..].to_string());
-    if !head.is_empty() && head.chars().any(|c| c != '/') {
-        head = head.trim_end_matches('/').to_string();
-    }
-    (head, tail)
-}
-
-fn dirname(p: &str) -> String {
-    path_split(p).0
-}
-
-/// `os.path.expandvars`: $name and ${name}; unknown names stay as they are.
-fn expandvars(p: &str) -> String {
-    if !p.contains('$') {
-        return p.to_string();
-    }
-    let cs: Vec<char> = p.chars().collect();
-    let mut out = String::new();
-    let mut i = 0;
-    while i < cs.len() {
-        if cs[i] == '$' && i + 1 < cs.len() {
-            let (name, end) = if cs[i + 1] == '{' {
-                match cs[i + 2..].iter().position(|&c| c == '}') {
-                    Some(k) => (Some(cs[i + 2..i + 2 + k].iter().collect::<String>()), i + 3 + k),
-                    None => (None, i),
-                }
-            } else {
-                let mut j = i + 1;
-                while j < cs.len() && (cs[j].is_ascii_alphanumeric() || cs[j] == '_') {
-                    j += 1;
-                }
-                if j > i + 1 { (Some(cs[i + 1..j].iter().collect::<String>()), j) } else { (None, i) }
-            };
-            if let Some(n) = name {
-                if let Ok(v) = env::var(&n) {
-                    out.push_str(&v);
-                    i = end;
-                    continue;
-                }
-                out.extend(&cs[i..end]);
-                i = end;
-                continue;
-            }
-        }
-        out.push(cs[i]);
-        i += 1;
-    }
-    out
-}
-
-/// Python `fnmatch.fnmatchcase`: `*` matches anything (also `/`), `?` one char, `[seq]`, `[!seq]`.
-fn fnmatch(name: &str, pat: &str) -> bool {
-    type Class = (usize, bool, Vec<(char, char)>);
-    fn class(pat: &[char], i: usize) -> Option<Class> {
-        // pat[i] == '['; returns (index after ']', negated, ranges)
-        let n = pat.len();
-        let mut j = i + 1;
-        if j < n && pat[j] == '!' {
-            j += 1;
-        }
-        if j < n && pat[j] == ']' {
-            j += 1;
-        }
-        while j < n && pat[j] != ']' {
-            j += 1;
-        }
-        if j >= n {
-            return None;
-        }
-        let mut k = i + 1;
-        let neg = pat[k] == '!';
-        if neg {
-            k += 1;
-        }
-        let mut ranges = Vec::new();
-        while k < j {
-            if k + 2 < j && pat[k + 1] == '-' {
-                ranges.push((pat[k], pat[k + 2]));
-                k += 3;
-            } else {
-                ranges.push((pat[k], pat[k]));
-                k += 1;
-            }
-        }
-        Some((j + 1, neg, ranges))
-    }
-    fn go(n: &[char], p: &[char]) -> bool {
-        if p.is_empty() {
-            return n.is_empty();
-        }
-        match p[0] {
-            '*' => {
-                let mut rest = p;
-                while !rest.is_empty() && rest[0] == '*' {
-                    rest = &rest[1..];
-                }
-                (0..=n.len()).any(|k| go(&n[k..], rest))
-            }
-            '?' => !n.is_empty() && go(&n[1..], &p[1..]),
-            '[' => match class(p, 0) {
-                Some((end, neg, ranges)) => {
-                    !n.is_empty()
-                        && (ranges.iter().any(|&(a, b)| a <= n[0] && n[0] <= b) != neg)
-                        && go(&n[1..], &p[end..])
-                }
-                None => !n.is_empty() && n[0] == '[' && go(&n[1..], &p[1..]),
-            },
-            c => !n.is_empty() && n[0] == c && go(&n[1..], &p[1..]),
-        }
-    }
-    let n: Vec<char> = name.chars().collect();
-    let p: Vec<char> = pat.chars().collect();
-    go(&n, &p)
-}
-
-fn case_fold(s: &str) -> String {
-    if is_macos() { s.to_lowercase() } else { s.to_string() }
-}
-
-/// `shlex.split(s)` (posix, no comments); None where Python raises ValueError.
-fn shlex_split(s: &str) -> Option<Vec<String>> {
-    let cs: Vec<char> = s.chars().collect();
-    let ws = |c: char| matches!(c, ' ' | '\t' | '\r' | '\n');
-    let mut out = Vec::new();
-    let mut i = 0;
-    loop {
-        // one token
-        let mut piece = String::new();
-        let mut quoted = false;
-        let mut state = ' ';
-        let mut escaped = ' ';
-        let mut got = false;
-        while i <= cs.len() {
-            let c = cs.get(i).copied();
-            i += 1;
-            match state {
-                ' ' => match c {
-                    None => break,
-                    Some(c) if ws(c) => {
-                        if !piece.is_empty() || quoted {
-                            got = true;
-                            break;
-                        }
-                    }
-                    Some('\\') => {
-                        escaped = 'a';
-                        state = '\\';
-                    }
-                    Some(c @ ('\'' | '"')) => state = c,
-                    Some(c) => {
-                        piece.push(c);
-                        state = 'a';
-                    }
-                },
-                '\'' | '"' => {
-                    quoted = true;
-                    let c = c?; // No closing quotation
-                    if c == state {
-                        state = 'a';
-                    } else if state == '"' && c == '\\' {
-                        escaped = state;
-                        state = '\\';
-                    } else {
-                        piece.push(c);
-                    }
-                }
-                '\\' => {
-                    let c = c?; // No escaped character
-                    if (escaped == '\'' || escaped == '"') && c != state && c != escaped {
-                        piece.push(state);
-                    }
-                    piece.push(c);
-                    state = escaped;
-                }
-                _ => match c {
-                    None => break,
-                    Some(c) if ws(c) => {
-                        state = ' ';
-                        if !piece.is_empty() || quoted {
-                            got = true;
-                            break;
-                        }
-                    }
-                    Some(c @ ('\'' | '"')) => state = c,
-                    Some('\\') => {
-                        escaped = 'a';
-                        state = '\\';
-                    }
-                    Some(c) => piece.push(c),
-                },
-            }
-        }
-        if got || !piece.is_empty() || quoted {
-            out.push(piece);
-        }
-        if i > cs.len() {
-            break;
-        }
-    }
-    Some(out)
-}
-
-/// Delimiters of the here-documents started on one line: `<<WORD`, `<<-'WORD'`, not `<<<`.
-fn heredoc_delims(line: &str) -> Vec<String> {
-    let cs: Vec<char> = line.chars().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + 1 < cs.len() {
-        if cs[i] == '<' && cs[i + 1] == '<' && (i == 0 || cs[i - 1] != '<') {
-            let mut j = i + 2;
-            if j < cs.len() && cs[j] == '-' {
-                j += 1;
-            }
-            while j < cs.len() && cs[j].is_whitespace() {
-                j += 1;
-            }
-            let quote = if j < cs.len() && (cs[j] == '\'' || cs[j] == '"') { Some(cs[j]) } else { None };
-            let mut k = if quote.is_some() { j + 1 } else { j };
-            if k < cs.len() && (cs[k].is_ascii_alphabetic() || cs[k] == '_') {
-                let st = k;
-                while k < cs.len() && (cs[k].is_ascii_alphanumeric() || cs[k] == '_') {
-                    k += 1;
-                }
-                let word: String = cs[st..k].iter().collect();
-                if let Some(q) = quote {
-                    if k < cs.len() && cs[k] == q {
-                        out.push(word);
-                        i = k + 1;
-                        continue;
-                    }
-                } else {
-                    out.push(word);
-                    i = k;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
-fn strip_heredocs(cmd: &str) -> String {
-    let (mut out, mut pending): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
-    for line in cmd.split('\n') {
-        if !pending.is_empty() {
-            if line.trim() == pending[0] {
-                pending.remove(0);
-            }
-            continue;
-        }
-        out.push(line);
-        pending.extend(heredoc_delims(line));
-    }
-    out.join("\n")
-}
-
-/// Split a command line at ; | & newline ( ) ` and $( outside quotes. Quotes stay in the text.
-fn segments(cmd: &str) -> Vec<String> {
-    let cs: Vec<char> = cmd.chars().collect();
-    let (mut segs, mut cur, mut quote, mut i) = (Vec::new(), String::new(), None::<char>, 0);
-    while i < cs.len() {
-        let c = cs[i];
-        if let Some(q) = quote {
-            cur.push(c);
-            if q == '"' && c == '\\' && i + 1 < cs.len() {
-                cur.push(cs[i + 1]);
-                i += 1;
-            } else if c == q {
-                quote = None;
-            }
-        } else if c == '\\' && i + 1 < cs.len() {
-            cur.push(c);
-            cur.push(cs[i + 1]);
-            i += 1;
-        } else if c == '\'' || c == '"' {
-            quote = Some(c);
-            cur.push(c);
-        } else if ";|&\n()`".contains(c) || (c == '$' && cs.get(i + 1) == Some(&'(')) {
-            segs.push(std::mem::take(&mut cur));
-            if c == '$' {
-                i += 1;
-            }
-        } else {
-            cur.push(c);
-        }
-        i += 1;
-    }
-    segs.push(cur);
-    segs
-}
-
-fn is_assign(t: &str) -> bool {
-    let mut it = t.chars();
-    match it.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-    for c in it {
-        if c == '=' {
-            return true;
-        }
-        if !(c.is_ascii_alphanumeric() || c == '_') {
-            return false;
-        }
-    }
-    false
-}
-
-fn wrapper_opts(name: &str) -> Option<&'static [&'static str]> {
-    Some(match name {
-        "sudo" => &["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"],
-        "doas" => &["-u", "-C"],
-        "env" => &["-u", "-C", "-S"],
-        "xargs" => &["-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a", "-J"],
-        "nice" => &["-n"],
-        "timeout" => &["-s", "-k"],
-        "exec" => &["-a"],
-        "command" | "builtin" | "nohup" | "time" => &[],
-        _ => return None,
-    })
-}
-
-/// Drop env assignments, reserved words and wrappers (sudo, env, xargs ...) from the front.
-fn peel(mut tokens: Vec<String>) -> Vec<String> {
-    const RESERVED: &[&str] = &["if", "then", "else", "elif", "do", "while", "until", "{", "}", "!"];
-    for _ in 0..8 {
-        let mut i = 0;
-        while i < tokens.len() && (RESERVED.contains(&tokens[i].as_str()) || is_assign(&tokens[i])) {
-            i += 1;
-        }
-        tokens.drain(..i);
-        if tokens.is_empty() {
-            return tokens;
-        }
-        let base = basename(&tokens[0]).to_string();
-        let Some(optval) = wrapper_opts(&base) else { return tokens };
-        let mut i = 1;
-        while i < tokens.len() && tokens[i].starts_with('-') && tokens[i] != "-" {
-            if tokens[i] == "--" {
-                i += 1;
-                break;
-            }
-            i += if optval.contains(&tokens[i].as_str()) { 2 } else { 1 };
-        }
-        if base == "timeout" {
-            i += 1; // the duration
-        }
-        tokens.drain(..i.min(tokens.len()));
-    }
-    tokens
-}
-
-fn abspath(p: &str, cwd: Option<&str>) -> String {
-    let mut p = expanduser(&expandvars(p));
-    if !p.starts_with('/')
-        && let Some(c) = cwd.filter(|c| !c.is_empty()) {
-            p = path_join(c, &p);
-        }
-    realpath(&p)
-}
-
-struct Cmd {
-    toks: Vec<String>,
-    extra: Vec<String>,
-    cwd: Option<String>,
-}
-
-/// Every simple command of a Bash command line, wrappers peeled; commands inside `bash -c`, `eval`
-/// and `find -exec` too (extra = the find words before -exec). cwd follows `cd`.
-fn walk(cmd: &str, cwd: Option<String>, depth: usize) -> Vec<Cmd> {
-    let mut out = Vec::new();
-    let mut cwd = cwd;
-    for seg in segments(&strip_heredocs(cmd)) {
-        let Some(split) = shlex_split(&seg) else { continue }; // unbalanced quotes: not a command
-        let toks = peel(split);
-        if toks.is_empty() {
-            continue;
-        }
-        let name = basename(&toks[0]).to_string();
-        if (name == "cd" || name == "pushd")
-            && let Some(d) = toks[1..].iter().find(|t| !t.starts_with('-')) {
-                cwd = Some(abspath(d, cwd.as_deref()));
-            }
-        out.push(Cmd { toks: toks.clone(), extra: Vec::new(), cwd: cwd.clone() });
-        if depth >= 3 {
-            continue;
-        }
-        if matches!(name.as_str(), "bash" | "sh" | "zsh" | "dash" | "ksh") {
-            for (k, t) in toks.iter().enumerate().skip(1) {
-                let is_c = t.len() >= 2 && t.starts_with('-') && t.ends_with('c') && t[1..].chars().all(|c| c.is_ascii_alphabetic());
-                if is_c && k + 1 < toks.len() {
-                    out.extend(walk(&toks[k + 1], cwd.clone(), depth + 1));
-                    break;
-                }
-            }
-        } else if name == "eval" {
-            out.extend(walk(&toks[1..].join(" "), cwd.clone(), depth + 1));
-        } else if name == "find" {
-            for (j, t) in toks.iter().enumerate() {
-                if matches!(t.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
-                    let sub: Vec<String> =
-                        toks[j + 1..].iter().take_while(|u| u.as_str() != ";" && u.as_str() != "+").cloned().collect();
-                    let sub = peel(sub);
-                    if !sub.is_empty() {
-                        out.push(Cmd { toks: sub, extra: toks[1..j].to_vec(), cwd: cwd.clone() });
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
 fn bash_command(data: &Value) -> Option<String> {
     if tool_name(data) != Some("Bash") {
         return None;
@@ -2157,520 +1685,60 @@ fn bash_command(data: &Value) -> Option<String> {
     get(ti, "command").as_str().filter(|s| !s.is_empty()).map(String::from)
 }
 
-// --- G14 sed -i ----------------------------------------------------------------
+// --- G14 to G17 live in the library (`agent_config::guard_checks`) ---------------
 
-/// True when sed's arguments hold -i, -i.bak, -ni, -Ei, --in-place[=SUFFIX].
-fn sed_in_place(args: &[String]) -> bool {
-    let mut skip = false;
-    for a in args {
-        if skip {
-            skip = false;
-        } else if a == "--" {
-            break;
-        } else if a.starts_with("--") {
-            if a == "--in-place" || a.starts_with("--in-place=") {
-                return true;
-            }
-            skip = matches!(a.as_str(), "--expression" | "--file" | "--line-length");
-        } else if a.starts_with('-') && a.chars().count() > 1 {
-            let cs: Vec<char> = a.chars().collect();
-            for k in 1..cs.len() {
-                if cs[k] == 'i' {
-                    return true;
-                }
-                if "efl".contains(cs[k]) {
-                    skip = k == cs.len() - 1;
-                    break;
-                }
-            }
-        }
+/// The refusal text of a verdict (only `Deny` refuses).
+fn deny_msg(v: gc::Verdict) -> Option<String> {
+    match v {
+        gc::Verdict::Deny(m) => Some(m),
+        _ => None,
     }
-    false
 }
 
 /// G14: deny BSD `sed -i` on macOS. Quoted text, `gsed` and `sed -n` pass.
 fn g14_sed(data: &Value, _ctx: &Ctx) -> Res {
     let Some(cmd) = bash_command(data) else { return Ok(None) };
-    if !is_macos() || !cmd.contains("sed") || check_off("G14") {
+    if !check_enabled("G14") {
         return Ok(None);
     }
-    let cwd = get(data, "cwd").as_str().map(String::from);
-    let r = std::panic::catch_unwind(|| {
-        walk(&cmd, cwd, 0).iter().any(|c| basename(&c.toks[0]) == "sed" && sed_in_place(&c.toks[1..]))
-    });
-    Ok(if r.unwrap_or(false) { Some(MSG_G14.to_string()) } else { None })
+    Ok(deny_msg(gc::g14_sed(&cmd, is_macos())))
 }
 
-// --- G15 secret reads ----------------------------------------------------------
-
-const SECRET_READERS: &[&str] = &[
-    "cat", "bat", "batcat", "less", "more", "most", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack",
-    "sed", "gsed", "awk", "gawk", "mawk", "cut", "strings", "xxd", "hexdump", "od", "nl", "tac", "rev", "sort",
-    "uniq", "paste", "fold", "column", "cp", "mv", "scp", "rsync", "open", "code", "cursor", "vim", "vi", "nvim",
-    "nano", "view", "pbcopy", "base64", "jq", "yq", "diff", "cmp", "ln", "install",
-];
-const SECRET_SEARCHERS: &[&str] = &["rg", "grep", "egrep", "fgrep", "ag", "ack"];
-const ARGS_FIELDS: &[&str] = &["args", "command", "cmd", "command_line", "cmdline"];
-const PS_VALUE_LONG: &[&str] = &[
-    "--format", "--pid", "--ppid", "--sid", "--tty", "--user", "--group", "--sort", "--cols", "--columns", "--width",
-    "--lines", "--rows",
-];
-
-type Target = (String, String);
-
-fn secret_target() -> Target {
-    let raw = normpath(&expanduser(SECRET_FILE));
-    let real = realpath(&raw);
-    (raw, real)
-}
-
-/// True when `path` (word as typed) is the secret file, a glob that matches it, or (dir_ok) its folder.
-fn is_secret(path: &str, cwd: Option<&str>, target: &Target, dir_ok: bool) -> bool {
-    let (raw, real) = (case_fold(&target.0), case_fold(&target.1));
-    let mut p = expanduser(&expandvars(path));
-    if p.is_empty() || p.starts_with('-') {
-        return false;
-    }
-    if !p.starts_with('/')
-        && let Some(c) = cwd.filter(|c| !c.is_empty()) {
-            p = path_join(c, &p);
-        }
-    if GLOB_CHARS.is_match(&p) {
-        let norm = normpath(&p);
-        let (d, base) = path_split(&norm);
-        return fnmatch(&raw, &case_fold(&norm)) || fnmatch(&real, &case_fold(&path_join(&realpath(&d), &base)));
-    }
-    let got = case_fold(&realpath(&p));
-    got == real || (dir_ok && got == dirname(&real))
-}
-
-/// True for a ps call that lists processes with their command lines (aux, -ef, -o args, ww, eww).
-fn ps_leaks(args: &[String]) -> bool {
-    use std::collections::HashMap;
-    let mut flags: HashMap<char, i32> = HashMap::new();
-    let mut bare: HashSet<char> = HashSet::new();
-    let mut fmt: Vec<String> = Vec::new();
-    let (mut i, n) = (0, args.len());
-    let mut has_o = false;
-    while i < n {
-        let a = &args[i];
-        i += 1;
-        if a.starts_with("--") {
-            if let Some(v) = a.strip_prefix("--format=") {
-                fmt.push(v.to_string());
-                has_o = true;
-            } else if PS_VALUE_LONG.contains(&a.as_str()) && i < n {
-                if a == "--format" {
-                    fmt.push(args[i].clone());
-                    has_o = true;
-                }
-                i += 1;
-            }
-        } else if a.starts_with('-') && a.chars().count() > 1 {
-            let cs: Vec<char> = a.chars().collect();
-            for k in 1..cs.len() {
-                let c = cs[k];
-                if "oOpCtuUgGsD".contains(c) {
-                    let mut val: String = cs[k + 1..].iter().collect();
-                    if val.is_empty() && i < n {
-                        val = args[i].clone();
-                        i += 1;
-                    }
-                    if c == 'o' || c == 'O' {
-                        fmt.push(val);
-                        has_o = has_o || c == 'o';
-                    }
-                    break;
-                }
-                *flags.entry(c).or_insert(0) += 1;
-            }
-        } else if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphabetic()) {
-            for c in a.chars() {
-                *flags.entry(c).or_insert(0) += 1;
-                bare.insert(c);
-            }
-        }
-    }
-    for val in &fmt {
-        let hit = val
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .filter(|f| !f.is_empty())
-            .any(|f| ARGS_FIELDS.contains(&f.split('=').next().unwrap_or("").to_lowercase().as_str()));
-        if hit {
-            return true;
-        }
-    }
-    if flags.get(&'w').copied().unwrap_or(0) >= 2 || flags.contains_key(&'f') || bare.contains(&'e') || bare.contains(&'u') {
-        return true;
-    }
-    if fmt.is_empty() && "eAaxd".chars().any(|c| flags.contains_key(&c)) {
-        return true;
-    }
-    if is_macos() {
-        return !has_o && !flags.contains_key(&'c') && !args.iter().any(|a| a == "--help" || a == "--version");
-    }
-    false
-}
-
-/// True for pgrep -fl / -af / -lf / --list-full (they print full command lines).
-fn pgrep_leaks(args: &[String]) -> bool {
-    let mut flags: HashSet<char> = HashSet::new();
-    let (mut i, n) = (0, args.len());
-    while i < n {
-        let a = &args[i];
-        i += 1;
-        if a == "--list-full" {
-            return true;
-        }
-        if a.starts_with("--") || !a.starts_with('-') || a.chars().count() < 2 {
-            continue;
-        }
-        let cs: Vec<char> = a.chars().collect();
-        for k in 1..cs.len() {
-            if "dFgGLPrstuU".contains(cs[k]) {
-                if k == cs.len() - 1 {
-                    i += 1;
-                }
-                break;
-            }
-            flags.insert(cs[k]);
-        }
-    }
-    flags.contains(&'f') && (flags.contains(&'l') || flags.contains(&'a'))
-}
-
-fn search_val(fam: &str) -> (&'static str, &'static [&'static str]) {
-    match fam {
-        "grep" => (
-            "efmABCdD",
-            &[
-                "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context",
-                "--directories", "--devices", "--include", "--exclude", "--exclude-dir", "--exclude-from",
-                "--label", "--binary-files", "--group-separator",
-            ],
-        ),
-        "rg" => (
-            "efgmABCdjMrtTE",
-            &[
-                "--regexp", "--file", "--glob", "--iglob", "--max-count", "--after-context", "--before-context",
-                "--context", "--max-depth", "--maxdepth", "--threads", "--max-columns", "--replace", "--type",
-                "--type-not", "--type-add", "--type-clear", "--ignore-file", "--encoding", "--colors", "--color",
-                "--sort", "--sortr", "--path-separator", "--pre", "--pre-glob", "--engine", "--dfa-size-limit",
-                "--regex-size-limit", "--max-filesize", "--context-separator", "--field-context-separator",
-                "--field-match-separator", "--hostname-bin", "--hyperlink-format",
-            ],
-        ),
-        "ag" => (
-            "ABCGgmpW",
-            &[
-                "--ignore", "--ignore-dir", "--depth", "--file-search-regex", "--path-to-ignore", "--pager",
-                "--after", "--before", "--context", "--max-count", "--width", "--workers",
-            ],
-        ),
-        _ => (
-            "ABCmgt",
-            &[
-                "--ignore-dir", "--noignore-dir", "--ignore-file", "--type", "--after-context", "--before-context",
-                "--context", "--max-count", "--output", "--pager",
-            ],
-        ),
+/// The hook's working folder: `cwd` of the call, else the process cwd.
+fn call_cwd(data: &Value) -> PathBuf {
+    match get(data, "cwd").as_str().filter(|s| !s.is_empty()) {
+        Some(c) => PathBuf::from(c),
+        None => env::current_dir().unwrap_or_default(),
     }
 }
 
-#[derive(Default)]
-struct SearchOpts {
-    pos: Vec<String>,
-    pat: bool,
-    rec: bool,
-    unres: bool,
-    globs: Vec<String>,
-    inc: Vec<String>,
-    xfile: Vec<String>,
-    xdir: Vec<String>,
-}
-
-/// Fold one short option (val is None for a flag) into the search options.
-fn search_short(fam: &str, c: char, val: Option<&str>, o: &mut SearchOpts) {
-    if (fam == "grep" || fam == "rg") && (c == 'e' || c == 'f') && val.is_some() {
-        o.pat = true;
-    } else if fam == "grep" {
-        if ((c == 'r' || c == 'R') && val.is_none()) || (c == 'd' && val == Some("recurse")) {
-            o.rec = true;
-        }
-    } else if fam == "rg" || fam == "ag" {
-        if let (true, Some(v)) = (c == 'g', val) {
-            o.globs.push(v.to_string());
-            o.pat = o.pat || fam == "ag"; // ag -g PATTERN replaces the content pattern
-        } else if val.is_none() && (c == 'u' || (c == '.' && fam == "rg") || (c == 'U' && fam == "ag")) {
-            o.unres = true;
-        }
-    } else if fam == "ack" && (c == 'g' || c == 'f') {
-        o.pat = true;
+/// G17 (preset no-ai-attribution): deny an assistant co-author, noreply or "generated with" line in
+/// a commit, tag, merge, revert, note or gh PR, issue or release text. In shadow mode (`GUARD_SHADOW`)
+/// it logs what it would deny and lets the call through.
+fn g17_attr(data: &Value, _ctx: &Ctx) -> Res {
+    let Some(cmd) = bash_command(data) else { return Ok(None) };
+    let cwd = call_cwd(data);
+    let Ok(verdict) = std::panic::catch_unwind(|| gc::g17_attribution(&cmd, &cwd)) else { return Ok(None) };
+    let gc::Verdict::Deny(msg) = &verdict else { return Ok(None) };
+    if gc::shadow("G17") {
+        gc::shadow_log("G17", &verdict, msg);
+        return Ok(None);
     }
-}
-
-/// Fold one long option (value already split off) into the search options.
-fn search_long(fam: &str, key: &str, val: &str, o: &mut SearchOpts) {
-    if (fam == "grep" || fam == "rg") && (key == "--regexp" || key == "--file") {
-        o.pat = true;
-    } else if fam == "grep" {
-        if key == "--recursive" || key == "--dereference-recursive" || (key == "--directories" && val == "recurse") {
-            o.rec = true;
-        } else if key == "--include" {
-            o.inc.push(val.to_string());
-        } else if key == "--exclude" {
-            o.xfile.push(val.to_string());
-        } else if key == "--exclude-dir" {
-            o.xdir.push(val.to_string());
-        }
-    } else if fam == "rg" {
-        if key == "--files" {
-            o.pat = true;
-        } else if key == "--glob" || key == "--iglob" {
-            o.globs.push(val.to_string());
-        } else if key == "--hidden" || key == "--unrestricted" || (key.starts_with("--no-ignore") && key != "--no-ignore-messages") {
-            o.unres = true;
-        }
-    } else if fam == "ag" {
-        if key == "--ignore" {
-            o.globs.push(format!("!{}", val));
-        } else if key == "--ignore-dir" {
-            o.xdir.push(val.to_string());
-        } else if key == "--unrestricted" || key == "--skip-vcs-ignores" || key == "--hidden" {
-            o.unres = true;
-        } else if key == "--file-search-regex" {
-            o.pat = true;
-        }
-    } else if fam == "ack" && key == "--ignore-dir" {
-        o.xdir.push(val.to_string());
-    }
-}
-
-/// Parse the arguments of grep, rg, ag or ack: path operands, recursion, unrestricted flags, excludes.
-fn search_opts(fam: &str, args: &[String]) -> SearchOpts {
-    let (short_val, long_val) = search_val(fam);
-    let mut o = SearchOpts { rec: fam == "ack", ..Default::default() };
-    let (mut i, n) = (0, args.len());
-    while i < n {
-        let a = &args[i];
-        i += 1;
-        if a == "--" {
-            o.pos.extend(args[i..].iter().cloned());
-            break;
-        }
-        if a.starts_with("--") {
-            let (key, eq, mut val) = match a.find('=') {
-                Some(x) => (&a[..x], true, a[x + 1..].to_string()),
-                None => (a.as_str(), false, String::new()),
-            };
-            if !eq && long_val.contains(&key) && i < n {
-                val = args[i].clone();
-                i += 1;
-            }
-            search_long(fam, key, &val, &mut o);
-        } else if a.starts_with('-') && a.chars().count() > 1 {
-            let cs: Vec<char> = a.chars().collect();
-            for k in 1..cs.len() {
-                let c = cs[k];
-                if short_val.contains(c) {
-                    let mut val: String = cs[k + 1..].iter().collect();
-                    if val.is_empty() && i < n {
-                        val = args[i].clone();
-                        i += 1;
-                    }
-                    search_short(fam, c, Some(&val), &mut o);
-                    break;
-                }
-                search_short(fam, c, None, &mut o);
-            }
-        } else {
-            o.pos.push(a.clone());
-        }
-    }
-    o
-}
-
-/// True when an ignore-style glob (rg -g '!GLOB') matches the file, one of its folders, or its path.
-fn glob_hits(g: &str, dirs: &[String], fname: &str, path: &str) -> bool {
-    let g = case_fold(g);
-    let g = g.trim_start_matches('/');
-    let only_dir = g.ends_with('/');
-    let g = g.trim_end_matches('/');
-    if g.is_empty() {
-        return false;
-    }
-    let mut names: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
-    if !only_dir {
-        names.push(fname);
-    }
-    if names.iter().any(|c| fnmatch(c, g)) {
-        return true;
-    }
-    [g.to_string(), format!("*/{}", g), format!("*/{}/*", g)].iter().any(|p| fnmatch(path, p))
-}
-
-/// True when the search options leave `path` out (--exclude, --exclude-dir, --include, rg/ag globs).
-fn search_excluded(o: &SearchOpts, path: &str, dirs: &[String], fname: &str) -> bool {
-    let path = case_fold(path);
-    if o.xfile.iter().any(|g| fnmatch(fname, &case_fold(g)) || fnmatch(&path, &case_fold(g))) {
-        return true;
-    }
-    if o.xdir.iter().any(|g| dirs.iter().any(|d| fnmatch(d, case_fold(g).trim_end_matches('/')))) {
-        return true;
-    }
-    if !o.inc.is_empty() && !o.inc.iter().any(|g| fnmatch(fname, &case_fold(g))) {
-        return true;
-    }
-    let keep: Vec<&String> = o.globs.iter().filter(|g| !g.starts_with('!')).collect();
-    if o.globs.iter().filter(|g| g.starts_with('!')).any(|g| glob_hits(&g[1..], dirs, fname, &path)) {
-        return true;
-    }
-    if !keep.is_empty() {
-        return !keep.iter().any(|g| {
-            let g = case_fold(g);
-            fnmatch(fname, &g) || fnmatch(&path, &g) || fnmatch(&path, &format!("*/{}", g))
-        });
-    }
-    false
-}
-
-/// True when the search root covers `cand` (the secret file) and no option leaves it out.
-fn search_reaches(o: &SearchOpts, root: &str, cand: &str) -> bool {
-    let root = normpath(root);
-    let cand = case_fold(cand);
-    let mut base = root.clone();
-    if GLOB_CHARS.is_match(&root) {
-        // a glob operand: the part before the first glob word is the base folder
-        let mut keep: Vec<&str> = Vec::new();
-        for part in root.split('/') {
-            if GLOB_CHARS.is_match(part) {
-                break;
-            }
-            keep.push(part);
-        }
-        base = keep.join("/");
-        if base.is_empty() {
-            base = "/".to_string();
-        }
-        let pat = case_fold(&root);
-        if !(fnmatch(&cand, &pat) || fnmatch(&cand, &format!("{}/*", pat.trim_end_matches('/')))) {
-            return false;
-        }
-    } else {
-        let r = case_fold(&root);
-        if !(r == cand || cand.starts_with(&format!("{}/", r.trim_end_matches('/')))) {
-            return false;
-        }
-    }
-    let base = case_fold(&base);
-    let prefix = format!("{}/", base.trim_end_matches('/'));
-    if !cand.starts_with(&prefix) {
-        return true;
-    }
-    let parts: Vec<String> = cand[prefix.len()..].split('/').map(String::from).collect();
-    let (fname, dirs) = parts.split_last().unwrap();
-    !search_excluded(o, &cand, dirs, fname)
-}
-
-/// True for a recursive search (grep -r, ack, and rg/ag with ignore rules off) that reaches the secret file.
-fn search_leaks(name: &str, args: &[String], cwd: Option<&str>, target: &Target) -> bool {
-    let fam = if matches!(name, "grep" | "egrep" | "fgrep") { "grep" } else { name };
-    let o = search_opts(fam, args);
-    if (fam == "grep" && !o.rec) || ((fam == "rg" || fam == "ag") && !o.unres) {
-        return false; // rg and ag skip the hidden, git-ignored file unless told not to
-    }
-    let operands: Vec<&String> = if o.pat { o.pos.iter().collect() } else { o.pos.iter().skip(1).collect() };
-    let mut paths: Vec<String> = operands.into_iter().filter(|p| p.as_str() != "-").cloned().collect();
-    let cwd_s = cwd.map(String::from).unwrap_or_else(|| {
-        env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".to_string())
-    });
-    if paths.is_empty() {
-        paths.push(cwd_s.clone());
-    }
-    for p in &paths {
-        let mut q = expanduser(&expandvars(p));
-        if !q.starts_with('/') {
-            q = path_join(&cwd_s, &q);
-        }
-        for root in [normpath(&q), realpath(&q)] {
-            if [&target.0, &target.1].iter().any(|cand| search_reaches(&o, &root, cand)) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// The G15 message for a Bash command that reads local.zsh or prints command lines, else None.
-fn bash_leaks(cmd: &str, cwd: &str) -> Option<&'static str> {
-    let target = secret_target();
-    for c in walk(cmd, Some(cwd.to_string()), 0) {
-        let name = basename(&c.toks[0]).to_string();
-        let args = &c.toks[1..];
-        let ccwd = c.cwd.as_deref();
-        let head = &args[..args.len().min(200)];
-        if name == "procs" || (name == "ps" && ps_leaks(args)) || (name == "pgrep" && pgrep_leaks(args)) {
-            return Some(MSG_G15_PS);
-        }
-        for (k, t) in c.toks.iter().enumerate() {
-            // input redirect: cmd < file
-            if t == "<" && k + 1 < c.toks.len() && is_secret(&c.toks[k + 1], ccwd, &target, false) {
-                return Some(MSG_G15_FILE);
-            }
-            if t.starts_with('<')
-                && !t.starts_with("<<")
-                && !t.starts_with("<(")
-                && t.chars().count() > 1
-                && is_secret(&t[1..], ccwd, &target, false)
-            {
-                return Some(MSG_G15_FILE);
-            }
-        }
-        if name == "dd" && head.iter().any(|a| a.starts_with("if=") && is_secret(&a[3..], ccwd, &target, false)) {
-            return Some(MSG_G15_FILE);
-        }
-        if SECRET_READERS.contains(&name.as_str()) {
-            if head.iter().any(|a| is_secret(a, ccwd, &target, false)) {
-                return Some(MSG_G15_FILE);
-            }
-            if SECRET_SEARCHERS.contains(&name.as_str())
-                && (head.iter().any(|a| is_secret(a, ccwd, &target, true)) || search_leaks(&name, head, ccwd, &target))
-            {
-                return Some(MSG_G15_SEARCH);
-            }
-            if c.extra.iter().take(200).any(|a| is_secret(a, ccwd, &target, true)) {
-                return Some(MSG_G15_FILE);
-            }
-        }
-    }
-    None
+    Ok(Some(msg.clone()))
 }
 
 /// G15: deny reading local.zsh (Read, Grep or Bash) and printing full process command lines.
 fn g15_secrets(data: &Value, _ctx: &Ctx) -> Res {
     let tool = tool_name(data);
-    if !matches!(tool, Some("Read" | "Grep" | "Bash")) || check_off("G15") {
+    let Some(tool @ ("Read" | "Grep" | "Bash")) = tool else { return Ok(None) };
+    if !check_enabled("G15") {
         return Ok(None);
     }
-    let r = std::panic::catch_unwind(|| {
-        let cwd = match get(data, "cwd").as_str().filter(|s| !s.is_empty()) {
-            Some(c) => c.to_string(),
-            None => env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default(),
-        };
-        if tool == Some("Bash") {
-            return bash_command(data).and_then(|cmd| bash_leaks(&cmd, &cwd));
-        }
-        let key = if tool == Some("Read") { "file_path" } else { "path" };
-        let ti = get(data, "tool_input");
-        let path = get(if ti.is_object() { ti } else { &NULL }, key);
-        match path.as_str() {
-            Some(p) if !p.is_empty() && is_secret(p, Some(&cwd), &secret_target(), tool == Some("Grep")) => {
-                Some(MSG_G15_FILE)
-            }
-            _ => None,
-        }
-    });
-    Ok(r.ok().flatten().map(String::from))
+    let cwd = match get(data, "cwd").as_str().filter(|s| !s.is_empty()) {
+        Some(c) => c.to_string(),
+        None => env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default(),
+    };
+    Ok(deny_msg(gc::g15_secrets_at(tool, get(data, "tool_input"), &cwd)))
 }
 
 // --- G13 silence note ------------------------------------------------------------
@@ -2730,7 +1798,7 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Result<usize, Fail> {
 
 /// G13 (PostToolUse, main thread): one JSON line after the 8th tool call with no text, else None.
 fn posttool(data: &Value) -> Option<String> {
-    if check_off("G13") || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
+    if !check_enabled("G13") || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
         return None; // the desktop app has its own nudge and its transcript can miss text blocks
     }
     if !is_main_thread(data) {
@@ -2931,11 +1999,16 @@ type GuardFn = fn(&Value, &Ctx) -> Res;
 
 fn pretool(data: &Value, ctx: &Ctx) -> Res {
     // g8_cap records the spawn it allows, so it runs after every other deny
-    let guards: [GuardFn; 11] = [
-        g3_pretool, g7_heavy, g1_agent, g2_polling, g4_ask, g5_handback, g6_archive, g9_plan_gate, g14_sed,
-        g15_secrets, g8_cap,
+    // each check runs only when its id is enabled (G14 and G15 also test their own id)
+    let guards: [(&str, GuardFn); 12] = [
+        ("G3", g3_pretool), ("G7", g7_heavy), ("G1", g1_agent), ("G2", g2_polling), ("G4", g4_ask),
+        ("G5", g5_handback), ("G6", g6_archive), ("G9", g9_plan_gate), ("G14", g14_sed),
+        ("G15", g15_secrets), ("G17", g17_attr), ("G8", g8_cap),
     ];
-    for g in guards {
+    for (id, g) in guards {
+        if !check_enabled(id) {
+            continue;
+        }
         if let Some(msg) = g(data, ctx)? {
             return Ok(Some(msg));
         }
@@ -2943,17 +2016,50 @@ fn pretool(data: &Value, ctx: &Ctx) -> Res {
     Ok(None)
 }
 
+/// G16 (core): a Bash or MCP call that sends text off the machine and holds a private word or a
+/// secret shape, or a body the guard cannot read. Returns the JSON line of an `ask`, or None. In
+/// shadow mode (`GUARD_SHADOW`) it logs what it would ask and lets the call through.
+fn outbound_ask(data: &Value) -> Option<String> {
+    if !check_enabled("G16") {
+        return None;
+    }
+    let tool = tool_name(data)?;
+    let input = get(data, "tool_input");
+    let verdict = std::panic::catch_unwind(|| {
+        if !gc::g16_applies(tool, input) {
+            return gc::Verdict::Allow;
+        }
+        let cwd = call_cwd(data);
+        let words = home_dir().map(|h| gc::private_words_at(&h, Some(&cwd))).unwrap_or_default();
+        gc::g16_outbound(tool, input, &cwd, &words)
+    })
+    .ok()?;
+    let gc::Verdict::Ask(msg) = &verdict else { return None };
+    if gc::shadow("G16") {
+        gc::shadow_log("G16", &verdict, msg);
+        return None;
+    }
+    Some(format!(
+        "{{\"hookSpecificOutput\": {{\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"ask\", \"permissionDecisionReason\": {}}}}}",
+        py_json_str(msg)
+    ))
+}
+
 /// Router and warnings for an allowed call: a JSON line for stdout, or None. The line holds
 /// additionalContext, plus permissionDecision allow and updatedInput when the router changed the call.
 fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
     let mut notes: Vec<String> = Vec::new();
     let mut updated: Option<Value> = None;
-    if let Ok((u, note)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| route_agent(data, ctx))) {
+    if check_enabled("ROUTER")
+        && let Ok((u, note)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| route_agent(data, ctx)))
+    {
         updated = u;
         notes.extend(note);
     }
-    let warners: [GuardFn; 2] = [w3_browser, w4_budget];
-    notes.extend(warners.iter().filter_map(|w| w(data, ctx).ok().flatten()));
+    if check_enabled("G3") {
+        let warners: [GuardFn; 2] = [w3_browser, w4_budget];
+        notes.extend(warners.iter().filter_map(|w| w(data, ctx).ok().flatten()));
+    }
     if notes.is_empty() && updated.is_none() {
         return None;
     }
@@ -2987,7 +2093,9 @@ fn pace_note(st: &PaceSt, last: &Value) -> Option<String> {
 
 /// G3 nudge and pace notes: JSON for stdout (or None); counters live in the per-session state file.
 fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
-    let _ = std::panic::catch_unwind(|| pace::refresh(5.0, None));
+    if check_enabled("PACE") {
+        let _ = std::panic::catch_unwind(|| pace::refresh(5.0, None));
+    }
     ctx.reset_pace();
     let st = ctx.pace();
     let over = ctx.size() >= NUDGE_CONTEXT;
@@ -2996,7 +2104,7 @@ fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
         let prev = state.get("count").map(|v| py_int(v).unwrap_or(0)).unwrap_or(0);
         let count = if over { prev + 1 } else { 0 };
         state.insert("count".into(), Value::from(count));
-        if st.state != "unknown" {
+        if st.state != "unknown" && check_enabled("PACE") {
             // a gap in the data does not reset what was announced
             note = pace_note(&st, state.get("pace").unwrap_or(&NULL));
             state.insert("pace".into(), Value::String(st.state.clone()));
@@ -3007,7 +2115,7 @@ fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
         Err(_) => i64::from(over),
     };
     let mut notes: Vec<String> = Vec::new();
-    if count >= 1 && (count - 1) % NUDGE_EVERY == 0 {
+    if count >= 1 && (count - 1) % NUDGE_EVERY == 0 && check_enabled("G3") {
         notes.push(format!(
             "Context is {}K. Keep PROGRESS.md (or the run's ledger) current; auto-compact carries the run. Hand off only when the user asks.",
             ctx.size() / 1000
@@ -3048,7 +2156,7 @@ fn run() -> i32 {
         "pretool" => match pretool(&data, &ctx) {
             Ok(m) => {
                 if m.is_none() {
-                    out = pretool_warn(&data, &ctx);
+                    out = outbound_ask(&data).or_else(|| pretool_warn(&data, &ctx));
                 }
                 m
             }
@@ -3125,6 +2233,57 @@ mod tests {
         assert!(CAP_RE.is_match("reply \u{2264}4000"));
         assert!(CAP_RE.is_match("Hand-back: 3000 chars"));
         assert!(!CAP_RE.is_match("build it"));
+    }
+
+    /// `(preset, ids)` from the `guard:` line of each `claude/presets/*/rules.md`.
+    fn preset_guard_lists() -> Vec<(String, Vec<String>)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../claude/presets");
+        let mut out = Vec::new();
+        for e in fs::read_dir(&dir).unwrap().flatten() {
+            let Ok(text) = fs::read_to_string(e.path().join("rules.md")) else { continue };
+            let line = text.lines().find_map(|l| l.strip_prefix("guard:")).unwrap_or("[]");
+            let ids = line
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            out.push((e.file_name().to_string_lossy().into_owned(), ids));
+        }
+        out
+    }
+
+    #[test]
+    fn registry_matches_the_preset_front_matter() {
+        let mut from_files: Vec<(String, String)> = Vec::new();
+        for (preset, ids) in preset_guard_lists() {
+            for id in ids {
+                from_files.push((id, preset.clone()));
+            }
+        }
+        // core checks have no preset folder
+        let mut from_registry: Vec<(String, String)> = gc::REGISTRY
+            .iter()
+            .filter(|(_, p)| *p != "core")
+            .map(|(i, p)| (i.to_string(), p.to_string()))
+            .collect();
+        from_files.sort();
+        from_registry.sort();
+        assert_eq!(from_files, from_registry);
+        let core: Vec<&str> = gc::REGISTRY.iter().filter(|(_, p)| *p == "core").map(|(i, _)| *i).collect();
+        assert_eq!(core, ["G14", "G15", "G16"]);
+    }
+
+    #[test]
+    fn zone_names() {
+        assert!(valid_zone("UTC"));
+        assert!(valid_zone("Asia/Tokyo"));
+        assert!(!valid_zone(""));
+        assert!(!valid_zone("../etc/passwd"));
+        assert!(!valid_zone("/etc/passwd"));
+        assert!(!valid_zone("a b"));
     }
 
     #[test]
@@ -3212,45 +2371,6 @@ mod tests {
         let ctx = Ctx::new(&data);
         let msg = g1_agent(&data, &ctx).ok().flatten().unwrap();
         assert!(msg.contains("a deadline and a hand-back cap"));
-    }
-
-    #[test]
-    fn shlex_matches_python() {
-        let split = |s: &str| shlex_split(s);
-        assert_eq!(split("a 'b c' \"d e\" f\\ g"), Some(vec!["a".into(), "b c".into(), "d e".into(), "f g".into()]));
-        assert_eq!(split("echo \"a\\\"b\" 'c\\d'"), Some(vec!["echo".into(), "a\"b".into(), "c\\d".into()]));
-        assert_eq!(split("x '' y"), Some(vec!["x".into(), "".into(), "y".into()]));
-        assert_eq!(split("unbalanced 'quote"), None);
-        assert_eq!(split("trailing \\"), None);
-        assert_eq!(split("   "), Some(vec![]));
-    }
-
-    #[test]
-    fn fnmatch_matches_python() {
-        assert!(fnmatch("/a/b/local.zsh", "*/local.zsh"));
-        assert!(fnmatch("local.zsh", "local.z?h"));
-        assert!(fnmatch("a1", "a[0-9]"));
-        assert!(!fnmatch("a1", "a[!0-9]"));
-        assert!(fnmatch("a[", "a["));
-        assert!(!fnmatch("abc", "ab"));
-    }
-
-    #[test]
-    fn normpath_matches_python() {
-        assert_eq!(normpath("/a//b/./c/../d"), "/a/b/d");
-        assert_eq!(normpath("//a"), "//a");
-        assert_eq!(normpath("///a"), "/a");
-        assert_eq!(normpath(""), ".");
-        assert_eq!(normpath("../x"), "../x");
-        assert_eq!(normpath("/.."), "/");
-    }
-
-    #[test]
-    fn heredoc_delims_match_python() {
-        assert_eq!(heredoc_delims("cat <<EOF"), vec!["EOF"]);
-        assert_eq!(heredoc_delims("cat <<-'EOF' > x"), vec!["EOF"]);
-        assert!(heredoc_delims("cat <<< word").is_empty());
-        assert_eq!(strip_heredocs("cat <<E\nsed -i x\nE\nls"), "cat <<E\nls");
     }
 
     #[test]

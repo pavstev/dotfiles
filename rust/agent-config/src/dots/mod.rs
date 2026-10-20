@@ -297,6 +297,10 @@ fn claude_config(repo: &Path, profile: &str) {
     if os::is_symlink(&old_sl) && os::readlink(&old_sl).is_some_and(|t| t.starts_with(&src)) && fs::remove_file(&old_sl).is_ok() {
         ok("removed the old statusline.sh link");
     }
+    // The enabled presets load as user rules; the ones that went off lose their link.
+    let on = crate::presets::enabled(&os::home(), profile);
+    crate::presets::link_all(repo, &os::home(), &on);
+    if verbose() { info(&format!("presets: {}", crate::presets::summary(&os::home(), profile))); }
     let n = link::take_count();
     if n > 0 { ok(&format!("linked {} Claude files", n)); }
     step_end(); // the agent-config lines below print their own count

@@ -96,9 +96,15 @@ grep -q '^PROFILE="[a-z]' "$SETTINGS" 2>/dev/null && bad "PROFILE saved without 
 grep -q 'profile: shared' "$T/run1.log" && pass "profile is shared" || bad "profile not shared"
 # Claude settings: a built file, the repo base only while there is no private layer.
 [[ -f "$LIVE" && ! -L "$LIVE" ]] && pass "settings.json is a built file" || bad "settings.json is a link or missing"
-[[ "$(tr -d ' \t\n' <"$LIVE")" == "$(tr -d ' \t\n' <"$R/claude/settings.json")" ]] \
-  && pass "settings.json equals the repo base" || bad "settings.json differs from the base"
 [[ ! -e "$LAYER" ]] && pass "no private layer yet" || bad "a private layer appeared on its own"
+# Presets: the shared profile links six (not ship-to-main) and merges their fragments over the base.
+PRE="$H/.claude/rules"
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 6 ]] && pass "shared profile links six presets" || bad "shared profile did not link six presets"
+[[ ! -e "$PRE/preset-ship-to-main.md" ]] && pass "ship-to-main stays off on shared" || bad "ship-to-main linked on shared"
+[[ "$(readlink "$PRE/preset-workflow.md")" == "$R/claude/presets/workflow/rules.md" ]] && pass "a preset links into the repo" || bad "preset-workflow.md not linked into the repo"
+grep -q '"outputStyle": "ELI5"' "$LIVE" && pass "preset fragment merged into settings.json" || bad "preset fragment missing from settings.json"
+! grep -q '"outputStyle"' "$R/claude/settings.json" && pass "the repo base holds no preset keys" || bad "the repo base holds a preset key"
+grep -q 'The user.s time is the cost that counts' "$OC/AGENTS.md" 2>/dev/null && pass "presets reach Opencode AGENTS.md" || bad "presets missing from Opencode AGENTS.md"
 # Opencode: the rules, the agents and the copper theme are generated on every run.
 grep -q 'generated-by: dotfiles' "$OC/AGENTS.md" 2>/dev/null && pass "Opencode AGENTS.md generated" || bad "Opencode AGENTS.md missing"
 [ -d "$OC/agents" ] && pass "Opencode agents dir" || bad "Opencode agents dir missing"
@@ -112,6 +118,8 @@ if run run2.log; then pass "owner run exits 0"; else bad "owner run exit $?"; fi
 grep -q '^PROFILE="owner"' "$SETTINGS" && pass "owner profile saved" || bad "owner profile not saved"
 [[ "$(readlink "$RULE")" == "$OWNER" ]] && pass "owner rules linked" || bad "owner rules not linked"
 grep -q 'Owner rules' "$OC/AGENTS.md" 2>/dev/null && pass "owner rules reach Opencode" || bad "owner rules missing from Opencode AGENTS.md"
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 7 ]] && pass "owner profile links seven presets" || bad "owner profile did not link seven presets"
+[[ "$(readlink "$PRE/preset-ship-to-main.md")" == "$R/claude/presets/ship-to-main/rules.md" ]] && pass "ship-to-main linked on owner" || bad "ship-to-main not linked on owner"
 
 # 4. Same again: nothing changes.
 before="$(fingerprint)"
@@ -142,6 +150,16 @@ run run4.log
 [[ ! -e "$RULE" && ! -L "$RULE" ]] && pass "owner rules unlinked" || bad "owner rules link still there"
 grep -q 'removed the owner rules link' "$T/run4.log" && pass "unlink reported" || bad "unlink not reported"
 [[ -f "$OWNER" ]] && pass "private rules file kept" || bad "private rules file gone"
+[[ ! -e "$PRE/preset-ship-to-main.md" && ! -L "$PRE/preset-ship-to-main.md" ]] && pass "ship-to-main link removed on shared" || bad "ship-to-main link still there on shared"
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 6 ]] && pass "six preset links stay" || bad "preset links changed besides ship-to-main"
+# A preset set off loses its link; a regular file named like a preset link is never touched.
+printf 'PRESETS="workflow"\n' >>"$SETTINGS"
+printf 'mine\n' >"$PRE/preset-extra.md"
+run run4b.log
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 1 ]] && pass "PRESETS list keeps one link" || bad "PRESETS list did not leave one link"
+[[ "$(cat "$PRE/preset-extra.md")" == mine ]] && pass "a regular preset-*.md file is untouched" || bad "a regular preset-*.md file was changed"
+printf 'PRESETS=""\n' >>"$SETTINGS"
+run run4c.log
 
 # 6. A new commit on origin: the run pulls it and restarts with the new script.
 tgit clone -q "$T/origin.git" "$T/other" &&
@@ -357,6 +375,54 @@ out="$(printf '%s' "$pre" | env HOME="$H" bash "$R/claude/hooks/rust-bin" --hook
 [[ -z "$(git -C "$R" ls-files '*.py')" ]] && pass "no Python file is tracked" || bad "tracked Python files: $(git -C "$R" ls-files '*.py' | head -3 | tr '\n' ' ')"
 [[ -z "$(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh 2>/dev/null)" ]] \
   && pass "no runtime script calls python" || bad "python still called in: $(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh | tr '\n' ' ')"
+
+# 17. Private words (scripts/git-hooks/private-words.sh), through real commits in a throwaway repo:
+#     the current user's home paths, whole-word matching for short words, a warning for an empty list.
+PW="$T/pw"; PH="$T/pwhome"
+mkdir -p "$PW" "$PH/.config/dotfiles"
+tgit -C "$PW" init -q
+pw_me="$(id -un 2>/dev/null)"; [[ -n "$pw_me" ]] || pw_me="${USERNAME:-}"
+pw_settings() { printf '%s\n' "$@" >"$PH/.config/dotfiles/settings"; }
+# Stage a file with the text $2 and commit it with the repo's hooks. Output goes to $T/pw.out.
+# A refused commit is unstaged again, so the next case starts clean.
+pw_commit() {
+  printf '%s\n' "$2" >"$PW/$1"
+  tgit -C "$PW" add "$1"
+  if HOME="$PH" tgit -C "$PW" -c core.hooksPath="$REPO/scripts/git-hooks" commit -q -m "add $1" >"$T/pw.out" 2>&1; then
+    return 0
+  fi
+  tgit -C "$PW" reset -q
+  return 1
+}
+if [[ -z "$pw_me" ]]; then
+  bad "private words: no user name to test the home-path rule (id -un and USERNAME are empty)"
+else
+  pw_settings 'PRIVATE_WORDS="zebrafish"'
+  for p in "/home/$pw_me/x" "/Users/$pw_me/x" "C:\\Users\\$pw_me\\x" "C:/Users/$pw_me/x"; do
+    pw_commit homes.txt "see $p" && bad "private words: a staged home path was not blocked: $p" || pass "private words: a staged home path is blocked ($p)"
+  done
+  pw_commit other.txt "see /home/someone-else/x" && pass "private words: another user's home path passes" || bad "private words: another user's path was blocked: $(cat "$T/pw.out")"
+  for p in "file:///home/$pw_me/x" "file:///Users/$pw_me/x" "file://localhost/home/$pw_me/x" "ends at /home/$pw_me"; do
+    pw_commit url.txt "see $p" && bad "private words: a home path in a URL or at line end was not blocked: $p" || pass "private words: a home path in a URL or at line end is blocked ($p)"
+  done
+  # the user name must end there: /home/<user>x is another user's folder
+  pw_commit longer.txt "see /home/${pw_me}x/y and /Users/${pw_me}-old/z" && pass "private words: a longer user name passes" || bad "private words: /home/${pw_me}x was blocked: $(cat "$T/pw.out")"
+  pw_settings 'PRIVATE_WORDS="abc"'
+  pw_commit short1.txt "abc here" && bad "private words: a short word as a whole word was not blocked" || pass "private words: a short word matches as a whole word"
+  pw_commit short2.txt "abcdef" && pass "private words: a short word inside a longer word passes" || bad "private words: abc blocked abcdef: $(cat "$T/pw.out")"
+  pw_commit short3.txt "x-abc-y" && bad "private words: abc between hyphens was not blocked" || pass "private words: a short word between punctuation is blocked"
+  pw_settings 'PRIVATE_WORDS="abcdef"'
+  pw_commit long1.txt "xxabcdefxx" && bad "private words: a long word inside text was not blocked" || pass "private words: a word of 5 letters or more matches anywhere"
+  # a short word is counted in characters: "ñoño" is 4 characters (6 bytes), in any locale
+  pw_settings 'PRIVATE_WORDS="ñoño"'
+  for loc in C en_US.UTF-8; do
+    LC_ALL="$loc" pw_commit "utf1-$loc.txt" "xñoñox" && pass "private words: a 4-character UTF-8 word inside a longer word passes ($loc)" || bad "private words: ñoño blocked xñoñox ($loc): $(cat "$T/pw.out")"
+    LC_ALL="$loc" pw_commit "utf2-$loc.txt" "a ñoño b" && bad "private words: a 4-character UTF-8 word as a whole word was not blocked ($loc)" || pass "private words: a 4-character UTF-8 word matches as a whole word ($loc)"
+  done
+  pw_settings ''
+  pw_commit empty.txt "plain text" && pass "private words: with no words a commit passes" || bad "private words: a commit with no words failed: $(cat "$T/pw.out")"
+  [[ "$(grep -c 'private words: none set' "$T/pw.out")" -ge 1 ]] && pass "private words: an empty list prints a warning" || bad "private words: no warning for an empty list: $(cat "$T/pw.out")"
+fi
 
 if [[ "$fails" -eq 0 ]]; then printf 'ALL PASS (%d checks)\n' "$passes"; exit 0; fi
 KEEP=1

@@ -1,3 +1,4 @@
+use agent_config::guard_checks as gc;
 use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
@@ -20,7 +21,7 @@ const DIRECT_KEYS: &[&str] = &["context_tokens", "contextTokens"];
 const USAGE_KEYS: &[&str] = &["usage", "token_usage", "tokenUsage", "tokens"];
 
 #[derive(Parser, Debug)]
-#[command(name = "guard_cursor", about = "Cursor port of guard G3 (context ceiling)")]
+#[command(name = "guard_cursor", about = "Cursor port of guard G3 (context ceiling) and the shared checks G14-G17")]
 struct Cli {
     mode: Option<String>,
 }
@@ -443,6 +444,159 @@ fn mode_response(data: &Value, key: &str) {
     }
 }
 
+// --- tool mode: the shared checks G14-G17 ---------------------------------------------
+//
+// Cursor hook docs: https://cursor.com/docs/hooks (add `.md` for the text).
+// - `preToolUse` input: `tool_name` (`Shell`, `Read`, `Grep`, `Write`, `Task`, `MCP:<tool>`),
+//   `tool_input` (Shell: `command`, `working_directory`), `cwd`. It does not enforce `ask`.
+// - `beforeShellExecution` input: `command`, `cwd`. `beforeMCPExecution` input: `tool_name`,
+//   `tool_input` (a JSON string), `mcp_server_name`. Both enforce `ask`.
+// - Answer on stdout: `{"permission": "allow"|"deny"|"ask", "user_message", "agent_message"}`.
+//   Exit code 2 also blocks.
+// - `beforeReadFile` input: `file_path` (absolute), `content`, `attachments`. Its answer holds only
+//   `permission` (`allow`|`deny`) and `user_message`. It carries G15, because the `tool_input` key
+//   that `preToolUse` uses for Read is not documented.
+// - Failures: the docs list "no output", a crash, a timeout and a non-zero exit other than 2 as hook
+//   failures that let the action through unless the hook sets `failClosed`. Only invalid JSON or an
+//   answer that does not fit the schema blocks. So a missing binary (no output) fails open. Tool
+//   mode still prints `allow` on every path, which is valid either way.
+
+const ALLOW: &str = "{\"permission\": \"allow\"}";
+
+/// What one Cursor tool event says, in Claude's words: the tool name, its input, the folder, and
+/// whether the host can ask (`beforeShellExecution`, `beforeMCPExecution`) or can only deny.
+struct ToolCall {
+    tool: String,
+    input: Value,
+    cwd: PathBuf,
+    can_ask: bool,
+    /// `beforeReadFile`: the answer schema has no `agent_message`.
+    read_event: bool,
+}
+
+fn tool_call(data: &Value) -> Option<ToolCall> {
+    let event = str_field(data, "hook_event_name").unwrap_or("");
+    let cwd_of = |input: &Value| -> PathBuf {
+        str_field(data, "cwd")
+            .or_else(|| input.get("working_directory").and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
+            .map(PathBuf::from)
+            .or_else(|| env::current_dir().ok())
+            .unwrap_or_default()
+    };
+    let is_mcp = event == "beforeMCPExecution" || str_field(data, "mcp_server_name").is_some();
+    let is_shell = event == "beforeShellExecution"
+        || (event.is_empty() && str_field(data, "command").is_some() && data.get("tool_name").is_none());
+    if is_mcp {
+        let name = str_field(data, "tool_name")?;
+        let raw = data.get("tool_input").cloned().unwrap_or(Value::Null);
+        let input = match &raw {
+            Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({"input": s})),
+            other => other.clone(),
+        };
+        let server = str_field(data, "mcp_server_name").unwrap_or("cursor");
+        return Some(ToolCall { tool: format!("mcp__{server}__{name}"), cwd: cwd_of(&input), input, can_ask: true, read_event: false });
+    }
+    if is_shell {
+        let input = serde_json::json!({"command": str_field(data, "command")?});
+        return Some(ToolCall { tool: "Bash".into(), cwd: cwd_of(&input), input, can_ask: true, read_event: false });
+    }
+    let is_read = event == "beforeReadFile"
+        || (event.is_empty() && str_field(data, "file_path").is_some() && data.get("tool_name").is_none());
+    if is_read {
+        let input = serde_json::json!({"file_path": str_field(data, "file_path")?});
+        return Some(ToolCall { tool: "Read".into(), cwd: cwd_of(&input), input, can_ask: false, read_event: true });
+    }
+    let tool = match str_field(data, "tool_name")? {
+        "Shell" => "Bash",
+        "Read" => "Read",
+        "Grep" => "Grep",
+        _ => return None,
+    };
+    let mut input = data.get("tool_input").cloned().filter(|v| v.is_object())?;
+    // Claude names the key `file_path` for Read; Cursor may name it `path`.
+    if tool == "Read" && input.get("file_path").is_none()
+        && let Some(p) = input.get("path").cloned()
+    {
+        input["file_path"] = p;
+    }
+    Some(ToolCall { tool: tool.into(), cwd: cwd_of(&input), input, can_ask: false, read_event: false })
+}
+
+/// Run check `id` when its gate is open (preset on, not in `GUARD_OFF`), the same gate the Claude
+/// guard uses. A check in shadow mode (`GUARD_SHADOW`) logs what it would do and allows.
+fn gated(id: &str, f: impl FnOnce() -> gc::Verdict) -> gc::Verdict {
+    if !gc::check_enabled(id) {
+        return gc::Verdict::Allow;
+    }
+    let v = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(gc::Verdict::Allow);
+    match &v {
+        gc::Verdict::Allow => v,
+        gc::Verdict::Ask(m) | gc::Verdict::Deny(m) if gc::shadow(id) => {
+            gc::shadow_log(id, &v, m);
+            gc::Verdict::Allow
+        }
+        _ => v,
+    }
+}
+
+fn tool_verdict(call: &ToolCall) -> gc::Verdict {
+    let (tool, input, cwd) = (call.tool.as_str(), &call.input, call.cwd.as_path());
+    if call.can_ask {
+        // G16 runs here: Cursor enforces `ask` on these events only.
+        return gated("G16", || {
+            if !gc::g16_applies(tool, input) {
+                return gc::Verdict::Allow;
+            }
+            let words = gc::home_dir().map(|h| gc::private_words_at(&h, Some(cwd))).unwrap_or_default();
+            gc::g16_outbound(tool, input, cwd, &words)
+        });
+    }
+    let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let bash = tool == "Bash";
+    let v = gated("G14", || if bash { gc::g14_sed(command, gc::is_macos()) } else { gc::Verdict::Allow });
+    if v != gc::Verdict::Allow {
+        return v;
+    }
+    let v = gated("G15", || gc::g15_secrets_at(tool, input, &cwd.to_string_lossy()));
+    if v != gc::Verdict::Allow {
+        return v;
+    }
+    gated("G17", || if bash { gc::g17_attribution(command, cwd) } else { gc::Verdict::Allow })
+}
+
+/// Answer one tool event. Always prints a permission answer; any failure allows.
+fn mode_tool(stdin: &str) -> i32 {
+    let (verdict, read_event) = std::panic::catch_unwind(|| {
+        let data: Value = serde_json::from_str(stdin).ok().filter(Value::is_object)?;
+        let call = tool_call(&data)?;
+        Some((tool_verdict(&call), call.read_event))
+    })
+    .ok()
+    .flatten()
+    .unwrap_or((gc::Verdict::Allow, false));
+    match verdict {
+        gc::Verdict::Allow => {
+            emit_out(ALLOW);
+            0
+        }
+        gc::Verdict::Ask(msg) => {
+            let out = serde_json::json!({"permission": "ask", "user_message": msg, "agent_message": msg});
+            emit_out(&serde_json::to_string(&out).unwrap_or_else(|_| ALLOW.into()));
+            0
+        }
+        gc::Verdict::Deny(msg) => {
+            let out = if read_event {
+                serde_json::json!({"permission": "deny", "user_message": msg})
+            } else {
+                serde_json::json!({"permission": "deny", "user_message": msg, "agent_message": msg})
+            };
+            emit_out(&serde_json::to_string(&out).unwrap_or_else(|_| ALLOW.into()));
+            let _ = writeln!(std::io::stderr(), "{}", msg);
+            2
+        }
+    }
+}
+
 fn main() {
     // Fail open: any panic (bad input, closed pipe) exits 0 silently.
     std::panic::set_hook(Box::new(|_| {}));
@@ -456,12 +610,17 @@ fn run() -> i32 {
         Err(_) => return 0,
     };
     let mode = match cli.mode.as_deref() {
-        Some(m) if ["prompt", "subagent", "compact", "response"].contains(&m) => m,
+        Some(m) if ["prompt", "subagent", "compact", "response", "tool"].contains(&m) => m,
         _ => return 0,
     };
 
     let mut stdin_buf = String::new();
-    if std::io::stdin().read_to_string(&mut stdin_buf).is_err() {
+    let read_ok = std::io::stdin().read_to_string(&mut stdin_buf).is_ok();
+    if mode == "tool" {
+        // a permission hook must always answer
+        return mode_tool(if read_ok { &stdin_buf } else { "" });
+    }
+    if !read_ok {
         return 0;
     }
     let data: Value = match serde_json::from_str::<Value>(&stdin_buf) {

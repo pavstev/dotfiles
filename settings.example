@@ -11,6 +11,32 @@ GIT_EMAIL=""
 # (~/.config/dotfiles/owner.md) exist, else shared.
 PROFILE=""
 
+# Which presets (claude/presets/) are on: all, none, or names split by spaces, for
+# example: workflow clock plain-writing. Empty: the owner profile gets every preset,
+# the shared profile every preset except ship-to-main. A preset that is off costs no tokens.
+PRESETS=""
+
+# Your time zone as an IANA name, for example Europe/Berlin. Empty: the system zone.
+TIMEZONE=""
+
+# Your Claude plan, which sets the weekly pace budget: pro, max5, max20, team, api or
+# unknown. Empty: unknown (no pace budget until the status line reports one).
+PLAN=""
+
+# The days you work, for the weekly pace: names or ranges, for example mon-fri,
+# mon-sat or sun-thu. Empty: mon-fri.
+WORK_DAYS=""
+
+# Colors of the status line, dots output and the Opencode theme: copper or plain
+# (no colors, no Opencode theme). Empty: copper.
+THEME=""
+
+# Guard check ids to turn off (GUARD_OFF) or to run in shadow mode, which logs what
+# would have blocked and lets it through (GUARD_SHADOW). Split by spaces or commas, for
+# example: G10 G13. Empty: none. The env var of the same name wins for one run.
+GUARD_OFF=""
+GUARD_SHADOW=""
+
 # Cloudflare docs search (an MCP server) in Cursor: on or off. Empty: off.
 # MCP servers are opt-in on every profile.
 CURSOR_MCP=""

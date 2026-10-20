@@ -1,0 +1,101 @@
+// generated-by: dotfiles (scripts/agent-config) from rust/agent-config/src/opencode_plugin.ts.tmpl. Edit that file, then run dots.
+//
+// Runs the Rust guard (the same checks as Claude Code) before every Opencode tool call. It builds the
+// Claude-shaped JSON the guard reads, runs `rust-bin --hook guard pretool` and throws on deny or ask:
+// a throw in the before hook blocks the call, and Opencode cannot ask through a plugin.
+// A missing launcher, a crash or an answer that is not JSON allows the call and warns once per session.
+//
+// Plugin shape of Opencode 2.x: a default export with an id and a `setup(ctx)` that registers hooks.
+import { spawnSync } from "node:child_process"
+
+const RUST_BIN: string = __RUST_BIN__
+
+// Opencode tool name -> Claude tool name. Anything else that is not a known built-in is an MCP tool.
+const NAMES: Record<string, string> = { shell: "Bash", bash: "Bash", read: "Read", grep: "Grep" }
+// Built-in tools the checks do not look at: no process is started for them.
+const SKIP = new Set([
+  "glob", "list", "ls", "edit", "write", "patch", "apply_patch", "multiedit", "todowrite", "todoread",
+  "task", "webfetch", "websearch", "skill", "question", "execute", "lsp",
+])
+
+type Hook = { tool?: string; sessionID?: string; id?: string; input?: Record<string, unknown> }
+
+// Module state, so a `setup` that runs twice shares it.
+const warned = new Set<string>()
+const seen = new Map<string, string | null>()
+
+function warnOnce(session: string, why: string): void {
+  if (warned.has(session)) return
+  warned.add(session)
+  console.warn(`dots-guard: ${why}; the guard is skipped for this session`)
+}
+
+/** The Claude tool name and input for an Opencode call, or null when no check applies. */
+function translate(tool: string, args: Record<string, unknown>): [string, Record<string, unknown>] | null {
+  const mapped = NAMES[tool]
+  if (mapped === "Bash") return [mapped, { command: args.command ?? args.cmd ?? "" }]
+  if (mapped === "Read") return [mapped, { file_path: args.path ?? args.filePath ?? args.file_path ?? "" }]
+  if (mapped === "Grep") return [mapped, { ...args, path: args.path ?? "" }]
+  if (SKIP.has(tool)) return null
+  // MCP tools are named `<server>_<tool>`; the guard reads `mcp__<server>__<tool>`
+  const cut = tool.indexOf("_")
+  if (cut <= 0) return null
+  return [`mcp__${tool.slice(0, cut)}__${tool.slice(cut + 1)}`, args]
+}
+
+/** The reason to block the call, or null to allow it. */
+function judge(input: Hook): string | null {
+  const session = input.sessionID ?? "unknown"
+  const call = translate(String(input.tool ?? ""), input.input ?? {})
+  if (!call) return null
+  const payload = JSON.stringify({
+    tool_name: call[0],
+    tool_input: call[1],
+    cwd: process.cwd(),
+    session_id: session,
+    hook_event_name: "PreToolUse",
+  })
+  const run = spawnSync("bash", [RUST_BIN, "--hook", "guard", "pretool"], { input: payload, encoding: "utf8", timeout: 10000 })
+  if (run.error || run.status === null) {
+    warnOnce(session, `could not run ${RUST_BIN}`)
+    return null
+  }
+  if (run.status === 2) return (run.stderr || "").trim() || "blocked by the guard"
+  if (run.status !== 0) {
+    warnOnce(session, `${RUST_BIN} exited with ${run.status}`)
+    return null
+  }
+  const out = (run.stdout || "").trim()
+  if (!out) return null
+  try {
+    const hso = JSON.parse(out)?.hookSpecificOutput
+    const why = String(hso?.permissionDecisionReason ?? "blocked by the guard")
+    if (hso?.permissionDecision === "deny") return why
+    if (hso?.permissionDecision === "ask") return `${why} (Opencode cannot ask, so the call is blocked)`
+  } catch {
+    warnOnce(session, "the guard answered with something that is not JSON")
+  }
+  return null
+}
+
+export default {
+  id: "dots-guard",
+  setup(ctx: { tool: { hook: (name: string, fn: (input: Hook) => Promise<void>) => void } }) {
+    ctx.tool.hook("execute.before", async (input: Hook) => {
+      // The cache only stops a `setup` that ran twice from judging one call twice. Inner calls of the
+      // `execute` tool can share one call id, so the key holds the tool and its input as well.
+      const key = input.id ? `${input.id}:${input.tool ?? ""}:${JSON.stringify(input.input ?? {})}` : ""
+      let reason: string | null
+      if (key && seen.has(key)) {
+        reason = seen.get(key) ?? null
+      } else {
+        reason = judge(input)
+        if (key) {
+          seen.set(key, reason)
+          if (seen.size > 200) seen.delete(seen.keys().next().value as string)
+        }
+      }
+      if (reason) throw new Error(reason)
+    })
+  },
+}
