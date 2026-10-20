@@ -53,7 +53,7 @@ const WRAP_TOOL: &str = "mcp__ccd_turn__wrap_up";
 
 const MSG_SCRATCH: &str = "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.";
 const MSG_POLL: &str = "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
-const MSG_ASK: &str = "guard: one AskUserQuestion per turn; put all questions in one call.";
+const MSG_ASK: &str = "guard: an earlier AskUserQuestion in this turn has no answer yet. Wait for it, then ask again. Put all questions of one round in one call.";
 const MSG_HEAVY_TAIL: &str = "subagent loads every tool and skill (about 60K tokens; `worker` starts near 15-20K). Use `worker` (edits, commands), `researcher` (web), `Explore` (search), `task-implementer` (one plan task) or `Plan` (planning).";
 const MSG_PLAN_GATE: &str = "guard: plans run on Opus only in plan mode (opusplan). Call EnterPlanMode first, then save the plan file after you approve it (autopilot: send a `Plan` helper instead).";
 const MSG_PLAN_GATE_APP: &str = "guard: in the desktop app plan mode does not switch a Sonnet session to Opus. For this plan, send a `Plan` helper (Opus by the router), or pick Opus in the model menu.";
@@ -475,9 +475,11 @@ fn message_content(rec: &Value) -> &Value {
     get(get(rec, "message"), "content")
 }
 
+/// Earlier AskUserQuestion calls of this turn that still have no tool_result (G4). A call with a
+/// result, answered or refused, is done and does not count.
 fn asks_since_last_prompt(path: &Path, tool_use_id: &Value, tool_input: &Value) -> Result<usize, Fail> {
     let mut found: Vec<(Value, Value)> = Vec::new(); // newest first
-    let mut denied: Vec<Value> = Vec::new();
+    let mut answered: Vec<Value> = Vec::new(); // ids with a tool_result
     for line in rev_lines(path)? {
         if !has(&line, b"\"user\"") && !has(&line, b"AskUserQuestion") && !has(&line, b"askme") {
             continue;
@@ -493,8 +495,8 @@ fn asks_since_last_prompt(path: &Path, tool_use_id: &Value, tool_input: &Value) 
         if rtype == Some("user") {
             if let Some(arr) = message_content(&rec).as_array() {
                 for b in arr {
-                    if get(b, "type").as_str() == Some("tool_result") && truthy(get(b, "is_error")) {
-                        denied.push(get(b, "tool_use_id").clone());
+                    if get(b, "type").as_str() == Some("tool_result") {
+                        answered.push(get(b, "tool_use_id").clone());
                     }
                 }
             }
@@ -516,7 +518,7 @@ fn asks_since_last_prompt(path: &Path, tool_use_id: &Value, tool_input: &Value) 
             }
             if get(b, "type").as_str() == Some("tool_use") && get(b, "name").as_str() == Some("AskUserQuestion") {
                 let id = get(b, "id");
-                if !denied.contains(id) {
+                if !answered.contains(id) {
                     found.push((id.clone(), get(b, "input").clone()));
                 }
             }
@@ -1317,7 +1319,9 @@ fn path_join(a: &str, b: &str) -> String {
     }
 }
 
-/// G10: this turn's work is uncommitted or unpushed in the session's repo.
+/// G10: this turn's work is uncommitted or unpushed in the session's repo. It fires once per repo
+/// state: the session state keeps the last (repo, uncommitted, unpushed) it reported, and the same
+/// tuple at the next Stop stays quiet. A changed tuple, or a clean repo in between, fires again.
 fn g10_commit(data: &Value, t: &Turn) -> Res {
     let Some(cwd) = get(data, "cwd").as_str().filter(|s| !s.is_empty()) else { return Ok(None) };
     if t.paths.is_empty() && !t.committed {
@@ -1354,10 +1358,21 @@ fn g10_commit(data: &Value, t: &Turn) -> Res {
         }
     }
     if dirty == 0 && unpushed == 0 {
+        let _ = with_state(data, |st| st.remove("g10_last")); // clean again: the next dirty state may fire
         return Ok(None);
     }
     let tp = get(data, "transcript_path").as_str().ok_or(Fail)?;
     if said_no_push(Path::new(tp))? {
+        return Ok(None);
+    }
+    // Once per repo state: the same (repo, uncommitted, unpushed) as the last time stays quiet.
+    let tuple = serde_json::json!([top, dirty, unpushed]);
+    let seen = with_state(data, |st| {
+        let same = st.get("g10_last") == Some(&tuple);
+        st.insert("g10_last".into(), tuple.clone());
+        same
+    });
+    if matches!(seen, Ok(true)) {
         return Ok(None);
     }
     Ok(Some(format!(
@@ -1696,7 +1711,8 @@ fn deny_msg(v: gc::Verdict) -> Option<String> {
     }
 }
 
-/// G14: deny BSD `sed -i` on macOS. Quoted text, `gsed` and `sed -n` pass.
+/// G14: deny a bare BSD `sed -i` on macOS (it eats the script as the backup suffix). A suffix
+/// argument (`-i ''`, `-i.bak`, `-i '.bak'`) passes. Quoted text, `gsed` and `sed -n` pass.
 fn g14_sed(data: &Value, _ctx: &Ctx) -> Res {
     let Some(cmd) = bash_command(data) else { return Ok(None) };
     if !check_enabled("G14") {
@@ -1728,7 +1744,8 @@ fn g17_attr(data: &Value, _ctx: &Ctx) -> Res {
     Ok(Some(msg.clone()))
 }
 
-/// G15: deny reading local.zsh (Read, Grep or Bash) and printing full process command lines.
+/// G15: deny reading local.zsh (Read, Grep or Bash) and printing full process command lines. The
+/// message names the safe command for the matched case (`pgrep -f`, `ps -o ... -p`, the exclude flag).
 fn g15_secrets(data: &Value, _ctx: &Ctx) -> Res {
     let tool = tool_name(data);
     let Some(tool @ ("Read" | "Grep" | "Bash")) = tool else { return Ok(None) };

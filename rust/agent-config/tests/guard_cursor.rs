@@ -479,7 +479,7 @@ fn attr_line() -> String {
 #[test]
 fn cursor_tool_sed_denied_on_macos() {
     let t = T::new();
-    assert_tool_deny(&t.shell("sed -i '' s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "darwin")]), "G14");
+    assert_tool_deny(&t.shell("sed -i s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "darwin")]), "G14");
     assert_tool_allow(&t.shell("sed -i s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "linux")]));
 }
 
@@ -574,19 +574,19 @@ fn cursor_tool_uses_the_same_gate_as_the_guard() {
     let t = T::new();
     let mac = ("GUARD_PLATFORM", "darwin");
     // GUARD_OFF turns a check off
-    assert_tool_allow(&t.shell("sed -i '' s/a/b/ x", &[mac, ("GUARD_OFF", "g14")]));
+    assert_tool_allow(&t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", "g14")]));
     t.settings("GUARD_OFF=\"G14\"\n");
-    assert_tool_allow(&t.shell("sed -i '' s/a/b/ x", &[mac]));
+    assert_tool_allow(&t.shell("sed -i s/a/b/ x", &[mac]));
     // the preset of G17 off: it allows; the preset on: it denies
     t.settings("PRESETS=\"workflow\"\n");
     assert_tool_allow(&t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]));
     t.settings("PRESETS=\"no-ai-attribution\"\n");
     assert_tool_deny(&t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]), "G17");
     // a core check ignores the presets
-    assert_tool_deny(&t.shell("sed -i '' s/a/b/ x", &[mac, ("GUARD_OFF", "")]), "G14");
+    assert_tool_deny(&t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", "")]), "G14");
     // shadow mode logs and allows
     let cache = t.dir.join("cache").to_string_lossy().into_owned();
-    let res = t.shell("sed -i '' s/a/b/ x", &[mac, ("GUARD_OFF", ""), ("GUARD_SHADOW", "G14"), ("XDG_CACHE_HOME", &cache)]);
+    let res = t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", ""), ("GUARD_SHADOW", "G14"), ("XDG_CACHE_HOME", &cache)]);
     assert_tool_allow(&res);
     let log = fs::read_to_string(t.dir.join("cache/dots-guard-shadow.log")).unwrap();
     assert!(log.contains(" G14 deny "), "{log}");

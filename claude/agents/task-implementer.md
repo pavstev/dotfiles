@@ -54,6 +54,7 @@ worktree path or the current checkout). If the task text is missing or unclear, 
 - Never `sleep` or poll. Run long commands with `run_in_background` and wait for the notice.
 - Read a file before you Edit or Write it. The shell tool is `Bash`, with a capital B.
 - Never call `update_plan` or `wrap_up`: they belong to the main session.
+- Never call `mcp__ccd_turn__update_plan`; it works only in the main thread.
 - `rm` only literal paths, or `"${VAR:?}"`.
 - Read big files in slices (offset and limit), or `rg -n` first: Read stops at 25K tokens.
 - You cannot start sub-agents, and skills that start them fail here: do that work inline.

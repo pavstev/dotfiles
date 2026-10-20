@@ -162,7 +162,7 @@ A check also needs its preset on (`dots settings`), and `GUARD_OFF` turns one of
 
 | Check | Claude Code | Cursor | Opencode |
 |-------|-------------|--------|----------|
-| G14 BSD `sed -i` on macOS | deny | deny (`preToolUse`, shell) | deny (plugin) |
+| G14 bare `sed -i` on macOS (a suffix such as `-i ''` or `-i.bak` passes) | deny | deny (`preToolUse`, shell) | deny (plugin) |
 | G15 reading `local.zsh`, printing command lines | deny | deny (`preToolUse`, shell, read, grep) | deny (plugin) |
 | G16 text with a private word or a secret leaving the machine | ask | ask (`beforeShellExecution`, `beforeMCPExecution`) | blocked, no ask |
 | G17 assistant attribution in a commit, PR or issue (preset `no-ai-attribution`) | deny | deny (`preToolUse`, shell) | deny (plugin) |

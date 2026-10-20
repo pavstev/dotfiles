@@ -68,7 +68,7 @@ and the fix, usually `Run: dots`. The checks:
 | `links` | every linked file points into the repo |
 | `settings-built` | `~/.claude/settings.json` exists and every hook runs `rust-bin` |
 | `bins-fresh` | each Rust program is built and not older than its source |
-| `guard-selftest` | the guard denies BSD `sed -i` (macOS rules) and a read of `local.zsh`, asks before a send that holds a private word, and lets `ls` through |
+| `guard-selftest` | the guard denies a bare BSD `sed -i` (macOS rules) and a read of `local.zsh`, asks before a send that holds a private word, and lets `ls` through |
 | `presets` | the preset links equal the `PRESETS` setting |
 | `generated` | the generated Cursor rule and Opencode files carry the `generated-by: dotfiles` marker |
 | `timezone` | `TIMEZONE` is empty or a real zone name (macOS and Linux) |

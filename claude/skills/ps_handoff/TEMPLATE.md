@@ -19,11 +19,13 @@ Blockers: <each with the default to take, or "none">
 The next session updates these lines after each phase, or the ledger it names.
 
 ## Read first
+Open these before anything else. Do not explore the repo again.
 - <absolute path>: <why, in 6 words>
-- (3 to 8 files, most important first)
+- (the exact files, at most 8, most important first)
 
-## Facts (verified <YYYY-MM-DD>)
-- <fact you checked this session, with the command or file that proves it>
+## Checked facts (verified <YYYY-MM-DD>)
+Trust these. Do not re-check them.
+- <fact you verified this session> | proof: <the command you ran or the file you read>
 - Pitfalls: <tool missing, flaky test, secret not to touch>
 
 ## Why

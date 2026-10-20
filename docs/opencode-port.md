@@ -108,7 +108,8 @@ in [`docs/ai-agents.md`](ai-agents.md#where-each-guard-check-runs).
   `export const X = async () => ({"tool.execute.before": ...})` form is refused. `setup` can run
   twice, so the plugin keeps its state at module level and caches the verdict per call.
 - **Blocking:** a throw in the hook blocks the call and the model sees the error text. Verified live:
-  `sed -i '' ...` came back as `G14: BSD sed -i on macOS ...` and nothing ran.
+  a bare `sed -i ...` came back as `G14: bare sed -i on macOS ...` and nothing ran. (At the time
+  the `sed -i ''` form was blocked too; G14 now lets a form with a suffix through.)
 - **Input:** `input.tool`, `input.input` (the args), `input.sessionID`, `input.id`.
 - **Tool names seen live:** `shell` (arg `command`; Claude's `Bash`), `read` (arg `path`),
   `grep` (args `pattern`, `path`), `glob`, `execute`, and MCP tools as `<server>_<tool>`

@@ -9,7 +9,7 @@ argument-hint: "[request to stress-test — empty = your last message]"
 <purpose>
 Interview me before any work starts, until we explicitly agree on requirements, edge cases, and architecture.
 A wrong assumption caught now costs one question; caught after implementation, it costs a rewrite.
-This is a conversation that adapts, not a fixed questionnaire: every question should be the single most useful one given everything I have already told you.
+This is a conversation that adapts, not a fixed questionnaire: every round should hold the most useful questions given everything I have already told you.
 </purpose>
 
 <request>
@@ -44,7 +44,7 @@ If none exists, ask in plain text with lettered options and wait for my reply.
 - Put your recommendation first, with "(Recommended)" at the end of its label.
 - Use multi-select only when options can combine. In Claude Code, use `preview` to compare code, schemas, or layouts side by side.
 - The tool adds a free-text answer automatically, so every option you write is a real choice.
-- One topic per call. Questions in the same call must be independent: when question B depends on how I answer A, ask A alone first.
+- Batch: put up to 4 related, independent questions in one call, recommended option first. Default the rest and say so in one line. A question that depends on an earlier answer waits for the next call. This beats "one question at a time".
 </asking>
 
 <phases>
@@ -64,7 +64,7 @@ Start with the highest-impact decision whose prerequisites are settled.
 Each round:
 1. One status line, e.g. `Locked 4 · Open: 2 high, 3 low`.
 2. In 1–2 sentences, name the risk behind the next question and why it matters. Act as a skeptical senior reviewer: look for unstated assumptions, edge cases (empty, huge, concurrent, failed, partially failed, retried), security holes, data-loss risk, scaling limits, and conflicts with existing code. When my idea has a flaw, say so plainly.
-3. Ask.
+3. Ask every open decision whose prerequisites are settled, up to 4, in one call (see `<asking>`). Do not ask them one by one.
 4. Process my answer with `<after_each_answer>` before choosing the next question.
 
 </phases>

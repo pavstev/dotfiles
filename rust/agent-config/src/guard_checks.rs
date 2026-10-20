@@ -20,10 +20,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECRET_FILE: &str = "~/.config/zsh/local.zsh";
 
-const MSG_G14: &str = "G14: BSD sed -i on macOS differs from GNU sed and breaks files. Use the Edit tool, or python3 for bulk edits.";
+const MSG_G14: &str = "G14: bare sed -i on macOS eats the script as the backup suffix. Give a suffix: `sed -i '' 's/a/b/' f` (or `-i.bak`). Or use the Edit tool.";
 const MSG_G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
-const MSG_G15_SEARCH: &str = "G15: this search can reach local.zsh (API keys). Exclude it: `rg -g '!local.zsh' ...` or `grep --exclude=local.zsh ...`.";
-const MSG_G15_PS: &str = "G15: this prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, or `ps -o pid=,etime=,ucomm= -p <pid>`.";
+const MSG_G15_PS: &str = "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
+const MSG_G15_PGREP: &str = "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
+const MSG_G15_PROCS: &str = "G15: procs prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, then `ps -o pid=,etime=,ucomm= -p <pid>`.";
+
+/// The G15 message for a search that can reach local.zsh: the exact exclude flag of the tool used.
+fn msg_g15_search(tool: &str) -> String {
+    let flag = match tool {
+        "rg" => "rg -g '!local.zsh' ...".to_string(),
+        "ag" => "ag --ignore local.zsh ...".to_string(),
+        "ack" => "ack --ignore-file=is:local.zsh ...".to_string(),
+        other => format!("{other} --exclude=local.zsh ..."),
+    };
+    format!("G15: this search can reach local.zsh (API keys). Exclude it with `{flag}`.")
+}
 
 static GLOB_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[*?\[]").unwrap());
 
@@ -637,10 +649,17 @@ fn command_of(input: &Value) -> Option<&str> {
 
 // --- G14 sed -i ----------------------------------------------------------------
 
-/// True when sed's arguments hold -i, -i.bak, -ni, -Ei, --in-place[=SUFFIX].
+/// True when the word after a bare `-i` is an explicit BSD backup suffix: empty (`''`) or a
+/// dot-word such as `.bak`. Anything else is the script, which BSD sed would eat as the suffix.
+fn is_bsd_suffix(word: &str) -> bool {
+    word.is_empty() || (word.starts_with('.') && word.len() > 1 && !word.contains(|c: char| c.is_whitespace() || c == '/'))
+}
+
+/// True when sed's arguments hold a BSD-unsafe in-place flag: -i, -ni, -Ei, --in-place[=SUFFIX]
+/// with no explicit suffix. `-i.bak`, `-i ''` and `-i .bak` carry one and are safe on BSD sed.
 fn sed_in_place(args: &[String]) -> bool {
     let mut skip = false;
-    for a in args {
+    for (n, a) in args.iter().enumerate() {
         if skip {
             skip = false;
         } else if a == "--" {
@@ -654,7 +673,13 @@ fn sed_in_place(args: &[String]) -> bool {
             let cs: Vec<char> = a.chars().collect();
             for k in 1..cs.len() {
                 if cs[k] == 'i' {
-                    return true;
+                    // -i.bak: the rest of the word is the suffix. A bare -i is safe only when the
+                    // next word is an explicit suffix.
+                    if k == cs.len() - 1 && !args.get(n + 1).is_some_and(|next| is_bsd_suffix(next)) {
+                        return true;
+                    }
+                    skip = k == cs.len() - 1;
+                    break;
                 }
                 if "efl".contains(cs[k]) {
                     skip = k == cs.len() - 1;
@@ -666,7 +691,8 @@ fn sed_in_place(args: &[String]) -> bool {
     false
 }
 
-/// G14: deny BSD `sed -i` on macOS. Quoted text, `gsed` and `sed -n` pass.
+/// G14: deny a bare BSD `sed -i` on macOS (it eats the script as the backup suffix). A suffix
+/// argument (`-i ''`, `-i.bak`, `-i '.bak'`) passes. Quoted text, `gsed` and `sed -n` pass too.
 pub fn g14_sed(cmd: &str, macos: bool) -> Verdict {
     if !macos || !cmd.contains("sed") {
         return Verdict::Allow;
@@ -1079,20 +1105,26 @@ fn search_leaks(name: &str, args: &[String], cwd: Option<&str>, target: &Target)
 }
 
 /// The G15 message for a Bash command that reads local.zsh or prints command lines, else None.
-fn bash_leaks(cmd: &str, cwd: &str) -> Option<&'static str> {
+fn bash_leaks(cmd: &str, cwd: &str) -> Option<String> {
     let target = secret_target();
     for c in walk(cmd, Some(cwd.to_string()), 0) {
         let name = basename(&c.toks[0]).to_string();
         let args = &c.toks[1..];
         let ccwd = c.cwd.as_deref();
         let head = &args[..args.len().min(200)];
-        if name == "procs" || (name == "ps" && ps_leaks(args)) || (name == "pgrep" && pgrep_leaks(args)) {
-            return Some(MSG_G15_PS);
+        if name == "procs" {
+            return Some(MSG_G15_PROCS.to_string());
+        }
+        if name == "ps" && ps_leaks(args) {
+            return Some(MSG_G15_PS.to_string());
+        }
+        if name == "pgrep" && pgrep_leaks(args) {
+            return Some(MSG_G15_PGREP.to_string());
         }
         for (k, t) in c.toks.iter().enumerate() {
             // input redirect: cmd < file
             if t == "<" && k + 1 < c.toks.len() && is_secret(&c.toks[k + 1], ccwd, &target, false) {
-                return Some(MSG_G15_FILE);
+                return Some(MSG_G15_FILE.to_string());
             }
             if t.starts_with('<')
                 && !t.starts_with("<<")
@@ -1100,23 +1132,23 @@ fn bash_leaks(cmd: &str, cwd: &str) -> Option<&'static str> {
                 && t.chars().count() > 1
                 && is_secret(&t[1..], ccwd, &target, false)
             {
-                return Some(MSG_G15_FILE);
+                return Some(MSG_G15_FILE.to_string());
             }
         }
         if name == "dd" && head.iter().any(|a| a.starts_with("if=") && is_secret(&a[3..], ccwd, &target, false)) {
-            return Some(MSG_G15_FILE);
+            return Some(MSG_G15_FILE.to_string());
         }
         if SECRET_READERS.contains(&name.as_str()) {
             if head.iter().any(|a| is_secret(a, ccwd, &target, false)) {
-                return Some(MSG_G15_FILE);
+                return Some(MSG_G15_FILE.to_string());
             }
             if SECRET_SEARCHERS.contains(&name.as_str())
                 && (head.iter().any(|a| is_secret(a, ccwd, &target, true)) || search_leaks(&name, head, ccwd, &target))
             {
-                return Some(MSG_G15_SEARCH);
+                return Some(msg_g15_search(&name));
             }
             if c.extra.iter().take(200).any(|a| is_secret(a, ccwd, &target, true)) {
-                return Some(MSG_G15_FILE);
+                return Some(MSG_G15_FILE.to_string());
             }
         }
     }
@@ -1130,7 +1162,8 @@ pub fn g15_secrets(tool: &str, input: &Value) -> Verdict {
     g15_secrets_at(tool, input, &cwd)
 }
 
-/// G15: deny reading local.zsh (Read, Grep or Bash) and printing full process command lines.
+/// G15: deny reading local.zsh (Read, Grep or Bash) and printing full process command lines. The
+/// message names the safe command for the matched case (`pgrep -f`, `ps -o ... -p`, the exclude flag).
 pub fn g15_secrets_at(tool: &str, input: &Value, cwd: &str) -> Verdict {
     if !matches!(tool, "Read" | "Grep" | "Bash") {
         return Verdict::Allow;
@@ -1141,11 +1174,13 @@ pub fn g15_secrets_at(tool: &str, input: &Value, cwd: &str) -> Verdict {
         }
         let key = if tool == "Read" { "file_path" } else { "path" };
         match input.get(key).and_then(Value::as_str) {
-            Some(p) if !p.is_empty() && is_secret(p, Some(cwd), &secret_target(), tool == "Grep") => Some(MSG_G15_FILE),
+            Some(p) if !p.is_empty() && is_secret(p, Some(cwd), &secret_target(), tool == "Grep") => {
+                Some(MSG_G15_FILE.to_string())
+            }
             _ => None,
         }
     });
-    deny_or_allow(r.ok().flatten())
+    deny_or_allow(r.ok().flatten().as_deref())
 }
 
 // --- G16 outbound sends --------------------------------------------------------

@@ -895,7 +895,7 @@ fn test_g4_first_ask_allowed_even_if_written() {
 }
 
 #[test]
-fn test_g4_second_ask_denied() {
+fn test_g4_follow_up_ask_allowed_after_an_answer() {
     let g = G::new();
     let recs = [
         human("start"),
@@ -903,10 +903,36 @@ fn test_g4_second_ask_denied() {
         tool_result("a1"),
         assistant_b(1000, json!([ask_block("a2", "which?")])),
     ];
-    assert_deny(&g.ask(&recs, Some("a2"), "which?"), "one AskUserQuestion per turn");
-    assert_deny(&g.ask(&recs, None, "which?"), ""); // no id: a1 still counted
-    // current call not yet written, earlier one counts
-    assert_deny(&g.ask(&recs[..3], Some("a2"), "which?"), "");
+    assert_allow(&g.ask(&recs, Some("a2"), "which?"));
+    assert_allow(&g.ask(&recs, None, "which?")); // no id: a1 is answered
+    assert_allow(&g.ask(&recs[..3], Some("a2"), "which?")); // current call not yet written
+    // a third card after a second answer
+    let mut more = recs.to_vec();
+    more.push(tool_result("a2"));
+    more.push(assistant_b(1000, json!([ask_block("a3", "again?")])));
+    assert_allow(&g.ask(&more, Some("a3"), "again?"));
+}
+
+#[test]
+fn test_g4_second_ask_denied() {
+    // denied only while an earlier call of the turn has no tool_result
+    let g = G::new();
+    let recs = [
+        human("start"),
+        assistant_b(1000, json!([ask_block("a1", "which?")])),
+        assistant_b(1000, json!([ask_block("a2", "other?")])),
+    ];
+    assert_deny(&g.ask(&recs, Some("a2"), "other?"), "answer");
+    assert_deny(&g.ask(&recs[..2], Some("a2"), "other?"), ""); // current call not yet written
+    // a1 answered, a2 unanswered, a3 asked: deny
+    let more = [
+        human("start"),
+        assistant_b(1000, json!([ask_block("a1", "which?")])),
+        tool_result("a1"),
+        assistant_b(1000, json!([ask_block("a2", "other?")])),
+        assistant_b(1000, json!([ask_block("a3", "third?")])),
+    ];
+    assert_deny(&g.ask(&more, Some("a3"), "third?"), "");
 }
 
 #[test]
@@ -914,7 +940,7 @@ fn test_g4_parallel_asks_first_allowed() {
     let g = G::new();
     let recs = [human("start"), assistant_b(1000, json!([ask_block("a1", "which?"), ask_block("a2", "other?")]))];
     assert_allow(&g.ask(&recs, Some("a1"), "which?"));
-    assert_deny(&g.ask(&recs, Some("a2"), "other?"), "one AskUserQuestion per turn");
+    assert_deny(&g.ask(&recs, Some("a2"), "other?"), "answer");
 }
 
 #[test]
@@ -1771,8 +1797,39 @@ impl G {
     }
 
     fn g10(&self, recs: &[Value], repo: &str, extra: Value) -> R {
-        self.stop_msg(recs, merge(json!({"cwd": repo}), extra), &[])
+        // a fresh session per call, so the once-per-repo-state rule does not hide a repeat
+        let base = json!({"cwd": repo, "session_id": format!("g10-{}", next_sid())});
+        self.stop_msg(recs, merge(base, extra), &[])
     }
+}
+
+#[test]
+fn test_g10_fires_once_per_repo_state() {
+    let g = G::new();
+    let repo = g.make_repo(true);
+    let p = g.write_file(&repo, "new.txt", "x");
+    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), g.say("done")];
+    let same = json!({"session_id": "once"});
+    assert_deny(&g.g10(&recs, &repo, same.clone()), "G10: this turn left work in work: 1 uncommitted file(s), 0 unpushed commit(s).");
+    // same session, same repo state: quiet, also on a third stop
+    assert_allow(&g.g10(&recs, &repo, same.clone()));
+    assert_allow(&g.g10(&recs, &repo, same.clone()));
+    // another session still hears it
+    assert_deny(&g.g10(&recs, &repo, json!({"session_id": "other"})), "G10");
+    // a changed count fires again
+    let q = g.write_file(&repo, "second.txt", "y");
+    let more = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tu("Write", json!({"file_path": q}), "u2"), g.say("done")];
+    assert_deny(&g.g10(&more, &repo, same.clone()), "2 uncommitted file(s)");
+    assert_allow(&g.g10(&more, &repo, same.clone()));
+    // clean in between: the next dirty state fires again, even with the same numbers
+    g.git(&repo, &["add", "-A"]);
+    g.git(&repo, &["commit", "-q", "-m", "all"]);
+    g.git(&repo, &["push", "-q"]);
+    assert_allow(&g.g10(&more, &repo, same.clone()));
+    let r = g.write_file(&repo, "third.txt", "z");
+    let third = [human("build"), tu("Write", json!({"file_path": r}), "u1"), g.say("done")];
+    assert_deny(&g.g10(&third, &repo, same.clone()), "1 uncommitted file(s)");
+    assert_allow(&g.g10(&third, &repo, same));
 }
 
 #[test]
@@ -2073,7 +2130,7 @@ fn test_g3_text_no_handoff_push() {
 }
 
 // G14 sed -i
-const G14_MSG: &str = "G14: BSD sed -i on macOS differs from GNU sed and breaks files. Use the Edit tool, or python3 for bulk edits.";
+const G14_MSG: &str = "G14: bare sed -i on macOS eats the script as the backup suffix. Give a suffix: `sed -i '' 's/a/b/' f` (or `-i.bak`). Or use the Edit tool.";
 
 impl G {
     fn g14_data(&self, data: &Value, platform: &str, env: &[(&str, &str)]) -> Option<String> {
@@ -2092,12 +2149,28 @@ impl G {
 fn test_g14_denies_in_place_forms() {
     let g = G::new();
     for cmd in [
-        "sed -i 's/a/b/' f", "sed -i '' 's/a/b/' f", "sed -i.bak s/a/b/ f", "sed -ni 's/a/b/p' f",
+        "sed -i 's/a/b/' f", "sed -ni 's/a/b/p' f",
         "sed -Ei 's/a/b/' f", "sed -i -E 's/a/b/' f", "sed --in-place s/a/b/ f", "sed --in-place=.bak s/a/b/ f",
         "sed -n -i p f", "sed -e s/a/b/ -i f", "sed s/a/b/ -i f", "/usr/bin/sed -i s/a/b/ f", "FOO=1 sed -i s/a/b/ f",
+        "sed -i -e 's/a/b/' f", "sed -i 'p' f", "sed -i s/.a/b/ f",
     ] {
         assert_eq!(g.g14(cmd, "darwin", &[]).as_deref(), Some(G14_MSG), "{cmd}");
     }
+}
+
+#[test]
+fn test_g14_allows_bsd_forms_with_a_suffix() {
+    let g = G::new();
+    for cmd in [
+        "sed -i '' 's/a/b/' f.txt", "sed -i \"\" 's/a/b/' f.txt", "sed -i.bak 's/a/b/' f", "sed -i '.bak' 's/a/b/' f",
+        "sed -i .bak 's/a/b/' f", "sed -Ei '' 's/a/b/' f", "sed -n -i '' p f", "sed -i '' -e 's/a/b/' f",
+        "sed -ni.bak 's/a/b/p' f", "cd x && sed -i '' s/a/b/ f", "sudo sed -i '' s/a/b/ f",
+        "find . -name '*.md' -exec sed -i '' s/a/b/ {} \\;",
+    ] {
+        assert_eq!(g.g14(cmd, "darwin", &[]), None, "{cmd}");
+    }
+    // a bare -i in a second command still denies
+    assert_eq!(g.g14("sed -i '' s/a/b/ f && sed -i s/a/b/ g", "darwin", &[]).as_deref(), Some(G14_MSG));
 }
 
 #[test]
@@ -2106,7 +2179,7 @@ fn test_g14_denies_after_separators_and_wrappers() {
     for cmd in [
         "cd x && sed -i s/a/b/ f", "echo a; sed -i s/a/b/ f", "false || sed -i s/a/b/ f", "ls | sed -i s/a/b/",
         "echo f | xargs sed -i s/a/b/", "echo f | xargs -I {} sed -i s/a/b/ {}",
-        "find . -name '*.md' -exec sed -i '' s/a/b/ {} \\;", "find . -name '*.md' -exec sed -i '' s/a/b/ {} +",
+        "find . -name '*.md' -exec sed -i s/a/b/ {} \\;", "find . -name '*.md' -exec sed -i s/a/b/ {} +",
         "sudo sed -i s/a/b/ f", "sudo -u root sed -i s/a/b/ f", "env FOO=1 sed -i s/a/b/ f", "env -i sed -i s/a/b/ f",
         "bash -c \"sed -i s/a/b/ f\"", "echo a\nsed -i s/a/b/ f", "(cd x; sed -i s/a/b/ f)",
     ] {
@@ -2153,14 +2226,20 @@ fn test_g14_through_pretool() {
             "tool_name": "Bash", "tool_input": {"command": cmd}});
         g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")])
     };
-    assert_deny(&run("sed -i '' s/a/b/ f"), "G14: BSD sed -i");
+    assert_deny(&run("sed -i s/a/b/ f"), "G14: bare sed -i");
+    assert_allow(&run("sed -i '' s/a/b/ f"));
     assert_allow(&run("sed -n 1p f"));
 }
 
 // G15 secret reads
 const G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
-const G15_SEARCH: &str = "G15: this search can reach local.zsh (API keys). Exclude it: `rg -g '!local.zsh' ...` or `grep --exclude=local.zsh ...`.";
-const G15_PS: &str = "G15: this prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, or `ps -o pid=,etime=,ucomm= -p <pid>`.";
+const G15_SEARCH_RG: &str = "G15: this search can reach local.zsh (API keys). Exclude it with `rg -g '!local.zsh' ...`.";
+const G15_SEARCH_GREP: &str = "G15: this search can reach local.zsh (API keys). Exclude it with `grep --exclude=local.zsh ...`.";
+const G15_SEARCH_AG: &str = "G15: this search can reach local.zsh (API keys). Exclude it with `ag --ignore local.zsh ...`.";
+const G15_SEARCH_ACK: &str = "G15: this search can reach local.zsh (API keys). Exclude it with `ack --ignore-file=is:local.zsh ...`.";
+const G15_PS: &str = "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
+const G15_PGREP: &str = "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
+const G15_PROCS: &str = "G15: procs prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, then `ps -o pid=,etime=,ucomm= -p <pid>`.";
 
 impl G {
     fn g15x(&self, tool: &str, ti: Value, env: &[(&str, &str)], platform: Option<&str>, extra: Value) -> Option<String> {
@@ -2240,7 +2319,8 @@ fn test_g15_bash_readers_denied() {
     ] {
         assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_FILE), "{cmd}");
     }
-    assert_eq!(g.g15bash("rg KEY ~/.config/zsh").as_deref(), Some(G15_SEARCH));
+    assert_eq!(g.g15bash("rg KEY ~/.config/zsh").as_deref(), Some(G15_SEARCH_RG));
+    assert_eq!(g.g15bash("grep KEY ~/.config/zsh").as_deref(), Some(G15_SEARCH_GREP));
 }
 
 #[test]
@@ -2263,11 +2343,15 @@ fn test_g15_process_command_lines_denied() {
         "ps aux", "ps auxww", "ps aux | grep node", "ps -ef", "ps -ef | grep x", "ps ax", "ps -e", "ps -A",
         "ps -f -p 12", "ps -o args", "ps -o command -p 1", "ps -p 1 -o pid,command", "ps -p 1 -o pid,args=",
         "ps -p 1 -opid,args", "ps -axo pid,command", "ps -eo pid,args", "ps --format pid,args", "ps -ww",
-        "ps -p 1 -ww", "ps eww", "ps eww -p 1", "/bin/ps aux", "sudo ps aux", "pgrep -fl node", "pgrep -af node",
-        "pgrep -lf node", "pgrep -f -l node", "pgrep -f -a node", "pgrep --list-full node", "procs", "procs --tree",
-        "echo x; procs",
+        "ps -p 1 -ww", "ps eww", "ps eww -p 1", "/bin/ps aux", "sudo ps aux",
     ] {
         assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_PS), "{cmd}");
+    }
+    for cmd in ["pgrep -fl node", "pgrep -af node", "pgrep -lf node", "pgrep -f -l node", "pgrep -f -a node", "pgrep --list-full node"] {
+        assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_PGREP), "{cmd}");
+    }
+    for cmd in ["procs", "procs --tree", "echo x; procs"] {
+        assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_PROCS), "{cmd}");
     }
 }
 
@@ -2290,14 +2374,26 @@ fn test_g15_recursive_searches_denied() {
     let repo = g.secret_tree();
     for cmd in [
         "grep -rn KEY .", "grep -R KEY", "grep --recursive KEY .", "grep -d recurse KEY .", "grep -drecurse KEY .",
-        "grep --directories=recurse KEY .", "grep -r -e KEY .", "grep -rn KEY home", "egrep -rn KEY .",
-        "fgrep -r KEY ~", "grep -rn KEY ~/dotfiles", "grep -rl KEY ..", "grep -r --exclude=other.txt KEY .",
-        "grep -r --exclude-dir=docs KEY .", "ack KEY", "ack KEY .", "rg -u KEY .", "rg -uu KEY", "rg -uuu KEY .",
-        "rg -nu KEY .", "rg --no-ignore KEY .", "rg --no-ignore-vcs KEY", "rg --hidden KEY .", "rg -. KEY .",
-        "rg -n --hidden KEY home", "rg -u -g '!other' KEY .", "ag -u KEY", "ag --unrestricted KEY", "ag -U KEY .",
-        "ag --skip-vcs-ignores KEY .", "ag --hidden KEY .", "sudo rg -u KEY .", "cd .. && grep -rn KEY dotfiles",
+        "grep --directories=recurse KEY .", "grep -r -e KEY .", "grep -rn KEY home",
+        "grep -rn KEY ~/dotfiles", "grep -rl KEY ..", "grep -r --exclude=other.txt KEY .",
+        "grep -r --exclude-dir=docs KEY .", "cd .. && grep -rn KEY dotfiles",
     ] {
-        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH), "{cmd}");
+        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_GREP), "{cmd}");
+    }
+    assert_eq!(g.g15bash_in("egrep -rn KEY .", &repo).as_deref(), Some(&G15_SEARCH_GREP.replace("`grep", "`egrep")[..]));
+    assert_eq!(g.g15bash_in("fgrep -r KEY ~", &repo).as_deref(), Some(&G15_SEARCH_GREP.replace("`grep", "`fgrep")[..]));
+    for cmd in ["ack KEY", "ack KEY ."] {
+        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_ACK), "{cmd}");
+    }
+    for cmd in [
+        "rg -u KEY .", "rg -uu KEY", "rg -uuu KEY .",
+        "rg -nu KEY .", "rg --no-ignore KEY .", "rg --no-ignore-vcs KEY", "rg --hidden KEY .", "rg -. KEY .",
+        "rg -n --hidden KEY home", "rg -u -g '!other' KEY .", "sudo rg -u KEY .",
+    ] {
+        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_RG), "{cmd}");
+    }
+    for cmd in ["ag -u KEY", "ag --unrestricted KEY", "ag -U KEY .", "ag --skip-vcs-ignores KEY .", "ag --hidden KEY ."] {
+        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_AG), "{cmd}");
     }
 }
 
@@ -2636,7 +2732,7 @@ impl G {
             "G2" => self.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 600}), 150_000),
             "G3" => self.pre_ctx("Agent", ok_agent(), 600_000),
             "G4" => {
-                let recs = [human("start"), assistant_b(1000, json!([ask_block("a1", "q?")])), tool_result("a1"),
+                let recs = [human("start"), assistant_b(1000, json!([ask_block("a1", "q?")])),
                     assistant_b(1000, json!([ask_block("a2", "q?")]))];
                 self.ask(&recs, Some("a2"), "q?")
             }
@@ -2914,9 +3010,11 @@ impl G {
 
 #[test]
 fn g14_g15_unchanged() {
-    let msg14 = "G14: BSD sed -i on macOS differs from GNU sed and breaks files. Use the Edit tool, or python3 for bulk edits.";
-    assert_eq!(gc::g14_sed("sed -i '' s/a/b/ f", true), Verdict::Deny(msg14.into()));
-    assert_eq!(gc::g14_sed("cd x && sudo sed -i.bak s/a/b/ f", true), Verdict::Deny(msg14.into()));
+    let msg14 = G14_MSG;
+    assert_eq!(gc::g14_sed("sed -i s/a/b/ f", true), Verdict::Deny(msg14.into()));
+    assert_eq!(gc::g14_sed("cd x && sudo sed -i s/a/b/ f", true), Verdict::Deny(msg14.into()));
+    assert_eq!(gc::g14_sed("sed -i '' s/a/b/ f", true), Verdict::Allow);
+    assert_eq!(gc::g14_sed("sed -i.bak s/a/b/ f", true), Verdict::Allow);
     assert_eq!(gc::g14_sed("sed -i s/a/b/ f", false), Verdict::Allow);
     assert_eq!(gc::g14_sed("gsed -i s/a/b/ f; sed -n 1p f", true), Verdict::Allow);
     let file = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";

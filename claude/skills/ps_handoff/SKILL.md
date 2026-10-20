@@ -23,6 +23,7 @@ Work alone, no subagents. Finish in 10 minutes.
 4. **Write the brief** to that path with the Write tool. Use [TEMPLATE.md](TEMPLATE.md). Rules for the brief:
    - Up to 150 lines. Absolute paths. No "as discussed" and no pointer to this chat.
    - Every fact says how it was checked. Date it.
+   - `## Read first` lists the exact files (at most 8) the new session opens before anything else. `## Checked facts` lists what you verified, each with the command or file that proved it. The new session trusts both and does not re-explore.
    - `## State` is `Key: Value` lines (Goal, Repo, Branch, Done, Next, Owner, Budget, Blockers). The next session updates them, or the ledger it names, after each phase.
    - The approach sits in `## Why`, `## What`, `## How`. Acceptance lines in `## Done when` start with MUST, SHOULD or MAY.
    - Every phase names a model and an effort. A phase that plans or designs says `Opus` (app) or `opusplan` (CLI), as in step 1. Build and review phases say `Sonnet` (app) or `sonnet` (CLI). Effort is `high`, never `xhigh` or `max`. Never give a build or review phase Opus: a final review phase says Sonnet too, and the guard runs the `code-reviewer` on Opus.
