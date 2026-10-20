@@ -1,6 +1,8 @@
 # Agent tools in Rust: ctx and sessions (design, 2026-10-20)
 
 Status: design, approved in the brainstorm of 2026-10-20. Waits for the owner's review of this file.
+
+**Change of 2026-10-20 (Task 1 spike):** `turso` needs C (`simsimd`, `bindgen`) on every target, so it is dropped. v1 of `sessions` indexes Claude Code only. Opencode and Cursor (decision 6, the Sources rows and the harness_stats line) wait for a pure-Rust SQLite reader; `sqlite-core` is being spiked on copies of the live stores.
 Evidence: `~/.claude/research/2026-10-20-harness-research.md` (sections 1.5, 3, 5).
 
 ## Goal

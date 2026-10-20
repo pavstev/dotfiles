@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Two pure-Rust CLIs in `rust/agent-config`: `ctx` (outline and read code by symbol) and `sessions` (search past Claude Code, Opencode and Cursor sessions), plus a `session-finder` agent and small harness_stats and statusline changes.
+**Goal:** Two pure-Rust CLIs in `rust/agent-config`: `ctx` (outline and read code by symbol) and `sessions` (search past Claude Code sessions; Opencode and Cursor later), plus a `session-finder` agent and small harness_stats and statusline changes.
 
-**Architecture:** Library modules (`codeview`, `redact`, `stores`) hold the logic; thin bins (`ctx`, `sessions`) parse args and print. `sessions` keeps a tantivy index in the user cache dir and reads SQLite stores with `turso`, read-only. Everything is tested with fixtures in a temp HOME, like the existing `tests/runtime_bins.rs`.
+**Architecture:** Library modules (`codeview`, `redact`, `stores`) hold the logic; thin bins (`ctx`, `sessions`) parse args and print. `sessions` keeps a tantivy index in the user cache dir and reads Claude Code JSONL. Opencode and Cursor (SQLite) wait for a pure-Rust reader: `turso` was dropped on 2026-10-20 because it needs C (`simsimd`, `bindgen`) on every target. Everything is tested with fixtures in a temp HOME, like the existing `tests/runtime_bins.rs`.
 
-**Tech Stack:** Rust 2024 (rust-version 1.89), clap 4, serde_json, regex, walkdir, dirs 6, tantivy 0.27 (default features off), turso 0.8.x.
+**Tech Stack:** Rust 2024 (rust-version 1.89), clap 4, serde_json, regex, walkdir, dirs 6, tantivy 0.27 (default features off).
 
 **Spec:** `docs/plans/2026-10-20-agent-tools-design.md`
 
@@ -17,6 +17,7 @@
 - A failed source or file never crashes a tool: it prints `• <tool>: <what> skipped: <why>` and goes on.
 - Every command has an output cap and says when it cut.
 - No secret is printed or written: `redact::redact` runs before any output or index write.
+- Owner decision 2026-10-20: v1 indexes Claude Code only. `read_opencode` and `read_cursor` are not built; `sessions find --source opencode|cursor` prints `• sessions: <source> skipped: not supported yet` and exits 0. A spike checks the pure-Rust reader `sqlite-core` on copies of the live stores; a pass makes Opencode and Cursor a follow-up task after Task 12.
 - Never read the Opencode tables `credential`, `account`, `account_state`, `control_account`, `kv`.
 - `ctx read` header: `FILE:START-END  <symbol path>  scan=<lang>  hash=<8 hex>`.
 - `sessions find` hit: `date  source  project  session-id  title`, then a snippet of at most 200 chars.
@@ -41,18 +42,17 @@
 - Modify: `rust/agent-config/Cargo.toml` (add deps and two `[[bin]]` entries for `ctx` and `sessions`, stub mains)
 - Create: `rust/agent-config/src/bin/ctx.rs`, `rust/agent-config/src/bin/sessions.rs` (stubs that print usage)
 - Create: `rust/agent-config/tests/deps.rs`
-- Create: `rust/agent-config/examples/turso_probe.rs`
 
 **Interfaces:**
-- Produces: crate deps `tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "stopwords"] }`, `turso = "0.8"`; bins `ctx`, `sessions`.
+- Produces: crate deps `tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "stopwords", "stemmer"] }` (`stopwords` needs `stemmer`); no `turso`; bins `ctx`, `sessions`.
 
 - [ ] **Step 1: Write the failing test** `no_c_build_on_any_target` in `tests/deps.rs`: for each of the 3 targets, run `cargo tree --target <t> -e normal,build --prefix none --format {p}` in `CARGO_MANIFEST_DIR` and assert no line starts with `cc `, `cmake ` or `bindgen `. Also `stub_bins_exist`: `env!("CARGO_BIN_EXE_ctx")` and `env!("CARGO_BIN_EXE_sessions")` run with `--help` and exit 0.
 - [ ] **Step 2: Run** `cargo test --manifest-path rust/agent-config/Cargo.toml --test deps`. Expected: FAIL (bins missing).
-- [ ] **Step 3: Add the deps, bins and stubs.** If `no_c_build_on_any_target` fails, find the C crate with `cargo tree -i <crate> --target <t>` and turn off the feature that pulls it. If turso itself needs C on any target, STOP and report to the parent with the `cargo tree` path.
-- [ ] **Step 4: Probe the live database.** `examples/turso_probe.rs` opens `<opencode data dir>/opencode.db` read-only with turso and prints `select count(*) from session` and the time it took. Run `cargo run --release --example turso_probe`. Expected: a count near 114 (it was 114 on 2026-10-20) within 5 s. If it errors or hangs, STOP and report.
+- [ ] **Step 3: Add the deps, bins and stubs.** If `no_c_build_on_any_target` fails, find the C crate with `cargo tree -i <crate> --target <t>` and turn off the feature that pulls it. (`turso` was tried and dropped: it needs C. See the notes folder file `task1-turso-needs-c.md`.)
+- [x] **Step 4: Probe the live database.** Dropped with `turso`. The `sqlite-core` spike replaces it (separate helper, scratch folder, copies only).
 - [ ] **Step 5: Measure build cost.** Time a clean `cargo build --release --bins` twice: in a second git worktree at the parent commit (before) and here (after), each with its own empty `target/`. Record both times in the commit message. If the clean build grew more than 120 s, STOP and report.
 - [ ] **Step 6: Run** the deps test again. Expected: PASS.
-- [ ] **Step 7: Commit** `feat(agent-tools): tantivy and turso deps with a no-C gate`.
+- [ ] **Step 7: Commit** `feat(agent-tools): tantivy dep with a no-C gate`.
 
 ### Task 2: codeview edge-case fixtures and failing tests (Opus helper)
 
@@ -126,7 +126,7 @@
 - [ ] **Step 4: Run** the tests. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(redact): one redactor for tool output and indexes`.
 
-### Task 6: store readers
+### Task 6: store readers (Claude only in v1)
 
 **Files:**
 - Create: `rust/agent-config/src/stores/mod.rs`, `claude.rs`, `opencode.rs`, `cursor.rs`; modify `src/lib.rs` (`pub mod stores;`)
@@ -138,21 +138,18 @@
   - `pub enum Skip { Missing, Locked, Error(String) }`
   - `pub fn claude_root(home: &Path) -> PathBuf`, `pub fn opencode_db(home: &Path) -> PathBuf`, `pub fn cursor_db(home: &Path) -> PathBuf`
   - `pub fn read_claude(home: &Path, since: &BTreeMap<PathBuf,(u64,i64)>, out: &mut dyn FnMut(Doc)) -> Result<BTreeMap<PathBuf,(u64,i64)>, Skip>` (map = path to (size, mtime); unchanged files are skipped)
-  - `pub fn read_opencode(home: &Path, since_updated: i64, out: &mut dyn FnMut(Doc)) -> Result<i64, Skip>` (returns the new max `part.time_updated`)
-  - `pub fn read_cursor(home: &Path, out: &mut dyn FnMut(Doc)) -> Result<(), Skip>`
+  - v1 builds `read_claude` only. `read_opencode` and `read_cursor` are not built (follow-up after the `sqlite-core` spike); `opencode_db` and `cursor_db` stay as path functions.
   - Every `Doc.text` has passed `redact::redact`.
 
 - [ ] **Step 1: Write failing tests:**
   - `paths_per_os`: on macOS `cursor_db` ends in `Library/Application Support/Cursor/User/globalStorage/state.vscdb`, on Linux `.config/Cursor/User/globalStorage/state.vscdb`, on Windows `AppData/Roaming/Cursor/User/globalStorage/state.vscdb`; `opencode_db` is `.local/share/opencode/opencode.db` on all three (`cfg!` branches in the test).
   - `claude_reads_main_and_subagents`: two JSONL fixtures (one under `subagents/`) give the expected user, assistant-text and tool docs; tool docs hold the tool name and its `command` or `file_path`, never the tool output.
   - `claude_half_last_line_skipped`: a file ending in a half JSON line yields the docs before it and no error.
-  - `opencode_fixture`: a turso-created db with `session`, `message`, `part` rows (shapes from the spec) yields docs; a second read with the returned `since_updated` yields none.
-  - `opencode_locked_skips_fast`: hold a write transaction open on the fixture db in another connection; `read_opencode` returns `Err(Skip::Locked)` or reads within 5 s, never hangs.
-  - `cursor_fixture`: `cursorDiskKV` rows `composerData:x` and `bubbleId:x:y` yield docs; other keys are ignored.
+  - (Opencode and Cursor fixture and lock tests move to the follow-up task.)
   - `forbidden_tables_never_named`: read the text of `src/stores/*.rs` and assert none of `credential`, `account`, `account_state`, `control_account`, ` kv` appears in a SQL string.
   - `secrets_redacted`: a fake key in a fixture prompt is `[REDACTED]` in the doc.
 - [ ] **Step 2: Run** `cargo test --manifest-path rust/agent-config/Cargo.toml --test stores`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Claude: stream with `BufReader::lines`, parse each line with serde_json, skip lines that do not parse. Title from the desktop app records (the same lookup `harness_stats` uses; move it to `stores::claude` and call it from both). Opencode and Cursor: turso read-only, busy timeout 2 s, a 5 s total cap; SELECT only the named tables and columns.
+- [ ] **Step 3: Implement.** Claude: stream with `BufReader::lines`, parse each line with serde_json, skip lines that do not parse. Title from the desktop app records (the same lookup `harness_stats` uses; move it to `stores::claude` and call it from both). Opencode and Cursor readers wait for the follow-up.
 - [ ] **Step 4: Run** the stores tests. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(stores): read Claude, Opencode and Cursor sessions`.
 
@@ -164,13 +161,13 @@
 
 **Interfaces:**
 - Consumes: `stores::*`, `redact::redact`.
-- Produces: CLI `sessions index [--rebuild]`, `sessions find QUERY [--project P] [--since YYYY-MM-DD] [--source claude|opencode|cursor] [--limit N]` (default limit 10, max 50). Index dir `dirs::cache_dir()/dots/sessions/`, state file `state.json` there with keys `claude` (path map), `opencode` (i64), `version` (1).
+- Produces: CLI `sessions index [--rebuild]`, `sessions find QUERY [--project P] [--since YYYY-MM-DD] [--source claude|opencode|cursor] [--limit N]` (default limit 10, max 50). Index dir `dirs::cache_dir()/dots/sessions/`, state file `state.json` there with keys `claude` (path map) and `version` (1).
 
 - [ ] **Step 1: Write failing tests** (temp HOME, fixtures from Task 6 helpers):
   - `find_returns_hit_block`: after indexing fixtures, `find "flaky vitest"` prints a line matching `^\d{4}-\d{2}-\d{2}  claude  \S+  [0-9a-f-]{36}  .+$` and a snippet of at most 200 chars.
   - `incremental_index`: a second `index` with no file changes adds 0 docs (print `• sessions: 0 new`); appending one JSONL line adds 1.
   - `half_line_indexed_next_run`: a half last line is skipped, then indexed after it is completed.
-  - `missing_source_one_line`: no Opencode db prints `• sessions: opencode skipped: missing` and exit 0.
+  - `unsupported_source_one_line`: `find x --source opencode` (and `cursor`) prints `• sessions: opencode skipped: not supported yet` and exits 0.
   - `lock_wait_then_stale`: hold the tantivy writer lock in the test; `find` returns within 6 s, with the line `• sessions: index busy, searched the last index`.
   - `filters`: `--source`, `--project`, `--since` and `--limit` each narrow the hits.
   - `no_secret_in_index`: grep the index dir bytes for the fake key text: not found.
@@ -203,13 +200,13 @@
 - Test: add to the existing harness_stats tests (`rg -l harness_stats rust/agent-config/tests`)
 
 **Interfaces:**
-- Consumes: `stores::read_opencode`, `stores::read_cursor`, the moved title lookup from Task 6.
+- Consumes: the moved title lookup from Task 6 (no Opencode or Cursor source in v1).
 
-- [ ] **Step 1: Write failing tests:** `collect_drops_headless_tests` (a project folder starting `-private-` or under the temp dir, with no app record and at most 3 calls, is dropped; `--all` keeps it); `report_has_new_rows` (rows `questions from ask skills` and `Stop blocks per check` exist; the row `agent calls w/ effort %` is gone); `opencode_rows` (`report --source opencode` on the Task 6 fixture prints sessions and tool errors).
+- [ ] **Step 1: Write failing tests:** `collect_drops_headless_tests` (a project folder starting `-private-` or under the temp dir, with no app record and at most 3 calls, is dropped; `--all` keeps it); `report_has_new_rows` (rows `questions from ask skills` and `Stop blocks per check` exist; the row `agent calls w/ effort %` is gone); the Opencode row test waits for the follow-up.
 - [ ] **Step 2: Run** them. Expected: FAIL.
 - [ ] **Step 3: Implement.** "Questions from ask skills" = AskUserQuestion calls in sessions whose skills include a name matching `askme|brainstorm|grilling|design-brainstorm|pick`. "Stop blocks per check" = count of `Stop hook feedback` records per `G\d+` code.
 - [ ] **Step 4: Run** the tests. Expected: PASS. Update `claude/skills/ps_harness-optimize/SKILL.md` step 3 metric list (skill TDD: one headless run before and after).
-- [ ] **Step 5: Commit** `feat(harness_stats): drop test runs, ask-skill and Stop rows, Opencode source`.
+- [ ] **Step 5: Commit** `feat(harness_stats): drop test runs, ask-skill and Stop rows`.
 
 ### Task 10: statusline "what is left"
 
@@ -249,4 +246,5 @@ Start only after the guard quick-wins branch (G10 state) is on main: both edit t
 - [ ] **Step 2: Run** `bash scripts/os-check.sh --since origin/main`. Expected: macOS, Linux and Windows PASS. On UTM error -609 (exit 142), quit and reopen UTM and run again.
 - [ ] **Step 3: Final review** with `code-reviewer` (Opus, high) on the branch from `origin/main` to HEAD.
 - [ ] **Step 4: Land** on main per the ship-to-main preset, then run `dots` and check `~/.claude/hooks/rust-bin sessions find "Beszel"` returns a hit.
-- [ ] **Step 5:** Add a line to `~/.claude/research/2026-10-20-harness-research.md`: measure on 2026-10-27 together with the compact trial.
+- [ ] **Step 5:** Follow-up task (after landing): Opencode and Cursor readers on `sqlite-core`, if the spike passes. Spike result: notes folder.
+- [ ] **Step 6:** Add a line to `~/.claude/research/2026-10-20-harness-research.md`: measure on 2026-10-27 together with the compact trial.

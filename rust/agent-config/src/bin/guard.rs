@@ -5,6 +5,12 @@
 //!
 //! Python semantics are mirrored on purpose (truthiness, `str()`, char-based lengths). Where the
 //! Python code would raise and so fail open, the Rust code returns `Err(Fail)`.
+//!
+//! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
+//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13 and H1 (preset workflow), G8 and
+//! PACE (pace), G9 and ROUTER (models), G10 (ship-to-main), G11 (clock), G17 (no-ai-attribution),
+//! G14, G15 and G16 (core). H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
+//! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session.
 
 use agent_config::guard_checks::{self as gc, expanduser, is_macos, realpath};
 use agent_config::pycompat::{days_from_civil, truthy};
@@ -48,6 +54,7 @@ const BUDGET_EVERY: usize = 5;
 const GIT_TIMEOUT: f64 = 2.0;
 const CLOCK_TURN_MIN: i64 = 10;
 const G13_AFTER: usize = 8;
+const H1_MAX: i64 = 3;
 const PLAN_TOOL: &str = "mcp__ccd_turn__update_plan";
 const WRAP_TOOL: &str = "mcp__ccd_turn__wrap_up";
 
@@ -961,6 +968,7 @@ fn default_cap(agent_type: &Value) -> i64 {
         Some("task-implementer" | "task-reviewer" | "researcher" | "ui-verifier" | "worker") => 3000,
         Some("code-reviewer") => 4000,
         Some("repo-scanner") => 2000,
+        Some("session-finder") => 1500,
         _ => HANDBACK_DEFAULT_CAP,
     }
 }
@@ -1442,12 +1450,44 @@ fn g6_stop(data: &Value) -> Res {
     Ok(None)
 }
 
+/// Keep the "what is left" file of the session in step with the open task steps: `<n>\t<first
+/// open step>`, written only when the text changed, removed when nothing is open. Every IO error
+/// is ignored: the statusline is a courtesy and must never fail the hook.
+fn write_status(data: &Value, t: &Turn) {
+    let Some(sid) = get(data, "session_id").as_str().filter(|s| !s.is_empty()) else { return };
+    let path = agent_config::status_path(sid);
+    let names = open_steps(&t.plan);
+    let Some(first) = names.first() else {
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+        return;
+    };
+    let one_line: String = first.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let body = format!("{}\t{}\n", names.len(), one_line.trim());
+    if fs::read_to_string(&path).is_ok_and(|old| old == body) {
+        return;
+    }
+    let Some(dir) = path.parent() else { return };
+    if fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let tmp = dir.join(format!(".status.{}.tmp", std::process::id()));
+    if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &path)).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
 /// Stop checks, first message wins: G6, then G10 to G12 on the main thread. One reminder per turn.
+/// The status file for the statusline is updated first on the main thread, also on the final Stop
+/// after a forced continuation (`stop_hook_active`), which runs no check.
 fn stop(data: &Value) -> Res {
-    if truthy(get(data, "stop_hook_active")) || !truthy(get(data, "transcript_path")) {
+    if !truthy(get(data, "transcript_path")) {
         return Ok(None);
     }
-    if check_enabled("G6")
+    let again = truthy(get(data, "stop_hook_active"));
+    if !again
+        && check_enabled("G6")
         && let Ok(Some(m)) = g6_stop(data)
     {
         return Ok(Some(m));
@@ -1458,11 +1498,12 @@ fn stop(data: &Value) -> Res {
     type TurnCheck = fn(&Value, &Turn) -> Res;
     let checks: [(&str, TurnCheck); 3] = [("G10", g10_commit), ("G11", g11_clock), ("G12", g12_open_steps)];
     let active: Vec<_> = checks.into_iter().filter(|(gid, _)| check_enabled(gid)).collect();
-    if active.is_empty() {
-        return Ok(None);
-    }
     let Some(path) = get(data, "transcript_path").as_str() else { return Ok(None) };
     let Ok(t) = scan_turn(Path::new(path)) else { return Ok(None) };
+    write_status(data, &t);
+    if again {
+        return Ok(None);
+    }
     for (_, f) in active {
         if let Ok(Some(m)) = f(data, &t) {
             return Ok(Some(m));
@@ -2066,6 +2107,22 @@ fn outbound_ask(data: &Value) -> Option<String> {
     ))
 }
 
+/// H1 (preset workflow): a Bash `sed -n` or `cat` of a code file `ctx` can outline gets a one-line
+/// tip, at most `H1_MAX` times per session (the count lives in the per-session state, and only a
+/// shown tip counts). A call that reads nothing like that costs no file access.
+fn h1_hint(data: &Value) -> Option<String> {
+    let file = gc::h1_read_target(&bash_command(data)?)?;
+    let show = with_state(data, |state| {
+        let n = state.get("ctx_hints").map(|v| py_int(v).unwrap_or(0)).unwrap_or(0);
+        if n < H1_MAX {
+            state.insert("ctx_hints".into(), Value::from(n + 1));
+        }
+        n < H1_MAX
+    })
+    .ok()?;
+    show.then(|| format!("Tip: ~/.claude/hooks/rust-bin ctx outline {file}, then ~/.claude/hooks/rust-bin ctx read {file} <symbol>"))
+}
+
 /// Router and warnings for an allowed call: a JSON line for stdout, or None. The line holds
 /// additionalContext, plus permissionDecision allow and updatedInput when the router changed the call.
 fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
@@ -2080,6 +2137,9 @@ fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
     if check_enabled("G3") {
         let warners: [GuardFn; 2] = [w3_browser, w4_budget];
         notes.extend(warners.iter().filter_map(|w| w(data, ctx).ok().flatten()));
+    }
+    if check_enabled("H1") {
+        notes.extend(h1_hint(data));
     }
     if notes.is_empty() && updated.is_none() {
         return None;

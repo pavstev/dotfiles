@@ -1076,7 +1076,8 @@ fn test_g5_counter_write_fails_allows() {
 fn test_g5_defaults_by_agent_type() {
     let g = G::new();
     for (kind, cap) in [("task-implementer", 3000), ("task-reviewer", 3000), ("code-reviewer", 4000),
-        ("researcher", 3000), ("repo-scanner", 2000), ("ui-verifier", 3000), ("general-purpose", 4000), ("Explore", 4000)]
+        ("researcher", 3000), ("repo-scanner", 2000), ("ui-verifier", 3000), ("session-finder", 1500),
+        ("general-purpose", 4000), ("Explore", 4000)]
     {
         let big = (cap as f64 * 1.1) as usize;
         let res = g.handback_full(json!("x".repeat(big + 1)), None, Some(kind), kind, "pretool", json!({}));
@@ -2076,6 +2077,55 @@ fn test_g12_switches_and_missing_transcript() {
     assert_allow(&g.run("stop", &json!({"hook_event_name": "Stop", "transcript_path": g.join("missing.jsonl")})));
 }
 
+/// Where the Stop pass keeps the "what is left" file for session `sid` in this world (unix only).
+#[cfg(unix)]
+fn status_file(g: &G, sid: &str) -> PathBuf {
+    let base = if cfg!(target_os = "macos") {
+        g.dir.join("Library/Caches")
+    } else {
+        g.dir.join("cache")
+    };
+    base.join("dots/status").join(format!("{sid}.txt"))
+}
+
+#[cfg(unix)]
+#[test]
+fn test_stop_writes_the_open_steps_for_the_statusline() {
+    let g = G::new();
+    let file = status_file(&g, "s");
+    let open = [human("go"),
+        plan(json!({"items": items(&[("Done one", "completed"), ("Run tests", "in_progress"), ("Ship", "pending")])})),
+        g.say("Working on it.")];
+    assert_deny(&g.stop_run(&open, json!({})), "G12");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "2\tRun tests\n");
+    // the forced continuation ends with a stop_hook_active Stop: the file follows the new state
+    let fewer = [human("go"),
+        plan(json!({"items": items(&[("Run tests", "in_progress"), ("Ship", "pending")])})),
+        plan(json!({"done": [1, 2]})), g.say("Done.")];
+    assert_allow(&g.stop_run(&fewer, json!({"stop_hook_active": true})));
+    assert!(!file.exists(), "nothing is open: the file is gone");
+    // a quiet G12 (helper running, question asked) still records what is left
+    let asked = [human("go"), plan(json!({"items": items(&[("A", "pending"), ("B", "pending")])})),
+        tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"), g.say("Waiting.")];
+    assert_allow(&g.stop_run(&asked, json!({})));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "2\tA\n");
+    // a session id keeps only [A-Za-z0-9_-] in the file name
+    assert_allow(&g.stop_run(&asked, json!({"session_id": "a/../b c"})));
+    assert_eq!(std::fs::read_to_string(status_file(&g, "abc")).unwrap(), "2\tA\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_stop_status_ignores_helpers_and_missing_plans() {
+    let g = G::new();
+    let file = status_file(&g, "s");
+    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), g.say("x")];
+    assert_allow(&g.stop_run(&recs, json!({"agent_id": "a1"})));
+    assert!(!file.exists(), "a helper's Stop never writes the main session's file");
+    assert_allow(&g.stop_run(&[human("go"), g.say("no plan")], json!({})));
+    assert!(!file.exists());
+}
+
 #[test]
 fn test_stop_checks_run_in_order_and_only_one_fires() {
     let g = G::new();
@@ -2761,6 +2811,7 @@ impl G {
                 self.stop_run(&recs, json!({}))
             }
             "G13" => self.post(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8)),
+            "H1" => self.pre_bash("cat src/a.ts", &[]),
             "PACE" => {
                 let path = self.transcript_named(&[human("hi"), assistant(1000)], "pace.jsonl");
                 let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "pc", "transcript_path": path, "prompt": "go"});
@@ -2793,7 +2844,7 @@ fn each_check_off_with_its_preset() {
             covered += 1;
         }
     }
-    assert_eq!(covered, 16, "workflow 9, pace 2, models 2, ship-to-main 1, clock 1, no-ai-attribution 1");
+    assert_eq!(covered, 17, "workflow 10, pace 2, models 2, ship-to-main 1, clock 1, no-ai-attribution 1");
 }
 
 #[test]
@@ -3758,4 +3809,92 @@ fn g17_generated_with_needs_the_assistant_name() {
     ] {
         assert!(is_deny(&g17_cmd(cmd, d)), "{cmd}");
     }
+}
+
+// --- H1: hint ctx when code is read through the shell ---
+
+impl G {
+    /// A Bash call in session `sid`.
+    fn bash_sid(&self, sid: &str, cmd: &str, env: &[(&str, &str)]) -> R {
+        let data = json!({"hook_event_name": "PreToolUse", "session_id": sid,
+            "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": self.d()});
+        self.run_with("pretool", &data, env)
+    }
+}
+
+#[test]
+fn h1_hints_ctx_for_sed_n_and_cat_of_code() {
+    let g = G::new();
+    let hint = |file: &str| format!("Tip: ~/.claude/hooks/rust-bin ctx outline {file}, then ~/.claude/hooks/rust-bin ctx read {file} <symbol>");
+    let cases: [(&str, &str); 8] = [
+        ("sed -n '1,80p' src/a.ts", "src/a.ts"),
+        ("sed -n 1,80p src/a.ts", "src/a.ts"),
+        ("sed -n -e '5,9p' lib/b.py", "lib/b.py"),
+        ("cat src/a.ts", "src/a.ts"),
+        ("cat -n src/main.rs", "src/main.rs"),
+        ("cat src/a.ts | head -20", "src/a.ts"),
+        ("cat one.css two.py", "one.css"),
+        ("cd web && cat 'my dir/x.ts'", "my dir/x.ts"),
+    ];
+    for (i, (cmd, file)) in cases.iter().enumerate() {
+        let res = g.bash_sid(&format!("h1a{i}"), cmd, &[]);
+        let ctx = assert_warn(&res, &hint(file));
+        assert!(!res.1.contains("permissionDecision"), "a hint is not a decision: {res:?}");
+        assert_eq!(ctx.lines().count(), 1, "{ctx:?}");
+    }
+}
+
+#[test]
+fn h1_is_silent_for_other_files_and_commands() {
+    let g = G::new();
+    for (i, cmd) in [
+        "cat notes.xyz",
+        "sed -n '1,5p' notes.xyz",
+        "sed 's/a/b/' src/a.ts",
+        "cat package.json",
+        "ls src/a.ts",
+        "echo cat src/a.ts",
+        "cat",
+        "sed -n",
+        "cat 'unbalanced.ts",
+        "cat src/a.ts\\",
+        "cat \"a.ts' b",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_allow(&g.bash_sid(&format!("h1b{i}"), cmd, &[]));
+    }
+}
+
+#[test]
+fn h1_gives_at_most_three_hints_per_session() {
+    let g = G::new();
+    for n in 1..=3 {
+        assert_warn(&g.bash_sid("h1c", &format!("cat src/f{n}.ts"), &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+    }
+    assert_allow(&g.bash_sid("h1c", "cat src/f4.ts", &[]));
+    assert_allow(&g.bash_sid("h1c", "sed -n '1,9p' src/f5.ts", &[]));
+    // a call that gets no hint does not use one up, and another session has its own count
+    assert_warn(&g.bash_sid("h1d", "cat src/f1.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+    assert_allow(&g.bash_sid("h1d", "cat notes.xyz", &[]));
+    assert_warn(&g.bash_sid("h1d", "cat src/f2.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+}
+
+#[test]
+fn h1_guard_off_turns_it_off() {
+    let g = G::new();
+    assert_allow(&g.bash_sid("h1e", "cat src/a.ts", &[("GUARD_OFF", "H1")]));
+    assert_allow(&g.bash_sid("h1e", "cat src/a.ts", &[("GUARD_OFF", "g13, h1")]));
+    g.set("GUARD_OFF=\"H1\"\n");
+    assert_allow(&g.bash_sid("h1f", "cat src/a.ts", &[]));
+    g.set("");
+    assert_warn(&g.bash_sid("h1g", "cat src/a.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+}
+
+#[test]
+fn h1_does_not_block_other_denies() {
+    let g = G::new();
+    let res = g.bash_sid("h1h", "sed -i s/a/b/ src/a.ts", &[("GUARD_PLATFORM", "darwin")]);
+    assert_deny(&res, "G14");
 }

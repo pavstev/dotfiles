@@ -6,7 +6,8 @@
 //! --show-current` runs only when the repo is not plain (git env vars, reftable, odd layouts).
 //! Context turns copper at 300 K: time to /ps:handoff. Rate limits are absent until the first API
 //! reply; then nothing is printed for them. Writes the pace cache `claude-pace.json` (read by the
-//! pace hook) when the weekly limit is present. `NO_COLOR` set (non-empty) or `THEME=plain` in the
+//! pace hook) when the weekly limit is present. Ends with `▸ 2 left: <first open step>` when the
+//! guard's Stop pass left a status file for the session (`agent_config::status_path`). `NO_COLOR` set (non-empty) or `THEME=plain` in the
 //! dotfiles settings prints the same text without escape codes.
 
 use serde_json::{Map, Value};
@@ -230,6 +231,34 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
     line
 }
 
+/// Longest step text on the line, in characters, the cut mark included.
+const LEFT_MAX: usize = 40;
+
+/// The text of a "what is left" file (`<n>\t<first open step>`) as `▸ 2 left: <step>`, with a
+/// step over `LEFT_MAX` characters cut and ended with `…`. `None` for anything malformed.
+fn left_text(file: &str) -> Option<String> {
+    let (n, step) = file.lines().next()?.split_once('\t')?;
+    let n: u32 = n.trim().parse().ok().filter(|n| *n > 0)?;
+    let step = step.trim();
+    if step.is_empty() {
+        return None;
+    }
+    let step = if step.chars().count() > LEFT_MAX {
+        format!("{}…", step.chars().take(LEFT_MAX - 1).collect::<String>())
+    } else {
+        step.to_string()
+    };
+    Some(format!("▸ {n} left: {step}"))
+}
+
+/// The line segment for what is left in this session: written by the guard's Stop pass, so it
+/// only shows when the file for the input's `session_id` exists.
+fn left_segment(input: &Value, color: bool) -> Option<String> {
+    let sid = jq_str(input.get("session_id")).filter(|s| !s.is_empty())?;
+    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&sid)).ok()?)?;
+    Some(if color { format!("{COPPER}{text}{RST}") } else { text })
+}
+
 /// The pace cache JSON, field order as in the shell: `updated`, `five_hour`, `seven_day`.
 fn pace_json(input: &Value, now: u64) -> Option<String> {
     jq_str(at(input, &["rate_limits", "seven_day", "used_percentage"]))?;
@@ -286,7 +315,11 @@ fn main() {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let plain = agent_config::setting(&home_dir(), "THEME") == "plain";
     let pwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
-    let line = render(&input, &pwd, &git_branch, !(no_color || plain));
+    let color = !(no_color || plain);
+    let mut line = render(&input, &pwd, &git_branch, color);
+    if let Some(left) = left_segment(&input, color) {
+        line.push_str(&format!("  {left}"));
+    }
     let mut out = std::io::stdout();
     let _ = out.write_all(line.as_bytes());
     let _ = out.flush();

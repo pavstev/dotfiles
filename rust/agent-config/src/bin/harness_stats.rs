@@ -1,6 +1,7 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
 //! Port of the old Python tool harness_stats.py (deleted; its tests are mapped in tests/PORTED.md).
 
+use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name};
 use agent_config::pycompat::{civil_from_days, fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
@@ -45,8 +46,6 @@ static CD_PREFIX: LazyLock<Regex> =
 static PATHS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"/private/tmp/\S+|/Users/[^\s/]+/\S*").unwrap());
 static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+").unwrap());
-static PROJ_WT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"--claude-worktrees-.*").unwrap());
-static WORK_PFX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^work-").unwrap());
 static PATHS_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^paths:").unwrap());
 
 static NULL: Value = Value::Null;
@@ -333,68 +332,12 @@ fn fnum(x: f64) -> Value {
 // Names and transcripts
 // ---------------------------------------------------------------------------
 
-fn project_name(folder: &str) -> String {
-    let h = home();
-    let p = PROJ_WT.replace(folder, "").into_owned();
-    let hm = format!("-{}", h.trim_matches('/').replace('/', "-"));
-    if p == hm {
-        return "~".into();
-    }
-    if p.contains("scratch-workspaces") {
-        return "scratch".into();
-    }
-    if p.starts_with("-private-") {
-        return "tmp".into();
-    }
-    let p = if let Some(r) = p.strip_prefix(&format!("{}-", hm)) {
-        r.to_string()
-    } else {
-        p.trim_start_matches('-').to_string()
-    };
-    let r = WORK_PFX.replace(&p, "").into_owned();
-    if r.is_empty() { "?".into() } else { r }
-}
-
 fn is_dir(p: &Path) -> bool {
     p.is_dir()
 }
 
 fn lexists(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok()
-}
-
-struct DesktopMeta {
-    title: Value,
-    archived: bool,
-    effort: Value,
-}
-
-fn desktop_meta(desktop: &Path) -> HashMap<String, DesktopMeta> {
-    let mut meta = HashMap::new();
-    for d1 in list_dir(desktop) {
-        for d2 in list_dir(&d1) {
-            for f in list_dir(&d2) {
-                let n = fname(&f);
-                if !(n.starts_with("local_") && n.ends_with(".json")) {
-                    continue;
-                }
-                let Some(txt) = fs::read(&f).ok() else { continue };
-                let Ok(d) = serde_json::from_slice::<Value>(&txt) else { continue };
-                let sid = get(&d, "cliSessionId");
-                if truthy(sid) {
-                    meta.insert(
-                        key_str(sid),
-                        DesktopMeta {
-                            title: get(&d, "title").clone(),
-                            archived: truthy(get(&d, "isArchived")),
-                            effort: get(&d, "effort").clone(),
-                        },
-                    );
-                }
-            }
-        }
-    }
-    meta
 }
 
 fn text_of(content: &Value) -> String {
@@ -623,8 +566,7 @@ fn cmd_collect(a: &CollectArgs) {
     .unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{}'", a.since)));
     let h = home();
     let projects = Path::new(&h).join(".claude").join("projects");
-    let desktop = Path::new(&h).join("Library").join("Application Support").join("Claude").join("claude-code-sessions");
-    let meta = desktop_meta(&desktop);
+    let meta = desktop_meta(&desktop_dir(Path::new(&h)));
     let mut rows: Vec<Value> = vec![];
     for pdir in list_dir(&projects) {
         for f in list_dir(&pdir) {
@@ -699,7 +641,7 @@ fn cmd_collect(a: &CollectArgs) {
             let last = *s.times.last().unwrap();
             let mut row = Map::new();
             row.insert("sid".into(), Value::from(sid.clone()));
-            row.insert("project".into(), Value::from(project_name(&folder)));
+            row.insert("project".into(), Value::from(project_name(&home(), &folder)));
             row.insert("folder".into(), Value::from(folder.clone()));
             row.insert("start".into(), Value::from(first.isoformat()));
             row.insert("end".into(), Value::from(last.isoformat()));

@@ -703,6 +703,79 @@ pub fn g14_sed(cmd: &str, macos: bool) -> Verdict {
     deny_or_allow(hit.unwrap_or(false).then_some(MSG_G14))
 }
 
+// --- H1 hint: read code with ctx --------------------------------------------------
+
+/// The file that `sed -n 'A,Bp' FILE`, `cat FILE` or `cat -n FILE` reads, when `codeview` knows its
+/// extension; else None. Pipes, `&&` and `;` split the line (so does `walk`); the first command of
+/// the two that names a code file wins, and of several files the first one counts. Anything odd (an
+/// unbalanced quote, a glob, a variable, a control character) gives None.
+pub fn h1_read_target(cmd: &str) -> Option<String> {
+    if !cmd.contains("sed") && !cmd.contains("cat") {
+        return None; // the cheap exit: most Bash calls read nothing
+    }
+    std::panic::catch_unwind(|| {
+        walk(cmd, None, 0).iter().find_map(|c| {
+            let file = match basename(c.toks.first()?) {
+                "cat" => cat_file(&c.toks[1..]),
+                "sed" => sed_n_file(&c.toks[1..]),
+                _ => None,
+            }?;
+            let odd = file.len() > 200 || file.chars().any(|ch| ch.is_control() || "*?$`{}".contains(ch));
+            (!odd && crate::codeview::scan_name(Path::new(&file)).is_some()).then_some(file)
+        })
+    })
+    .ok()
+    .flatten()
+}
+
+/// A redirection word (`>`, `2>f`, `<in`) ends the file arguments.
+fn is_redirect(t: &str) -> bool {
+    let t = t.trim_start_matches(|c: char| c.is_ascii_digit());
+    t.starts_with('>') || t.starts_with('<')
+}
+
+fn cat_file(args: &[String]) -> Option<String> {
+    args.iter()
+        .take_while(|t| !is_redirect(t))
+        .find(|t| !t.starts_with('-'))
+        .cloned()
+}
+
+/// `sed -n SCRIPT FILE` (or `-n -e SCRIPT FILE`): the file. No `-n` or an in-place edit: None.
+fn sed_n_file(args: &[String]) -> Option<String> {
+    let (mut quiet, mut script) = (false, false);
+    let mut it = args.iter().take_while(|t| !is_redirect(t));
+    while let Some(t) = it.next() {
+        if t == "--quiet" || t == "--silent" {
+            quiet = true;
+        } else if t == "--expression" || t == "--file" {
+            script = true;
+            it.next();
+        } else if t.starts_with("--expression=") || t.starts_with("--file=") {
+            script = true;
+        } else if t.starts_with("--") {
+            if t.starts_with("--in-place") {
+                return None;
+            }
+        } else if t.len() > 1 && t.starts_with('-') {
+            let flags = &t[1..];
+            if flags.contains('i') {
+                return None;
+            }
+            quiet |= flags.contains('n');
+            if flags.ends_with('e') || flags.ends_with('f') {
+                script = true;
+                it.next(); // the script text
+            }
+        } else if !script {
+            script = true; // the first plain word is the script
+        } else {
+            return quiet.then(|| t.clone());
+        }
+    }
+    None
+}
+
 // --- G15 secret reads ----------------------------------------------------------
 
 const SECRET_READERS: &[&str] = &[
@@ -2021,6 +2094,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G7", "workflow"),
     ("G12", "workflow"),
     ("G13", "workflow"),
+    ("H1", "workflow"),
     ("G8", "pace"),
     ("PACE", "pace"),
     ("G9", "models"),

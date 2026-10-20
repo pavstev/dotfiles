@@ -1,0 +1,7 @@
+rule :root 1-4
+rule a[href="{x}"]::after 6-8
+rule .btn 12-12
+rule @media (min-width: 600px) 14-19
+  rule .card 15-17
+  rule .card:hover 18-18
+rule .last 21-22

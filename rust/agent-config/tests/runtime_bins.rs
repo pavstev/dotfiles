@@ -142,6 +142,72 @@ fn statusline_context_turns_copper_at_300k() {
     assert!(c.contains("ctx 4K"), "{c:?}");
 }
 
+/// The "what is left" file of a session in a temp HOME: the guard's Stop pass writes it
+/// (`agent_config::status_path`, `dirs::cache_dir()/dots/status/<session>.txt`).
+#[cfg(unix)]
+fn status_file(home: &Path, session: &str) -> PathBuf {
+    let cache = if cfg!(target_os = "macos") { home.join("Library/Caches") } else { home.join(".cache") };
+    cache.join("dots/status").join(format!("{session}.txt"))
+}
+
+#[cfg(unix)]
+fn left_line(home: &Path, session: &str, body: Option<&str>, input: &str) -> String {
+    let file = status_file(home, session);
+    if let Some(body) = body {
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, body).unwrap();
+    }
+    let (code, out, err) = run_bin(STATUSLINE, &[], input, &[("HOME", s(home))], Some(Path::new("/")));
+    assert_eq!(code, 0, "{err}");
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn statusline_shows_what_is_left() {
+    let home = temp_home("sl-left");
+    let input = r#"{"session_id":"abc-1","model":{"display_name":"Opus"}}"#;
+    let out = left_line(&home, "abc-1", Some("2\tRun tests\n"), input);
+    assert!(out.ends_with("  Opus  ▸ 2 left: Run tests"), "{out:?}");
+    // another session id: no segment
+    let other = left_line(&home, "abc-1", None, r#"{"session_id":"zzz","model":{"display_name":"Opus"}}"#);
+    assert!(!other.contains('▸'), "{other:?}");
+    // no session id in the input: no segment
+    assert!(!left_line(&home, "abc-1", None, r#"{"model":{"display_name":"Opus"}}"#).contains('▸'));
+    // a session id with odd characters keeps only [A-Za-z0-9_-] in the name
+    let odd = left_line(&home, "abc", Some("1\tOne\n"), r#"{"session_id":"a/../b c"}"#);
+    assert!(odd.ends_with("▸ 1 left: One"), "{odd:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn statusline_cuts_a_long_step_and_survives_a_bad_file() {
+    let home = temp_home("sl-left-cut");
+    let long = "x".repeat(60);
+    let out = left_line(&home, "s", Some(&format!("3\t{long}\n")), r#"{"session_id":"s"}"#);
+    let want = format!("▸ 3 left: {}…", "x".repeat(39));
+    assert!(out.ends_with(&want), "{out:?}");
+    let short = "y".repeat(40);
+    let out = left_line(&home, "s", Some(&format!("3\t{short}\n")), r#"{"session_id":"s"}"#);
+    assert!(out.ends_with(&format!("▸ 3 left: {short}")), "{out:?}");
+    for bad in ["", "garbage", "0\tNone\n", "x\tStep\n", "2\t\n"] {
+        let out = left_line(&home, "s", Some(bad), r#"{"session_id":"s"}"#);
+        assert!(!out.contains('▸'), "{bad:?} -> {out:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn statusline_left_segment_is_copper_with_color() {
+    let home = temp_home("sl-left-color");
+    let file = status_file(&home, "s");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "2\tRun tests\n").unwrap();
+    let env = [("HOME", s(&home)), ("NO_COLOR", "")];
+    let (_, out, _) = run_bin(STATUSLINE, &[], r#"{"session_id":"s"}"#, &env, Some(Path::new("/")));
+    assert!(out.ends_with("\u{1b}[38;2;224;130;95m▸ 2 left: Run tests\u{1b}[0m"), "{out:?}");
+}
+
 // ---------------------------------------------------------------------------
 // skill_check
 // ---------------------------------------------------------------------------

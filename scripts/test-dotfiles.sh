@@ -430,7 +430,7 @@ out="$(env HOME="$H" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev/null)"; rc
 [[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "python3 on PATH changes nothing: no binary still means Run: dots" || bad "skill call with python3 on PATH: rc=$rc out='$out'"
 out="$(printf '%s' "$pre" | env HOME="$H" sh "$R/claude/hooks/rust-bin" --hook guard pretool 2>&1)"; rc=$?
 [[ "$rc" -eq 0 && -z "$out" ]] && pass "python3 on PATH changes nothing: a hook with no binary stays silent" || bad "hook with python3 on PATH: rc=$rc out='$out'"
-[[ -z "$(git -C "$R" ls-files '*.py')" ]] && pass "no Python file is tracked" || bad "tracked Python files: $(git -C "$R" ls-files '*.py' | head -3 | tr '\n' ' ')"
+[[ -z "$(git -C "$R" ls-files '*.py' ':!rust/agent-config/tests/fixtures')" ]] && pass "no Python file is tracked" || bad "tracked Python files: $(git -C "$R" ls-files '*.py' ':!rust/agent-config/tests/fixtures' | head -3 | tr '\n' ' ')"
 [[ -z "$(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh 2>/dev/null)" ]] \
   && pass "no runtime script calls python" || bad "python still called in: $(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh | tr '\n' ' ')"
 

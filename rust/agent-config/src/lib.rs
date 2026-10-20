@@ -35,10 +35,13 @@ pub fn set_dry(v: bool) { DRY.store(v, Ordering::Relaxed); }
 fn home_dir() -> PathBuf { env::var("HOME").map(PathBuf::from).ok().filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from(".")) }
 
 pub mod out;
+pub mod codeview;
 pub mod dots;
 pub mod guard_checks;
 pub mod presets;
 pub mod pycompat;
+pub mod redact;
+pub mod stores;
 pub mod tools_cli;
 pub mod tools_core;
 pub use out::{color_enabled, verbose, ok, info, skip, header, summary, warn};
@@ -76,6 +79,21 @@ pub fn claude_dir() -> PathBuf { repo_root().join("claude") }
 pub fn cursor_src_dir() -> PathBuf { repo_root().join("cursor") }
 /// The launcher that Cursor's hooks run: `rust-bin --hook guard_cursor <mode>`.
 pub fn guard_path() -> PathBuf { claude_dir().join("hooks").join("rust-bin") }
+
+/// The "what is left" file of a session: `<cache dir>/dots/status/<session>.txt`, one line
+/// `<n>\t<first open step>`. The guard's Stop pass writes it; the statusline reads it. Only
+/// `[A-Za-z0-9_-]` of the session id is kept, so the id cannot leave the folder.
+pub fn status_path(session: &str) -> PathBuf {
+    let mut name: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).collect();
+    if name.is_empty() {
+        name.push('_');
+    }
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from(".cache"))
+        .join("dots")
+        .join("status")
+        .join(format!("{name}.txt"))
+}
 
 /// The file as text, or `None` when it cannot be read.
 pub fn read_text(p: &Path) -> Option<String> { fs::read_to_string(p).ok() }

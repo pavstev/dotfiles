@@ -12,6 +12,7 @@ sha2 = "0.10"
 tempfile = "3"
 walkdir = "2"
 regex = "1"
+tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "stopwords", "stemmer"] }
 
 # The prompt backend. crossterm pulls winapi 0.3, whose GNU import libraries clash with the
 # raw-dylib ones of windows-sys: on windows-gnu the linked exe crashes before main. So Windows
@@ -98,3 +99,11 @@ path = "src/bin/bag_check.rs"
 [[bench]]
 name = "hooks"
 harness = false
+
+[[bin]]
+name = "ctx"
+path = "src/bin/ctx.rs"
+
+[[bin]]
+name = "sessions"
+path = "src/bin/sessions.rs"

@@ -1,0 +1,3 @@
+function looks_like_code() {
+  return 1;
+}

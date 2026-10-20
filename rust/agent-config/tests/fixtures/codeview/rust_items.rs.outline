@@ -1,0 +1,14 @@
+struct Point 3-6
+impl Point 8-20
+  fn new 9-11
+  fn raw 13-15
+  fn hashes 17-19
+impl std::fmt::Display for Point 22-26
+  fn fmt 23-25
+struct Pair 28-28
+impl Pair<T> 30-32
+  fn first 31-31
+macro_rules square 34-38
+macro_rules open_brace 40-44
+mod inner 46-48
+  fn deep 47-47

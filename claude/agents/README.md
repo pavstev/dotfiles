@@ -17,6 +17,7 @@ and to `~/.config/opencode/agents`.
 | `researcher` | one research question with sources; full notes to one named file | web, Read, Grep, Glob, Write | sonnet / high |
 | `repo-scanner` | read-only sweep of a repo from one angle into one file | Read, Grep, Glob, Bash, Write | sonnet / high |
 | `ui-verifier` | check a page or extension flow in a browser, pass or fail with evidence | Read, Write, Bash, Grep, Glob, ToolSearch, both browser MCP servers (`mcp__<server>__*`); Write only to scratch (frontmatter hook) | sonnet / high |
+| `session-finder` | find which past session did something, from the `sessions` index; ids, dates, titles | Bash, Read | haiku / high |
 | `worker` | any other edit, command or file job; the lean stand-in for general-purpose | Read, Edit, Write, Bash, Grep, Glob | sonnet / high |
 
 The `workflow` preset (`claude/presets/workflow/rules.md`, "Agents") holds the routing text. Opus

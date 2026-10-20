@@ -11,7 +11,7 @@ const AC: &str = env!("CARGO_BIN_EXE_agent-config");
 
 /// Guard ids a preset may own (the registry of the guard).
 const GUARD_IDS: &[&str] = &[
-    "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12", "G13", "G17", "ROUTER", "PACE",
+    "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12", "G13", "G17", "H1", "ROUTER", "PACE",
 ];
 const PRESETS: &[&str] = &["workflow", "pace", "models", "clock", "plain-writing", "no-ai-attribution", "ship-to-main"];
 
@@ -70,7 +70,7 @@ fn presets_well_formed() {
         }
     }
     let guard_of = |n: &str| front_matter(&dir.join(n).join("rules.md")).2.unwrap();
-    assert_eq!(guard_of("workflow"), ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G12", "G13"]);
+    assert_eq!(guard_of("workflow"), ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G12", "G13", "H1"]);
     assert_eq!(guard_of("pace"), ["G8", "PACE"]);
     assert_eq!(guard_of("models"), ["G9", "ROUTER"]);
     assert_eq!(guard_of("clock"), ["G11"]);

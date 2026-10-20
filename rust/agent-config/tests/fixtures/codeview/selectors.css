@@ -1,0 +1,22 @@
+:root {
+  --brace: "}";
+  --open: '{';
+}
+
+a[href="{x}"]::after {
+  content: "}";
+}
+
+/* .ghost { color: red; }
+.ghost2 { */
+.btn { color: red; }
+
+@media (min-width: 600px) {
+  .card {
+    background: url("data:image/svg+xml;utf8,<svg>{</svg>");
+  }
+  .card:hover { color: blue; }
+}
+
+.last { /* } */ margin: 0;
+}

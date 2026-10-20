@@ -1,0 +1,5 @@
+class AppComponent 1-8
+class Service 10-18
+  method onClick 13-16
+  method run 17-17
+function plain 21-23
