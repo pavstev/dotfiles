@@ -34,20 +34,30 @@ pub fn pull(repo: &Path) -> bool {
             "pull", "--ff-only", "--no-rebase", "--quiet"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
+        .stderr(Stdio::null()) // git's hint block; the caller warns in one line
         .status().map(|s| s.success()).unwrap_or(false);
     pulled || heal_rewrite(repo, &before)
 }
 
-/// The pull failed. Safe to reset to the new upstream only when all of these hold: the
-/// upstream moved to a history that does not contain its old tip (a force push), HEAD was
-/// inside that old upstream (no commit of our own), and no tracked file is changed. The old
-/// HEAD stays reachable as the branch `before-rewrite-<time>`.
+/// The pull failed. Safe to reset to the new upstream only when all of these hold: an old
+/// upstream tip (the one before this pull, or one in the upstream reflog, for a clone that
+/// fetched earlier) is missing from the new upstream (a force push), HEAD was inside that old
+/// tip (no commit of our own), and no tracked file is changed. The old HEAD stays reachable
+/// as the branch `before-rewrite-<time>`.
 fn heal_rewrite(repo: &Path, before: &str) -> bool {
     let r = repo.to_string_lossy();
     let Some(after) = out(&["-C", &r, "rev-parse", "--verify", "-q", "@{u}"]) else { return false };
-    if before.is_empty() || after == before { return false; }
     let anc = |a: &str, b: &str| ok_run(&["-C", &r, "merge-base", "--is-ancestor", a, b]);
-    if anc(before, &after) || !anc("HEAD", before) || !changed(repo).is_empty() { return false; }
+    let up = out(&["-C", &r, "rev-parse", "--symbolic-full-name", "@{u}"]).unwrap_or_default();
+    // The raw reflog lines are "<old> <new> <who> <when>\t<what>": both columns are tips it had.
+    let log = out(&["-C", &r, "rev-parse", "--git-path", &format!("logs/{}", up)])
+        .filter(|_| !up.is_empty())
+        .and_then(|p| fs::read_to_string(repo.join(p)).ok())
+        .unwrap_or_default();
+    let tips: Vec<&str> = log.lines().flat_map(|l| l.split(' ').take(2)).collect();
+    let old_tip = std::iter::once(before).chain(tips.into_iter().rev())
+        .find(|t| !t.is_empty() && *t != after && !anc(t, &after) && anc("HEAD", t));
+    if old_tip.is_none() || !changed(repo).is_empty() { return false; }
     let keep = format!("before-rewrite-{}", os::timestamp());
     if !ok_run(&["-C", &r, "branch", &keep, "HEAD"]) { return false; }
     if !ok_run(&["-C", &r, "-c", "core.autocrlf=false", "reset", "--hard", "--quiet", "@{u}"]) { return false; }
@@ -133,6 +143,14 @@ mod tests {
         assert!(pull(&c));
         assert_eq!(head(&c), head(&o));
         assert!(out(&["-C", &c.to_string_lossy(), "branch", "--list", "before-rewrite-*"]).unwrap().contains("before-rewrite-"));
+    }
+
+    #[test]
+    fn heals_after_an_earlier_fetch() {
+        let (_t, o, c) = rewritten();
+        assert!(git(&c, &["fetch", "-q"])); // an editor or lazygit fetched first
+        assert!(pull(&c));
+        assert_eq!(head(&c), head(&o));
     }
 
     #[test]
