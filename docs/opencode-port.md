@@ -101,7 +101,7 @@ keys; the docs example lists `syntaxBracket`, which no shipped theme has, and om
 `generated-by: dotfiles`; a file of that name without the marker is yours and is left alone; the
 file is removed when `claude/hooks/rust-bin` is gone). The source text is
 `rust/agent-config/src/opencode_plugin.ts.tmpl`. Which check runs in which app is in the table
-in [`docs/guide.md`](guide.md#where-each-guard-check-runs).
+in [`docs/ai-agents.md`](ai-agents.md#where-each-guard-check-runs).
 
 - **Shape (Opencode 2.0.30):** a default export `{ id, setup(ctx) }` that calls
   `ctx.tool.hook("execute.before", async (input) => ...)`. The older

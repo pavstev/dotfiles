@@ -1,112 +1,85 @@
 <div align="center">
 
-<img src="assets/logo.svg" width="96" height="96" alt="dotfiles logo">
+<img src="assets/logo.svg" width="112" height="112" alt="dotfiles logo: a prompt chevron, a dot and a blinking cursor on a night sky">
 
 # dotfiles
 
-**One command sets up macOS, Linux or Windows for coding with Claude Code, Cursor and Opencode.**
+**AI-ready dotfiles for macOS, Linux and Windows.**<br>
+One command sets up Claude Code, Cursor and Opencode with shared skills, agents, rules and guard hooks, plus a fast terminal.
+
+[![macOS](https://img.shields.io/badge/macOS-07080F?style=flat-square&logo=apple&logoColor=E8EAF2)](docs/install.md#set-up-macos)
+[![Linux](https://img.shields.io/badge/Linux-5_distros-07080F?style=flat-square&logo=linux&logoColor=FFC46B&labelColor=07080F)](docs/install.md#set-up-linux)
+[![Windows](https://img.shields.io/badge/Windows-Git_Bash-07080F?style=flat-square&logo=gitforwindows&logoColor=5E8BFF&labelColor=07080F)](docs/install.md#set-up-windows)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-A97CFF?style=flat-square&logo=claude&logoColor=white)](docs/ai-agents.md#claude-code)
+[![Cursor](https://img.shields.io/badge/Cursor-5E8BFF?style=flat-square&logo=cursor&logoColor=white)](docs/ai-agents.md#cursor)
+[![Opencode](https://img.shields.io/badge/Opencode-4FE0C8?style=flat-square&logoColor=07080F)](docs/ai-agents.md#opencode)
+[![AGENTS.md](https://img.shields.io/badge/AGENTS.md-ready-FF6FB5?style=flat-square&labelColor=07080F)](AGENTS.md)
+[![MIT](https://img.shields.io/badge/license-MIT-FFC46B?style=flat-square&labelColor=07080F)](LICENSE)
+
+[Install](#-install) · [What you get](#-what-you-get) · [Every day](#-every-day) · [Docs](docs/README.md)
 
 </div>
 
-## Set up macOS
+## ⚡ Install
 
-1. Open the **Terminal** app. Do not use a Claude Code window for this.
-2. Paste this line, then press Enter:
+Paste one line in a terminal. Do not use a Claude Code window for it.
 
-   ```sh
-   sh -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
-   ```
+**macOS** (Terminal app)
 
-3. Type your Mac password when it asks. Homebrew needs it.
-4. Answer the questions. Use ↑ ↓ to move and Enter to pick.
-   - 👤 your name and ✉️ your email, for git commits
-   - ⚙️ the settings menu: Java, private rules, private words and more. Pick ✅ Done to
-     keep the defaults.
-   - 🎨 the looks: the Starship prompt, the VS Code and Cursor settings, the Nerd Font. All
-     are optional. Mark none to keep your own look.
-   - ✨ an optional extra: the Claude desktop app
-5. Wait. The first run takes about 20 to 40 minutes.
-6. 🔑 Pick what to sign in to: GitHub, Claude Code, Opencode, Cursor. A browser opens for each one.
-7. Open a new Terminal window.
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
+```
 
-## Set up Linux
+**Linux** (Debian, Ubuntu, Fedora, Arch, Alpine) and **Windows** (Git Bash)
 
-This works on Debian, Ubuntu, Fedora and Arch, on x86_64 and arm64. You need a normal user
-that can run `sudo`. Alpine works too: the tools come from mise and `apk`.
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
+```
 
-1. Open a terminal.
-2. Paste this line, then press Enter:
+A few questions come first: your git name and email, the settings, and the optional looks.
+Then it installs. A long step says `still working…` each minute, and the last line is
+`dotfiles: done in <time>`. Step by step, with what each OS needs: [docs/install.md](docs/install.md).
 
-   ```sh
-   bash -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
-   ```
+## ✨ What you get
 
-   No `curl` yet? Install it with your package manager first (for example `sudo apt-get install -y curl`).
-3. Type your password when it asks. The package manager and Homebrew need it.
-4. Answer the questions, as in steps 4 to 6 of the macOS setup.
-5. Open a new terminal, or run `exec zsh`.
+| | |
+|---|---|
+| 🤖 **One config, three agents** | Claude Code, Cursor and Opencode read the same rules, 18 `/ps:` skills and 7 agents from [`claude/`](claude). |
+| 🛡️ **Guard hooks** | A Rust guard checks each tool call: risky git, secrets in files, private words, runaway helpers. |
+| 🧩 **Presets** | Opt-in working habits: workflow, pace, models, clock, plain writing and more. |
+| 🦀 **One command** | `dots` pulls, links and installs. It is idempotent, short, and `dots doctor` checks the result. |
+| 🧰 **39 CLI tools** | `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`, `lazygit` and more, from one [`tools.list`](tools.list) via mise. |
+| 🎨 **Optional looks** | Starship prompt, VS Code and Cursor settings, Nerd Font. Off until you pick them. |
+| 🔒 **Private by design** | Settings and personal rules stay on the machine. Git hooks block secrets and private words. |
+| ✅ **Tested everywhere** | `/os-check` runs the setup on macOS, five Linux distros and a Windows VM. |
 
-## Set up Windows
+## 🧭 Every day
 
-This works in Git Bash (MSYS/MINGW). You need `git` and `curl` on PATH. Install them with WinGet if
-they are missing.
+| Command | What it does |
+|---|---|
+| `dots` | Get the newest setup: pull, link, install what is missing. |
+| `dots settings` | Change a setting: git identity, presets, looks, Java, private rules. |
+| `dots doctor` | Check the setup. One PASS or FAIL line per check, with the fix. |
+| `dots -v` | The same run, with every command shown. |
 
-1. Open a Git Bash terminal.
-2. Paste this line, then press Enter:
+In Claude Code, Opencode or Cursor, type `/ps:` to see the skills.
+Edit files in `~/dotfiles/home/` and `~/dotfiles/claude/`: they are linked, so a change is live at once.
 
-   ```sh
-   bash -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bootstrap.sh)"
-   ```
+## 📚 Docs
 
-3. Answer the two questions (git name and email).
-4. Wait about 10 minutes. The run installs mise, the tools, Claude Code and Opencode, and links your config.
-   If it says "Windows can't make links yet", turn on Settings > System > For developers >
-   Developer Mode, then paste the same line again.
-5. Close the window and open a new Git Bash. Run `claude`.
+| Page | Answers |
+|---|---|
+| [Install](docs/install.md) | How do I set up macOS, Linux or Windows, and check it works? |
+| [Features](docs/features.md) | What is inside, and which shortcuts do I get? |
+| [AI agents](docs/ai-agents.md) | How do Claude Code, Cursor and Opencode share skills, agents and guards? |
+| [Platforms](docs/platforms.md) | What is different on Linux and Windows? |
+| [Customize](docs/customize.md) | How do I change, turn off or uninstall things? |
+| [Troubleshooting](docs/troubleshooting.md) | Something is off. What do I do? |
+| [Friend setup](docs/FRIENDS-SETUP.md) | A runbook Claude follows to set up someone else's machine. |
+| [AGENTS.md](AGENTS.md) | How AI agents work on this repo. |
 
-What is different on Windows:
+**Fork it:** change `DOTFILES_REPO` at the top of [`bootstrap.sh`](bootstrap.sh) and the URLs above.
 
-- No Homebrew. The command-line tools in `tools.list` come from mise (installed with WinGet), with
-  WinGet and Scoop as fallbacks. Claude Code comes from WinGet (`Anthropic.ClaudeCode`). The shell-only
-  tools (starship, atuin, zoxide and others) are for macOS and Linux. The VS Code and Cursor
-  settings link only when you pick `editor` in the looks.
-- Your own `~/.gitconfig` stays. Only the git name and email are added to it.
-- The macOS-only steps and the zsh setup do not run.
-- `scripts/agent-config` generates the Opencode/Claude/Cursor config. It runs the Rust build in
-  `rust/agent-config` (built on first use when `cargo` is installed). Python is not needed
-  anywhere. With no `cargo` the steps warn and skip, and `dots` installs Rust on its next run.
+---
 
-## Check that it works
-
-- **Claude Code:** run `claude`, then type `/ps:`. You see the `ps:` skills.
-- **Opencode:** run `opencode`, then type `/ps:`. You see the same skills.
-- **Cursor:** open Cursor, open the chat, then type `/ps:`. You see the same skills.
-- **Git:** run `git config user.name`. You see your name.
-
-## Every day
-
-- Run `dots` to get the newest setup. You can run it at any time.
-- Edit the files in `~/dotfiles/home/`. Your machine uses the change at once.
-- Run `dots settings` to change a setting: git name, Java, private rules and more. The
-  settings stay on this machine, never in git. `settings.example` lists them all.
-- The look changes (Starship prompt, editor settings, Nerd Font) are optional. Turn them on or
-  off with `dots settings` > Looks. Remove them by hand: [docs/guide.md](docs/guide.md#looks-starship-editor-settings-and-the-nerd-font).
-- A long step prints `still working on <step> (1m20s)…` each minute, and the last line is
-  always `dotfiles: done in <time>`.
-- Run `dots doctor` to check the setup. It prints PASS or FAIL per check and names the fix.
-- Working habits are opt-in **presets** (workflow, pace, models, clock, plain-writing,
-  no-ai-attribution, ship-to-main). A new install turns on all but `ship-to-main`. Pick them
-  with `dots settings`.
-- Do not edit `~/.claude/CLAUDE.md`: it comes from this repo, and `dots` updates it.
-
-## More
-
-- [Setting this up for a friend](docs/FRIENDS-SETUP.md): a runbook that Claude follows step by step.
-- [Full guide](docs/guide.md): what is inside, shortcuts, how to change things, uninstall, fixes.
-- [AGENTS.md](AGENTS.md): how AI agents work on this repo, and the `owner` and `shared` profiles.
-- [Cursor details](docs/cursor-port.md) and [Opencode details](docs/opencode-port.md).
-- On a fork: change `DOTFILES_REPO` at the top of [`bootstrap.sh`](bootstrap.sh) and the URL in step 2.
-
-## License
-
-[MIT](LICENSE)
+<div align="center"><sub>MIT licensed · made by <a href="https://github.com/pavstev">@pavstev</a></sub></div>

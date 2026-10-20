@@ -67,8 +67,23 @@ else
       die "Can't repair $REPO_DIR. Delete that folder and run this again."
   else
     info "Repo already at $REPO_DIR — pulling latest defaults…"
-    git -C "$REPO_DIR" pull --ff-only --quiet || \
-      info "(couldn't fast-forward — local changes? continuing with what's here)"
+    before="$(git -C "$REPO_DIR" rev-parse --verify -q '@{u}' 2>/dev/null || true)"
+    if ! git -C "$REPO_DIR" pull --ff-only --quiet; then
+      # A rewritten upstream (force push): move a clone with no work of its own to it.
+      # The same rule as `dots` (heal_rewrite): upstream lost its old tip, HEAD was inside
+      # it, and no tracked file changed. The old state stays as a branch.
+      after="$(git -C "$REPO_DIR" rev-parse --verify -q '@{u}' 2>/dev/null || true)"
+      if [[ -n "$before" && -n "$after" && "$before" != "$after" ]] &&
+        ! git -C "$REPO_DIR" merge-base --is-ancestor "$before" "$after" &&
+        git -C "$REPO_DIR" merge-base --is-ancestor HEAD "$before" &&
+        [[ -z "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]] &&
+        git -C "$REPO_DIR" branch "before-rewrite-$(date +%Y%m%d-%H%M%S)" HEAD &&
+        git -C "$REPO_DIR" -c core.autocrlf=false reset --hard --quiet '@{u}'; then
+        info "The history was rewritten upstream. This clone had no work of its own, so it moved to the new one."
+      else
+        info "(couldn't fast-forward — local changes? continuing with what's here)"
+      fi
+    fi
   fi
 fi
 [[ -f "$REPO_DIR/dotfiles" ]] || die "$REPO_DIR has no ./dotfiles script. Delete that folder and run this again."
