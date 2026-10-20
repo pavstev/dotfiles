@@ -2942,6 +2942,35 @@ fn g16_clean_body_allows() {
 }
 
 #[test]
+fn g16_repo_and_branch_flag_values_are_not_body_text() {
+    let dir = tempfile::tempdir().unwrap();
+    for cmd in [
+        format!("gh pr create -R me/{WORD} --title t --body ok"),
+        format!("gh pr create --repo me/{WORD} --title t --body ok"),
+        format!("gh pr create --repo=me/{WORD} --title t --body ok"),
+        format!("gh pr create --head {WORD}-fix --title t --body ok"),
+        format!("gh pr create --head={WORD}-fix --base main --title t --body ok"),
+        format!("gh pr create --base {WORD}-main --title t --body ok"),
+        format!("gh pr create --base={WORD}-main --title t --body ok"),
+        format!("gh pr comment 1 -R me/{WORD} --body ok"),
+    ] {
+        assert_eq!(g16_cmd(&cmd, dir.path()), Verdict::Allow, "{cmd}");
+    }
+    // the same word in the text still asks, also next to a repo flag
+    for cmd in [
+        format!("gh pr create -R me/x --title \"{WORD}\" --body ok"),
+        format!("gh pr create --repo=me/x --title t --body \"{WORD}\""),
+        format!("gh pr create --head x --title t --body \"{WORD}\""),
+    ] {
+        assert!(is_ask(&g16_cmd(&cmd, dir.path())), "{cmd}");
+    }
+    let file = dir.path().join("b.md");
+    std::fs::write(&file, format!("about {WORD}")).unwrap();
+    let cmd = format!("gh pr create -R me/x --title t --body-file {}", file.display());
+    assert!(is_ask(&g16_cmd(&cmd, dir.path())), "{cmd}");
+}
+
+#[test]
 fn g16_private_word_asks() {
     let dir = tempfile::tempdir().unwrap();
     let v = g16_cmd(&format!("gh pr create --title t --body \"fixes the {WORD} bug\""), dir.path());

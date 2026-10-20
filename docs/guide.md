@@ -38,8 +38,23 @@ dotd                                            # preview source changes  (git d
 dots                                            # pull + relink + reprovision: for new files, packages, machines
 dots settings                                   # the settings menu: git name, Java, private rules and more
 dots -v                                         # the same run, with every line (the default is one line per step)
+dots doctor                                     # check the setup: PASS or FAIL per check, changes nothing
 dot                                             # cd into the repo
 ```
+
+`dots doctor` prints one line per check and exits 1 when one fails. Each FAIL line says what is wrong
+and the fix, usually `Run: dots`. The checks:
+
+| Check | What it looks at |
+|-------|------------------|
+| `links` | every linked file points into the repo |
+| `settings-built` | `~/.claude/settings.json` exists and every hook runs `rust-bin` |
+| `bins-fresh` | each Rust program is built and not older than its source |
+| `guard-selftest` | the guard denies BSD `sed -i` (macOS rules) and a read of `local.zsh`, asks before a send that holds a private word, and lets `ls` through |
+| `presets` | the preset links equal the `PRESETS` setting |
+| `generated` | the generated Cursor rule and Opencode files carry the `generated-by: dotfiles` marker |
+| `timezone` | `TIMEZONE` is empty or a real zone name (macOS and Linux) |
+| `no-leak` | no private word in a tracked file |
 
 Want a new command-line tool? Add one line to [`tools.list`](../tools.list) and run `dots`. Each
 line names the tool, its commands, the OSes it is for and its sources in order (mise first, then
@@ -112,6 +127,39 @@ Ships the `ps:*` workflow skills (provenance and test notes in
 [`SOURCES.md`](../claude/skills/SOURCES.md)); grow your own from
 [`_template`](../claude/skills/_template/SKILL.md). Machine-local permission grants stay in
 `~/.claude/settings.local.json`, untouched.
+
+### Presets
+
+The core rules in `claude/CLAUDE.md` are short and neutral. The habits that some people want and
+others do not are **presets**: one folder each under `claude/presets/` (see its
+[README](../claude/presets/README.md)). A preset that is off costs no tokens, and its guard check
+does not run.
+
+| Preset | What it does |
+|--------|--------------|
+| `workflow` | speed over ceremony, hand-offs in files, briefs, the agent set |
+| `pace` | make the weekly budget last the work days, with helper caps |
+| `models` | effort and model picks (also sets `model` and the helper model) |
+| `clock` | say the local time and an estimate with a range |
+| `plain-writing` | no em dashes, short plain sentences (sets the `ELI5` output style) |
+| `no-ai-attribution` | no assistant co-author or "generated with" line in commits and PRs |
+| `ship-to-main` | work lands on main in one commit; the "archive this" routine |
+
+A new install has every preset on except `ship-to-main`. Pick others with `dots settings`
+(`PRESETS`: `all`, `none`, or names split by spaces). `dots` then links the rules to
+`~/.claude/rules/preset-<name>.md`, merges the settings fragments, and writes the same rules into the
+Cursor and Opencode files.
+
+Other settings that shape the setup (all in `settings.example`):
+
+| Setting | Meaning |
+|---------|---------|
+| `PRESETS` | which presets are on |
+| `TIMEZONE` | your time zone as an IANA name (empty: the system zone) |
+| `PLAN` | your Claude plan, for the weekly pace budget |
+| `WORK_DAYS` | the days you work, for the weekly pace |
+| `THEME` | `copper` (default) or `plain` (no colors, no Opencode theme) |
+| `GUARD_OFF`, `GUARD_SHADOW` | guard check ids to turn off, or to log without blocking |
 
 ## Cursor
 
@@ -350,10 +398,11 @@ dotfiles/
 ├── Brewfile                  # the macOS apps, fonts + VS Code extensions (Brewfile.local for extras)
 ├── claude/                   # Claude config, symlinked into ~/.claude
 │   ├── settings.json  CLAUDE.md
-│   └── skills/ agents/ hooks/ output-styles/
+│   └── skills/ agents/ hooks/ output-styles/ presets/
 ├── cursor/                   # Cursor-only sources, merged into ~/.cursor
 │   └── mcp.json              # MCP servers (cloudflare-docs); your entries win
 ├── docs/guide.md            # this guide
+├── docs/FRIENDS-SETUP.md     # the runbook Claude follows to set this repo up on a friend's machine
 ├── docs/cursor-port.md       # Cursor port: profiles, mapping, gap table
 ├── docs/opencode-port.md    # Opencode port: rules, agents, permissions, gaps
 ├── home/                     # mirrors $HOME 1:1; only paths in `dotfiles`'s link list are touched
@@ -370,7 +419,8 @@ dotfiles/
 │       Code/User/{settings,keybindings}.json         # VS Code: symlinked, edit either side
 │       Cursor/User/{settings,keybindings}.json       # Cursor: same
 ├── scripts/
-│   ├── setup-lib.sh          # shell helpers for the few bash scripts (step/info/ok/warn/have, is_*, setting)
+│   ├── setup-lib.sh          # shell helpers for the few bash scripts (step/info/ok/warn/have, is_*, setting, ensure_rust_bin)
+│   ├── tools                 # shim: builds and runs the Rust `tools` bin (installs the tools of tools.list)
 │   ├── agent-config          # shim for the Rust build that generates and merges the Cursor and Opencode files
 │   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart, fake Linux
 │   │                         # (the provisioning steps are Rust: rust/agent-config/src/dots/install/)
@@ -408,6 +458,8 @@ dotfiles/
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Opencode rules, agents, permissions, theme | `claude/` (shared source); the palette lives in `rust/agent-config/themes/copper.json` | `dots` (regenerates `~/.config/opencode`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
+| Which habits are on (presets), time zone, plan, work days, theme | `dots settings` (`PRESETS`, `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME`) | `dots` refreshes the links and files; `dots doctor` checks them |
+| A new preset | `claude/presets/<name>/rules.md` (steps in its README) | `cargo test --test presets` in `rust/agent-config`, then `dots` |
 | Settings: git name, profile, Cursor MCP, Opencode MCP, Opencode projects, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
 
 ## Updating
@@ -452,6 +504,9 @@ For Opencode:
 4. In every project listed in `OPENCODE_PROJECTS`: `rm -r .opencode` (symlinks only).
 
 ## Troubleshooting
+
+**Something feels off.** Run `dots doctor`. Each FAIL line names the fix. A `bins-fresh` FAIL
+means a Rust program is older than its source or not built: run `dots`.
 
 **`brew bundle` says "Permission denied".** Homebrew is owned by another user. Run
 `~/dotfiles/scripts/fix-brew-permissions.sh`, then `dots`.

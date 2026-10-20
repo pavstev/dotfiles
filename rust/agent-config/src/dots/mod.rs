@@ -3,9 +3,11 @@
 //!
 //! A run prints one short line per step. `dots -v` (or DOTFILES_VERBOSE=1) prints
 //! everything. `dots settings` (or `dots private`) opens the settings menu, then
-//! refreshes the links, the Cursor rule and the Opencode config.
+//! refreshes the links, the Cursor rule and the Opencode config. `dots doctor` checks the
+//! result and changes nothing.
 
 pub mod ask;
+pub mod doctor;
 pub mod git;
 pub mod install;
 pub mod java;
@@ -44,6 +46,12 @@ pub fn main() -> i32 {
     os::brew_env();
     os::tool_paths(); // mise, cargo and WinGet tools on PATH for every step
 
+    // `dots doctor` only reads: no pull, no links, no steps.
+    if env::args().nth(1).as_deref() == Some("doctor") {
+        if env::args().len() > 2 { eprintln!("usage: dots doctor"); return 2; }
+        return doctor::run();
+    }
+
     let mut ask_settings = false;
     let mut own_steps = false;
     for a in env::args().skip(1) {
@@ -55,7 +63,7 @@ pub fn main() -> i32 {
                 // no step: its config is written below on every run.
                 if env::var_os("DOTFILES_STEPS").is_none() { os::set_env("DOTFILES_STEPS", "60-cursor"); own_steps = true; }
             }
-            _ => { eprintln!("usage: dots [-v] [settings]"); return 2; }
+            _ => { eprintln!("usage: dots [-v] [settings | doctor]"); return 2; }
         }
     }
 

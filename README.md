@@ -86,10 +86,15 @@ What is different on Windows:
 - Edit the files in `~/dotfiles/home/`. Your machine uses the change at once.
 - Run `dots settings` to change a setting: git name, Java, private rules and more. The
   settings stay on this machine, never in git. `settings.example` lists them all.
+- Run `dots doctor` to check the setup. It prints PASS or FAIL per check and names the fix.
+- Working habits are opt-in **presets** (workflow, pace, models, clock, plain-writing,
+  no-ai-attribution, ship-to-main). A new install turns on all but `ship-to-main`. Pick them
+  with `dots settings`.
 - Do not edit `~/.claude/CLAUDE.md`: it comes from this repo, and `dots` updates it.
 
 ## More
 
+- [Setting this up for a friend](docs/FRIENDS-SETUP.md): a runbook that Claude follows step by step.
 - [Full guide](docs/guide.md): what is inside, shortcuts, how to change things, uninstall, fixes.
 - [AGENTS.md](AGENTS.md): how AI agents work on this repo, and the `owner` and `shared` profiles.
 - [Cursor details](docs/cursor-port.md) and [Opencode details](docs/opencode-port.md).

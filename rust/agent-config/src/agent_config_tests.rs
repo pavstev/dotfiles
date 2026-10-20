@@ -16,12 +16,13 @@ static LOCK: Mutex<()> = Mutex::new(());
 const CLAUDE_MD_TEXT: &str = "# Global\n\nintro line\n\n## Environment\n\n- one\n- two\n\n## Working rules\n\n1. a\n2. b\n";
 const OWNER_TEXT: &str = "## Off-limits\n\n- never do the secret thing\n";
 
-// Only the tests of this file write the environment, and each holds LOCK. Other lib tests (for
-// example `dots::os`) may read it at the same time without LOCK, so no test here writes a variable
-// they depend on: PATH is never written (the clipboard test passes it as an argument).
+// Only the tests of this file write the environment, and each holds LOCK, so two writers never
+// overlap. Other lib tests (for example `dots::os`) may read the environment at the same time
+// without LOCK: a read next to a write is a data race that `set_var` cannot rule out. It is
+// accepted here because this is test-only code, the variables written are few (HOME, DOTFILES_*,
+// NO_COLOR) and PATH is never written (the clipboard test passes it as an argument).
 fn set_env(k: &str, v: impl AsRef<std::ffi::OsStr>) {
-    // SAFETY: see the note above: every writer holds LOCK, and the variables written are HOME,
-    // DOTFILES_* and NO_COLOR.
+    // SAFETY: every writer holds LOCK; the residual race with unlocked readers is described above.
     unsafe { env::set_var(k, v) }
 }
 fn unset_env(k: &str) {

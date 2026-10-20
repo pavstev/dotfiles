@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/tools-env.sh: puts the places that tools from mise, cargo, WinGet and the mise
-# installer land on PATH. Sourced by ./dotfiles (so every install step sees them) and by
-# scripts/tools. They go on the END of PATH: a tool that is already on PATH keeps its place.
+# installer land on PATH. Sourced by scripts/tools (the Rust `dots` does the same itself with
+# `tool_paths`). They go on the END of PATH: a tool that is already on PATH keeps its place.
 # Needs is_windows from scripts/setup-lib.sh.
 
 tools_add_paths() {

@@ -8,7 +8,8 @@
 #  (DOTFILES_STEPS=none) and no terminal, so nothing installs or asks.
 #  Checks: first run, the owner profile saved, the owner rules linked and
 #  unlinked, a run that changes nothing, and the restart after a pull.
-#  It builds the Rust `dots` once here (cargo must work) and runs ./dotfiles with it.
+#  It builds the Rust `dots` and `tools` once here (cargo must work) and runs ./dotfiles and
+#  scripts/tools with them.
 #  The Windows part of dots is checked by scripts/os-check.sh windows.
 #
 #  bash scripts/test-dotfiles.sh          # --keep leaves the temp folder
@@ -29,7 +30,7 @@ done
 # The Rust dots, built once. DOTS_TEST_BIN names it for the runs below.
 if [[ -z "${DOTS_TEST_BIN:-}" ]]; then
   L="$(mktemp -d)"
-  if RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --bin dots \
+  if RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --bin dots --bin tools \
       --manifest-path "$REPO/rust/agent-config/Cargo.toml" >"$L/build.log" 2>&1; then
     rm -rf "$L"
     DOTS_TEST_BIN="$REPO/rust/agent-config/target/release/dots" exec bash "$0" "$@"
@@ -267,8 +268,11 @@ which_got="$(bash "$REPO/scripts/os-check.sh" --which $(printf '%s\n' "$which_wa
 [[ "$which_got" == "$which_want" ]] && pass "os-check maps each file to the right OS" \
   || bad "os-check map differs: $(diff <(printf '%s\n' "$which_want") <(printf '%s\n' "$which_got") | grep '^[<>]' | head -3 | tr '\n' ' ')"
 
-# 13. The tool list: scripts/tools with a fake mise. No network, nothing installs for real.
-#     (cargo test covers the Rust resolver; this covers the bash version a fresh machine runs.)
+# 13. The tool list: scripts/tools (a shim over the Rust `tools` bin) with a fake mise. No network,
+#     nothing installs for real. (cargo test covers the Rust resolver; this covers the shim:
+#     arguments, TOOLS_LIST, the exit codes, and the one copy of the install-Rust code.)
+TB="${DOTS_TEST_BIN%/*}/tools"
+[[ -x "$TB" ]] || bad "no tools bin at $TB"
 FB="$T/toolbin"; mkdir -p "$FB"
 for t in bash env sh cat grep tr id sed uname dirname mktemp rm mkdir chmod date sleep tail head awk cygpath; do
   p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$FB/$t"
@@ -286,30 +290,61 @@ for a; do
 done
 EOS
 chmod +x "$FB/mise"
-printf 'a | tool-a | all | mise:x/tool-a\nb | tool-b | all | mise:x/tool-b\nu | tool-u | unix | mise:x/tool-u\nw | tool-w | windows | mise:x/tool-w\nc | tool-c | all | cargo:tool-c\n' >"$T/tools.t.list"
+printf 'a | tool-a | all | mise:x/tool-a\nb | tool-b | all | mise:x/tool-b\nu | tool-u | unix | mise:x/tool-u\nw | tool-w | windows | mise:x/tool-w\n' >"$T/tools.t.list"
 H4="$T/home4"; mkdir -p "$H4"
-tools() { env -i HOME="$H4" PATH="$FB" NO_COLOR=1 TOOLS_LIST="$T/tools.t.list" TOOLS_IMPL=bash FAKE_LOG="$T/mise.log" FAKE_BIN="$FB" \
+tools() { env -i HOME="$H4" PATH="$FB" NO_COLOR=1 TOOLS_BIN="$TB" TOOLS_LIST="$T/tools.t.list" FAKE_LOG="$T/mise.log" FAKE_BIN="$FB" \
   "$FB/bash" "$R/scripts/tools" "$@"; }
 rm -f "$T/mise.log"
 out="$(tools --check 2>&1)"; rc=$?
-[[ "$rc" -eq 1 && "$out" == "missing (4): a b u c" ]] && pass "tools --check lists what is missing for this OS" || bad "tools --check: rc=$rc '$out'"
-out="$(tools 2>&1)"
-[[ "$(grep -c '^mise --yes use -g' "$T/mise.log")" -eq 1 ]] && pass "tools installs the mise tools in one mise call" || bad "tools: mise calls: $(cat "$T/mise.log" 2>/dev/null | tr '\n' ';')"
-grep -qE 'use -g x/tool-a@latest x/tool-b@latest x/tool-u@latest$' "$T/mise.log" && ! grep -q 'tool-w' "$T/mise.log" \
+[[ "$rc" -eq 1 && "$out" == "missing (3): a b u" ]] && pass "tools --check lists what is missing for this OS" || bad "tools --check: rc=$rc '$out'"
+out="$(tools 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$(grep -c '^mise --yes use -g' "$T/mise.log")" -eq 3 ]] && pass "tools installs each missing tool through mise" || bad "tools: rc=$rc mise calls: $(cat "$T/mise.log" 2>/dev/null | tr '\n' ';')"
+grep -q 'use -g x/tool-a@latest' "$T/mise.log" && grep -q 'use -g x/tool-b@latest' "$T/mise.log" && grep -q 'use -g x/tool-u@latest' "$T/mise.log" && ! grep -q 'tool-w' "$T/mise.log" \
   && pass "tools sends only this OS's tools (a Windows-only tool is left out)" || bad "tools: wrong ids: $(cat "$T/mise.log" | tr '\n' ';')"
-grep -q 'waiting for the Rust build.*: c$' <<<"$out" && pass "tools says the cargo-only tool waits for the Rust build" || bad "tools: no word on tool c: $out"
+grep -q 'Tools: 3 installed' <<<"$out" && pass "tools prints the count of what it installed" || bad "tools: no count line: $out"
 out="$(tools 2>&1)"
-[[ "$out" == *"Tools: 3 up to date"* && "$(grep -c 'mise --yes' "$T/mise.log")" -eq 1 ]] && pass "a second run installs nothing and prints one count line" || bad "tools run 2: '$out'"
+[[ "$out" == *"Tools: 3 up to date"* && "$(grep -c 'mise --yes' "$T/mise.log")" -eq 3 ]] && pass "a second run installs nothing and prints one count line" || bad "tools run 2: '$out'"
 out="$(tools -q 2>&1)"; [[ -z "$out" ]] && pass "tools -q prints nothing when nothing changed" || bad "tools -q: '$out'"
 printf 'bad | tool-bad | all | mise:x/bad\ng | tool-g | all | mise:x/tool-g\n' >"$T/tools.t2.list"
-out="$(env -i HOME="$H4" PATH="$FB" NO_COLOR=1 TOOLS_LIST="$T/tools.t2.list" TOOLS_IMPL=bash FAKE_LOG="$T/mise.log" FAKE_BIN="$FB" "$FB/bash" "$R/scripts/tools" 2>&1)"
-grep -q 'bad did not install' <<<"$out" && [[ -x "$FB/tool-g" ]] && pass "one bad tool is a warning and the others still install" || bad "tools with a bad tool: '$out'"
+out="$(env -i HOME="$H4" PATH="$FB" NO_COLOR=1 TOOLS_BIN="$TB" TOOLS_LIST="$T/tools.t2.list" FAKE_LOG="$T/mise.log" FAKE_BIN="$FB" "$FB/bash" "$R/scripts/tools" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -q 'bad did not install' <<<"$out" && [[ -x "$FB/tool-g" ]] && pass "one bad tool is a warning and the others still install" || bad "tools with a bad tool: rc=$rc '$out'"
+out="$(env -i HOME="$H4" PATH="$FB" TOOLS_BIN="$FB/no-such-bin" "$FB/bash" "$R/scripts/tools" --list 2>&1)"; rc=$?
+[[ "$rc" -eq 1 && "$out" == *"TOOLS_BIN is not a program"* ]] && pass "tools says so when TOOLS_BIN is not a program" || bad "tools with a bad TOOLS_BIN: rc=$rc '$out'"
+out="$(env -i HOME="$H4" PATH="$FB" "$FB/bash" "$R/scripts/tools" --help 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"scripts/tools --check"* ]] && pass "tools --help needs no Rust" || bad "tools --help: rc=$rc '$out'"
+# One copy of "find or install Rust, then build": the rustup recipe is in setup-lib.sh only.
+dupe="$(grep -l 'sh.rustup.rs' "$R/dotfiles" "$R/scripts/tools" "$R/scripts/agent-config" 2>/dev/null)"
+[[ -z "$dupe" ]] && grep -q 'sh.rustup.rs' "$R/scripts/setup-lib.sh" && grep -q 'ensure_rust_bin' "$R/dotfiles" && grep -q 'ensure_rust_bin' "$R/scripts/tools" \
+  && pass "dotfiles and scripts/tools share one install-Rust function" || bad "the install-Rust code is not in one place: '$dupe'"
 # The one list: no formula in the Brewfile that tools.list also holds; every list line parses (4 fields).
 dup=""; while read -r f; do grep -qE "\|[[:space:]]*$f[[:space:]]*\|" "$R/tools.list" && dup="$dup $f"; done < <(sed -nE 's/^brew "([^"]+)".*/\1/p' "$R/Brewfile")
 [[ -z "$dup" ]] && pass "no tool is in both the Brewfile and tools.list" || bad "in both lists:$dup"
 bad_lines="$(grep -vE '^[[:space:]]*(#|$)' "$R/tools.list" | awk -F'|' 'NF != 4 { print NR": "$0 }')"
 [[ -z "$bad_lines" ]] && pass "every tools.list line has 4 fields" || bad "tools.list lines: $bad_lines"
-[[ "$(TOOLS_IMPL=bash bash "$R/scripts/tools" --list | head -1 | cut -f1)" == mise ]] && pass "tools.list puts mise first" || bad "tools.list: mise is not first"
+[[ "$(TOOLS_BIN="$TB" bash "$R/scripts/tools" --list | head -1 | cut -f1)" == mise ]] && pass "tools.list puts mise first" || bad "tools.list: mise is not first"
+
+# 13b. `scripts/agent-config --bins` retries a bin that is missing or stale, also when agent-config
+#      itself is fresh (after a partial build failure only agent-config is built). A fake crate with
+#      two bins and a fake cargo that logs its calls and fails: no build here, nothing installs.
+FR="$T/binsrepo"; mkdir -p "$FR/scripts" "$FR/rust/agent-config/src" "$FR/rust/agent-config/target/release" "$T/fakecargo"
+cp "$R/scripts/agent-config" "$R/scripts/setup-lib.sh" "$R/scripts/linux-prereqs.txt" "$FR/scripts/"
+printf '[package]\nname = "x"\n\n[[bin]]\nname = "agent-config"\npath = "src/main.rs"\n\n[[bin]]\nname = "beta"\npath = "src/b.rs"\n\n[[bench]]\nname = "manual"\n' >"$FR/rust/agent-config/Cargo.toml"
+printf 'fn main() {}\n' >"$FR/rust/agent-config/src/main.rs"; cp "$FR/rust/agent-config/src/main.rs" "$FR/rust/agent-config/src/b.rs"
+touch -t 202001010000 "$FR/rust/agent-config/Cargo.toml" "$FR/rust/agent-config/src/main.rs" "$FR/rust/agent-config/src/b.rs"
+printf '#!/bin/sh\necho "cargo $*" >>"$FAKE_LOG"\nexit 1\n' >"$T/fakecargo/cargo"; chmod +x "$T/fakecargo/cargo"
+printf '#!/bin/sh\nexit 0\n' >"$FR/rust/agent-config/target/release/agent-config"; chmod +x "$FR/rust/agent-config/target/release/agent-config"
+bins() { env HOME="$H4" PATH="$T/fakecargo:$PATH" NO_COLOR=1 FAKE_LOG="$T/cargo.log" bash "$FR/scripts/agent-config" --bins >/dev/null 2>&1; }
+rm -f "$T/cargo.log"; bins
+[[ "$(grep -c '^cargo build' "$T/cargo.log" 2>/dev/null)" -ge 1 ]] && pass "--bins builds again when a bin is missing though agent-config is fresh" \
+  || bad "--bins did not retry a missing bin (cargo calls: $(cat "$T/cargo.log" 2>/dev/null | wc -l))"
+cp "$FR/rust/agent-config/target/release/agent-config" "$FR/rust/agent-config/target/release/beta"
+rm -f "$T/cargo.log"; bins
+[[ ! -e "$T/cargo.log" ]] && pass "--bins builds nothing when every bin is fresh" || bad "--bins built with every bin fresh: $(cat "$T/cargo.log")"
+touch -t 202001020000 "$FR/rust/agent-config/src/b.rs"; touch -t 202001030000 "$FR/rust/agent-config/target/release/agent-config"
+touch -t 202001010000 "$FR/rust/agent-config/target/release/beta"
+rm -f "$T/cargo.log"; bins
+[[ "$(grep -c '^cargo build' "$T/cargo.log" 2>/dev/null)" -ge 1 ]] && pass "--bins builds again when one bin is older than its sources" \
+  || bad "--bins did not retry a stale bin"
 
 # 14. Step 20 (Homebrew apps) on a Mac with Homebrew: a Brewfile whose one formula is installed
 #     skips; one with an unknown formula warns and the run goes on. Nothing installs.

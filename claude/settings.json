@@ -15,7 +15,6 @@
     }
   },
   "subagentPromptCacheTtl": "1h",
-  "includeCoAuthoredBy": false,
   "permissions": {
     "allow": [
       "Bash(git status:*)",

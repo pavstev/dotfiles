@@ -1,7 +1,7 @@
 //! The tool resolver behind `scripts/tools`: reads `tools.list`, and for this OS installs each
 //! missing tool from the first source that works. No crates beyond std: the list is a plain
-//! `name | commands | OSes | sources` file (see its header), so the bash fallback in
-//! `scripts/tools` reads the same file.
+//! `name | commands | OSes | sources` file (see its header). `scripts/tools` is a shim that
+//! builds and runs the `tools` bin.
 //!
 //! The logic is split from the real world by the `Env` trait: `resolve` asks the `Env` whether a
 //! command is there and tells it to install from a source. The tests use a fake `Env`.

@@ -9,6 +9,9 @@
 import { spawnSync } from "node:child_process"
 
 const RUST_BIN: string = __RUST_BIN__
+// The full path of the bash that runs the launcher, written when the plugin is generated. On Windows a
+// bare `bash` can be the WSL launcher, so `dots` writes the path of Git Bash. Empty: use `bash` by name.
+const BASH: string = __BASH__
 
 // Opencode tool name -> Claude tool name. Anything else that is not a known built-in is an MCP tool.
 const NAMES: Record<string, string> = { shell: "Bash", bash: "Bash", read: "Read", grep: "Grep" }
@@ -55,7 +58,7 @@ function judge(input: Hook): string | null {
     session_id: session,
     hook_event_name: "PreToolUse",
   })
-  const run = spawnSync("bash", [RUST_BIN, "--hook", "guard", "pretool"], { input: payload, encoding: "utf8", timeout: 10000 })
+  const run = spawnSync(BASH || "bash", [RUST_BIN, "--hook", "guard", "pretool"], { input: payload, encoding: "utf8", timeout: 10000 })
   if (run.error || run.status === null) {
     warnOnce(session, `could not run ${RUST_BIN}`)
     return null

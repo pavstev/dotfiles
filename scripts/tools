@@ -9,16 +9,15 @@
 #    scripts/tools -q                print nothing when nothing changed
 #    scripts/tools -v                every tool, not just the count
 #
-#  1. It installs mise first when it is missing (the official installer on macOS and
-#     Linux, incl. Alpine; WinGet on Windows). mise is the main source for the tools.
-#  2. It runs the Rust build (rust/agent-config, bin `tools`) when it is fresh: all
-#     sources, the command-starts check, the jq link.
-#  3. With no fresh Rust build (a new machine: no cargo, no Python) it runs a small
-#     bash version that reads the same tools.list and uses the `mise:` sources, plus
-#     `apk:` on Alpine. `dots` runs it again after the Rust bins are built, so the
-#     other sources (cargo, winget, scoop, brew) are tried then.
-#  It never builds Rust (scripts/agent-config --bins does that) and never fails a run:
-#  a tool that does not install is a warning. Only --check exits non-zero.
+#  A shim over the Rust bin `tools` (rust/agent-config/src/tools_cli.rs). It finds Rust, or
+#  installs it with rustup when it is missing, builds the bin when it is missing or older than
+#  its sources (ensure_rust_bin in scripts/setup-lib.sh, the same code as ./dotfiles), then
+#  runs it with all the arguments. The bin installs mise first when a tool needs it, tries the
+#  sources of each tool in order, and never fails a run: a tool that does not install is a
+#  warning. Only --check exits non-zero.
+#
+#    TOOLS_BIN=<path> scripts/tools   # run this tools binary (tests), no build
+#    TOOLS_LIST=<file> scripts/tools  # read this list instead of tools.list (tests)
 # ============================================================================
 set -u
 
@@ -29,249 +28,17 @@ REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=tools-env.sh
 . "$HERE/tools-env.sh"
 
-LIST="${TOOLS_LIST:-$REPO/tools.list}"
-EXE=tools
-is_windows && EXE=tools.exe
-BIN="$REPO/rust/agent-config/target/release/$EXE"
+case "${1:-}" in -h | --help) sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 0 ;; esac
 
-# ---- 1. mise ----------------------------------------------------------------
-ensure_mise() {
-  tools_add_paths
-  have mise && return 0
-  if is_windows; then
-    have winget || { warn "mise is missing and winget was not found. Install mise: https://mise.jdx.dev/installing-mise.html"; return 1; }
-    info "installing mise (WinGet)"
-    winget install --id jdx.mise -e --accept-package-agreements --accept-source-agreements --silent >/dev/null 2>&1 || true
-  else
-    have curl || { warn "mise is missing and curl was not found, so the tools did not install."; return 1; }
-    info "installing mise"
-    curl -fsSL https://mise.run | sh >/dev/null 2>&1 || true
-  fi
-  tools_add_paths
-  if have mise; then ok "mise installed"; return 0; fi
-  warn "mise did not install. Try: curl https://mise.run | sh   (Windows: winget install jdx.mise)"
-  return 1
-}
-
-# ---- 3. the bash version ----------------------------------------------------
-trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
-
-# os_ok <oses>: does the OSes field name this machine?
-os_ok() {
-  local f=",$(trim "$1")," me=linux
-  is_macos && me=macos
-  is_windows && me=windows
-  [[ "$f" == *,'!musl',* ]] && is_musl && return 1
-  [[ "$f" == *,all,* || "$f" == *,"$me",* ]] && return 0
-  [[ "$f" == *,unix,* && "$me" != windows ]] && return 0
-  return 1
-}
-
-# plan: one line per tool for this OS: name|commands|sources (the same field text as the list).
-plan() {
-  local name cmds oses sources
-  while IFS='|' read -r name cmds oses sources; do
-    name="$(trim "$name")"
-    [[ -z "$name" || "$name" == \#* ]] && continue
-    os_ok "$oses" || continue
-    printf '%s|%s|%s\n' "$name" "$(trim "$cmds")" "$(trim "$sources")"
-  done <"$LIST"
-}
-
-present() { # present <commands>: any one of the commands (a name>link keeps the name) is on PATH
-  local c
-  for c in $(printf '%s' "$1" | tr ',' ' '); do have "${c%%>*}" && return 0; done
-  return 1
-}
-
-selected() { # selected <name> <commands>: is it in --only (or is --only empty)?
-  [[ -z "$ONLY" ]] && return 0
-  local o c
-  for o in $(printf '%s' "$ONLY" | tr ',' ' '); do
-    [[ "$o" == "$1" ]] && return 0
-    for c in $(printf '%s' "$2" | tr ',' ' '); do [[ "${c%%>*}" == "$o" ]] && return 0; done
-  done
-  return 1
-}
-
-as_root() { if [[ "$(id -u)" == 0 ]]; then "$@"; elif have sudo; then sudo -n "$@"; else return 1; fi; }
-
-winget_run() { winget install --id "$1" -e --accept-package-agreements --accept-source-agreements --silent >/dev/null 2>&1; }
-# winget_from <sources>: on Windows, install from the first winget: source in that text.
-winget_from() {
-  local s
-  is_windows && have winget || return 1
-  for s in $1; do [[ "$s" == winget:* ]] && { winget_run "${s#winget:}"; return; }; done
-  return 1
-}
-
-# make_links: a command written a>b (jaq>jq) gets a link b -> a in ~/.local/bin when no real b exists.
-make_links() {
-  local name cmds oses sources c real dir="$HOME/.local/bin"
-  while IFS='|' read -r name cmds sources; do
-    [[ "$cmds" == *'>'* ]] || continue
-    selected "$name" "$cmds" || continue
-    for c in $(printf '%s' "$cmds" | tr ',' ' '); do
-      [[ "$c" == *'>'* ]] || continue
-      have "${c#*>}" && continue
-      have "${c%%>*}" || continue
-      real="$(mise which "${c%%>*}" 2>/dev/null || command -v "${c%%>*}")"
-      [[ -n "$real" ]] || continue
-      mkdir -p "$dir" && ln -sf "$real" "$dir/${c#*>}"
-    done
-  done < <(plan)
-}
-
-bash_resolve() {
-  local name cmds sources s rustup_name="" mise_ids=() mise_names=() mise_srcs=() winget_ids=() winget_names=() apk_pkgs=() apk_names=() n_present=0 n_new=0 n_fail=0 i
-  while IFS='|' read -r name cmds sources; do
-    selected "$name" "$cmds" || continue
-    # On Alpine, a glibc binary on PATH may not start: the Rust version checks that; here only "is there".
-    if present "$cmds"; then n_present=$((n_present + 1)); verbose && printf '• %s (already there)\n' "$name"; continue; fi
-    if [[ "$CHECK" == 1 ]]; then MISSING+=("$name"); continue; fi
-    local picked=""
-    for s in $sources; do
-      case "$s" in
-        apk:*) is_musl && have apk && { picked="$s"; break; } ;;
-        mise:*) have mise && { picked="$s"; break; } ;;
-        winget:*) is_windows && have winget && { picked="$s"; break; } ;;
-        sh:rustup) ! is_windows && have curl && { picked="$s"; break; } ;;
-      esac
-    done
-    case "$picked" in
-      apk:*) apk_pkgs+=("${picked#apk:}"); apk_names+=("$name") ;;
-      mise:*) mise_ids+=("${picked#mise:}@latest"); mise_names+=("$name"); mise_srcs+=("$sources") ;;
-      winget:*) winget_ids+=("${picked#winget:}"); winget_names+=("$name") ;;
-      sh:rustup) rustup_name="$name" ;;
-      *) NEED_RUST+=("$name") ;;   # cargo, winget, scoop, brew, sh: the Rust version tries those
-    esac
-  done < <(plan)
-
-  [[ "$CHECK" == 1 ]] && return 0
-
-  if ((${#apk_pkgs[@]})); then
-    # One call for all; if it fails (a package this Alpine lacks), one package at a time.
-    if as_root apk add --no-cache "${apk_pkgs[@]}" >/dev/null 2>&1; then
-      for i in "${!apk_names[@]}"; do ok "${apk_names[$i]} installed (apk)"; n_new=$((n_new + 1)); done
-    else
-      for i in "${!apk_pkgs[@]}"; do
-        if as_root apk add --no-cache "${apk_pkgs[$i]}" >/dev/null 2>&1; then
-          ok "${apk_names[$i]} installed (apk)"; n_new=$((n_new + 1))
-        else
-          warn "${apk_names[$i]} did not install (apk add ${apk_pkgs[$i]} failed or needs root)"; n_fail=$((n_fail + 1))
-        fi
-      done
-    fi
-  fi
-
-  if ((${#mise_ids[@]})); then
-    # One call installs all of them in parallel. If it fails, retry one by one to find the bad one.
-    if mise --yes use -g "${mise_ids[@]}" >/dev/null 2>&1; then
-      for i in "${!mise_names[@]}"; do ok "${mise_names[$i]} installed (mise)"; n_new=$((n_new + 1)); done
-    else
-      for i in "${!mise_ids[@]}"; do
-        if mise --yes use -g "${mise_ids[$i]}" >/dev/null 2>&1; then
-          ok "${mise_names[$i]} installed (mise)"; n_new=$((n_new + 1))
-        else
-          # Another source on this OS (winget on Windows)? Try it. Else one warning.
-          if winget_from "${mise_srcs[$i]}"; then
-            ok "${mise_names[$i]} installed (winget)"; n_new=$((n_new + 1))
-          else
-            warn "${mise_names[$i]} did not install (mise ${mise_ids[$i]%@latest})"; n_fail=$((n_fail + 1))
-          fi
-        fi
-      done
-    fi
-  fi
-
-  for i in "${!winget_ids[@]}"; do
-    if winget_run "${winget_ids[$i]}"; then
-      ok "${winget_names[$i]} installed (winget)"; n_new=$((n_new + 1))
-    else
-      warn "${winget_names[$i]} did not install (winget ${winget_ids[$i]})"; n_fail=$((n_fail + 1))
-    fi
-  done
-
-  if [[ -n "$rustup_name" ]]; then
-    # The rustup recipe (the same one the Rust version runs): the official installer makes cargo and rustc.
-    if curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable >/dev/null 2>&1; then
-      ok "$rustup_name installed (sh)"; n_new=$((n_new + 1))
-    else
-      warn "$rustup_name did not install (the rustup installer failed)"; n_fail=$((n_fail + 1))
-    fi
-  fi
-
-  [[ "$CHECK" == 1 ]] || make_links
-
-  if ((n_new == 0 && n_fail == 0)); then
-    [[ "$QUIET" == 1 ]] || printf '%s•%s Tools: %s up to date\n' "$_c_d" "$_c_0" "$n_present"
-  else
-    ok "Tools: $n_new installed, $n_present up to date"
-  fi
-  if ((${#NEED_RUST[@]})) && [[ "$QUIET" != 1 ]]; then
-    note "waiting for the Rust build (other sources): ${NEED_RUST[*]}"
-  fi
-}
-
-# ---- run --------------------------------------------------------------------
-CHECK=0 ONLY="" LISTONLY=0 QUIET=0 PASS=("$@")
-while (($#)); do
-  case "$1" in
-    --check) CHECK=1 ;;
-    --list) LISTONLY=1 ;;
-    -q | --quiet) QUIET=1 ;;
-    --only) ONLY="${2:-}"; shift ;;
-    -v | --verbose) export DOTFILES_VERBOSE=1 ;;
-    -h | --help) sed -n '2,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
-    *) printf 'tools: unknown argument: %s\n' "$1" >&2; exit 2 ;;
-  esac
-  shift
-done
-
-[[ -f "$LIST" ]] || { printf 'tools: no tools.list at %s\n' "$LIST" >&2; exit 2; }
-
-# needs_mise: is a tool missing that has a mise source? Then mise goes in first. A run with
-# nothing to do installs nothing, not even mise.
-needs_mise() {
-  local name cmds sources s
-  while IFS='|' read -r name cmds sources; do
-    selected "$name" "$cmds" || continue
-    present "$cmds" && continue
-    for s in $sources; do [[ "$s" == mise:* ]] && return 0; done
-  done < <(plan)
-  return 1
-}
+if [[ -n "${TOOLS_BIN:-}" ]]; then
+  [[ -x "$TOOLS_BIN" ]] || { printf '!  tools: TOOLS_BIN is not a program: %s\n' "$TOOLS_BIN" >&2; exit 1; }
+  RUST_BIN="$TOOLS_BIN"
+else
+  ensure_rust_bin "$REPO" tools tools || exit 1
+fi
 
 tools_add_paths
-if [[ "$LISTONLY" == 1 || "$CHECK" == 1 ]]; then :; elif needs_mise; then ensure_mise || true; fi
-
-stale() {
-  local crate="$REPO/rust/agent-config"
-  [[ ! -x "$BIN" ]] && return 0
-  [[ -n "$(find "$crate/src" "$crate/Cargo.toml" "$crate/Cargo.lock" "$LIST" -newer "$BIN" -type f 2>/dev/null | head -1)" ]]
-}
-
-if [[ "${TOOLS_IMPL:-auto}" != bash ]] && ! stale; then
-  export DOTFILES_REPO="$REPO" PATH
-  [[ "${TOOLS_LIST:-}" ]] && PASS=("--file" "$LIST" "${PASS[@]}")
-  exec "$BIN" "${PASS[@]}"
-fi
-
-if [[ "${TOOLS_IMPL:-auto}" == rust ]]; then
-  echo "tools: TOOLS_IMPL=rust but the Rust binary is not fresh (run: scripts/agent-config --bins)" >&2
-  exit 1
-fi
-
-MISSING=() NEED_RUST=()
-if [[ "$LISTONLY" == 1 ]]; then
-  # name<TAB>the sources of this OS, like the Rust --list
-  while IFS='|' read -r name cmds sources; do printf '%s\t%s\n' "$name" "$sources"; done < <(plan)
-  exit 0
-fi
-step "Tools"
-bash_resolve
-if [[ "$CHECK" == 1 ]]; then
-  if ((${#MISSING[@]})); then printf 'missing (%s): %s\n' "${#MISSING[@]}" "${MISSING[*]}"; exit 1; fi
-  printf '%s✓%s every tool is installed\n' "$_c_g" "$_c_0"
-fi
-exit 0
+export DOTFILES_REPO="$REPO"
+args=("$@")
+[[ -z "${TOOLS_LIST:-}" ]] || args=(--file "$TOOLS_LIST" "$@")
+exec "$RUST_BIN" ${args[@]+"${args[@]}"}

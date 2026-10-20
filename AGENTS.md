@@ -25,14 +25,15 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `rust/agent-config/src/dots/install/` | the provisioning steps, one Rust file each, in the order of `STEPS` in `install/mod.rs` (`NN-name`). Skip-aware and fault-tolerant. |
 | `scripts/os-check.sh`, `scripts/win-golden.sh` | the manual check on all three OSes; the one-time builder of the Windows test VM `win11-golden` (UTM, Mac only). |
 | `scripts/linux-prereqs.txt` | the Linux packages per manager (apt-get, dnf, pacman, apk, other), read by the shim and by `dots`. |
-| `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `step`/`info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`. |
-| `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). |
+| `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `step`/`info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`, `ensure_rust_bin` (find or install Rust, build one bin; used by `dotfiles` and `scripts/tools`). |
+| `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). The core rules are `claude/CLAUDE.md`; the opt-in habits are `claude/presets/<name>/` (`rules.md`, optional `settings.json`; list and how to add one: `claude/presets/README.md`). |
+| `docs/FRIENDS-SETUP.md` | the runbook for setting the repo up on a friend's machine: Claude runs it step by step, then `dots doctor`. |
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`). The Cursor guard adapter is the Rust bin `guard_cursor`. |
 | `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes). With no binary and no `cargo` it says "Run: dots" and exits 127. `--bins` builds every bin and always exits 0. The CLI: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
 | `claude/hooks/rust-bin` | launcher for hooks and skills: runs the Rust bin (`.exe` on Windows) when it exists, with no freshness check; never builds. With no binary, `--hook` fails open (exit 0, silent) and a skill call says "Run: dots" and exits 127. Notes: `rust/MIGRATION.md`. |
 | `docs/guide.md`, `docs/cursor-port.md`, `docs/opencode-port.md` | the user guide; the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
 | `tools.list` | THE list of command-line tools: `name \| commands \| OSes \| sources in order` (mise, apk, winget, scoop, cargo, brew, sh). Add a tool = add a line. Nothing else lists tools. |
-| `scripts/tools`, `scripts/tools-env.sh` | `scripts/tools` installs mise first when needed, then the tools: the Rust bin `tools` (`rust/agent-config/src/tools_core.rs`, `bin/tools.rs`) when fresh, else a bash version for the `mise:` and `apk:` sources (a new machine has no cargo). `--check`, `--only a,b`, `--list`, `-q`, `-v`. `tools-env.sh` puts the mise, cargo and WinGet dirs on PATH. |
+| `scripts/tools`, `scripts/tools-env.sh` | `scripts/tools` is a shim over the Rust bin `tools` (`rust/agent-config/src/tools_core.rs`, `tools_cli.rs`, `bin/tools.rs`). It finds Rust, or installs it with rustup, builds the bin when it is missing or stale (`ensure_rust_bin` in `scripts/setup-lib.sh`, the same code as `./dotfiles`), then runs it. The bin installs mise first when needed, then the tools. `--check`, `--only a,b`, `--list`, `-q`, `-v`. `TOOLS_BIN=<path>` runs a given bin (tests). `tools-env.sh` puts the mise, cargo and WinGet dirs on PATH. |
 | `Brewfile` | the macOS apps only: casks, the tap, the font, `vscode` lines (per-machine extras in the ignored `Brewfile.local`). |
 | `settings.example` | every setting with a note and default. The `dots settings` menu is `rust/agent-config/src/dots/menu.rs`. |
 | `scripts/test-linux.sh` | runs `./dotfiles` twice in a fresh Linux container (Debian, Ubuntu, Fedora, Arch, Alpine). |
@@ -46,10 +47,17 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   one to its Rust test, and `ported_map_complete` (in `tests/guard.rs`) checks the map. The pre-commit
   hook runs `rust-bin skill_check` and `cargo test --test skill_bins` for a staged skill change.
   No test needs Python.
+- `dots doctor` (`rust/agent-config/src/dots/doctor.rs`, test `cargo test --test doctor`): one
+  `PASS` or `FAIL` line per check, exit 1 on any FAIL, changes nothing. Checks: `links`,
+  `settings-built`, `bins-fresh`, `guard-selftest`, `presets`, `generated`, `timezone`, `no-leak`.
+  `bins-fresh` is the one place a stale binary shows: `claude/hooks/rust-bin` runs whatever bin
+  exists and never checks it. A FAIL line names the fix (`Run: dots`). New check: add it to
+  `checks()` and give it a pass test and a fail test in `tests/doctor.rs`.
 - `bash scripts/test-dotfiles.sh`: `./dotfiles` in a temp HOME with a temp repo and origin (first
   run, owner profile, owner rules linked and unlinked, a no-change second run, restart after a
-  pull, the warning count on the last line, apt, dnf, pacman and apk faked on a fake Linux, and
-  the os-check file map). It builds the Rust `dots` once and runs the checks with it. About 20
+  pull, the warning count on the last line, apt, dnf, pacman and apk faked on a fake Linux, the
+  os-check file map, and `scripts/tools` with a fake mise). It builds the Rust `dots` and `tools`
+  once and runs the checks with them. About 20
   seconds, nothing installs. On a Mac with Homebrew it also checks step 20 (a satisfied and a failing
   Brewfile); `DOTS_TEST_NETWORK=1` adds step 50 (downloads Node).
 - `scripts/os-check.sh` (or `/os-check` in Claude Code): the manual check on all three OSes, run
@@ -225,6 +233,12 @@ on Linux: the tools come from mise.
   `claude/settings.json` plus the private layer `~/.config/dotfiles/claude-settings.json`; live
   changes move into the layer first (`scripts/agent-config claude-settings build`).
   `claude-settings promote <key>` moves a key to the repo base. Owner-only keys stay in the layer.
+- **Presets:** the habits that are not core rules (`claude/presets/`, seven of them). The
+  `PRESETS` setting picks them: `all`, `none`, or names. Empty: `owner` gets every preset, `shared`
+  every one but `ship-to-main` (a push to a work repo's main can hurt). `dots` links each enabled
+  preset to `~/.claude/rules/preset-<name>.md`, merges its `settings.json` fragment between the repo
+  base and the private layer, and the guard runs a check only while its preset is on. A preset
+  that is off costs no tokens. `dots doctor` checks that the links equal the setting.
 - **Cursor MCP servers** (`cursor/mcp.json`) are opt-in: `CURSOR_MCP="on"`, or `DOTFILES_MCP=on` once.
 - **Opencode MCP servers** (the same `cursor/mcp.json`) are opt-in: `OPENCODE_MCP="on"`, or
   `DOTFILES_MCP=on` once.

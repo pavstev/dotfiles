@@ -5,120 +5,34 @@
 #  A thin shim. It runs the Rust `dots` (rust/agent-config/src/dots/), built here
 #  on first use and again when its sources change (about 1 to 2 minutes). With no
 #  Rust it installs one with rustup first (on Windows the GNU host, no Visual Studio).
-#  If Rust cannot be installed or the build fails it says why and exits 1.
-#  Arguments: dots [-v] [settings].
+#  The find-or-install-Rust-then-build code is ensure_rust_bin in scripts/setup-lib.sh;
+#  scripts/tools uses the same one. If Rust cannot be installed or the build fails it
+#  says why and exits 1.
+#  Arguments: dots [-v] [settings | doctor].
 #
 #    DOTS_BIN=<path> ./dotfiles    # run this dots binary (tests), no build
 # ============================================================================
 set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CRATE="$REPO/rust/agent-config"
-TARGET="$CRATE/target"
-BIN="$TARGET/release/dots"
+# shellcheck source=scripts/setup-lib.sh
+. "$REPO/scripts/setup-lib.sh"
 
 no_rust() { printf '!  dots: %s\n' "$1" >&2; exit 1; }
 
-WIN=""
-case "$(uname -s 2>/dev/null)" in
-  MINGW*|MSYS*|CYGWIN*) WIN=1; BIN="$BIN.exe" ;;
-esac
-
 if [[ -n "${DOTS_BIN:-}" ]]; then
-  [[ -x "$DOTS_BIN" ]] || no_rust "DOTS_BIN is not a program: $DOTS_BIN" "$@"
+  [[ -x "$DOTS_BIN" ]] || no_rust "DOTS_BIN is not a program: $DOTS_BIN"
   BIN="$DOTS_BIN"
 else
-  # cargo from rustup (~/.cargo/bin) or from Homebrew's keg-only rustup.
-  for d in /home/linuxbrew/.linuxbrew/opt/rustup/bin /usr/local/opt/rustup/bin /opt/homebrew/opt/rustup/bin \
-           "${CARGO_HOME:-$HOME/.cargo}/bin"; do
-    if [[ -d "$d" && ":$PATH:" != *":$d:"* ]]; then PATH="$d:$PATH"; fi
-  done
-  export PATH
-  stale() {
-    [[ ! -x "$BIN" ]] && return 0
-    [[ -n "$(find "$CRATE/src" "$CRATE/Cargo.toml" "$CRATE/Cargo.lock" "$CRATE/themes" \
-      -newer "$BIN" -type f 2>/dev/null | head -1)" ]]
-  }
-  # A fresh machine has no Rust: install a minimal stable toolchain with rustup (into
-  # ~/.cargo and ~/.rustup; step 40 adds clippy and rust-analyzer later). On Linux the
-  # build tools come first (scripts/linux-prereqs.txt; Alpine also needs build-base).
-  install_rust() (
-    set -o pipefail   # a failed download must fail the install, not feed sh nothing
-    . "$REPO/scripts/setup-lib.sh"
-    if is_linux; then
-      [[ "$LINUX_PKG" == apk ]] && LINUX_PREREQS+=(build-base)
-      linux_prereqs || return 1
-    fi
-    printf '»» installing Rust with rustup (about a minute)\n' >&2
-    rlog="$(mktemp "${TMPDIR:-/tmp}/dots-rustup.XXXXXX")"
-    if is_windows && ! have rustup; then
-      # The GNU host brings its own linker, so no Visual Studio Build Tools. It also runs on
-      # Windows on Arm (x64 emulation).
-      host=x86_64-pc-windows-gnu
-      rdir="$(mktemp -d "${TMPDIR:-/tmp}/dots-rustup.XXXXXX")"
-      curl --proto '=https' --tlsv1.2 -fsSL -o "$rdir/rustup-init.exe" \
-          "https://static.rust-lang.org/rustup/dist/$host/rustup-init.exe" 2>"$rlog" &&
-        "$rdir/rustup-init.exe" -y --profile minimal --no-modify-path --default-host "$host" \
-          --default-toolchain stable --component llvm-tools >>"$rlog" 2>&1
-      rc=$?; rm -rf "$rdir"; (exit $rc)
-    elif have rustup; then
-      rustup toolchain install stable --profile minimal >"$rlog" 2>&1 && rustup default stable >>"$rlog" 2>&1
-    else
-      curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs 2>"$rlog" |
-        sh -s -- -y --profile minimal --no-modify-path --default-toolchain stable >>"$rlog" 2>&1
-    fi || { printf '!  the Rust install failed (log: %s)\n' "$rlog" >&2; return 1; }
-    rm -f "$rlog"
-  )
-  # A cargo that works and a rustc at least as new as rust-version in Cargo.toml (1.88).
-  # RUSTUP_AUTO_INSTALL=0: with no toolchain on this HOME, fail now, never download one.
-  rust_ok() {
-    RUSTUP_AUTO_INSTALL=0 cargo --version >/dev/null 2>&1 || return 1
-    local v; v="$(RUSTUP_AUTO_INSTALL=0 rustc --version 2>/dev/null)" || return 1
-    v="${v#rustc }"; v="${v%% *}"
-    local major="${v%%.*}" minor="${v#*.}"; minor="${minor%%.*}"
-    [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( major > 1 || minor >= 88 ))
-  }
-  # Windows GNU Rust: windows-sys links with raw-dylib, so rustc runs dlltool.exe from PATH.
-  # The GNU one in rustup needs an assembler that rustup does not ship. LLVM's (llvm-ar from
-  # llvm-tools, under the name dlltool) needs none. It goes in ~/.cargo/dlltool, first on
-  # PATH for this build and for the build of the other bins that dots starts.
-  win_dlltool() {
-    local b h d="${CARGO_HOME:-$HOME/.cargo}/dlltool"
-    b="$(RUSTUP_AUTO_INSTALL=0 rustc --print sysroot 2>/dev/null)" || return 0
-    h="$(RUSTUP_AUTO_INSTALL=0 rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
-    b="$(cygpath -u "$b")/lib/rustlib/$h/bin"
-    [[ -f "$b/llvm-ar.exe" ]] || rustup component add llvm-tools >/dev/null 2>&1 || return 0
-    if [[ ! -f "$d/dlltool.exe" || "$b/llvm-ar.exe" -nt "$d/dlltool.exe" ]]; then
-      mkdir -p "$d" && cp "$b"/*.dll "$d/" && cp "$b/llvm-ar.exe" "$d/dlltool.exe" || return 0
-    fi
-    PATH="$d:$PATH"
-  }
-  if stale; then
-    if ! rust_ok; then
-      install_rust || no_rust "Rust could not be installed" "$@"
-      PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
-      rust_ok || no_rust "no cargo with Rust 1.88 or newer" "$@"
-    fi
-    [[ -z "$WIN" ]] || win_dlltool
-    printf '»» building the Rust setup (the first time takes a few minutes)\n' >&2
-    log="$(mktemp "${TMPDIR:-/tmp}/dots-build.XXXXXX")"
-    if RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$TARGET" \
-        --manifest-path "$CRATE/Cargo.toml" --bin dots >"$log" 2>&1; then
-      touch "$BIN"   # cargo leaves it alone when only another bin's source changed
-      rm -f "$log"
-    else
-      no_rust "the Rust build failed (log: $log)" "$@"
-    fi
-  elif [[ -n "$WIN" ]] && command -v rustc >/dev/null 2>&1; then
-    win_dlltool
-  fi
+  ensure_rust_bin "$REPO" dots dots || exit 1
+  BIN="$RUST_BIN"
 fi
 
 export DOTFILES_REPO="$REPO"
-[[ -n "$WIN" ]] || exec "$BIN" "$@"
+is_windows || exec "$BIN" "$@"
 # Windows locks a running .exe, so the restart after a pull could not rebuild dots.exe.
 # Run a copy of it instead.
 run="$(mktemp -d "${TMPDIR:-/tmp}/dots-run.XXXXXX")" || exit 1
 trap 'rm -rf "$run"' EXIT
-cp "$BIN" "$run/dots.exe" || no_rust "couldn't copy $BIN" "$@"
+cp "$BIN" "$run/dots.exe" || no_rust "couldn't copy $BIN"
 "$run/dots.exe" "$@"

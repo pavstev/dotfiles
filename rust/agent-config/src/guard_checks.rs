@@ -1214,15 +1214,27 @@ fn is_word_char(c: char) -> bool {
 
 /// A word of 4 letters or fewer matches whole words only; a longer one matches anywhere.
 /// Both sides are lower case.
-fn word_hit(text: &str, word: &str) -> bool {
-    if word.chars().count() > 4 {
-        return text.contains(word);
+pub fn word_hit(text: &str, word: &str) -> bool {
+    !word_spans(text, word).is_empty()
+}
+
+/// The byte spans of `word` in `text` that count as a hit by the rule of `word_hit`. Both sides
+/// are lower case.
+pub fn word_spans(text: &str, word: &str) -> Vec<(usize, usize)> {
+    if word.is_empty() {
+        return Vec::new();
     }
-    text.match_indices(word).any(|(i, _)| {
-        let before = text[..i].chars().next_back();
-        let after = text[i + word.len()..].chars().next();
-        !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char)
-    })
+    let long = word.chars().count() > 4;
+    text.match_indices(word)
+        .filter(|(i, _)| {
+            long || {
+                let before = text[..*i].chars().next_back();
+                let after = text[*i + word.len()..].chars().next();
+                !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char)
+            }
+        })
+        .map(|(i, _)| (i, i + word.len()))
+        .collect()
 }
 
 fn add_kind(kinds: &mut Vec<String>, kind: String) {
@@ -1562,6 +1574,8 @@ fn gh_text_payload(group: &str, verb: &str, args: &[String]) -> Payload {
             p.stdin = true; // the inputs come from stdin
         } else if matches!(k.as_str(), "-F" | "--body-file" | "--notes-file") {
             p.file(v);
+        } else if matches!(k.as_str(), "-R" | "--repo" | "--head" | "--base" | "-B") || (group == "pr" && k == "-H") {
+            // a repo or branch name is an address, not body text
         } else if !v.is_empty() {
             p.texts.push(v.clone());
         }

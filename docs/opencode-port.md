@@ -177,3 +177,9 @@ leaves a `opencode.jsonc.bak-<timestamp>` next to it.
 Opencode works the same on Windows (Git Bash). The CLI comes from mise or WinGet (`SST.opencode`, step
 `12-tools`) instead of Homebrew, and the clipboard uses `clip.exe`. Config is generated into
 `~/.config/opencode` the same as on macOS and Linux. No settings are Windows-specific.
+
+The guard plugin starts `bash` to run `claude/hooks/rust-bin`. A bare `bash` on Windows can be the
+WSL launcher, so `dots` writes the full path of the Git Bash that runs it into `dots-guard.ts`
+(never a path under `System32`). If no usable `bash` is on PATH when the plugin is written, the
+plugin falls back to `bash` by name, which then needs Git Bash first on PATH. Run `dots` from Git
+Bash so the right one is found.

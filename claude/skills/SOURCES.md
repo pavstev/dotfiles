@@ -189,3 +189,13 @@ desktop-commander). Ideas only, rewritten for this setup, no text copied. Full r
 - design `accessibility-review` (Anthropic, Apache-2.0, https://github.com/anthropics/knowledge-work-plugins): the label, keyboard, focus, target size, contrast and zoom checks in the `ui-verifier` agent.
 - desktop-commander `terminal` and `desktop-commander-overview` (Desktop Commander, MIT, https://github.com/wonderwhy-er/DesktopCommanderMCP): the persistent interactive-session pattern, now driven through tmux in `ps:autopilot`. The desktop-commander MCP tools were removed from `ps:autopilot`, `ps:whatsleft` and `ps:mic-drop`.
 - Not taken: the other 20 skills (generic templates, connector flows, Obsidian, Hermes and OpenClaw setup).
+
+## ps:standup, ps:draft-reply, ps:review-panel risk lenses (2026-10-20)
+
+Ideas from three retired private repos of the repo owner (own work, no third-party text), rewritten
+for this setup. Each change ran the baseline, edit, re-run test (track S of
+`docs/plans/2026-10-20-presets-rust-only-plan.md`).
+
+- ps:review-panel: risk lenses (`references/risk-lenses.md`), path triggers, a lower drop threshold on security paths, and a judge rule for dropped blocking findings.
+- ps:standup (new): yesterday, today and blockers from git, PRs, issues and a tracker, grouped by ticket key.
+- ps:draft-reply (new): draft first, send only after an explicit yes for that message, never to a recipient found in the thread text.

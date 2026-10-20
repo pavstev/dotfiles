@@ -87,7 +87,7 @@ fn preset_fragments_hold_the_fixed_values() {
     };
     assert_eq!(frag("models"), json!({"model": "opusplan", "env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}}));
     assert_eq!(frag("plain-writing"), json!({"outputStyle": "ELI5"}));
-    assert_eq!(frag("no-ai-attribution"), json!({"attribution": {"commit": "", "pr": ""}}));
+    assert_eq!(frag("no-ai-attribution"), json!({"attribution": {"commit": "", "pr": ""}, "includeCoAuthoredBy": false}));
     assert!(dir.join("README.md").is_file());
 }
 
@@ -168,7 +168,7 @@ fn no_rule_numbers() {
 fn base_settings_neutral() {
     let text = fs::read_to_string(claude_dir().join("settings.json")).unwrap();
     let base: Value = serde_json::from_str(&text).unwrap();
-    for key in ["model", "outputStyle", "enabledPlugins", "extraKnownMarketplaces", "skillOverrides", "attribution"] {
+    for key in ["model", "outputStyle", "enabledPlugins", "extraKnownMarketplaces", "skillOverrides", "attribution", "includeCoAuthoredBy"] {
         assert!(base.get(key).is_none(), "base settings still has {key}");
     }
     assert!(base.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL").is_none());
@@ -414,6 +414,28 @@ fn fragments_leave_with_their_preset() {
     fx.ac(&["claude-settings", "build"]);
     assert!(rj(&fx.live()).get("outputStyle").is_none());
     assert!(!fx.layer().exists(), "a preset key must not drift into the private layer");
+}
+
+#[test]
+fn co_author_switch_follows_the_no_ai_attribution_preset() {
+    let base: Value = serde_json::from_str(&fs::read_to_string(claude_dir().join("settings.json")).unwrap()).unwrap();
+    assert!(base.get("includeCoAuthoredBy").is_none(), "the core base must not hide co-author lines");
+    // the real repo, a temp HOME: built with the preset on, then off
+    let home = temp_home("presets-co-author");
+    let (h, r) = (home.to_str().unwrap().to_string(), real_repo().to_str().unwrap().to_string());
+    let build = |settings: &str| -> Value {
+        wr(&home.join(".config/dotfiles/settings"), settings);
+        let (code, out, err) = run_bin(AC, &["claude-settings", "build"], "", &[("HOME", &h), ("DOTFILES_REPO", &r)], None);
+        assert_eq!(code, 0, "{out}{err}");
+        rj(&home.join(".claude/settings.json"))
+    };
+    let on = build("PRESETS=\"no-ai-attribution\"\n");
+    assert_eq!(on["includeCoAuthoredBy"], json!(false), "{on}");
+    assert_eq!(on["attribution"], json!({"commit": "", "pr": ""}));
+    let off = build("PRESETS=\"workflow\"\n");
+    assert!(off.get("includeCoAuthoredBy").is_none(), "{off}");
+    assert!(off.get("attribution").is_none(), "{off}");
+    let _ = fs::remove_dir_all(&home);
 }
 
 #[test]

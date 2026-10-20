@@ -11,6 +11,7 @@
 #            is_macos · is_linux · is_windows · is_musl  (which OS; Alpine is musl)
 #            linux_prereqs · at_terminal      (Linux: install the system packages dots needs)
 #            setting                          (read ~/.config/dotfiles/settings)
+#            ensure_rust_bin                  (find or install Rust, build one bin; see the end of this file)
 # ============================================================================
 
 # Copper-on-stone palette, but only when stdout is a real TTY and the caller
@@ -197,4 +198,109 @@ setting() {
       v = substr($0, length(k) + 2); sub(/[[:space:]]+$/, "", v)
       sub(/^"/, "", v); sub(/"$/, "", v); r = v
     } END { if (r != "") print r }' "$DOTFILES_SETTINGS"
+}
+
+# ---- Rust: find or install it, then build one bin of rust/agent-config --------
+# The one copy of this code. `dotfiles` (the bin `dots`) and `scripts/tools` (the bin `tools`)
+# call ensure_rust_bin. A fresh machine has no Rust: it installs a minimal stable toolchain
+# with rustup (into ~/.cargo and ~/.rustup; step 40 adds clippy and rust-analyzer later).
+
+# rust_path: cargo from rustup (~/.cargo/bin) or from Homebrew's keg-only rustup, on PATH.
+rust_path() {
+  local d
+  for d in /home/linuxbrew/.linuxbrew/opt/rustup/bin /usr/local/opt/rustup/bin /opt/homebrew/opt/rustup/bin \
+           "${CARGO_HOME:-$HOME/.cargo}/bin"; do
+    if [[ -d "$d" && ":$PATH:" != *":$d:"* ]]; then PATH="$d:$PATH"; fi
+  done
+  export PATH
+}
+
+# A cargo that works and a rustc at least as new as rust-version in Cargo.toml (1.88).
+# RUSTUP_AUTO_INSTALL=0: with no toolchain on this HOME, fail now, never download one.
+rust_ok() {
+  RUSTUP_AUTO_INSTALL=0 cargo --version >/dev/null 2>&1 || return 1
+  local v; v="$(RUSTUP_AUTO_INSTALL=0 rustc --version 2>/dev/null)" || return 1
+  v="${v#rustc }"; v="${v%% *}"
+  local major="${v%%.*}" minor="${v#*.}"; minor="${minor%%.*}"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] && (( major > 1 || minor >= 88 ))
+}
+
+# install_rust: a minimal stable toolchain with rustup. On Linux the build tools come first
+# (scripts/linux-prereqs.txt; Alpine also needs build-base). A subshell, so its pipefail and
+# its list changes stay inside.
+install_rust() (
+  set -o pipefail   # a failed download must fail the install, not feed sh nothing
+  if is_linux; then
+    [[ "$LINUX_PKG" == apk ]] && LINUX_PREREQS+=(build-base)
+    linux_prereqs || return 1
+  fi
+  printf '»» installing Rust with rustup (about a minute)\n' >&2
+  rlog="$(mktemp "${TMPDIR:-/tmp}/dots-rustup.XXXXXX")"
+  if is_windows && ! have rustup; then
+    # The GNU host brings its own linker, so no Visual Studio Build Tools. It also runs on
+    # Windows on Arm (x64 emulation).
+    host=x86_64-pc-windows-gnu
+    rdir="$(mktemp -d "${TMPDIR:-/tmp}/dots-rustup.XXXXXX")"
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$rdir/rustup-init.exe" \
+        "https://static.rust-lang.org/rustup/dist/$host/rustup-init.exe" 2>"$rlog" &&
+      "$rdir/rustup-init.exe" -y --profile minimal --no-modify-path --default-host "$host" \
+        --default-toolchain stable --component llvm-tools >>"$rlog" 2>&1
+    rc=$?; rm -rf "$rdir"; (exit $rc)
+  elif have rustup; then
+    rustup toolchain install stable --profile minimal >"$rlog" 2>&1 && rustup default stable >>"$rlog" 2>&1
+  else
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs 2>"$rlog" |
+      sh -s -- -y --profile minimal --no-modify-path --default-toolchain stable >>"$rlog" 2>&1
+  fi || { printf '!  the Rust install failed (log: %s)\n' "$rlog" >&2; return 1; }
+  rm -f "$rlog"
+)
+
+# Windows GNU Rust: windows-sys links with raw-dylib, so rustc runs dlltool.exe from PATH.
+# The GNU one in rustup needs an assembler that rustup does not ship. LLVM's (llvm-ar from
+# llvm-tools, under the name dlltool) needs none. It goes in ~/.cargo/dlltool, first on
+# PATH for this build and for the build of the other bins that dots starts.
+win_dlltool() {
+  local b h d="${CARGO_HOME:-$HOME/.cargo}/dlltool"
+  b="$(RUSTUP_AUTO_INSTALL=0 rustc --print sysroot 2>/dev/null)" || return 0
+  h="$(RUSTUP_AUTO_INSTALL=0 rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+  b="$(cygpath -u "$b")/lib/rustlib/$h/bin"
+  [[ -f "$b/llvm-ar.exe" ]] || rustup component add llvm-tools >/dev/null 2>&1 || return 0
+  if [[ ! -f "$d/dlltool.exe" || "$b/llvm-ar.exe" -nt "$d/dlltool.exe" ]]; then
+    mkdir -p "$d" && cp "$b"/*.dll "$d/" && cp "$b/llvm-ar.exe" "$d/dlltool.exe" || return 0
+  fi
+  PATH="$d:$PATH"
+}
+
+# ensure_rust_bin <repo> <bin> <label>: make sure target/release/<bin> of rust/agent-config exists
+# and is not older than its sources (src, themes, Cargo.toml, Cargo.lock): find Rust (install
+# it when it is missing), then build just that bin. Sets RUST_BIN to the file. Returns 1 with
+# one `!  <label>: why` line when it cannot. Never touches the other bins.
+ensure_rust_bin() {
+  local repo="$1" name="$2" label="$3" crate target exe log
+  crate="$repo/rust/agent-config"; target="$crate/target"
+  exe="$name"; is_windows && exe="$name.exe"
+  RUST_BIN="$target/release/$exe"
+  rust_path
+  if [[ ! -x "$RUST_BIN" ]] || [[ -n "$(find "$crate/src" "$crate/Cargo.toml" "$crate/Cargo.lock" "$crate/themes" \
+      -newer "$RUST_BIN" -type f 2>/dev/null | head -1)" ]]; then
+    if ! rust_ok; then
+      install_rust || { printf '!  %s: Rust could not be installed\n' "$label" >&2; return 1; }
+      PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"; export PATH
+      rust_ok || { printf '!  %s: no cargo with Rust 1.88 or newer\n' "$label" >&2; return 1; }
+    fi
+    ! is_windows || win_dlltool
+    printf '»» building the Rust %s (the first time takes a few minutes)\n' "$name" >&2
+    log="$(mktemp "${TMPDIR:-/tmp}/dots-build.XXXXXX")"
+    if RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$target" \
+        --manifest-path "$crate/Cargo.toml" --bin "$name" >"$log" 2>&1; then
+      touch "$RUST_BIN"   # cargo leaves it alone when only another bin's source changed
+      rm -f "$log"
+    else
+      printf '!  %s: the Rust build failed (log: %s)\n' "$label" "$log" >&2
+      return 1
+    fi
+  elif is_windows && have rustc; then
+    win_dlltool
+  fi
+  return 0
 }
