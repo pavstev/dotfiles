@@ -67,8 +67,32 @@ else
       die "Can't repair $REPO_DIR. Delete that folder and run this again."
   else
     info "Repo already at $REPO_DIR — pulling latest defaults…"
-    git -C "$REPO_DIR" pull --ff-only --quiet || \
-      info "(couldn't fast-forward — local changes? continuing with what's here)"
+    before="$(git -C "$REPO_DIR" rev-parse --verify -q '@{u}' 2>/dev/null || true)"
+    if ! git -C "$REPO_DIR" pull --ff-only --quiet 2>/dev/null; then
+      # A rewritten upstream (force push): move a clone with no work of its own to it.
+      # The same rule as `dots` (heal_rewrite): upstream lost its old tip, HEAD was inside
+      # it, and no tracked file changed. The old state stays as a branch.
+      # An old tip: the one before this pull, or one in the upstream reflog (a clone that
+      # fetched earlier).
+      after="$(git -C "$REPO_DIR" rev-parse --verify -q '@{u}' 2>/dev/null || true)"
+      up="$(git -C "$REPO_DIR" rev-parse --symbolic-full-name '@{u}' 2>/dev/null || true)"
+      old_tip=""
+      log=""; [[ -n "$up" ]] && log="$(git -C "$REPO_DIR" rev-parse --git-path "logs/$up" 2>/dev/null)"
+      [[ -z "$log" || "$log" == /* ]] || log="$REPO_DIR/$log"
+      # raw reflog lines: "<old> <new> ...", both are tips the upstream had
+      for t in $before $( [[ -f "$log" ]] && cut -d' ' -f1,2 "$log"); do
+        if [[ "$t" != "$after" ]] && ! git -C "$REPO_DIR" merge-base --is-ancestor "$t" "$after" 2>/dev/null &&
+          git -C "$REPO_DIR" merge-base --is-ancestor HEAD "$t" 2>/dev/null; then old_tip="$t"; break; fi
+      done
+      if [[ -n "$after" && -n "$old_tip" ]] &&
+        [[ -z "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]] &&
+        git -C "$REPO_DIR" branch "before-rewrite-$(date +%Y%m%d-%H%M%S)" HEAD &&
+        git -C "$REPO_DIR" -c core.autocrlf=false reset --hard --quiet '@{u}'; then
+        info "The history was rewritten upstream. This clone had no work of its own, so it moved to the new one."
+      else
+        info "(couldn't fast-forward — local changes? continuing with what's here)"
+      fi
+    fi
   fi
 fi
 [[ -f "$REPO_DIR/dotfiles" ]] || die "$REPO_DIR has no ./dotfiles script. Delete that folder and run this again."

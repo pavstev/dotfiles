@@ -1,0 +1,12 @@
+function outer 1-13
+  function inner 6-11
+    function innermost 7-9
+function sibling 15-17
+class Box 19-34
+  method constructor 21-23
+  method make 24-26
+  method load 27-33
+interface Shape 36-38
+type Pair 40-43
+type Id 45-45
+enum Color 47-50

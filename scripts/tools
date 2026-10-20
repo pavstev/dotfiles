@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# ============================================================================
+#  scripts/tools: installs the command-line tools of tools.list (the one list).
+#
+#    scripts/tools                   install what is missing, for this OS
+#    scripts/tools --check           list what is missing, exit 1 if any
+#    scripts/tools --only gum,fzf    just these tools
+#    scripts/tools --list            the plan for this OS
+#    scripts/tools -q                print nothing when nothing changed
+#    scripts/tools -v                every tool, not just the count
+#
+#  A shim over the Rust bin `tools` (rust/agent-config/src/tools_cli.rs). It finds Rust, or
+#  installs it with rustup when it is missing, builds the bin when it is missing or older than
+#  its sources (ensure_rust_bin in scripts/setup-lib.sh, the same code as ./dotfiles), then
+#  runs it with all the arguments. The bin installs mise first when a tool needs it, tries the
+#  sources of each tool in order, and never fails a run: a tool that does not install is a
+#  warning. Only --check exits non-zero.
+#
+#    TOOLS_BIN=<path> scripts/tools   # run this tools binary (tests), no build
+#    TOOLS_LIST=<file> scripts/tools  # read this list instead of tools.list (tests)
+# ============================================================================
+set -u
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+# shellcheck source=setup-lib.sh
+. "$HERE/setup-lib.sh"
+# shellcheck source=tools-env.sh
+. "$HERE/tools-env.sh"
+
+case "${1:-}" in -h | --help) sed -n '2,21p' "${BASH_SOURCE[0]}"; exit 0 ;; esac
+
+if [[ -n "${TOOLS_BIN:-}" ]]; then
+  [[ -x "$TOOLS_BIN" ]] || { printf '!  tools: TOOLS_BIN is not a program: %s\n' "$TOOLS_BIN" >&2; exit 1; }
+  RUST_BIN="$TOOLS_BIN"
+else
+  ensure_rust_bin "$REPO" tools tools || exit 1
+fi
+
+tools_add_paths
+export DOTFILES_REPO="$REPO"
+args=("$@")
+[[ -z "${TOOLS_LIST:-}" ]] || args=(--file "$TOOLS_LIST" "$@")
+exec "$RUST_BIN" ${args[@]+"${args[@]}"}

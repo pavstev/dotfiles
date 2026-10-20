@@ -6,8 +6,8 @@ Markdown), optionally bundled with `scripts/` and reference files.
 
 ## How it's wired
 
-This directory is the single source of truth. `../skill-sync.sh` (run by `./dotfiles`,
-or by hand) adds a **per-skill symlink** into `~/.claude/skills`. Cursor and Opencode read
+This directory is the single source of truth. `dots` (the skills step, `rust/agent-config/src/dots/skills.rs`)
+adds a **per-skill symlink** into `~/.claude/skills`. Cursor and Opencode read
 `~/.claude/skills` themselves. It never touches skills it does not own. A skill added here
 shows up in every agent on every machine after `dots`.
 
@@ -24,13 +24,13 @@ Claude Code + Cursor + Opencode skills, not portable ones.
 
 ## Rules every skill follows
 
-`check.py` enforces these. It runs from the repo's pre-commit hook whenever a file
+The `skill_check` Rust bin enforces these. It runs from the repo's pre-commit hook whenever a file
 under `claude/skills/` is staged, and you can run it any time:
 
 ```sh
-python3 claude/skills/check.py            # all skills
-python3 claude/skills/check.py ps:askme   # one skill
-python3 claude/skills/check.py --self-test
+bash claude/hooks/rust-bin skill_check            # all skills
+bash claude/hooks/rust-bin skill_check ps:askme   # one skill
+cargo test --test runtime_bins                    # its own tests (in rust/agent-config)
 ```
 
 - `name` equals the folder name with `:` written as `_` (`ps:foo` lives in `ps_foo`). Lowercase, digits, hyphens, optional `ps:` prefix.
@@ -51,7 +51,7 @@ python3 claude/skills/check.py --self-test
 ```sh
 cp -r _template ps_my-skill
 $EDITOR ps_my-skill/SKILL.md      # set name + description, keep the body short
-python3 check.py ps:my-skill
+bash ../hooks/rust-bin skill_check ps:my-skill
 dots                              # links it; commit + push to sync machines
 ```
 

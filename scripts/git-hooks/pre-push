@@ -4,7 +4,7 @@
 #   made by cherry-pick, rebase, a merge or --no-verify skip the commit hooks.
 # - A second history (another first commit) for a remote that has one stops the
 #   push. So an old private history never mixes with a public one.
-# Wired with the other hooks: git config core.hooksPath scripts/git-hooks (install.d/77).
+# Wired with the other hooks: git config core.hooksPath scripts/git-hooks (step 77-dotfiles-git-hooks).
 set -uo pipefail
 . "$(dirname "$0")/private-words.sh"
 

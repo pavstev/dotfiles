@@ -5,6 +5,7 @@
 //! Needs on PATH: `yt-dlp` always; `ffmpeg` and `whisper-cli` for the Whisper fallback;
 //! `curl` once, to fetch the Whisper model into the user cache folder.
 
+use agent_config::pycompat::{py_is_space, py_strip};
 use clap::{ArgAction, ArgGroup, Parser};
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -71,19 +72,9 @@ enum CapErr {
 // Python-compat helpers (str.strip, urllib.parse, repr)
 // ---------------------------------------------------------------------------
 
-/// Python's `str.isspace` set (Rust's White_Space lacks U+001C to U+001F).
-fn py_space(c: char) -> bool {
-    matches!(c, '\t'..='\r' | '\u{1c}'..='\u{1f}' | ' ' | '\u{85}' | '\u{a0}' | '\u{1680}'
-        | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}')
-}
-
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(py_space)
-}
-
 /// `" ".join(s.split())`
 fn collapse_ws(s: &str) -> String {
-    s.split(py_space).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+    s.split(py_is_space).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// `urllib.parse.unquote`: percent escapes decode as UTF-8, bad bytes become U+FFFD.
@@ -126,7 +117,7 @@ fn py_repr(s: &str) -> String {
                 let n = c as u32;
                 let hidden = c != ' '
                     && (c.is_control()
-                        || py_space(c)
+                        || py_is_space(c)
                         || matches!(n, 0xad | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0xfeff));
                 if !hidden {
                     out.push(c);
@@ -470,13 +461,13 @@ fn install_hint(tool: &str) -> String {
     let win = cfg!(windows);
     match tool {
         "yt-dlp" if win => "winget install yt-dlp.yt-dlp".into(),
-        "yt-dlp" => "`brew install yt-dlp` (macOS, Linux)".into(),
+        "yt-dlp" => "run `dots` (it installs yt-dlp from tools.list)".into(),
         "ffmpeg" if win => "winget install Gyan.FFmpeg".into(),
-        "ffmpeg" => "`brew install ffmpeg` (macOS, Linux), or `sudo apt install ffmpeg` (Debian, Ubuntu)".into(),
+        "ffmpeg" => "run `dots` (it installs ffmpeg from tools.list)".into(),
         "whisper-cli" if win => {
             "download whisper-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases and put whisper-cli.exe on PATH".into()
         }
-        "whisper-cli" => "`brew install whisper-cpp` (macOS, Linux)".into(),
+        "whisper-cli" => "run `dots` (it installs whisper-cpp from tools.list; Alpine has no build)".into(),
         other => format!("install {other}"),
     }
 }
@@ -824,7 +815,71 @@ fn run(cli: Cli) -> i32 {
     0
 }
 
+const FETCH_USAGE: &str = "usage: yt_transcribe fetch <youtube url>";
+
+/// `~/.cache/yt-learn`: the cache of `fetch` (HOME first, like the shell script it replaced).
+fn fetch_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir);
+    home.unwrap_or_else(|| PathBuf::from(".")).join(".cache").join("yt-learn")
+}
+
+/// `fetch <url>`: print the path of a timestamped markdown transcript, `~/.cache/yt-learn/<id>.md`.
+/// A cached, non-empty file is returned at once with no network.
+fn fetch(url: &str) -> i32 {
+    fetch_with(url, &fetch_dir(), &|id| {
+        transcribe_with(id, &[], "base", false, false, &from_captions, &from_whisper).and_then(|t| render(&t, "markdown"))
+    })
+}
+
+fn fetch_with(url: &str, dir: &Path, make: &dyn Fn(&str) -> Result<String, String>) -> i32 {
+    let id = match extract_video_id(url) {
+        Ok(id) => id,
+        Err(e) => return fail(&e),
+    };
+    let out = dir.join(format!("{id}.md"));
+    if out.metadata().is_ok_and(|m| m.is_file() && m.len() > 0) {
+        println!("{}", out.display());
+        return 0;
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return fail(&format!("Cannot make {}: {e}", dir.display()));
+    }
+    let text = match make(&id) {
+        Ok(t) => t,
+        Err(e) => return fail(&e),
+    };
+    let tmp = match tempfile::Builder::new().prefix(&format!(".{id}.")).tempfile_in(dir) {
+        Ok(t) => t,
+        Err(e) => return fail(&format!("Cannot write in {}: {e}", dir.display())),
+    };
+    if let Err(e) = std::fs::write(tmp.path(), format!("{text}\n")) {
+        return fail(&format!("Cannot write {}: {e}", tmp.path().display()));
+    }
+    if tmp.path().metadata().is_ok_and(|m| m.len() == 0) {
+        return fail("transcript came back empty");
+    }
+    if let Err(e) = tmp.persist(&out) {
+        return fail(&format!("Cannot save {}: {e}", out.display()));
+    }
+    println!("{}", out.display());
+    0
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "fetch") {
+        match args.get(1).map(String::as_str) {
+            Some("-h" | "--help") => {
+                println!("{FETCH_USAGE}");
+                std::process::exit(0);
+            }
+            Some(url) if !url.is_empty() => std::process::exit(fetch(url)),
+            _ => {
+                eprintln!("{FETCH_USAGE}");
+                std::process::exit(2);
+            }
+        }
+    }
     std::process::exit(run(Cli::parse()));
 }
 

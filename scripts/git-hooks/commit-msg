@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # commit-msg: block a commit message that holds a private word (private-words.sh).
-# Wired with pre-commit: git config core.hooksPath scripts/git-hooks (install.d/77).
+# Wired with pre-commit: git config core.hooksPath scripts/git-hooks (step 77-dotfiles-git-hooks).
 set -uo pipefail
 . "$(dirname "$0")/private-words.sh"
 

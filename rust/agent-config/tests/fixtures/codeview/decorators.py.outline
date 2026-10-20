@@ -1,0 +1,6 @@
+def cached 4-6
+def view 9-15
+class Plain 18-25
+  def size 19-21
+  def make 23-25
+def last 30-31

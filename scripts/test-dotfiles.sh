@@ -4,10 +4,13 @@
 #  links and saves. Mac and Linux, no container, about 10 seconds.
 #
 #  It copies the tracked files of this working tree (your edits included) into
-#  a temp repo with a local "origin", then runs ./dotfiles with no install.d
-#  steps (DOTFILES_STEPS=none) and no terminal, so nothing installs or asks.
+#  a temp repo with a local "origin", then runs ./dotfiles with no install steps
+#  (DOTFILES_STEPS=none) and no terminal, so nothing installs or asks.
 #  Checks: first run, the owner profile saved, the owner rules linked and
 #  unlinked, a run that changes nothing, and the restart after a pull.
+#  It builds the Rust `dots` and `tools` once here (cargo must work) and runs ./dotfiles and
+#  scripts/tools with them.
+#  The Windows part of dots is checked by scripts/os-check.sh windows.
 #
 #  bash scripts/test-dotfiles.sh          # --keep leaves the temp folder
 #  Prints only failures, then one closing line. -v also prints each PASS.
@@ -24,6 +27,18 @@ for a in "$@"; do
   esac
 done
 
+# The Rust dots, built once. DOTS_TEST_BIN names it for the runs below.
+if [[ -z "${DOTS_TEST_BIN:-}" ]]; then
+  L="$(mktemp -d)"
+  if RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --bin dots --bin tools \
+      --manifest-path "$REPO/rust/agent-config/Cargo.toml" >"$L/build.log" 2>&1; then
+    rm -rf "$L"
+    DOTS_TEST_BIN="$REPO/rust/agent-config/target/release/dots" exec bash "$0" "$@"
+  fi
+  printf 'FAIL  no Rust build (log: %s)\n' "$L/build.log"
+  exit 1
+fi
+
 T="$(mktemp -d)"
 T="$(cd "$T" && pwd -P)"
 cleanup() { if [[ -n "$KEEP" ]]; then printf 'kept: %s\n' "$T"; else rm -rf "$T"; fi; }
@@ -33,10 +48,13 @@ fails=0 passes=0
 pass() { passes=$((passes + 1)); if [[ -n "$VERBOSE" ]]; then printf 'PASS  %s\n' "$*"; fi; }
 bad()  { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 
-# git for the setup only: no user config, no hooks, no signing.
+# git for the setup only: no user config, no hooks, no signing. A clone copies the objects: a
+# hard-linked local clone in the temp folder failed about 1 run in 8 on macOS.
 tgit() {
+  local a=("$@")
+  if [[ "$1" == clone ]]; then a=(clone --no-hardlinks "${@:2}"); fi
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=Test -c user.email=test@example.com \
-    -c core.hooksPath=/dev/null -c commit.gpgsign=false -c init.defaultBranch=main "$@"
+    -c core.hooksPath=/dev/null -c commit.gpgsign=false -c init.defaultBranch=main "${a[@]}"
 }
 
 # 1. The tracked files of this working tree, as one commit, with a bare origin.
@@ -57,7 +75,8 @@ OC="$H/.config/opencode"
 # run <log> [env...]: ./dotfiles in the temp HOME, no terminal, no steps.
 run() {
   local log="$1"; shift
-  env HOME="$H" NO_COLOR=1 DOTFILES_STEPS=none "$@" bash "$R/dotfiles" >"$T/$log" 2>&1 <"$T/stdin"
+  env HOME="$H" NO_COLOR=1 DOTFILES_STEPS=none DOTS_BIN="$DOTS_TEST_BIN" "$@" \
+    bash "$R/dotfiles" >"$T/$log" 2>&1 <"$T/stdin"
 }
 # fingerprint: every link under the temp HOME and the saved settings.
 fingerprint() {
@@ -78,9 +97,15 @@ grep -q '^PROFILE="[a-z]' "$SETTINGS" 2>/dev/null && bad "PROFILE saved without 
 grep -q 'profile: shared' "$T/run1.log" && pass "profile is shared" || bad "profile not shared"
 # Claude settings: a built file, the repo base only while there is no private layer.
 [[ -f "$LIVE" && ! -L "$LIVE" ]] && pass "settings.json is a built file" || bad "settings.json is a link or missing"
-python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' \
-  "$LIVE" "$R/claude/settings.json" && pass "settings.json equals the repo base" || bad "settings.json differs from the base"
 [[ ! -e "$LAYER" ]] && pass "no private layer yet" || bad "a private layer appeared on its own"
+# Presets: the shared profile links six (not ship-to-main) and merges their fragments over the base.
+PRE="$H/.claude/rules"
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 6 ]] && pass "shared profile links six presets" || bad "shared profile did not link six presets"
+[[ ! -e "$PRE/preset-ship-to-main.md" ]] && pass "ship-to-main stays off on shared" || bad "ship-to-main linked on shared"
+[[ "$(readlink "$PRE/preset-workflow.md")" == "$R/claude/presets/workflow/rules.md" ]] && pass "a preset links into the repo" || bad "preset-workflow.md not linked into the repo"
+grep -q '"outputStyle": "ELI5"' "$LIVE" && pass "preset fragment merged into settings.json" || bad "preset fragment missing from settings.json"
+! grep -q '"outputStyle"' "$R/claude/settings.json" && pass "the repo base holds no preset keys" || bad "the repo base holds a preset key"
+grep -q 'The user.s time is the cost that counts' "$OC/AGENTS.md" 2>/dev/null && pass "presets reach Opencode AGENTS.md" || bad "presets missing from Opencode AGENTS.md"
 # Opencode: the rules, the agents and the copper theme are generated on every run.
 grep -q 'generated-by: dotfiles' "$OC/AGENTS.md" 2>/dev/null && pass "Opencode AGENTS.md generated" || bad "Opencode AGENTS.md missing"
 [ -d "$OC/agents" ] && pass "Opencode agents dir" || bad "Opencode agents dir missing"
@@ -94,6 +119,8 @@ if run run2.log; then pass "owner run exits 0"; else bad "owner run exit $?"; fi
 grep -q '^PROFILE="owner"' "$SETTINGS" && pass "owner profile saved" || bad "owner profile not saved"
 [[ "$(readlink "$RULE")" == "$OWNER" ]] && pass "owner rules linked" || bad "owner rules not linked"
 grep -q 'Owner rules' "$OC/AGENTS.md" 2>/dev/null && pass "owner rules reach Opencode" || bad "owner rules missing from Opencode AGENTS.md"
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 7 ]] && pass "owner profile links seven presets" || bad "owner profile did not link seven presets"
+[[ "$(readlink "$PRE/preset-ship-to-main.md")" == "$R/claude/presets/ship-to-main/rules.md" ]] && pass "ship-to-main linked on owner" || bad "ship-to-main not linked on owner"
 
 # 4. Same again: nothing changes.
 before="$(fingerprint)"
@@ -108,7 +135,8 @@ run run3v.log DOTFILES_VERBOSE=1
 grep -q 'already set up' "$T/run3v.log" && pass "DOTFILES_VERBOSE=1 prints the skip lines" || bad "DOTFILES_VERBOSE=1 printed no skip lines"
 
 # 4b. Claude changes its settings: the change is kept in the private layer.
-python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["testKeptKey"]=True; open(p,"w").write(json.dumps(d, indent=4))' "$LIVE"
+live_json="$(cat "$LIVE")"
+printf '{\n  "testKeptKey": true,%s\n' "${live_json#\{}" >"$LIVE"
 run run3b.log
 grep -q 'kept in your private layer: testKeptKey' "$T/run3b.log" && pass "Claude's change reported" || bad "Claude's change not reported"
 grep -q '"testKeptKey": true' "$LAYER" 2>/dev/null && pass "Claude's change kept in the private layer" || bad "Claude's change lost"
@@ -123,16 +151,40 @@ run run4.log
 [[ ! -e "$RULE" && ! -L "$RULE" ]] && pass "owner rules unlinked" || bad "owner rules link still there"
 grep -q 'removed the owner rules link' "$T/run4.log" && pass "unlink reported" || bad "unlink not reported"
 [[ -f "$OWNER" ]] && pass "private rules file kept" || bad "private rules file gone"
+[[ ! -e "$PRE/preset-ship-to-main.md" && ! -L "$PRE/preset-ship-to-main.md" ]] && pass "ship-to-main link removed on shared" || bad "ship-to-main link still there on shared"
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 6 ]] && pass "six preset links stay" || bad "preset links changed besides ship-to-main"
+# A preset set off loses its link; a regular file named like a preset link is never touched.
+printf 'PRESETS="workflow"\n' >>"$SETTINGS"
+printf 'mine\n' >"$PRE/preset-extra.md"
+run run4b.log
+[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 1 ]] && pass "PRESETS list keeps one link" || bad "PRESETS list did not leave one link"
+[[ "$(cat "$PRE/preset-extra.md")" == mine ]] && pass "a regular preset-*.md file is untouched" || bad "a regular preset-*.md file was changed"
+printf 'PRESETS=""\n' >>"$SETTINGS"
+run run4c.log
+
+# 5b. Looks: off until picked. On links Starship; off removes the link and brings back the
+#     file it replaced.
+SS="$H/.config/starship.toml"
+[[ ! -L "$SS" ]] && pass "no Starship link while LOOKS is not set" || bad "Starship linked while LOOKS is not set"
+printf 'my prompt\n' >"$SS"
+printf 'LOOKS="starship"\n' >>"$SETTINGS"
+run run4d.log
+[[ "$(readlink "$SS")" == "$R/home/.config/starship.toml" ]] && pass "LOOKS=starship links the prompt" || bad "LOOKS=starship did not link the prompt"
+printf 'LOOKS="none"\n' >>"$SETTINGS"
+run run4e.log
+[[ ! -L "$SS" && "$(cat "$SS" 2>/dev/null)" == "my prompt" ]] && pass "LOOKS=none brings back the old file" || bad "LOOKS=none did not restore the old file"
+rm -f "$SS"
+printf 'LOOKS=""\n' >>"$SETTINGS"
 
 # 6. A new commit on origin: the run pulls it and restarts with the new script.
 tgit clone -q "$T/origin.git" "$T/other" &&
-  sed 's/ok "dotfiles: done/ok "dotfiles: done (new)/' "$T/other/dotfiles" >"$T/dotfiles.new" &&
+  sed 's/^set -u$/set -u; echo "dotfiles: the new shim ran" >\&2/' "$T/other/dotfiles" >"$T/dotfiles.new" &&
   cat "$T/dotfiles.new" >"$T/other/dotfiles" &&
   tgit -C "$T/other" commit -qam "new script" && tgit -C "$T/other" push -q origin HEAD:main ||
   bad "couldn't push a new commit to the temp origin"
 run run5.log
 grep -q 'pulled the latest version' "$T/run5.log" && pass "pull restarts the script" || bad "no restart after the pull"
-grep -q 'dotfiles: done (new)' "$T/run5.log" && pass "the new script ran" || bad "the old script ran after the pull"
+grep -q 'dotfiles: the new shim ran' "$T/run5.log" && pass "the new script ran" || bad "the old script ran after the pull"
 
 # 7. Windows safety: no tracked path may hold a name Windows cannot check out.
 . "$REPO/scripts/git-hooks/windows-paths.sh"
@@ -144,8 +196,8 @@ winbad="$(cd "$REPO" && git ls-files | windows_bad_paths)"
 H2="$T/home2"; mkdir -p "$H2"
 printf 'Test User\ntest@example.com\n' >"$T/stdin"
 bs() { # bs <log> <dir>
-  env HOME="$H2" NO_COLOR=1 DOTFILES_STEPS=none GIT_CONFIG_GLOBAL=/dev/null DOTFILES_REPO="$T/origin.git" DOTFILES="$2" \
-    bash "$REPO/bootstrap.sh" >"$T/$1" 2>&1 <"$T/stdin"
+  env HOME="$H2" NO_COLOR=1 DOTFILES_STEPS=none GIT_CONFIG_GLOBAL=/dev/null DOTFILES_REPO="file://$T/origin.git" DOTFILES="$2" \
+    DOTS_BIN="$DOTS_TEST_BIN" bash "$REPO/bootstrap.sh" >"$T/$1" 2>&1 <"$T/stdin"
 }
 if bs bs1.log "$T/bs1" && [[ -f "$T/bs1/dotfiles" ]]; then pass "bootstrap: fresh clone runs"; else bad "bootstrap: fresh clone (log: bs1.log)"; fi
 [[ "$(git -C "$T/bs1" config core.autocrlf)" == false ]] && pass "bootstrap: autocrlf off in the clone" || bad "bootstrap: autocrlf not off"
@@ -155,35 +207,15 @@ grep -q 'Repairing' "$T/bs2.log" && pass "bootstrap: says it repairs" || bad "bo
 rc=0; DOTFILES_REPO="$T/missing.git" DOTFILES="$T/bs3" HOME="$H2" GIT_CONFIG_GLOBAL=/dev/null bash "$REPO/bootstrap.sh" >"$T/bs3.log" 2>&1 <"$T/stdin" || rc=$?
 [[ "$rc" -ne 0 && ! -e "$T/bs3" ]] && pass "bootstrap: a failed clone leaves nothing behind" || bad "bootstrap: failed clone left $T/bs3 or exited 0"
 
-# 9. A Windows run (Git Bash), faked with a `uname` that says MINGW64: it runs only the
-#    Windows steps, links little, prints one total, and leaves the user's own .gitconfig alone.
-H3="$T/home3"; mkdir -p "$H3" "$T/fakebin"
-printf '#!/bin/sh\ncase "$1" in -s) echo MINGW64_NT-10.0 ;; *) exec /usr/bin/uname "$@" ;; esac\n' >"$T/fakebin/uname"
-chmod +x "$T/fakebin/uname"
-printf '[user]\n\tname = Mine\n' >"$H3/.gitconfig.bak-1"           # the user's own file, backed up by an old run
-cp "$R/home/.gitconfig" "$H3/.gitconfig"                              # the repo copy an old run left
-printf 'Win User\nwin@example.com\n' >"$T/stdin"
-rc=0
-env HOME="$H3" PATH="$T/fakebin:$PATH" NO_COLOR=1 AGENT_CONFIG_IMPL=python bash "$R/dotfiles" >"$T/win.log" 2>&1 <"$T/stdin" || rc=$?
-[[ "$rc" -eq 0 ]] && pass "Windows run exits 0" || bad "Windows run exit $rc (log: win.log)"
-grep -qiE 'homebrew|oh my zsh|brew bundle' "$T/win.log" && bad "Windows run mentions Homebrew or Oh My Zsh" || pass "Windows run is quiet about Mac tools"
-grep -q 'All set' "$T/win.log" && pass "Windows run ends with the All set box" || bad "Windows run has no All set box"
-[[ "$(grep -c '^✓ linked ' "$T/win.log")" -le 4 ]] && pass "Windows run prints totals, not one line per link" || bad "Windows run prints many link lines"
-[[ -L "$H3/.claude/CLAUDE.md" ]] && pass "Windows run links ~/.claude" || bad "Windows run did not link ~/.claude"
-[[ ! -L "$H3/.gitconfig" ]] && grep -q 'name = Mine' "$H3/.gitconfig" && pass "Windows run keeps the user's own .gitconfig" || bad "Windows run replaced the user's .gitconfig"
-git config -f "$H3/.gitconfig" --get-all include.path | grep -q gitconfig.local && pass "Windows .gitconfig includes the identity file" || bad "Windows .gitconfig misses the include"
-[[ ! -e "$H3/.zshrc" ]] && pass "Windows run does not link .zshrc" || bad "Windows run linked .zshrc"
-
 # 10. The last line: the done line, or the warning count of every step. A test step in the
-#     temp repo warns; the count file is gone after the run.
+#     pull from a missing origin warns once; the count file is gone after the run.
 mkdir -p "$T/tmp"
-[[ "$(tail -n 1 "$T/run3.log")" =~ ^✓\ dotfiles:\ done\ \(profile:\ [a-z]+\)$ ]] && pass "a clean run ends with the done line" \
+[[ "$(tail -n 1 "$T/run3.log")" =~ ^✓\ dotfiles:\ done\ in\ [0-9hms]+\ \(profile:\ [a-z]+\)$ ]] && pass "a clean run ends with the done line" \
   || bad "clean run last line: $(tail -n 1 "$T/run3.log")"
-printf '#!/usr/bin/env bash\n. "$REPO/scripts/setup-lib.sh"\nwarn "test warning one"\nwarn "test warning two"\n' \
-  >"$R/scripts/install.d/99-test-warn.sh"
-run run10.log DOTFILES_STEPS=99-test-warn TMPDIR="$T/tmp"
-rm -f "$R/scripts/install.d/99-test-warn.sh"
-grep -q '^!  dotfiles: done with 2 warnings (profile: ' "$T/run10.log" && pass "the last line counts the warnings of a step" \
+git -C "$R" remote set-url origin "$T/no-such-origin.git"     # the pull fails: one warning
+run run10.log TMPDIR="$T/tmp"
+git -C "$R" remote set-url origin "$T/origin.git"
+grep -q '^!  dotfiles: done in [0-9hms]* with 1 warning (profile: ' "$T/run10.log" && pass "the last line counts the warnings of a run" \
   || bad "warning count line missing (log: run10.log)"
 [[ -z "$(ls "$T/tmp" | grep dots-warn)" ]] && pass "no warning count file left" || bad "warning count file left in TMPDIR"
 
@@ -215,12 +247,12 @@ lx() { # lx <dir>: source setup-lib.sh as on that fake Linux, print the manager,
 for m in apt-get dnf pacman apk; do
   d="$T/linux-$m"; fake_linux "$d" "$m"; out="$(lx "$d")"
   case "$m" in
-    apt-get) want_list="build-essential ca-certificates curl file git procps python3 zsh"
+    apt-get) want_list="build-essential ca-certificates curl file git procps zsh"
       want_log="apt-get install -y -qq --no-install-recommends zsh" ;;
-    dnf) want_list="gcc gcc-c++ make ca-certificates curl file git procps-ng python3 zsh"; want_log="dnf install -y -q zsh" ;;
-    pacman) want_list="base-devel ca-certificates curl file git procps-ng python zsh"
+    dnf) want_list="gcc gcc-c++ make ca-certificates curl file git procps-ng zsh"; want_log="dnf install -y -q zsh" ;;
+    pacman) want_list="base-devel ca-certificates curl file git procps-ng zsh"
       want_log="pacman -S --needed --noconfirm zsh" ;;
-    apk) want_list="bash ca-certificates curl file git python3 zsh"; want_log="apk add -q --no-cache zsh" ;;
+    apk) want_list="bash build-base ca-certificates curl file git zsh"; want_log="apk add -q --no-cache zsh" ;;
   esac
   [[ "$out" == "$m|$want_list|zsh |rc=0" ]] && pass "Linux $m: finds the manager, its list and the missing zsh" \
     || bad "Linux $m: got '$out'"
@@ -228,20 +260,17 @@ for m in apt-get dnf pacman apk; do
     || bad "Linux $m: install command: $(cat "$d/log" 2>/dev/null | tr '\n' ';')"
 done
 d="$T/linux-none"; fake_linux "$d" none; out="$(lx "$d")"
-[[ "$out" == "|cc make curl file git ps python3 zsh|cc make curl file git ps python3 zsh |rc=1" ]] \
+[[ "$out" == "|cc make curl file git ps zsh|cc make curl file git ps zsh |rc=1" ]] \
   && pass "Linux with no known manager: lists the missing commands and fails" || bad "Linux with no manager: got '$out'"
 
 # 12. The os-check skip rule: which OS each changed file is for.
 which_want='dotfiles: macos linux windows
 scripts/setup-lib.sh: macos linux windows
 rust/agent-config/src/lib.rs: macos linux windows
-claude/hooks/guard.py: macos linux windows
-scripts/install.d/15-winget.sh: windows
-scripts/install.d/57-claude-code.sh: macos linux windows
-scripts/install.d/70-macos-defaults.sh: macos
-scripts/install.d/05-linux-prereqs.sh: linux
-scripts/install.d/78-linux-extras.sh: linux
-Brewfile: macos linux
+claude/hooks/rust-bin: macos linux windows
+tools.list: macos linux windows
+scripts/tools: macos linux windows
+Brewfile: macos
 home/.zshrc: macos linux
 home/.config/gh/config.yml: macos linux windows
 .gitattributes: windows
@@ -252,6 +281,230 @@ claude/skills/ps_handoff/SKILL.md: none'
 which_got="$(bash "$REPO/scripts/os-check.sh" --which $(printf '%s\n' "$which_want" | cut -d: -f1))"
 [[ "$which_got" == "$which_want" ]] && pass "os-check maps each file to the right OS" \
   || bad "os-check map differs: $(diff <(printf '%s\n' "$which_want") <(printf '%s\n' "$which_got") | grep '^[<>]' | head -3 | tr '\n' ' ')"
+
+# 12b. The os-check run, in the clean temp tree with fake OS checks (OS_CHECK_STUB). No change
+#      skips every OS. With --force the 3 run at the same time, so the fastest result prints first.
+out="$(bash "$T/src/scripts/os-check.sh" 2>&1)"; rc=$?
+want='SKIP  macos: no macos change since HEAD (--force runs it)
+SKIP  linux: no linux change since HEAD (--force runs it)
+SKIP  windows: no windows change since HEAD (--force runs it)
+RESULT: pass. Logs: .os-check/'
+[[ "$out|$rc" == "$want|0" ]] && pass "os-check skips every OS with no change" || bad "os-check skip run: rc=$rc, got '$out'"
+cat >"$T/os-stub.sh" <<'EOF'
+run_macos() { sleep 3; echo ok; }
+run_linux() { echo "FAIL  boom"; return 1; }
+run_windows() { sleep 1; echo "skip: no UTM here"; return 2; }
+EOF
+out="$(OS_CHECK_STUB="$T/os-stub.sh" bash "$T/src/scripts/os-check.sh" --force 2>&1)"; rc=$?
+want='»» macos check, log: .os-check/macos.log
+»» linux check, log: .os-check/linux.log
+»» windows check, log: .os-check/windows.log
+FAIL  linux: boom
+SKIP  windows: no UTM here
+PASS  macos
+RESULT: 1 failed. Logs: .os-check/'
+[[ "$out|$rc" == "$want|1" ]] && pass "os-check runs the OSes at once and prints each result as it ends" \
+  || bad "os-check --force with fake checks: rc=$rc, got '$out'"
+
+# 13. The tool list: scripts/tools (a shim over the Rust `tools` bin) with a fake mise. No network,
+#     nothing installs for real. (cargo test covers the Rust resolver; this covers the shim:
+#     arguments, TOOLS_LIST, the exit codes, and the one copy of the install-Rust code.)
+TB="${DOTS_TEST_BIN%/*}/tools"
+[[ -x "$TB" ]] || bad "no tools bin at $TB"
+FB="$T/toolbin"; mkdir -p "$FB"
+for t in bash env sh cat grep tr id sed uname dirname mktemp rm mkdir chmod date sleep tail head awk cygpath; do
+  p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$FB/$t"
+done
+cat >"$FB/mise" <<'EOS'
+#!/bin/sh
+# fake mise: `mise --yes use -g id@latest ...` logs the call and makes a command per id (its last path part)
+echo "mise $*" >>"$FAKE_LOG"
+[ "$1" = --yes ] && shift
+[ "$1" = use ] || exit 0
+shift; [ "$1" = -g ] && shift
+for a; do
+  case "$a" in bad@latest|*/bad@latest) exit 1 ;; esac
+  n="${a##*/}"; n="${n%@latest}"; printf '#!/bin/sh\nexit 0\n' >"$FAKE_BIN/$n"; chmod +x "$FAKE_BIN/$n"
+done
+EOS
+chmod +x "$FB/mise"
+printf 'a | tool-a | all | mise:x/tool-a\nb | tool-b | all | mise:x/tool-b\nu | tool-u | unix | mise:x/tool-u\nw | tool-w | windows | mise:x/tool-w\n' >"$T/tools.t.list"
+H4="$T/home4"; mkdir -p "$H4"
+tools() { env -i HOME="$H4" PATH="$FB" NO_COLOR=1 TOOLS_BIN="$TB" TOOLS_LIST="$T/tools.t.list" FAKE_LOG="$T/mise.log" FAKE_BIN="$FB" \
+  "$FB/bash" "$R/scripts/tools" "$@"; }
+rm -f "$T/mise.log"
+out="$(tools --check 2>&1)"; rc=$?
+[[ "$rc" -eq 1 && "$out" == "missing (3): a b u" ]] && pass "tools --check lists what is missing for this OS" || bad "tools --check: rc=$rc '$out'"
+out="$(tools 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$(grep -c '^mise --yes use -g' "$T/mise.log")" -eq 3 ]] && pass "tools installs each missing tool through mise" || bad "tools: rc=$rc mise calls: $(cat "$T/mise.log" 2>/dev/null | tr '\n' ';')"
+grep -q 'use -g x/tool-a@latest' "$T/mise.log" && grep -q 'use -g x/tool-b@latest' "$T/mise.log" && grep -q 'use -g x/tool-u@latest' "$T/mise.log" && ! grep -q 'tool-w' "$T/mise.log" \
+  && pass "tools sends only this OS's tools (a Windows-only tool is left out)" || bad "tools: wrong ids: $(cat "$T/mise.log" | tr '\n' ';')"
+grep -q 'Tools: 3 installed' <<<"$out" && pass "tools prints the count of what it installed" || bad "tools: no count line: $out"
+out="$(tools 2>&1)"
+[[ "$out" == *"Tools: 3 up to date"* && "$(grep -c 'mise --yes' "$T/mise.log")" -eq 3 ]] && pass "a second run installs nothing and prints one count line" || bad "tools run 2: '$out'"
+out="$(tools -q 2>&1)"; [[ -z "$out" ]] && pass "tools -q prints nothing when nothing changed" || bad "tools -q: '$out'"
+printf 'bad | tool-bad | all | mise:x/bad\ng | tool-g | all | mise:x/tool-g\n' >"$T/tools.t2.list"
+out="$(env -i HOME="$H4" PATH="$FB" NO_COLOR=1 TOOLS_BIN="$TB" TOOLS_LIST="$T/tools.t2.list" FAKE_LOG="$T/mise.log" FAKE_BIN="$FB" "$FB/bash" "$R/scripts/tools" 2>&1)"; rc=$?
+[[ "$rc" -eq 0 ]] && grep -q 'bad did not install' <<<"$out" && [[ -x "$FB/tool-g" ]] && pass "one bad tool is a warning and the others still install" || bad "tools with a bad tool: rc=$rc '$out'"
+out="$(env -i HOME="$H4" PATH="$FB" TOOLS_BIN="$FB/no-such-bin" "$FB/bash" "$R/scripts/tools" --list 2>&1)"; rc=$?
+[[ "$rc" -eq 1 && "$out" == *"TOOLS_BIN is not a program"* ]] && pass "tools says so when TOOLS_BIN is not a program" || bad "tools with a bad TOOLS_BIN: rc=$rc '$out'"
+out="$(env -i HOME="$H4" PATH="$FB" "$FB/bash" "$R/scripts/tools" --help 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && "$out" == *"scripts/tools --check"* ]] && pass "tools --help needs no Rust" || bad "tools --help: rc=$rc '$out'"
+# One copy of "find or install Rust, then build": the rustup recipe is in setup-lib.sh only.
+dupe="$(grep -l 'sh.rustup.rs' "$R/dotfiles" "$R/scripts/tools" "$R/scripts/agent-config" 2>/dev/null)"
+[[ -z "$dupe" ]] && grep -q 'sh.rustup.rs' "$R/scripts/setup-lib.sh" && grep -q 'ensure_rust_bin' "$R/dotfiles" && grep -q 'ensure_rust_bin' "$R/scripts/tools" \
+  && pass "dotfiles and scripts/tools share one install-Rust function" || bad "the install-Rust code is not in one place: '$dupe'"
+# The one list: no formula in the Brewfile that tools.list also holds; every list line parses (4 fields).
+dup=""; while read -r f; do grep -qE "\|[[:space:]]*$f[[:space:]]*\|" "$R/tools.list" && dup="$dup $f"; done < <(sed -nE 's/^brew "([^"]+)".*/\1/p' "$R/Brewfile")
+[[ -z "$dup" ]] && pass "no tool is in both the Brewfile and tools.list" || bad "in both lists:$dup"
+bad_lines="$(grep -vE '^[[:space:]]*(#|$)' "$R/tools.list" | awk -F'|' 'NF != 4 { print NR": "$0 }')"
+[[ -z "$bad_lines" ]] && pass "every tools.list line has 4 fields" || bad "tools.list lines: $bad_lines"
+[[ "$(TOOLS_BIN="$TB" bash "$R/scripts/tools" --list | head -1 | cut -f1)" == mise ]] && pass "tools.list puts mise first" || bad "tools.list: mise is not first"
+
+# 13b. `scripts/agent-config --bins` retries a bin that is missing or stale, also when agent-config
+#      itself is fresh (after a partial build failure only agent-config is built). A fake crate with
+#      two bins and a fake cargo that logs its calls and fails: no build here, nothing installs.
+FR="$T/binsrepo"; mkdir -p "$FR/scripts" "$FR/rust/agent-config/src" "$FR/rust/agent-config/target/release" "$T/fakecargo"
+cp "$R/scripts/agent-config" "$R/scripts/setup-lib.sh" "$R/scripts/linux-prereqs.txt" "$FR/scripts/"
+printf '[package]\nname = "x"\n\n[[bin]]\nname = "agent-config"\npath = "src/main.rs"\n\n[[bin]]\nname = "beta"\npath = "src/b.rs"\n\n[[bench]]\nname = "manual"\n' >"$FR/rust/agent-config/Cargo.toml"
+printf 'fn main() {}\n' >"$FR/rust/agent-config/src/main.rs"; cp "$FR/rust/agent-config/src/main.rs" "$FR/rust/agent-config/src/b.rs"
+touch -t 202001010000 "$FR/rust/agent-config/Cargo.toml" "$FR/rust/agent-config/src/main.rs" "$FR/rust/agent-config/src/b.rs"
+printf '#!/bin/sh\necho "cargo $*" >>"$FAKE_LOG"\nexit 1\n' >"$T/fakecargo/cargo"; chmod +x "$T/fakecargo/cargo"
+printf '#!/bin/sh\nexit 0\n' >"$FR/rust/agent-config/target/release/agent-config"; chmod +x "$FR/rust/agent-config/target/release/agent-config"
+bins() { env HOME="$H4" PATH="$T/fakecargo:$PATH" NO_COLOR=1 FAKE_LOG="$T/cargo.log" bash "$FR/scripts/agent-config" --bins >/dev/null 2>&1; }
+rm -f "$T/cargo.log"; bins
+[[ "$(grep -c '^cargo build' "$T/cargo.log" 2>/dev/null)" -ge 1 ]] && pass "--bins builds again when a bin is missing though agent-config is fresh" \
+  || bad "--bins did not retry a missing bin (cargo calls: $(cat "$T/cargo.log" 2>/dev/null | wc -l))"
+cp "$FR/rust/agent-config/target/release/agent-config" "$FR/rust/agent-config/target/release/beta"
+rm -f "$T/cargo.log"; bins
+[[ ! -e "$T/cargo.log" ]] && pass "--bins builds nothing when every bin is fresh" || bad "--bins built with every bin fresh: $(cat "$T/cargo.log")"
+touch -t 202001020000 "$FR/rust/agent-config/src/b.rs"; touch -t 202001030000 "$FR/rust/agent-config/target/release/agent-config"
+touch -t 202001010000 "$FR/rust/agent-config/target/release/beta"
+rm -f "$T/cargo.log"; bins
+[[ "$(grep -c '^cargo build' "$T/cargo.log" 2>/dev/null)" -ge 1 ]] && pass "--bins builds again when one bin is older than its sources" \
+  || bad "--bins did not retry a stale bin"
+
+# 14. Step 20 (Homebrew apps) on a Mac with Homebrew: a Brewfile whose one formula is installed
+#     skips; one with an unknown formula warns and the run goes on. Nothing installs.
+if [[ "$(uname -s)" == Darwin ]] && command -v brew >/dev/null 2>&1; then
+  f1="$(brew list --formula 2>/dev/null | head -1)"
+  cp "$R/Brewfile" "$T/Brewfile.keep"
+  if [[ -n "$f1" ]]; then
+    printf 'brew "%s"\n' "$f1" >"$R/Brewfile"
+    run step20a.log DOTFILES_STEPS=20-brew-bundle
+    grep -q 'up to date\|already installed' "$T/step20a.log" && ! grep -q 'Some Brewfile' "$T/step20a.log" \
+      && pass "step 20 skips when the Brewfile is satisfied" || bad "step 20 satisfied Brewfile (log: step20a.log): $(tail -n 3 "$T/step20a.log" | tr '\n' '|')"
+  fi
+  printf 'brew "no-such-formula-dots-test"\n' >"$R/Brewfile"
+  run step20b.log DOTFILES_STEPS=20-brew-bundle
+  grep -q 'Some Brewfile entries failed' "$T/step20b.log" && grep -q 'fix-brew-permissions.sh' "$T/step20b.log" \
+    && grep -q 'done in [0-9hms]* with 3 warnings' "$T/step20b.log" && pass "step 20 warns about a failed Brewfile and goes on" \
+    || bad "step 20 failing Brewfile (log: step20b.log): $(tail -n 5 "$T/step20b.log" | tr '\n' '|')"
+  ! grep -q '^Using \|brew bundle. complete' "$T/step20b.log" && pass "step 20 hides brew's Using lines" || bad "step 20 printed a Using line"
+  cp "$T/Brewfile.keep" "$R/Brewfile"
+fi
+
+# 15. Step 50 (Node + pnpm) downloads Node, so it runs only with DOTS_TEST_NETWORK=1 and a mise on PATH.
+#     Node, mise and corepack stay in the temp HOME: no real mise shims on PATH, so `corepack enable`
+#     cannot write links into the real Node bin folder.
+if [[ -n "${DOTS_TEST_NETWORK:-}" ]] && command -v mise >/dev/null 2>&1 && [[ "$(uname -s)" == Darwin ]]; then
+  node_path="$(dirname "$(command -v mise)")"
+  for d in ${PATH//:/ }; do case "$d" in *mise*|*/.local/share/*) ;; *) node_path="$node_path:$d" ;; esac; done
+  real_pnpm="$(mise which pnpm 2>/dev/null || true)"; real_pnpm_to="$(readlink "$real_pnpm" 2>/dev/null || true)"
+  iso=(PATH="$node_path" MISE_DATA_DIR="$H/.local/share/mise" MISE_CONFIG_DIR="$H/.config/mise"
+       MISE_CACHE_DIR="$H/.cache/mise" COREPACK_HOME="$H/.cache/node/corepack")
+  run step50.log DOTFILES_STEPS=50-node-pnpm "${iso[@]}"
+  grep -q 'node + pnpm ready\|Node + pnpm (via mise): 2 up to date' "$T/step50.log" && ! grep -q '^!' "$T/step50.log" && pass "step 50 makes Node and pnpm ready" \
+    || bad "step 50 (log: step50.log): $(tail -n 5 "$T/step50.log" | tr '\n' '|')"
+  run step50b.log DOTFILES_STEPS=50-node-pnpm "${iso[@]}"
+  grep -q 'up to date' "$T/step50b.log" && pass "step 50 on a second run changes nothing" || bad "step 50 run 2 (log: step50b.log): $(tail -n 4 "$T/step50b.log" | tr '\n' '|')"
+  [[ "$(readlink "$real_pnpm" 2>/dev/null || true)" == "$real_pnpm_to" ]] && pass "step 50 leaves the real pnpm link alone" \
+    || bad "step 50 changed the real pnpm link $real_pnpm"
+fi
+
+# 15b. The old status line link: a dangling ~/.claude/statusline.sh into the repo goes, a link
+#      to somewhere else stays.
+ln -s "$R/claude/statusline.sh" "$H/.claude/statusline.sh"
+run run15b.log
+[[ ! -e "$H/.claude/statusline.sh" && ! -L "$H/.claude/statusline.sh" ]] && pass "the old statusline.sh link into the repo is removed" || bad "old statusline.sh link still there"
+grep -q 'removed the old statusline.sh link' "$T/run15b.log" && pass "its removal is reported" || bad "removal not reported"
+ln -s "$T/my-statusline.sh" "$H/.claude/statusline.sh"
+run run15c.log
+[[ "$(readlink "$H/.claude/statusline.sh")" == "$T/my-statusline.sh" ]] && pass "a statusline.sh link elsewhere is left alone" || bad "a foreign statusline.sh link was touched"
+rm -f "$H/.claude/statusline.sh"
+
+# 16. No python, no binary: ./dotfiles runs with no python3 on PATH, and with no Rust binary a
+#     hook exits 0 silent while a skill call says "Run: dots" and exits 127.
+FP="$T/nopy"; mkdir -p "$FP"
+for t in bash env sh cat grep egrep tr id sed uname dirname basename mktemp rm mkdir rmdir chmod date tail head awk ln cp mv ls find xargs \
+    tar cksum readlink wc sort cut tee touch git stat realpath expr test which diff cmp curl; do
+  p="$(command -v "$t" 2>/dev/null)" && [[ "$p" == /* ]] && ln -sf "$p" "$FP/$t"
+done
+rm -f "$FP/python3" "$FP/python"
+PATH="$FP" command -v python3 >/dev/null 2>&1 && bad "the no-python PATH still finds python3"
+printf 'Test User\ntest@example.com\n' >"$T/stdin"
+if run run16.log PATH="$FP"; then pass "./dotfiles runs with no python3 on PATH"; else bad "./dotfiles without python3 (log: run16.log): $(tail -n 3 "$T/run16.log" | tr '\n' '|')"; fi
+[[ ! -e "$R/rust/agent-config/target" ]] && pass "the temp repo has no Rust binary" || bad "the temp repo already has a Rust build"
+pre='{"tool_name":"Bash","tool_input":{"command":"ls"},"session_id":"t","cwd":"/tmp"}'
+out="$(printf '%s' "$pre" | env HOME="$H" PATH="$FP" bash "$R/claude/hooks/rust-bin" --hook guard pretool 2>"$T/hook.err")"; rc=$?
+[[ "$rc" -eq 0 && -z "$out" ]] && pass "a hook with no binary exits 0 and prints nothing" || bad "hook with no binary: rc=$rc out='$out'"
+out="$(env HOME="$H" PATH="$FP" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev/null)"; rc=$?
+[[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "a skill call with no binary says Run: dots and exits 127" || bad "skill call with no binary: rc=$rc out='$out'"
+out="$(env HOME="$H" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev/null)"; rc=$?
+[[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "python3 on PATH changes nothing: no binary still means Run: dots" || bad "skill call with python3 on PATH: rc=$rc out='$out'"
+out="$(printf '%s' "$pre" | env HOME="$H" sh "$R/claude/hooks/rust-bin" --hook guard pretool 2>&1)"; rc=$?
+[[ "$rc" -eq 0 && -z "$out" ]] && pass "python3 on PATH changes nothing: a hook with no binary stays silent" || bad "hook with python3 on PATH: rc=$rc out='$out'"
+[[ -z "$(git -C "$R" ls-files '*.py' ':!rust/agent-config/tests/fixtures')" ]] && pass "no Python file is tracked" || bad "tracked Python files: $(git -C "$R" ls-files '*.py' ':!rust/agent-config/tests/fixtures' | head -3 | tr '\n' ' ')"
+[[ -z "$(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh 2>/dev/null)" ]] \
+  && pass "no runtime script calls python" || bad "python still called in: $(git -C "$R" grep -lE 'python3? ' -- claude/hooks scripts/git-hooks scripts/agent-config scripts/test-linux.sh | tr '\n' ' ')"
+
+# 17. Private words (scripts/git-hooks/private-words.sh), through real commits in a throwaway repo:
+#     the current user's home paths, whole-word matching for short words, a warning for an empty list.
+PW="$T/pw"; PH="$T/pwhome"
+mkdir -p "$PW" "$PH/.config/dotfiles"
+tgit -C "$PW" init -q
+pw_me="$(id -un 2>/dev/null)"; [[ -n "$pw_me" ]] || pw_me="${USERNAME:-}"
+pw_settings() { printf '%s\n' "$@" >"$PH/.config/dotfiles/settings"; }
+# Stage a file with the text $2 and commit it with the repo's hooks. Output goes to $T/pw.out.
+# A refused commit is unstaged again, so the next case starts clean.
+pw_commit() {
+  printf '%s\n' "$2" >"$PW/$1"
+  tgit -C "$PW" add "$1"
+  if HOME="$PH" tgit -C "$PW" -c core.hooksPath="$REPO/scripts/git-hooks" commit -q -m "add $1" >"$T/pw.out" 2>&1; then
+    return 0
+  fi
+  tgit -C "$PW" reset -q
+  return 1
+}
+if [[ -z "$pw_me" ]]; then
+  bad "private words: no user name to test the home-path rule (id -un and USERNAME are empty)"
+else
+  pw_settings 'PRIVATE_WORDS="zebrafish"'
+  for p in "/home/$pw_me/x" "/Users/$pw_me/x" "C:\\Users\\$pw_me\\x" "C:/Users/$pw_me/x"; do
+    pw_commit homes.txt "see $p" && bad "private words: a staged home path was not blocked: $p" || pass "private words: a staged home path is blocked ($p)"
+  done
+  pw_commit other.txt "see /home/someone-else/x" && pass "private words: another user's home path passes" || bad "private words: another user's path was blocked: $(cat "$T/pw.out")"
+  for p in "file:///home/$pw_me/x" "file:///Users/$pw_me/x" "file://localhost/home/$pw_me/x" "ends at /home/$pw_me"; do
+    pw_commit url.txt "see $p" && bad "private words: a home path in a URL or at line end was not blocked: $p" || pass "private words: a home path in a URL or at line end is blocked ($p)"
+  done
+  # the user name must end there: /home/<user>x is another user's folder
+  pw_commit longer.txt "see /home/${pw_me}x/y and /Users/${pw_me}-old/z" && pass "private words: a longer user name passes" || bad "private words: /home/${pw_me}x was blocked: $(cat "$T/pw.out")"
+  pw_settings 'PRIVATE_WORDS="abc"'
+  pw_commit short1.txt "abc here" && bad "private words: a short word as a whole word was not blocked" || pass "private words: a short word matches as a whole word"
+  pw_commit short2.txt "abcdef" && pass "private words: a short word inside a longer word passes" || bad "private words: abc blocked abcdef: $(cat "$T/pw.out")"
+  pw_commit short3.txt "x-abc-y" && bad "private words: abc between hyphens was not blocked" || pass "private words: a short word between punctuation is blocked"
+  pw_settings 'PRIVATE_WORDS="abcdef"'
+  pw_commit long1.txt "xxabcdefxx" && bad "private words: a long word inside text was not blocked" || pass "private words: a word of 5 letters or more matches anywhere"
+  # a short word is counted in characters: "ñoño" is 4 characters (6 bytes), in any locale
+  pw_settings 'PRIVATE_WORDS="ñoño"'
+  for loc in C en_US.UTF-8; do
+    LC_ALL="$loc" pw_commit "utf1-$loc.txt" "xñoñox" && pass "private words: a 4-character UTF-8 word inside a longer word passes ($loc)" || bad "private words: ñoño blocked xñoñox ($loc): $(cat "$T/pw.out")"
+    LC_ALL="$loc" pw_commit "utf2-$loc.txt" "a ñoño b" && bad "private words: a 4-character UTF-8 word as a whole word was not blocked ($loc)" || pass "private words: a 4-character UTF-8 word matches as a whole word ($loc)"
+  done
+  pw_settings ''
+  pw_commit empty.txt "plain text" && pass "private words: with no words a commit passes" || bad "private words: a commit with no words failed: $(cat "$T/pw.out")"
+  [[ "$(grep -c 'private words: none set' "$T/pw.out")" -ge 1 ]] && pass "private words: an empty list prints a warning" || bad "private words: no warning for an empty list: $(cat "$T/pw.out")"
+fi
 
 if [[ "$fails" -eq 0 ]]; then printf 'ALL PASS (%d checks)\n' "$passes"; exit 0; fi
 KEEP=1

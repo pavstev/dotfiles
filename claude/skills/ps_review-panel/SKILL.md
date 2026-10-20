@@ -14,7 +14,19 @@ The guard router sets model and effort: `panel: <angle>` calls run on Sonnet, a 
 
 - Under about 300 changed lines and 5 files, and no risky area (auth, payments, data migration,
   security): send ONE `code-reviewer`, description `final review: <slug>`. Stop here.
-- Else run the panel.
+- A diff of only renames or formatting: ONE `code-reviewer`. Stop here.
+- Else run the panel. Read every changed path (CSS and lockfiles too), then pick lenses by path:
+
+| Path holds | Lens in [risk-lenses.md](references/risk-lenses.md) |
+|---|---|
+| `migrations/`, `*.sql`, a schema file | Migration and data integrity |
+| a lockfile or manifest (`package.json`, `Cargo.toml`, `go.mod`, ...) | Dependencies and license |
+| `Dockerfile`, `*.tf`, `.github/workflows/` | Ops |
+| `*.tsx`, `*.css`, `*.vue`, `*.svelte` | Frontend |
+| `api/`, `openapi.*`, `*.proto` | API contract |
+| `auth`, `payment`, `privacy`, `crypto`, `session`, `identity` or `secret` anywhere in the path | Security and privacy, and the floor below |
+
+- The floor: when a security path matched, the score to drop is 60, not 80.
 
 ## Pace
 
@@ -42,14 +54,18 @@ Never merge partial results.
 | design | `code-reviewer` | `panel: design` | fit with the repo's rules and conventions, docs and tests updated, names, rollout and migration safety. |
 | correctness | `code-reviewer` | `final review: <slug>` | bugs, security, broken contracts, a rule one commit adds and another breaks. Gets the other angles' findings and confirms or drops them. |
 
-One risky area that dominates the change (a payment webhook, an auth flow) may get a fifth agent:
-`code-reviewer`, description `panel: <area>`, that area only. Never more than 5.
+The highest-risk lens from the Gate (security first) gets a fifth agent: `code-reviewer`,
+description `panel: <lens>`. Its brief says "Read references/risk-lenses.md, section <lens>. Check
+that lens only." It runs in its own wave after wave 1 and before the judge, so the judge sees its
+findings. Other matched lenses go as one extra line each in the `design` and `correctness`
+briefs: "Also check lens <name>: read its section in references/risk-lenses.md and run every check".
+Never more than 5 agents.
 
 Each brief holds: the repo path, the range, the angle and its lens, the check commands, and:
 
 ```
 Report each finding as: [blocking|minor] file:line: <defect>. Fix: <concrete fix>. (score 0-100)
-Drop findings under 80. Change nothing. Deadline: 15 min. Hand back at most 3,000 chars.
+Drop findings under <80, or 60 on the floor>. Change nothing. Deadline: 15 min. Hand back at most 3,000 chars.
 ```
 
 Reviewers have no Write tool. Never ask them for a notes file. The verify brief adds: "Line 1
@@ -62,6 +78,10 @@ Reviewers have no Write tool. Never ask them for a notes file. The verify brief 
 - Found by two angles: keep it. Found by one angle and blocking: Read the cited lines yourself,
   then confirm it or drop it with the reason. Found by one angle and minor: keep it as minor.
 - A failing check from verify is a blocking finding.
+- The judge fails closed. A blocking finding it drops needs a written reason that cites lines it
+  read. No reason, it stays blocking. Missing context ("no caller found", "cannot see the schema")
+  is not proof that nothing is wrong: keep the finding and name what was not checked.
+- On the floor, findings dropped under 60 are listed under "Not checked" with `file:line` and the score.
 - Two angles that disagree (simplify says remove, design says keep) go under Conflicts with both
   sides. Never pick a winner silently.
 - Write the full merged report to `.agents/reviews/<YYYY-MM-DD>-<slug>.md` when `.agents/` is
@@ -97,3 +117,5 @@ description `re-review: <slug>` (Sonnet), with the findings and the fix range. N
 | A panel for a 40-line change | The gate: one `final review:` `code-reviewer`. |
 | More than 3 agents at once | The Pace cap. Send the judge after the angles. |
 | A second full panel after the fixes | Re-review the blocking findings only. |
+| Dropping a blocking finding because the reviewer lacked context | Keep it; the judge needs a written reason. |
+| Skipping a CSS or lockfile change because it looks harmless | The Gate reads every path and picks the lens. |

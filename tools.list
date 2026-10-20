@@ -1,0 +1,82 @@
+# tools.list: every command-line tool this setup installs. The ONE list.
+#
+# One line per tool, four fields split by "|":
+#   name | commands | OSes | sources
+#
+#   name      what the tool is called in messages
+#   commands  the command(s) it puts on PATH; the tool counts as present when any one is found
+#             (comma list). A tool that is already on PATH is never touched.
+#   OSes      all | unix (macOS and Linux) | any of macos, linux, windows (comma list).
+#             Add !musl to leave the tool out on Alpine (no musl build and no apk package).
+#   sources   in order; the first one that installs a command that starts wins.
+#               mise:<backend id>   mise installs it (aqua:, github:, conda: ...). Works on every OS.
+#               apk:<package>       Alpine only. Needs root. A native musl build.
+#               winget:<id>         Windows only.
+#               scoop:<package>     Windows only.
+#               cargo:<crate>       any OS with cargo.
+#               brew:<formula>      macOS and Linux with Homebrew.
+#               sh:<recipe>         a built-in install recipe (rustup).
+#               boot:mise           mise itself; the tools resolver installs it before anything else.
+#             A source for another OS is skipped, so one line serves every OS.
+#
+# Add a tool: add a line here. Nothing else lists tools. (macOS apps, fonts and VS Code
+# extensions are in the Brewfile; they are not command-line tools.)
+# `scripts/tools --check` lists what is missing; `scripts/tools -v` shows every tool.
+# Versions float on purpose: mise installs `@latest` into the global mise config, so there is
+# no mise.lock (a lock file belongs to a project mise.toml, and this repo has none).
+# Tests: tools_core.rs parses this file; scripts/test-dotfiles.sh checks it.
+
+# ---- mise itself -----------------------------------------------------------
+mise          | mise          | all     | boot:mise
+
+# ---- Shell experience (zsh; macOS and Linux) -------------------------------
+starship      | starship      | unix    | mise:aqua:starship/starship cargo:starship
+atuin         | atuin         | unix    | mise:aqua:atuinsh/atuin cargo:atuin
+zoxide        | zoxide        | unix    | mise:aqua:ajeetdsouza/zoxide cargo:zoxide
+carapace      | carapace      | unix    | mise:aqua:carapace-sh/carapace-bin
+fzf           | fzf           | all     | mise:aqua:junegunn/fzf
+eza           | eza           | unix    | apk:eza mise:aqua:eza-community/eza cargo:eza
+yazi          | yazi          | unix    | mise:aqua:sxyazi/yazi
+dust          | dust          | unix    | mise:aqua:bootandy/dust cargo:du-dust
+duf           | duf           | unix    | mise:aqua:muesli/duf
+procs         | procs         | unix    | apk:procs mise:aqua:dalance/procs cargo:procs
+bottom        | btm           | unix    | mise:aqua:ClementTsang/bottom cargo:bottom
+fastfetch     | fastfetch     | unix    | apk:fastfetch mise:aqua:fastfetch-cli/fastfetch
+tealdeer      | tldr          | all     | mise:aqua:tealdeer-rs/tealdeer cargo:tealdeer
+tmux          | tmux          | unix    | mise:aqua:tmux/tmux-builds apk:tmux
+
+# ---- Files, search, data ---------------------------------------------------
+ripgrep       | rg            | all     | mise:aqua:BurntSushi/ripgrep cargo:ripgrep
+fd            | fd            | all     | mise:aqua:sharkdp/fd cargo:fd-find
+bat           | bat           | all     | mise:aqua:sharkdp/bat cargo:bat
+jaq           | jaq>jq        | all     | mise:aqua:01mf02/jaq cargo:jaq
+rage          | rage          | all     | mise:github:str4d/rage cargo:rage
+
+# ---- Git and GitHub --------------------------------------------------------
+git-delta     | delta         | all     | apk:delta mise:aqua:dandavison/delta cargo:git-delta
+difftastic    | difft         | all     | apk:difftastic mise:aqua:Wilfred/difftastic cargo:difftastic
+lazygit       | lazygit       | all     | mise:aqua:jesseduffield/lazygit
+gh            | gh            | all     | mise:aqua:cli/cli winget:GitHub.cli
+
+# ---- Dev workflow ----------------------------------------------------------
+just          | just          | all     | mise:aqua:casey/just cargo:just
+gum           | gum           | all     | mise:aqua:charmbracelet/gum
+opencode      | opencode      | all     | mise:aqua:anomalyco/opencode winget:SST.opencode
+oxker         | oxker         | unix    | mise:aqua:mrjackwills/oxker cargo:oxker
+
+# ---- Python, JavaScript, Go ------------------------------------------------
+uv            | uv            | all     | mise:aqua:astral-sh/uv cargo:uv
+ruff          | ruff          | all     | mise:aqua:astral-sh/ruff
+ty            | ty            | all     | mise:aqua:astral-sh/ty
+biome         | biome         | all     | mise:aqua:biomejs/biome
+golangci-lint | golangci-lint | all     | mise:aqua:golangci/golangci-lint
+
+# ---- Rust ------------------------------------------------------------------
+rustup        | rustup        | all     | sh:rustup winget:Rustlang.Rustup
+cargo-nextest | cargo-nextest | all     | mise:aqua:nextest-rs/nextest/cargo-nextest cargo:cargo-nextest
+
+# ---- Video, audio, PDF (ps:yt-learn, PDF reads) ----------------------------
+yt-dlp        | yt-dlp        | all     | mise:github:yt-dlp/yt-dlp winget:yt-dlp.yt-dlp
+ffmpeg        | ffmpeg        | all     | apk:ffmpeg mise:conda:ffmpeg winget:Gyan.FFmpeg
+poppler       | pdftotext     | all     | apk:poppler-utils mise:conda:poppler scoop:poppler
+whisper-cpp   | whisper-cli,whisper-cpp | unix,!musl | mise:conda:whisper.cpp

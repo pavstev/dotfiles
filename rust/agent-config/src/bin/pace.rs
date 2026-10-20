@@ -24,7 +24,7 @@ fn main() -> ExitCode {
         ("seed", 3) => {
             match pace::parse_percent(&args[2]) {
                 Some(used) if pace::seed(used, None) => {
-                    println!("{}", pace::seed_json(pace::week_weight()));
+                    println!("{}", pace::seed_json(pace::week_weight().unwrap_or(0.0)));
                     ExitCode::SUCCESS
                 }
                 _ => {
@@ -34,7 +34,8 @@ fn main() -> ExitCode {
             }
         }
         _ => {
-            eprintln!("usage: pace.py status | refresh | seed <percent>");
+            eprintln!("usage: pace status | refresh | seed <percent>");
+            eprintln!("the plan and the work days come from PLAN and WORK_DAYS in ~/.config/dotfiles/settings");
             ExitCode::from(2)
         }
     }

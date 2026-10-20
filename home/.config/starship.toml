@@ -33,7 +33,6 @@ $python\
 [](fg:color_steel bg:color_bg3)\
 $docker_context\
 $conda\
-$pixi\
 [](fg:color_bg3 bg:color_bg1)\
 $cmd_duration\
 [ ](fg:color_bg1)\
@@ -71,7 +70,6 @@ Fedora = "󰣛"
 Alpine = ""
 Amazon = ""
 Android = ""
-AOSC = ""
 Arch = "󰣇"
 Artix = "󰣇"
 EndeavourOS = ""
@@ -174,9 +172,6 @@ format = '[[ $symbol( $context) ](fg:color_fg0 bg:color_bg3)]($style)'
 style = "bg:color_bg3"
 format = '[[ $symbol( $environment) ](fg:color_fg0 bg:color_bg3)]($style)'
 
-[pixi]
-style = "bg:color_bg3"
-format = '[[ $symbol( $version)( $environment) ](fg:color_fg0 bg:color_bg3)]($style)'
 
 [cmd_duration]
 min_time = 500

@@ -14,7 +14,7 @@ Work with the user's other Claude Code sessions. One rule matters most: never po
 | List sessions (title, branch, pinned, running) | `mcp__ccd_session_mgmt__list_sessions` (`include_archived`, `limit`, `group`) |
 | Read one session's state | `mcp__ccd_session_mgmt__get_session` (`session_id`) |
 | Read its recent turns | `mcp__ccd_session_mgmt__list_events` (`session_id`, `limit`) |
-| Find where something was done | `mcp__ccd_session_mgmt__search_session_transcripts` (`query`, `include_archived`) |
+| Find where something was done | The `session-finder` agent, or `~/.claude/hooks/rust-bin sessions find WORDS`, before you grep transcripts; then `mcp__ccd_session_mgmt__search_session_transcripts` (`query`, `include_archived`) |
 | Message a session | `SendMessage` (`to`, `message`). `mcp__ccd_session_mgmt__send_message` is the older route. |
 | Be told when a session goes idle | `SendMessage` with `notify_when_idle: true` and no `message` |
 | Be told when a file or branch changes | `Monitor` (`command`, `description`, `timeout_ms`) |

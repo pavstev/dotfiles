@@ -12,9 +12,18 @@ for _brew in /opt/homebrew/bin/brew /usr/local/bin/brew \
 done
 unset _brew
 
+# ---- Tools from mise, cargo and the mise installer (scripts/tools; tools.list) ------
+# On the END of PATH: a tool Homebrew or the system already has keeps its place. Before the
+# fzf, atuin and zoxide lines below, which need their commands. `mise activate` (further down)
+# puts the mise tool versions in front.
+for _d in "$HOME/.local/bin" "$HOME/.local/share/mise/shims"; do
+  [[ -d $_d && ":$PATH:" != *":$_d:"* ]] && PATH="$PATH:$_d"
+done
+unset _d
+
 # ---- Oh My Zsh -------------------------------------------------------------
 export ZSH="$HOME/.oh-my-zsh"
-ZSH_THEME=""                       # prompt is handled by Starship
+ZSH_THEME=""                       # prompt: Starship, or the plain one below
 DISABLE_AUTO_TITLE="false"
 ENABLE_CORRECTION="false"
 COMPLETION_WAITING_DOTS="true"
@@ -83,11 +92,15 @@ command -v atuin >/dev/null && eval "$(atuin init zsh --disable-up-arrow)"
 
 # ---- Tooling hooks ---------------------------------------------------------
 command -v zoxide   >/dev/null && eval "$(zoxide init zsh)"            # smart cd  (z <dir>)
-command -v direnv   >/dev/null && eval "$(direnv hook zsh)"           # per-dir env
 command -v mise     >/dev/null && eval "$(mise activate zsh)"         # runtime versions
 command -v carapace >/dev/null && source <(carapace _carapace zsh)    # multi-shell completions
-command -v starship >/dev/null && eval "$(starship init zsh)"         # prompt (load last)
-# starship reads ~/.config/starship.toml automatically (symlinked from this repo).
+# Prompt (load last). Starship is one of the optional looks (dots settings > Looks): it runs
+# only while dots links ~/.config/starship.toml. Otherwise a plain prompt: folder and %/#.
+if command -v starship >/dev/null && [[ -e $HOME/.config/starship.toml ]]; then
+  eval "$(starship init zsh)"
+else
+  PROMPT='%F{173}%~%f %# '
+fi
 
 # ---- zsh-autosuggestions tuning -------------------------------------------
 ZSH_AUTOSUGGEST_STRATEGY=(history completion)
