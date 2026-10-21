@@ -2,6 +2,7 @@
 //! Opencode) and the Claude `settings.json`. It also holds the modules behind the `dots`, `guard`
 //! and `tools` binaries. The `agent-config` bin and `dots` call it; hooks reach it through `rust-bin`.
 use clap::{Parser, Subcommand};
+use presets::Profile;
 use regex::Regex;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -246,17 +247,17 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
 }
 
 /// The private `owner.md` rules file, only for the `owner` profile and only when it exists.
-pub fn owner_overlay(home: &Path, profile: &str) -> Option<PathBuf> {
+pub fn owner_overlay(home: &Path, profile: Profile) -> Option<PathBuf> {
     let f = home.join(OWNER_MD);
-    if profile == "owner" && f.is_file() { Some(f) } else { None }
+    if profile == Profile::Owner && f.is_file() { Some(f) } else { None }
 }
 
-fn has_preset_rules(home: &Path, profile: &str) -> bool {
+fn has_preset_rules(home: &Path, profile: Profile) -> bool {
     !presets::rules_text(&repo_root(), &presets::enabled_quiet(home, profile)).is_empty()
 }
 
 /// The rules for Cursor and Opencode: the core, the enabled presets, then the private overlay.
-pub fn rules_text(home: &Path, profile: &str) -> String {
+pub fn rules_text(home: &Path, profile: Profile) -> String {
     let mut text = read_text(&claude_dir().join("CLAUDE.md")).unwrap_or_default();
     let on = presets::enabled(home, profile);
     let extra = presets::rules_text(&repo_root(), &on);
@@ -321,7 +322,7 @@ pub fn setting(home: &Path, name: &str) -> String {
 }
 
 /// The text to paste into Cursor User Rules: the Cursor note, the rules and the reply style.
-pub fn user_rules_text(home: &Path, profile: &str) -> String {
+pub fn user_rules_text(home: &Path, profile: Profile) -> String {
     let mut text = format!("{}{}", CURSOR_NOTE, rules_text(home, profile));
     if let Some((name, _, body)) = output_style(home) {
         text = format!("{}\n\n# Reply style: {}\n\n{}", text.trim_end_matches('\n'), name, body);
@@ -344,7 +345,7 @@ pub fn built_settings(home: &Path) -> Value {
 
 /// The repo base with the settings fragments of the enabled presets merged over it, in order.
 pub fn with_presets(home: &Path, base: &Value) -> Value {
-    let on = presets::enabled_quiet(home, &presets::profile(home));
+    let on = presets::enabled_quiet(home, presets::current_profile(home));
     presets::fragments(&repo_root(), &on).iter().fold(base.clone(), |acc, f| merge(&acc, f))
 }
 
@@ -542,7 +543,7 @@ pub fn opencode_mcp_wanted(home: &Path) -> bool {
 // Cursor parts
 /// Writes the Cursor rule files in `~/.cursor/rules` (core rules and reply style), or only checks
 /// them when the rules were pasted into Cursor User Rules.
-pub fn cursor_rules(home: &Path, profile: &str) {
+pub fn cursor_rules(home: &Path, profile: Profile) {
     let rules = home.join(".cursor").join("rules");
     let mark = home.join(USER_RULES_MARK);
     if mark.exists() {
@@ -560,7 +561,7 @@ pub fn cursor_rules(home: &Path, profile: &str) {
     let (desc, mode) = if overlay.is_some() {
         ("Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules", Some(0o600))
     } else {
-        if profile == "owner" {
+        if profile == Profile::Owner {
             warn(
                 "no ~/.config/dotfiles/owner.md, so the Cursor rule has no owner-only rules. Add them with: dots settings",
             );
@@ -1274,7 +1275,7 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
     let home = paths::home();
     header(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), args.profile));
     let parts = vec![
-        part(|| cursor_rules(&home, &args.profile)),
+        part(|| cursor_rules(&home, args.profile)),
         part(|| cursor_agents(&home)),
         part(|| cursor_hooks(&home)),
         part(|| cursor_mcp(&home)),
@@ -1287,16 +1288,16 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
 #[derive(Parser, Debug)]
 pub struct CursorArgs {
     /// owner pulls in the private owner.md rules
-    #[arg(long, default_value = "shared", value_parser = ["owner", "shared"])]
-    pub profile: String,
+    #[arg(long, default_value_t = Profile::Shared, value_parser = str::parse::<Profile>)]
+    pub profile: Profile,
     /// report what would change without writing
     #[arg(long)]
     pub dry_run: bool,
 }
 
 /// The profile of this machine (`owner` or `shared`), from the settings.
-pub fn default_profile() -> String {
-    presets::profile(&paths::home())
+pub fn default_profile() -> Profile {
+    presets::current_profile(&paths::home())
 }
 
 /// The command that copies stdin to the clipboard on this OS, or `None` when none is installed.
@@ -1338,7 +1339,7 @@ fn crate_which(cmd: &str, path: Option<&str>) -> bool {
 
 /// The `user-rules` command: prints the Cursor User Rules text, or with `copy` puts it on the
 /// clipboard and removes the file copies in `~/.cursor/rules`. Returns 1 when there is no clipboard tool.
-pub fn cmd_user_rules(profile: &str, copy: bool) -> i32 {
+pub fn cmd_user_rules(profile: Profile, copy: bool) -> i32 {
     let home = paths::home();
     let text = user_rules_text(&home, profile);
     if !copy {
@@ -1763,8 +1764,8 @@ pub enum Commands {
 #[derive(Parser, Debug)]
 pub struct UserRulesArgs {
     /// owner pulls in the private ~/.config/dotfiles/owner.md rules
-    #[arg(long, default_value_t = default_profile(), value_parser = ["owner", "shared"])]
-    pub profile: String,
+    #[arg(long, default_value_t = default_profile(), value_parser = str::parse::<Profile>)]
+    pub profile: Profile,
     /// copy to the clipboard and drop the file copy
     #[arg(long)]
     pub copy: bool,
@@ -1790,8 +1791,8 @@ pub struct ClaudeSettingsArgs {
 #[derive(Parser, Debug)]
 pub struct OpencodeArgs {
     /// owner pulls in the private ~/.config/dotfiles/owner.md rules
-    #[arg(long, default_value = "shared", value_parser = ["owner", "shared"])]
-    pub profile: String,
+    #[arg(long, default_value_t = Profile::Shared, value_parser = str::parse::<Profile>)]
+    pub profile: Profile,
     /// report what would change without writing
     #[arg(long)]
     pub dry_run: bool,
@@ -1831,7 +1832,7 @@ fn run_cli(cli: Cli) -> i32 {
         }
         Commands::UserRules(a) => {
             set_dry(a.dry_run);
-            (cmd_user_rules(&a.profile, a.copy), "user-rules")
+            (cmd_user_rules(a.profile, a.copy), "user-rules")
         }
         Commands::ClaudeSettings(a) => {
             set_dry(a.dry_run);
@@ -1884,7 +1885,7 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
         part(|| opencode_agents(&home)),
         part(|| opencode_plugin(&home)),
         part(|| opencode_config(&home)),
-        part(|| opencode_rules(&home, &a.profile)),
+        part(|| opencode_rules(&home, a.profile)),
         part(|| opencode_theme(&home)),
         part(|| opencode_projects(&home, projects)),
     ];
@@ -1892,7 +1893,7 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
 }
 
 /// Writes `~/.config/opencode/AGENTS.md`: the rules, enabled presets, owner overlay and reply style.
-pub fn opencode_rules(home: &Path, profile: &str) {
+pub fn opencode_rules(home: &Path, profile: Profile) {
     let path = home.join(".config").join("opencode").join("AGENTS.md");
     if is_symlink(&path) || (path.exists() && !read_text(&path).unwrap_or_default().contains(MARK)) {
         warn(&format!(
@@ -1912,7 +1913,7 @@ pub fn opencode_rules(home: &Path, profile: &str) {
     if overlay.is_some() {
         srcs.push("~/.config/dotfiles/owner.md");
         mode = Some(0o600);
-    } else if profile == "owner" {
+    } else if profile == Profile::Owner {
         warn(
             "no ~/.config/dotfiles/owner.md, so the OpenCode rules have no owner-only rules. Add them with: dots settings",
         );

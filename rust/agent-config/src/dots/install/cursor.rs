@@ -49,7 +49,7 @@ pub fn step(repo: &Path) {
 
     // 3. Rules, agents, hooks, MCP, CLI config. agent-config prints its own count line.
     out::step_end();
-    if crate::run_args(&["cursor", "--profile", &settings::profile()]) != 0 {
+    if crate::run_args(&["cursor", "--profile", settings::profile().as_str()]) != 0 {
         warn("agent-config cursor reported an issue, see above");
     }
 }

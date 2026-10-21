@@ -21,6 +21,7 @@ pub mod steps;
 pub mod uninstall;
 
 use crate::out::{self, info, ok, step, step_end, uptodate, verbose, warn};
+use crate::presets::Profile;
 use clap::{Parser, Subcommand};
 use std::env;
 use std::fs;
@@ -231,7 +232,7 @@ pub fn main() -> i32 {
     looks::ask_if_unset();
 
     let profile = settings::profile();
-    os::set_env("DOTFILES_PROFILE", &profile);
+    os::set_env("DOTFILES_PROFILE", profile.as_str());
 
     // An optional extra, offered once: on the first run, at a terminal. "No" comes first.
     if os::is_macos() && first_run && os::at_terminal() && !Path::new("/Applications/Claude.app").is_dir() {
@@ -249,7 +250,7 @@ pub fn main() -> i32 {
     }
 
     link_files(&repo);
-    claude_config(&repo, &profile);
+    claude_config(&repo, profile);
 
     step("Skills");
     let (good, lines) = skills::sync(&repo);
@@ -460,7 +461,7 @@ fn link_files(repo: &Path) {
     }
 }
 
-fn claude_config(repo: &Path, profile: &str) {
+fn claude_config(repo: &Path, profile: Profile) {
     step("Claude config");
     if verbose() {
         info(&format!("profile: {profile} (AGENTS.md \"Profiles\")"));
@@ -505,10 +506,10 @@ fn claude_config(repo: &Path, profile: &str) {
     // The owner's private rules (never in the repo) load as a Claude user rule.
     let rule = dst.join("rules").join("owner.md");
     let owner = settings::owner_md();
-    if profile == "owner" && owner.is_file() {
+    if profile == Profile::Owner && owner.is_file() {
         link::link_item(&owner, &rule, false);
     } else {
-        if profile == "owner" {
+        if profile == Profile::Owner {
             warn("owner profile, but no private rules on this machine. Add them with: dots settings");
         }
         if os::is_symlink(&rule)

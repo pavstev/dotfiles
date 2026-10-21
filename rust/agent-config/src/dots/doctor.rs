@@ -283,7 +283,7 @@ fn guard_selftest(repo: &Path) -> Result<(), String> {
 
 /// The `~/.claude/rules/preset-*.md` links equal the presets that are on.
 fn presets(repo: &Path, home: &Path) -> Result<(), String> {
-    let on = crate::presets::enabled_quiet(home, &crate::presets::profile(home));
+    let on = crate::presets::enabled_quiet(home, crate::presets::current_profile(home));
     let src = repo.join("claude").join("presets");
     // `repo` can be spelled another way than the links (a `..` in the exe path, a symlinked folder)
     let src_real = fs::canonicalize(&src).unwrap_or_else(|_| src.clone());

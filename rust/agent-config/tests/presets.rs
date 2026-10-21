@@ -473,6 +473,18 @@ fn theme_plain_skips_opencode_theme() {
 }
 
 #[test]
+fn profile_parses_and_prints() {
+    use presets::Profile;
+    assert_eq!("owner".parse::<Profile>().unwrap(), Profile::Owner);
+    assert_eq!("shared".parse::<Profile>().unwrap(), Profile::Shared);
+    assert!("root".parse::<Profile>().is_err() && "".parse::<Profile>().is_err());
+    // callers that take a name read an unknown one as shared
+    assert_eq!(Profile::from("root"), Profile::Shared);
+    assert_eq!(Profile::Owner.to_string(), "owner");
+    assert_eq!(Profile::default().to_string(), "shared");
+}
+
+#[test]
 fn profile_read_only() {
     let home = temp_home("presets-profile");
     wr(&home.join(".config/dotfiles/owner.md"), "x\n");
