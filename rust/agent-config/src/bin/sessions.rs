@@ -12,7 +12,7 @@ use agent_config::quiet_println as println;
 use agent_config::redact::redact;
 use agent_config::stores::{Doc, Skip, read_claude};
 use clap::{Parser, Subcommand};
-use serde_json::{Map, Value as Json, json};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fs;
@@ -152,43 +152,51 @@ fn lock_writer(index: &Index) -> Res<Option<IndexWriter>> {
 type Stamps = BTreeMap<PathBuf, (u64, i64)>;
 
 /// What the last run indexed: the (size, mtime) of every transcript and how many documents each gave.
-#[derive(Default)]
+#[derive(Serialize, Deserialize)]
+#[serde(default)]
 struct State {
+    version: u64,
+    #[serde(with = "path_keys")]
     claude: Stamps,
     docs: BTreeMap<String, u64>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self { version: STATE_VERSION, claude: Stamps::new(), docs: BTreeMap::new() }
+    }
+}
+
+/// A map keyed by path, written with the lossy text of each path as the key.
+mod path_keys {
+    use super::Stamps;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S: Serializer>(map: &Stamps, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(map.iter().map(|(p, v)| (p.to_string_lossy(), v)))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Stamps, D::Error> {
+        let map = std::collections::BTreeMap::<String, (u64, i64)>::deserialize(d)?;
+        Ok(map.into_iter().map(|(k, v)| (PathBuf::from(k), v)).collect())
+    }
 }
 
 fn state_path(dir: &Path) -> PathBuf {
     dir.join("state.json")
 }
 
+/// The saved state. A missing, unreadable, malformed or other-version file gives an empty state,
+/// which reads every transcript again.
 fn load_state(dir: &Path) -> State {
-    let Ok(text) = fs::read_to_string(state_path(dir)) else { return State::default() };
-    let Ok(v) = serde_json::from_str::<Json>(&text) else { return State::default() };
-    if v.get("version").and_then(Json::as_u64) != Some(STATE_VERSION) {
-        return State::default();
-    }
-    let mut s = State::default();
-    for (k, e) in v.get("claude").and_then(Json::as_object).into_iter().flatten() {
-        if let (Some(size), Some(mtime)) = (e.get(0).and_then(Json::as_u64), e.get(1).and_then(Json::as_i64)) {
-            s.claude.insert(PathBuf::from(k), (size, mtime));
-        }
-    }
-    for (k, n) in v.get("docs").and_then(Json::as_object).into_iter().flatten() {
-        if let Some(n) = n.as_u64() {
-            s.docs.insert(k.clone(), n);
-        }
-    }
-    s
+    let state = fs::read(state_path(dir)).ok().and_then(|b| serde_json::from_slice::<State>(&b).ok());
+    state.filter(|s| s.version == STATE_VERSION).unwrap_or_default()
 }
 
 fn save_state(dir: &Path, s: &State) -> Res<()> {
-    let claude: Map<String, Json> =
-        s.claude.iter().map(|(p, (size, mtime))| (p.to_string_lossy().into_owned(), json!([size, mtime]))).collect();
-    let docs: Map<String, Json> = s.docs.iter().map(|(p, n)| (p.clone(), json!(n))).collect();
-    let body = json!({"version": STATE_VERSION, "claude": claude, "docs": docs});
     let tmp = dir.join("state.json.tmp");
-    fs::write(&tmp, serde_json::to_vec(&body)?)?;
+    fs::write(&tmp, serde_json::to_vec(s)?)?;
     fs::rename(&tmp, state_path(dir))?;
     Ok(())
 }
@@ -273,7 +281,7 @@ fn update(home: &Path, dir: &Path, f: &Fields, writer: &mut IndexWriter, state: 
     if dirty {
         writer.commit()?;
     }
-    let next = State { claude: fresh, docs };
+    let next = State { claude: fresh, docs, ..State::default() };
     let changed = next.claude != state.claude || next.docs != state.docs;
     *state = next;
     if changed {
