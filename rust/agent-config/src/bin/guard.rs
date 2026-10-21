@@ -261,12 +261,14 @@ fn with_state<T>(data: &Value, f: impl FnOnce(&mut Map<String, Value>) -> T) -> 
         Some(Value::Object(m)) => m,
         _ => Map::new(),
     };
-    let before = state.clone();
+    // Compare the text, not the maps: Map equality ignores key order, and W5 keeps recency in it.
+    let before = Value::Object(state.clone()).to_string();
     let out = f(&mut state);
+    let text = Value::Object(state).to_string();
     // a read-only closure leaves the file alone (a missing file still gets written once)
-    if state != before || !path.exists() {
+    if text != before || !path.exists() {
         let tmp = dir.join(format!("{}.json.{}.tmp", sid, std::process::id()));
-        fs::write(&tmp, Value::Object(state).to_string()).map_err(|_| Fail)?;
+        fs::write(&tmp, text).map_err(|_| Fail)?;
         fs::rename(&tmp, &path).map_err(|_| Fail)?;
     }
     Ok(out)

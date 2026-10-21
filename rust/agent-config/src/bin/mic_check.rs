@@ -579,10 +579,10 @@ struct Cli {
     #[arg(long = "no-fetch")]
     no_fetch: bool,
     /// Also list this session's commits since a sha or a time.
-    #[arg(long, value_name = "SHA|TIME")]
+    #[arg(long, value_name = "SHA|TIME", allow_hyphen_values = true)]
     since: Option<String>,
-    /// Append a leftover.
-    #[arg(long, value_name = "TEXT")]
+    /// Append a leftover. Free text, so it may start with a dash.
+    #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     note: Option<String>,
     /// Print the leftovers file.
     #[arg(long)]

@@ -103,17 +103,13 @@ fn is_exe(p: &Path) -> bool {
     }
 }
 
-fn home() -> Option<PathBuf> {
-    env::var_os("HOME").or_else(|| env::var_os("USERPROFILE")).map(PathBuf::from)
-}
-
 /// The project root of `path` (a file or a folder): the nearest folder up with a marker file. The
 /// home folder is never a root.
 pub fn find_root(path: &Path) -> Option<PathBuf> {
     let start = if path.is_dir() { path } else { path.parent()? };
-    let home = home();
+    let home = crate::paths::home();
     for dir in start.ancestors() {
-        if Some(dir) == home.as_deref() || dir.parent().is_none() {
+        if dir == home || dir.parent().is_none() {
             return None;
         }
         if MARKERS.iter().any(|m| dir.join(m).is_file()) {
@@ -126,10 +122,10 @@ pub fn find_root(path: &Path) -> Option<PathBuf> {
 /// `root` and its parents, up to and including the first with `.git` (a monorepo keeps its lockfile
 /// and `node_modules` at the top). Never reaches the home folder.
 fn ancestors_to_git(root: &Path) -> Vec<PathBuf> {
-    let home = home();
+    let home = crate::paths::home();
     let mut out = Vec::new();
     for dir in root.ancestors() {
-        if Some(dir) == home.as_deref() || dir.parent().is_none() {
+        if dir == home || dir.parent().is_none() {
             break;
         }
         out.push(dir.to_path_buf());

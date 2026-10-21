@@ -336,7 +336,7 @@ pub fn missing(tools: &[Tool], host: Host, env: &dyn Env, only: &[String]) -> Ve
 
 /// The home folder (USERPROFILE on Windows).
 pub fn home() -> PathBuf {
-    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map_or_else(|| PathBuf::from("."), PathBuf::from)
+    crate::paths::home()
 }
 
 /// Where mise puts its shims.
