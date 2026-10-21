@@ -287,13 +287,6 @@ fn write_atomic(file: &Path, text: &str) -> std::io::Result<()> {
     res
 }
 
-fn cache_dir() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| home_dir().join(".cache"))
-}
-
 fn main() {
     let mut raw = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut raw);
@@ -301,7 +294,7 @@ fn main() {
 
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     if let Some(json) = pace_json(&input, now) {
-        let _ = write_atomic(&cache_dir().join("claude-pace.json"), &format!("{json}\n"));
+        let _ = write_atomic(&agent_config::paths::cache().join("claude-pace.json"), &format!("{json}\n"));
     }
 
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());

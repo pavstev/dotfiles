@@ -13,3 +13,8 @@ pub fn home() -> PathBuf {
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
 }
+
+/// The cache folder: `$XDG_CACHE_HOME`, else `~/.cache` on every OS. An empty value counts as unset.
+pub fn cache() -> PathBuf {
+    env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()).map_or_else(|| home().join(".cache"), PathBuf::from)
+}

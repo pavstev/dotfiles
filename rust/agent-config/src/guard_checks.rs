@@ -2228,12 +2228,113 @@ pub fn shadow(check: Check) -> bool {
     raw.split(|c: char| c.is_whitespace() || c == ',').any(|p| p.eq_ignore_ascii_case(check.id()))
 }
 
+fn unix_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// What a check did when it fired, as the fire log spells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FireKind {
+    Deny,
+    Ask,
+    /// a Stop reminder
+    Stop,
+    Warn,
+    Hint,
+    Note,
+    /// the router changed or annotated an Agent call
+    Route,
+    /// a shadow-mode check that would have fired
+    Shadow,
+}
+
+impl FireKind {
+    const ALL: [Self; 8] =
+        [Self::Deny, Self::Ask, Self::Stop, Self::Warn, Self::Hint, Self::Note, Self::Route, Self::Shadow];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Ask => "ask",
+            Self::Stop => "stop",
+            Self::Warn => "warn",
+            Self::Hint => "hint",
+            Self::Note => "note",
+            Self::Route => "route",
+            Self::Shadow => "shadow",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
+/// One line of the fire log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fire {
+    /// unix seconds
+    pub at: u64,
+    pub check: Check,
+    pub kind: FireKind,
+}
+
+/// The fire log: one line per check that fired.
+pub fn fire_log_path() -> PathBuf {
+    crate::paths::cache().join("dots-guard-fires.log")
+}
+
+/// Past this size the fire log moves to `<name>.old` (one old file kept), so it stays small.
+const FIRE_LOG_MAX: u64 = 1_000_000;
+
+/// Append `<unix secs> <check id> <kind>` to the fire log. Never the message or the matched text.
+/// `harness_stats guard` reads this to find checks that no longer fire.
+pub fn fire_log(check: Check, kind: FireKind) {
+    fire_log_at(&fire_log_path(), check, kind);
+}
+
+fn fire_log_at(path: &Path, check: Check, kind: FireKind) {
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    if fs::metadata(path).is_ok_and(|m| m.len() > FIRE_LOG_MAX) {
+        let _ = fs::rename(path, rolled(path));
+    }
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{} {} {}", unix_secs(), check.id(), kind.as_str());
+    }
+}
+
+/// `<path>.old`: where a full fire log goes.
+fn rolled(path: &Path) -> PathBuf {
+    let mut old = path.as_os_str().to_owned();
+    old.push(".old");
+    PathBuf::from(old)
+}
+
+/// The fires in the fire log at `path` and in its rolled `.old` file, oldest first.
+pub fn read_fire_log(path: &Path) -> Vec<Fire> {
+    let text = |p: &Path| fs::read_to_string(p).unwrap_or_default();
+    read_fires(&(text(&rolled(path)) + &text(path)))
+}
+
+/// The fires in a fire log. A bad line, or one of a check or kind this build does not know, is skipped.
+pub fn read_fires(text: &str) -> Vec<Fire> {
+    text.lines()
+        .filter_map(|l| {
+            let mut p = l.split_whitespace();
+            let at = p.next()?.parse().ok()?;
+            Some(Fire { at, check: Check::parse(p.next()?)?, kind: FireKind::parse(p.next()?)? })
+        })
+        .collect()
+}
+
 /// Append one line to `${XDG_CACHE_HOME:-~/.cache}/dots-guard-shadow.log`: time, check id, what the
 /// check would have done, and a short summary. Never the matched text: callers pass the message.
+/// The check also goes to the fire log as `shadow`.
 pub fn shadow_log(check: Check, v: &Verdict, summary: &str) {
-    let dir = env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map_or_else(|| crate::paths::home().join(".cache"), PathBuf::from);
+    fire_log(check, FireKind::Shadow);
+    let dir = crate::paths::cache();
     let _ = fs::create_dir_all(&dir);
     let id = check.id();
     let what = match v {
@@ -2242,9 +2343,8 @@ pub fn shadow_log(check: Check, v: &Verdict, summary: &str) {
         Verdict::Deny(_) => "deny",
     };
     let one_line: String = summary.chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect();
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("dots-guard-shadow.log")) {
-        let _ = writeln!(f, "{ts} {id} {what} {one_line}");
+        let _ = writeln!(f, "{} {id} {what} {one_line}", unix_secs());
     }
 }
 
@@ -2455,5 +2555,28 @@ mod tests {
         assert!(!has_substitution("gh pr create --body \"$(cat <<'EOF'\nx\nEOF\n)\""));
         assert!(has_substitution("gh pr create --body \"$(cat <<'EOF'\nx\nEOF\n)\" $(date)"));
         assert!(!has_substitution("gh pr create --body \\$(x)"));
+    }
+
+    #[test]
+    fn fire_log_appends_parses_and_rolls_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("sub/fires.log");
+        fire_log_at(&p, Check::G12, FireKind::Stop);
+        fire_log_at(&p, Check::Pace, FireKind::Note);
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains(" G12 stop\n") && text.contains(" PACE note\n"), "{text}");
+        let got = read_fires(&text);
+        let ids: Vec<_> = got.iter().map(|f| (f.check, f.kind)).collect();
+        assert_eq!(ids, [(Check::G12, FireKind::Stop), (Check::Pace, FireKind::Note)]);
+        assert!(got[0].at > 1_700_000_000);
+        let bad = "junk\n12 G1\n\nx G2 deny\n5 G99 deny\n5 G1 bark\n5 g1 deny\n";
+        assert_eq!(read_fires(bad), [Fire { at: 5, check: Check::G1, kind: FireKind::Deny }], "bad lines are skipped");
+        fs::write(&p, "x".repeat(usize::try_from(FIRE_LOG_MAX).unwrap() + 1)).unwrap();
+        fire_log_at(&p, Check::G1, FireKind::Deny);
+        assert_eq!(read_fires(&fs::read_to_string(&p).unwrap()).len(), 1, "a full log moves to .old");
+        assert!(dir.path().join("sub/fires.log.old").exists());
+        fs::write(dir.path().join("sub/fires.log.old"), "7 G2 warn\n").unwrap();
+        let both: Vec<_> = read_fire_log(&p).into_iter().map(|f| f.check).collect();
+        assert_eq!(both, [Check::G2, Check::G1], "the rolled file is read first");
     }
 }

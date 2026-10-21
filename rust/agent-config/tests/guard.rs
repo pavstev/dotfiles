@@ -4058,3 +4058,22 @@ fn h1_guard_off_turns_it_off() {
     g.set("");
     assert_warn(&g.bash_sid("h1g", "cat src/a.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
 }
+
+// --- fire log: each check that fires leaves one line for `harness_stats guard` ---
+
+#[test]
+fn fire_log_records_each_check_that_fires() {
+    let g = G::new();
+    let fires = || fs::read_to_string(g.join("cache/dots-guard-fires.log")).unwrap_or_default();
+    assert_allow(&g.bash_sid("fl1", "ls src", &[]));
+    assert_eq!(fires(), "", "a quiet call logs nothing");
+    assert_warn(&g.bash_sid("fl1", "cat src/a.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
+    let cmd = format!("gh pr create --title t --body \"{WORD}\"");
+    assert!(ask_reason(&g.pre_bash(&cmd, &[])).is_some());
+    assert_allow(&g.pre_bash(&cmd, &[("GUARD_SHADOW", "G16")]));
+    let kinds: Vec<String> =
+        fires().lines().map(|l| l.split_whitespace().skip(1).collect::<Vec<_>>().join(" ")).collect();
+    assert_eq!(kinds, ["H1 hint", "G16 ask", "G16 shadow"]);
+    assert!(!fires().contains(WORD), "the log holds no message text");
+}

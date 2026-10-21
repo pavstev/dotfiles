@@ -147,7 +147,7 @@ fn env_nonempty(k: &str) -> Option<String> {
 impl Paths {
     /// The paths and settings of this machine.
     pub fn from_env() -> Self {
-        let cache = env_nonempty("XDG_CACHE_HOME").map_or_else(|| home().join(".cache"), PathBuf::from);
+        let cache = crate::paths::cache();
         let base = env_nonempty("CLAUDE_CONFIG_DIR").map_or_else(|| home().join(".claude"), PathBuf::from);
         // the settings file is read once per process
         static SETTINGS: OnceLock<(String, i64)> = OnceLock::new();

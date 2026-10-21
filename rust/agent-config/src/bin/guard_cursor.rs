@@ -401,7 +401,8 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
 }
 
 /// Run check `id` when its gate is open (preset on, not in `GUARD_OFF`), the same gate the Claude
-/// guard uses. A check in shadow mode (`GUARD_SHADOW`) logs what it would do and allows.
+/// guard uses. A check in shadow mode (`GUARD_SHADOW`) logs what it would do and allows. A deny or
+/// an ask goes to the fire log, as in the Claude guard.
 fn gated(check: gc::Check, f: impl FnOnce() -> gc::Verdict) -> gc::Verdict {
     if !gc::check_enabled(check) {
         return gc::Verdict::Allow;
@@ -412,7 +413,15 @@ fn gated(check: gc::Check, f: impl FnOnce() -> gc::Verdict) -> gc::Verdict {
             gc::shadow_log(check, &v, m);
             gc::Verdict::Allow
         }
-        _ => v,
+        gc::Verdict::Ask(_) => {
+            gc::fire_log(check, gc::FireKind::Ask);
+            v
+        }
+        gc::Verdict::Deny(_) => {
+            gc::fire_log(check, gc::FireKind::Deny);
+            v
+        }
+        gc::Verdict::Allow => v,
     }
 }
 

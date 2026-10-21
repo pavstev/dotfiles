@@ -124,6 +124,15 @@ In auto mode a subagent hands back through the `SubagentHandback` tool, and Suba
 `last_assistant_message`. In other modes SubagentStop carries the text. So G5 hooks both (tested
 live with Claude Code 2.1.296).
 
+Each check that fires (a deny, an ask, a Stop reminder, a warning, a hint, a note, a route, or a
+shadow-mode hit) appends `<unix secs> <id> <kind>` to `${XDG_CACHE_HOME:-~/.cache}/dots-guard-fires.log`.
+The line holds no message text. Over 1 MB the log moves to `.old`. `harness_stats guard [--days 30]`
+reads both files: fires per check, the last fire, and the checks that are on but never fired in the
+window. A check that stays quiet for weeks may be a guardrail the models outgrew, so it is a
+candidate to remove. The Cursor adapter (`guard_cursor`) logs its denies, asks and shadow hits
+too. Opencode runs this guard, so its fires count, but its plugin drops warnings, hints and router
+notes: under Opencode those fires reach the log and not the model.
+
 Not built: a Bash fixer for worktree refusals. A hook deny in place of the harness refusal saves
 nothing, because a refusal streak ends on the next call anyway. Almost no refusal has the one shape
 a hook could rewrite without changing what runs (`cd <root> && <one command>`): they are heredoc

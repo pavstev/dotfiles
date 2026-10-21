@@ -17,7 +17,7 @@
 // Every check shares the `GuardFn` signature, so one that cannot fail still returns `Res`.
 #![allow(clippy::unnecessary_wraps)]
 
-use agent_config::guard_checks::{self as gc, Check, expanduser, is_macos, realpath};
+use agent_config::guard_checks::{self as gc, Check, FireKind, expanduser, is_macos, realpath};
 use agent_config::paths;
 use agent_config::proj;
 use agent_config::pycompat::{days_from_civil, truthy};
@@ -1362,6 +1362,7 @@ fn stop(data: &Value) -> Res {
         && check_enabled(Check::G6)
         && let Ok(Some(m)) = g6_stop(data)
     {
+        gc::fire_log(Check::G6, FireKind::Stop);
         return Ok(Some(m));
     }
     if !is_main_thread(data) {
@@ -1377,8 +1378,9 @@ fn stop(data: &Value) -> Res {
     if again {
         return Ok(None);
     }
-    for (_, f) in active {
+    for (check, f) in active {
         if let Ok(Some(m)) = f(data, &t) {
+            gc::fire_log(check, FireKind::Stop);
             return Ok(Some(m));
         }
     }
@@ -1417,6 +1419,8 @@ fn subagentstop(data: &Value) -> Res {
     let msg = if check_enabled(Check::G5) { check_handback(data, get(data, "last_assistant_message")) } else { None };
     if msg.is_none() {
         spawn_done(data); // the helper is really done; a denied hand-back keeps its slot
+    } else {
+        gc::fire_log(Check::G5, FireKind::Deny);
     }
     Ok(msg)
 }
@@ -1744,7 +1748,10 @@ fn posttool(data: &Value) -> Option<String> {
     let path = get(data, "transcript_path").as_str().filter(|s| !s.is_empty())?;
     let tid = get(data, "tool_use_id").as_str().filter(|s| !s.is_empty());
     match g13_streak(Path::new(path), tid) {
-        Ok(n) if n == G13_AFTER => Some(hook_output("PostToolUse", MSG_G13)),
+        Ok(n) if n == G13_AFTER => {
+            gc::fire_log(Check::G13, FireKind::Warn);
+            Some(hook_output("PostToolUse", MSG_G13))
+        }
         _ => None,
     }
 }
@@ -1996,6 +2003,7 @@ fn pretool(data: &Value, ctx: &Ctx) -> Res {
             continue;
         }
         if let Some(msg) = g(data, ctx)? {
+            gc::fire_log(check, FireKind::Deny);
             return Ok(Some(msg));
         }
     }
@@ -2025,6 +2033,7 @@ fn outbound_ask(data: &Value) -> Option<String> {
         gc::shadow_log(Check::G16, &verdict, msg);
         return None;
     }
+    gc::fire_log(Check::G16, FireKind::Ask);
     Some(
         json!({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -2063,18 +2072,33 @@ fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
     if check_enabled(Check::Router)
         && let Ok((u, note)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| route_agent(data, ctx)))
     {
+        if u.is_some() || note.is_some() {
+            gc::fire_log(Check::Router, FireKind::Route);
+        }
         updated = u;
         notes.extend(note);
     }
+    // each note is logged under the check that wrote it
+    let mut add = |check: Check, kind: FireKind, note: Option<String>| {
+        if let Some(n) = note {
+            gc::fire_log(check, kind);
+            notes.push(n);
+        }
+    };
     if check_enabled(Check::G3) {
-        let warners: [GuardFn; 2] = [w3_browser, w4_budget];
-        notes.extend(warners.iter().filter_map(|w| w(data, ctx).ok().flatten()));
+        for w in [w3_browser as GuardFn, w4_budget] {
+            add(Check::G3, FireKind::Warn, w(data, ctx).ok().flatten());
+        }
     }
     if check_enabled(Check::H1) {
-        notes.extend(h1_hint(data));
+        add(Check::H1, FireKind::Hint, h1_hint(data));
     }
     if check_enabled(Check::W5) {
-        notes.extend(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w5_repeat(data))).ok().flatten());
+        add(
+            Check::W5,
+            FireKind::Warn,
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w5_repeat(data))).ok().flatten(),
+        );
     }
     if notes.is_empty() && updated.is_none() {
         return None;
@@ -2138,6 +2162,10 @@ fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
             "Context is {}K. Keep PROGRESS.md (or the run's ledger) current; auto-compact carries the run. Hand off only when the user asks.",
             ctx.size() / 1000
         ));
+        gc::fire_log(Check::G3, FireKind::Note);
+    }
+    if note.is_some() {
+        gc::fire_log(Check::Pace, FireKind::Note);
     }
     notes.extend(note);
     if notes.is_empty() { None } else { Some(hook_output("UserPromptSubmit", &notes.join("\n"))) }

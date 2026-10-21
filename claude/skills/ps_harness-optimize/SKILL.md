@@ -37,9 +37,23 @@ small changes with evidence. The numbers come from the script, never from eyebal
    rules (path-scoped / all), agents, skills and hooks. Then read the global `~/.claude/CLAUDE.md`,
    `~/.claude/settings.json` and the files behind each proposal.
 7. **Skills.** `harness_stats skills` lists calls per skill and installed skills never called.
-8. **Write the review** to `~/.claude/research/<YYYY-MM-DD>-harness-review.md` in the shape below, and
+8. **Guard checks.** `harness_stats guard --days 30` reads the guard's fire log: fires per check by
+   kind, the last fire, and the checks that are on but never fired in the window. A guardrail the
+   models outgrew stops firing, so a quiet check is a cut candidate, never a cut by itself. Propose a
+   cut only when all hold:
+   - the log covers all `--days` days (the report warns when it starts later; then cut nothing and
+     say "too early, re-check on <date>");
+   - the check is on and has 0 fires in the window;
+   - its doc comment in `rust/agent-config/src/bin/guard.rs` or `src/guard_checks.rs` does not
+     guard a rare but costly mistake. Read the comment of each candidate: the list is not fixed.
+     Today G14 to G17 (a broken `sed -i`, secrets, outbound private words, AI attribution) are such
+     checks and stay even at 0 fires;
+   - the error cluster it was built for is gone from `errors --daily` (needs steps 1 and 4).
+   A check that fires often is still needed; check that it does not fire on correct calls.
+   A guard-only review runs steps 1, 4 (`errors --daily`) and 8, and may skip the rest.
+9. **Write the review** to `~/.claude/research/<YYYY-MM-DD>-harness-review.md` in the shape below, and
    keep the previous reviews: the next run compares against them.
-9. **Apply nothing yet.** Show the proposals. Apply only the ones the user picks, one commit each,
+10. **Apply nothing yet.** Show the proposals. Apply only the ones the user picks, one commit each,
    in the repo that owns the file. Skill edits follow the skill TDD rule.
 
 ## Where a fix belongs
@@ -77,6 +91,7 @@ Cuts: <ISO + commit subject per cut>
 | Keyword frustration counts | "do not stop until" is an instruction. Use the script's corrections count and read the hits |
 | One big rewrite | One change per proposal, each tied to a metric |
 | Judging a 1-day period | The report marks periods under 20 sessions early; re-run next week |
+| Cutting a guard check because it never fired | Quiet is not useless: apply all four tests of step 8 |
 | Per-session rates after hand-offs | Hand-offs make sessions shorter; compare per-100-prompt rates too |
 
 Transcripts older than `cleanupPeriodDays` are deleted. If the setting is under 180, propose raising it.

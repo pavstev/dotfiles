@@ -1,6 +1,6 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
 
-use agent_config::guard_checks::expanduser;
+use agent_config::guard_checks::{Fire, Gate, REGISTRY, expanduser, fire_log_path, read_fire_log};
 use agent_config::paths;
 use agent_config::pycompat::{fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
 use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
@@ -27,11 +27,13 @@ const DOC: &str = "harness_stats: measure Claude Code sessions from local transc
   harness_stats skills  [--in FILE]
   harness_stats inventory [--in FILE] [--top 8]
   harness_stats agents  [--in FILE] [--cut ISO ...]
+  harness_stats guard   [--days 30] [--log FILE]
 
 collect reads ~/.claude/projects/*/*.jsonl (main sessions), their subagents/*.jsonl and
 .meta.json, and the desktop app's session records (title, archived). It writes one JSON
 row per main session. Everything else reads that file. Default file:
-$TMPDIR/harness_stats.json.";
+$TMPDIR/harness_stats.json. guard reads the guard's fire log instead
+(${XDG_CACHE_HOME:-~/.cache}/dots-guard-fires.log).";
 
 const INTERRUPT: &str = "[Request interrupted by user";
 const POLL_TOOLS: [&str; 3] = ["ScheduleWakeup", "CronCreate", "Monitor"];
@@ -1057,6 +1059,77 @@ fn cmd_skills(a: &SimpleArgs) {
     }
 }
 
+fn day(ts: u64) -> String {
+    i64::try_from(ts)
+        .ok()
+        .and_then(|s| jiff::Timestamp::from_second(s).ok())
+        .map_or_else(|| "?".into(), |t| t.strftime("%F").to_string())
+}
+
+/// The fire table: per check its preset, whether it is on, its fires in the last `days` days by
+/// kind, and the last fire; then the checks that are on and never fired in that window. A check
+/// that keeps not firing is a shim the models outgrew: a candidate to remove.
+fn guard_report(fires: &[Fire], now: u64, days: u64, gate: &Gate) -> String {
+    let from = now.saturating_sub(days * 86_400);
+    let mut s = String::new();
+    let first = fires.iter().map(|f| f.at).min();
+    match first {
+        None => {
+            let _ = writeln!(s, "The fire log is empty: no check fired yet, or the guard is older than the log.");
+        }
+        Some(t) if t > from => {
+            let _ = writeln!(
+                s,
+                "The log starts {}, less than {days} days ago: a quiet check may not have had its chance yet.",
+                day(t)
+            );
+        }
+        Some(_) => {}
+    }
+    let _ = writeln!(s, "| check | preset | on | fires ({days} d) | kinds | last fire |");
+    let _ = writeln!(s, "|---|---|---|---|---|---|");
+    let mut quiet: Vec<&str> = vec![];
+    for (check, preset) in REGISTRY {
+        let id = check.id();
+        let mine: Vec<_> = fires.iter().filter(|f| f.check == *check).collect();
+        let recent: Vec<_> = mine.iter().filter(|f| f.at >= from).collect();
+        let mut kinds: Counter<&str> = Counter::new();
+        for f in &recent {
+            kinds.add(f.kind.as_str(), 1);
+        }
+        let kinds = kinds.most_common(None).into_iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ");
+        let last = mine.iter().map(|f| f.at).max().map_or_else(|| "never".into(), day);
+        let on = gate.enabled(*check);
+        let _ = writeln!(
+            s,
+            "| {id} | {preset} | {} | {} | {} | {last} |",
+            if on { "yes" } else { "no" },
+            recent.len(),
+            if kinds.is_empty() { "-" } else { &kinds }
+        );
+        if on && recent.is_empty() {
+            quiet.push(id);
+        }
+    }
+    if first.is_none() {
+        return s; // no log yet: every check would look quiet
+    }
+    let _ = writeln!(
+        s,
+        "\nOn and never fired in {days} days: {}",
+        if quiet.is_empty() { "none".into() } else { quiet.join(", ") }
+    );
+    let _ =
+        writeln!(s, "Read each one's doc comment in guard.rs before you cut it: some guard a rare, costly mistake.");
+    s
+}
+
+fn cmd_guard(a: &GuardArgs) {
+    let path = a.log.as_deref().map_or_else(fire_log_path, |p| PathBuf::from(expanduser(p)));
+    let now = u64::try_from(jiff::Timestamp::now().as_second()).unwrap_or(0);
+    out!("{}", guard_report(&read_fire_log(&path), now, a.days, &Gate::load(&paths::home())).trim_end());
+}
+
 fn count_lines(p: &Path) -> usize {
     let t = read_text_ignore(p).unwrap_or_default().replace("\r\n", "\n").replace('\r', "\n");
     let n = t.matches('\n').count();
@@ -1151,6 +1224,7 @@ enum Cmd {
     Skills(SimpleArgs),
     Inventory(InvArgs),
     Agents(AgentsArgs),
+    Guard(GuardArgs),
 }
 
 #[derive(Args, Debug)]
@@ -1199,6 +1273,16 @@ struct AgentsArgs {
 }
 
 #[derive(Args, Debug)]
+struct GuardArgs {
+    /// the window: fires in the last N days
+    #[arg(long, default_value_t = 30)]
+    days: u64,
+    /// the fire log (default: the guard's own)
+    #[arg(long)]
+    log: Option<String>,
+}
+
+#[derive(Args, Debug)]
 struct ErrorsArgs {
     #[arg(long = "in", default_value_t = default_out())]
     inp: String,
@@ -1243,12 +1327,14 @@ fn main() {
         Cmd::Skills(a) => cmd_skills(a),
         Cmd::Inventory(a) => cmd_inventory(a),
         Cmd::Agents(a) => cmd_agents(a),
+        Cmd::Guard(a) => cmd_guard(a),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_config::guard_checks::{Check, read_fires};
 
     #[test]
     fn iso_roundtrip_keeps_offset() {
@@ -1281,5 +1367,29 @@ mod tests {
         assert_eq!(med(&[Num::I(1), Num::I(3), Num::I(2)]), Num::I(2));
         assert_eq!(med(&[Num::I(4), Num::I(6)]).show(), "5.0");
         assert_eq!(med(&[]).show(), "0");
+    }
+
+    #[test]
+    fn guard_report_counts_fires_and_lists_quiet_checks() {
+        let now = 1_800_000_000;
+        let old = now - 40 * 86_400;
+        let log = format!("{old} G2 deny\n{} G12 stop\n{} G12 stop\n{} H1 hint\n", now - 60, now - 50, now - 40);
+        let gate = Gate {
+            off: vec![Check::G11],
+            presets: agent_config::presets::ALL.iter().map(ToString::to_string).collect(),
+        };
+        let r = guard_report(&read_fires(&log), now, 30, &gate);
+        assert!(r.contains("| G12 | workflow | yes | 2 | stop 2 |"), "{r}");
+        assert!(r.contains("| G2 | workflow | yes | 0 | - |"), "an old fire is outside the window: {r}");
+        assert!(r.contains("| G11 | clock | no | 0 | - | never |"), "{r}");
+        let quiet = r.lines().find(|l| l.starts_with("On and never fired")).unwrap();
+        assert!(quiet.contains("G2") && !quiet.contains("G12") && !quiet.contains("H1"), "{quiet}");
+        assert!(!quiet.contains("G11"), "a check that is off is not listed: {quiet}");
+        assert!(!r.contains("The log starts"), "the log is older than the window: {r}");
+        let empty = guard_report(&[], now, 30, &gate);
+        assert!(empty.starts_with("The fire log is empty") && !empty.contains("never fired"), "{empty}");
+        assert!(
+            guard_report(&read_fires(&format!("{} G1 deny\n", now - 10)), now, 30, &gate).starts_with("The log starts")
+        );
     }
 }
