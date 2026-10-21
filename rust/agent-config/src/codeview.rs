@@ -17,6 +17,7 @@
 //! or brace that is not balanced, shell arithmetic like `$((a<<b))`, Python f-strings that nest
 //! the same quote (3.12), Markdown setext headings.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -118,7 +119,7 @@ pub fn render(symbols: &[Symbol]) -> String {
     let mut out = String::new();
     for s in symbols {
         out.push_str(&"  ".repeat(s.depth));
-        out.push_str(&format!("{} {} {}-{}\n", s.kind, s.name, s.start, s.end));
+        let _ = writeln!(out, "{} {} {}-{}", s.kind, s.name, s.start, s.end);
     }
     out
 }
@@ -843,14 +844,15 @@ fn detect_rust(doc: &Doc, ln: usize, col: usize) -> Option<Cand> {
 
 /// The name of an `impl`: the text after its own generics, up to `{` or `where`.
 fn rust_impl(doc: &Doc, ln: usize, k: usize) -> Option<Cand> {
-    let name = impl_text(doc, ln, k)
-        .filter(|t| !t.is_empty())
-        .or_else(|| (ln + 1 < doc.len()).then(|| impl_text(doc, ln + 1, 0)).flatten())
-        .filter(|t| !t.is_empty())?;
+    let first = impl_text(doc, ln, k);
+    let name = if first.is_empty() && ln + 1 < doc.len() { impl_text(doc, ln + 1, 0) } else { first };
+    if name.is_empty() {
+        return None;
+    }
     Some(Cand { kind: "impl", name, arrow: false })
 }
 
-fn impl_text(doc: &Doc, ln: usize, from: usize) -> Option<String> {
+fn impl_text(doc: &Doc, ln: usize, from: usize) -> String {
     let o = doc.o(ln);
     let m = doc.m(ln);
     let mut p = skip_ws(o, from);
@@ -872,7 +874,7 @@ fn impl_text(doc: &Doc, ln: usize, from: usize) -> Option<String> {
     let stop = m[p..].iter().position(|&c| c == '{').map_or(o.len(), |x| p + x);
     let text: String = o[p..stop].iter().collect();
     let words: Vec<&str> = text.split_whitespace().take_while(|w| *w != "where").collect();
-    Some(words.join(" "))
+    words.join(" ")
 }
 
 fn detect_go(s: &[char], col: usize) -> Option<Cand> {

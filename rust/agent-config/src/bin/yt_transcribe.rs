@@ -5,10 +5,11 @@
 //! Needs on PATH: `yt-dlp` always; `ffmpeg` and `whisper-cli` for the Whisper fallback;
 //! `curl` once, to fetch the Whisper model into the user cache folder.
 
-use agent_config::pycompat::{py_is_space, py_strip};
+use agent_config::pycompat::{py_is_space, py_repr_str as py_repr, py_strip};
 use clap::{ArgAction, ArgGroup, Parser};
 use regex::Regex;
 use serde_json::{Map, Value};
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -96,43 +97,6 @@ fn unquote(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Python `repr()` of a str, as far as error messages need it.
-fn py_repr(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(q);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == q => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => {
-                let n = c as u32;
-                let hidden = c != ' '
-                    && (c.is_control()
-                        || py_is_space(c)
-                        || matches!(n, 0xad | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0xfeff));
-                if !hidden {
-                    out.push(c);
-                } else if n <= 0xff {
-                    out.push_str(&format!("\\x{n:02x}"));
-                } else if n <= 0xffff {
-                    out.push_str(&format!("\\u{n:04x}"));
-                } else {
-                    out.push_str(&format!("\\U{n:08x}"));
-                }
-            }
-        }
-    }
-    out.push(q);
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +389,7 @@ fn render(t: &Transcript, fmt: &str) -> Result<String, String> {
         "markdown" => {
             let mut head = format!("# Transcript: {}\n\nSource: {}", t.video_id, t.source);
             if let Some(l) = t.language.as_deref().filter(|l| !l.is_empty()) {
-                head.push_str(&format!(" ({l})"));
+                let _ = write!(head, " ({l})");
             }
             let lines: Vec<String> =
                 t.segments.iter().map(|s| format!("- **[{}]** {}", stamp(s.start), s.text)).collect();
@@ -634,7 +598,8 @@ fn download_audio(ytdlp: &Path, video_id: &str, dir: &Path) -> Result<PathBuf, S
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            n.starts_with(&format!("{video_id}.")) && !n.ends_with(".part") && !n.ends_with(".ytdl")
+            let partial = matches!(p.extension().and_then(|x| x.to_str()), Some("part" | "ytdl"));
+            n.starts_with(&format!("{video_id}.")) && !partial
         })
         .collect();
     files.sort();
@@ -781,7 +746,7 @@ fn fail(msg: &str) -> i32 {
     1
 }
 
-fn run(cli: Cli) -> i32 {
+fn run(cli: &Cli) -> i32 {
     if cli.print_id {
         return match extract_video_id(&cli.video) {
             Ok(id) => {
@@ -885,7 +850,7 @@ fn main() {
             }
         }
     }
-    std::process::exit(run(Cli::parse()));
+    std::process::exit(run(&Cli::parse()));
 }
 
 #[cfg(test)]

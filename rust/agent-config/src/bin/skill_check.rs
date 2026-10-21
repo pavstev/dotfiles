@@ -11,11 +11,9 @@
 //! skill_check -q           failures only, nothing when all pass
 //! ```
 
-#[macro_use]
-#[path = "../quiet_out.rs"]
-mod quiet_out;
-
 use agent_config::pycompat::py_repr_str;
+use agent_config::quiet_println as println;
+use clap::Parser;
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -102,7 +100,7 @@ fn parse_frontmatter(text: &str) -> (Fields, String, Vec<String>) {
         };
         let (key, value) = (key.trim().to_string(), value.trim().to_string());
         match fields.iter_mut().find(|(k, _)| *k == key) {
-            Some(slot) => slot.1 = value.clone(),
+            Some(slot) => slot.1.clone_from(&value),
             None => fields.push((key.clone(), value.clone())),
         }
         let Some(q) = value.chars().next() else { continue };
@@ -288,11 +286,11 @@ fn check_skill(path: &Path) -> Report {
         let full = path.join(&target);
         if !full.exists() {
             r.fails.push(format!("link target missing: {target}"));
-        } else if full.to_string_lossy().ends_with(".md") {
+        } else if full.extension().is_some_and(|x| x == "md") {
             let sub = read_text(&full).unwrap_or_default();
             for n in MD_LINK.captures_iter(&sub) {
                 let t = n.get(1).unwrap().as_str();
-                if !NOT_LOCAL.iter().any(|p| t.starts_with(p)) && t.ends_with(".md") {
+                if !NOT_LOCAL.iter().any(|p| t.starts_with(p)) && Path::new(t).extension().is_some_and(|x| x == "md") {
                     r.warns.push(format!("{target} links on to {t} — keep references one level deep"));
                     break;
                 }
@@ -349,6 +347,19 @@ fn run(paths: &[PathBuf], quiet: bool) -> i32 {
 
 const USAGE: &str = "usage: skill_check [-q] [skill name or folder | skills dir]...";
 
+#[derive(Parser)]
+#[command(name = "skill_check", disable_help_flag = true, disable_version_flag = true)]
+struct Cli {
+    /// Print the usage line.
+    #[arg(short = 'h', long = "help")]
+    help: bool,
+    /// Failures only.
+    #[arg(short = 'q')]
+    quiet: bool,
+    /// Skill names, skill folders or folders of skills.
+    targets: Vec<String>,
+}
+
 /// What one command-line target means: a skill folder, a folder of skills, or a skill name under
 /// the repo's claude/skills.
 fn resolve(arg: &str, skills_root: &Path) -> Vec<PathBuf> {
@@ -370,17 +381,11 @@ fn resolve(arg: &str, skills_root: &Path) -> Vec<PathBuf> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    let Cli { help, quiet, targets } = Cli::parse();
+    if help {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if let Some(bad) = args.iter().find(|a| a.starts_with('-') && *a != "-q") {
-        eprintln!("skill_check: unknown option {bad} (see --help)");
-        return ExitCode::from(2);
-    }
-    let quiet = args.iter().any(|a| a == "-q");
-    let targets: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     let root = agent_config::claude_dir().join("skills");
     let paths: Vec<PathBuf> = if targets.is_empty() {
         let found = list_skills(&root);

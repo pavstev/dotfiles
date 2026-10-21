@@ -59,7 +59,7 @@ pub fn desktop_meta(desktop: &Path) -> HashMap<String, DesktopMeta> {
         for d2 in list_dir(&d1) {
             for f in list_dir(&d2) {
                 let n = fname(&f);
-                if !(n.starts_with("local_") && n.ends_with(".json")) {
+                if !(n.starts_with("local_") && f.extension().is_some_and(|x| x == "json")) {
                     continue;
                 }
                 let Ok(txt) = fs::read(&f) else { continue };

@@ -12,6 +12,7 @@
 use agent_config::codeview::{self, Refusal, Symbol};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -172,7 +173,7 @@ fn read_cmd(file: &str, query: &str, if_changed: Option<&str>) -> Reply {
         many => {
             let mut out = format!("ambiguous: {query} matches {} symbols in {file}; use a longer path\n", many.len());
             for &i in many {
-                out.push_str(&format!("  {file}:{}-{}  {}\n", symbols[i].start, symbols[i].end, paths[i]));
+                let _ = writeln!(out, "  {file}:{}-{}  {}", symbols[i].start, symbols[i].end, paths[i]);
             }
             Reply { text: out, code: 1 }
         }
@@ -196,7 +197,7 @@ fn not_found(file: &str, query: &str, symbols: &[Symbol], paths: &[String]) -> R
             continue;
         }
         seen.push(&paths[i]);
-        out.push_str(&format!("  {}  ({}-{})\n", paths[i], symbols[i].start, symbols[i].end));
+        let _ = writeln!(out, "  {}  ({}-{})", paths[i], symbols[i].start, symbols[i].end);
     }
     Reply { text: out, code: 1 }
 }
@@ -205,10 +206,10 @@ fn body(file: &str, text: &str, sym: &Symbol, path: &str, scan: &str, hash: &str
     let mut out = format!("{file}:{}-{}  {path}  scan={scan}  hash={hash}\n", sym.start, sym.end);
     let total = sym.end - sym.start + 1;
     for (i, line) in text.lines().enumerate().skip(sym.start - 1).take(total.min(CAP)) {
-        out.push_str(&format!("{}\t{line}\n", i + 1));
+        let _ = writeln!(out, "{}\t{line}", i + 1);
     }
     if total > CAP {
-        out.push_str(&format!("… cut at {CAP} of {total} lines; use Read with offset\n"));
+        let _ = writeln!(out, "… cut at {CAP} of {total} lines; use Read with offset");
     }
     out
 }

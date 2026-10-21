@@ -7,11 +7,8 @@
 //! Opencode and Cursor are not supported yet: `--source opencode|cursor` prints one line.
 
 // println! that stops quietly on a closed pipe (`sessions find x | head`).
-#[macro_use]
-#[path = "../quiet_out.rs"]
-mod quiet_out;
-
 use agent_config::pycompat::{civil_from_days, days_from_civil, days_in_month};
+use agent_config::quiet_println as println;
 use agent_config::redact::redact;
 use agent_config::stores::{Doc, Skip, read_claude};
 use clap::{Parser, Subcommand};

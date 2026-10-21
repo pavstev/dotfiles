@@ -5,6 +5,7 @@ mod common;
 use common::{iso_utc, run_bin, temp_home};
 use regex::Regex;
 use serde_json::json;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -299,7 +300,7 @@ fn generate_big(path: &Path, megabytes: usize) {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            text.push_str(&format!("w{:x} ", x % 60_000));
+            let _ = write!(text, "w{:x} ", x % 60_000);
         }
         let line = if n % 2 == 0 { user_line(T_OCT + n, &text) } else { assistant_line(T_OCT + n, &text) };
         w.write_all(line.as_bytes()).unwrap();
