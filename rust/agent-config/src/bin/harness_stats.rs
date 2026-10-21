@@ -2,17 +2,19 @@
 
 use agent_config::guard_checks::{Fire, Gate, REGISTRY, expanduser, fire_log_path, read_fire_log};
 use agent_config::paths;
-use agent_config::pycompat::{fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
-use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
+use agent_config::pycompat::{fname, list_dir, parse_ts_micros, py_float, truthy};
+use agent_config::scan::{Counter, py_dumps};
+use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name};
+use agent_config::transcript::{Block, Body, Line};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
 use serde_json::{Map, Number, Value};
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::hash::Hash;
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -54,8 +56,8 @@ static NULL: Value = Value::Null;
 static EMPTY: LazyLock<Value> = LazyLock::new(|| Value::Object(Map::new()));
 
 macro_rules! out {
-    () => { let _ = writeln!(std::io::stdout()); };
-    ($($a:tt)*) => { let _ = writeln!(std::io::stdout(), $($a)*); };
+    () => { let _ = writeln!(io::stdout()); };
+    ($($a:tt)*) => { let _ = writeln!(io::stdout(), $($a)*); };
 }
 
 // ---------------------------------------------------------------------------
@@ -111,50 +113,6 @@ fn pyround0(x: f64) -> i64 {
     x.round_ties_even() as i64
 }
 
-/// json.dumps(v) with Python defaults (ensure_ascii, ", " and ": ").
-fn py_dumps(v: &Value) -> String {
-    let mut s = String::new();
-    dump(v, &mut s);
-    s
-}
-
-fn dump(v: &Value, out: &mut String) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            if n.is_i64() || n.is_u64() {
-                out.push_str(&n.to_string());
-            } else {
-                out.push_str(&py_float(n.as_f64().unwrap_or(0.0)));
-            }
-        }
-        Value::String(s) => json_str(out, s),
-        Value::Array(a) => {
-            out.push('[');
-            for (i, x) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                dump(x, out);
-            }
-            out.push(']');
-        }
-        Value::Object(o) => {
-            out.push('{');
-            for (i, (k, x)) in o.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                json_str(out, k);
-                out.push_str(": ");
-                dump(x, out);
-            }
-            out.push('}');
-        }
-    }
-}
-
 /// bytes -> str like open(errors="ignore"): invalid sequences are dropped.
 fn decode_ignore(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
@@ -173,6 +131,11 @@ fn decode_ignore(bytes: &[u8]) -> String {
             }
         }
     }
+}
+
+/// One line of bytes as text: valid UTF-8 is borrowed, invalid sequences are dropped.
+fn decode_line(bytes: &[u8]) -> Cow<'_, str> {
+    std::str::from_utf8(bytes).map_or_else(|_| Cow::Owned(decode_ignore(bytes)), Cow::Borrowed)
 }
 
 fn read_text_ignore(p: &Path) -> Option<String> {
@@ -214,84 +177,35 @@ fn parse_ts(s: &str) -> Option<Dt> {
 }
 
 // ---------------------------------------------------------------------------
-// Insertion-ordered counter (collections.Counter)
+// Counters as JSON
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
-struct Counter<K: Clone + Eq + Hash> {
-    keys: Vec<K>,
-    idx: HashMap<K, usize>,
-    vals: Vec<i64>,
+/// The counter as a JSON object; `only` picks the items and their order, else all in insertion order.
+fn counter_to_json(c: &Counter<String>, only: Option<&[(String, i64)]>) -> Value {
+    let mut m = Map::new();
+    match only {
+        Some(items) => {
+            for (k, v) in items {
+                m.insert(k.clone(), Value::from(*v));
+            }
+        }
+        None => {
+            for (k, v) in c.iter() {
+                m.insert(k.clone(), Value::from(v));
+            }
+        }
+    }
+    Value::Object(m)
 }
 
-impl<K: Clone + Eq + Hash> Counter<K> {
-    fn new() -> Self {
-        Self { keys: vec![], idx: HashMap::new(), vals: vec![] }
-    }
-    fn add(&mut self, k: K, n: i64) {
-        if let Some(&i) = self.idx.get(&k) {
-            self.vals[i] += n;
-        } else {
-            self.idx.insert(k.clone(), self.keys.len());
-            self.keys.push(k);
-            self.vals.push(n);
+fn counter_from_json(v: &Value) -> Counter<String> {
+    let mut c = Counter::new();
+    if let Some(o) = v.as_object() {
+        for (k, x) in o {
+            c.add(k.clone(), as_i(x));
         }
     }
-    fn get(&self, k: &K) -> i64 {
-        self.idx.get(k).map_or(0, |&i| self.vals[i])
-    }
-    fn items(&self) -> Vec<(K, i64)> {
-        self.keys.iter().cloned().zip(self.vals.iter().copied()).collect()
-    }
-    fn update(&mut self, other: &Self) {
-        for (k, v) in other.items() {
-            self.add(k, v);
-        }
-    }
-    /// Descending by count, ties in insertion order; `None` = all.
-    fn most_common(&self, n: Option<i64>) -> Vec<(K, i64)> {
-        let mut it = self.items();
-        it.sort_by_key(|(_, v)| Reverse(*v));
-        match n {
-            None => it,
-            Some(n) if n <= 0 => vec![],
-            Some(n) => {
-                it.truncate(n as usize);
-                it
-            }
-        }
-    }
-    fn total(&self) -> i64 {
-        self.vals.iter().sum()
-    }
-}
-
-impl Counter<String> {
-    fn to_json(&self, only: Option<&[(String, i64)]>) -> Value {
-        let mut m = Map::new();
-        match only {
-            Some(items) => {
-                for (k, v) in items {
-                    m.insert(k.clone(), Value::from(*v));
-                }
-            }
-            None => {
-                for (k, v) in self.keys.iter().zip(&self.vals) {
-                    m.insert(k.clone(), Value::from(*v));
-                }
-            }
-        }
-        Value::Object(m)
-    }
-    fn from_json(v: &Value) -> Self {
-        let mut c = Self::new();
-        if let Some(o) = v.as_object() {
-            for (k, x) in o {
-                c.add(k.clone(), as_i(x));
-            }
-        }
-        c
-    }
+    c
 }
 
 fn fnum(x: f64) -> Value {
@@ -315,7 +229,11 @@ fn norm_error(name: &str, content: &Value) -> String {
         Value::String(s) => s.clone(),
         other => py_dumps(other),
     };
-    let t = PATHS.replace_all(&t, "<path>").into_owned();
+    norm_text(name, &t)
+}
+
+fn norm_text(name: &str, t: &str) -> String {
+    let t = PATHS.replace_all(t, "<path>");
     let t = DIGITS.replace_all(&t, "N").replace('\n', " ");
     format!("{}: {}", name, pychars(&t, 110))
 }
@@ -346,99 +264,89 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
     let (mut first_ctx, mut peak): (Option<i64>, i64) = (None, 0);
     let mut names: HashMap<String, String> = HashMap::new();
     let mut version = Value::Null;
-    let text = read_text_ignore(path).unwrap_or_default();
-    for line in text.split('\n') {
-        let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
-        if !o.is_object() {
-            continue;
+    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let mut reader = BufReader::new(src);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if !reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            break;
         }
-        if truthy(get(&o, "timestamp"))
-            && let Some(s) = get(&o, "timestamp").as_str()
-            && let Some(d) = parse_ts(s)
-        {
+        let text = decode_line(&buf);
+        let Some(o) = Line::parse_str(text.strip_suffix('\n').unwrap_or(&text)) else { continue };
+        if let Some(d) = o.timestamp.as_str().and_then(parse_ts) {
             times.push(d);
         }
-        let kind = get(&o, "type").as_str().unwrap_or("");
-        let msg = or_empty(get(&o, "message"));
+        let msg = o.msg();
         if !truthy(&version) {
-            version = get(&o, "version").clone();
+            version = o.version.clone();
         }
-        match kind {
-            "system" => match get(&o, "subtype").as_str() {
+        match o.kind.or_empty() {
+            "system" => match o.subtype.as_str() {
                 Some("compact_boundary") => r.add("compactions".into(), 1),
                 Some("api_error") => r.add("api_errors".into(), 1),
                 _ => {}
             },
             "assistant" => {
-                if let Some(arr) = get(msg, "content").as_array() {
-                    for c in arr {
-                        if !c.is_object() || get(c, "type").as_str() != Some("tool_use") {
-                            continue;
-                        }
-                        let n = get(c, "name").as_str().unwrap_or("").to_string();
-                        let inp = or_empty(get(c, "input"));
-                        names.insert(get(c, "id").to_string(), n.clone());
-                        tools.add(n.clone(), 1);
-                        if n == "Skill" {
-                            let sk = match get(inp, "skill") {
-                                Value::String(s) => s.clone(),
-                                Value::Null => "?".to_string(),
-                                other => other.to_string(),
+                for c in msg.content.blocks().iter().filter(|c| c.kind.as_str() == Some("tool_use")) {
+                    let n = c.name.or_empty().to_string();
+                    let inp = or_empty(&c.input);
+                    names.insert(c.id.or_empty().to_string(), n.clone());
+                    tools.add(n.clone(), 1);
+                    if n == "Skill" {
+                        let sk = match get(inp, "skill") {
+                            Value::String(s) => s.clone(),
+                            Value::Null => "?".to_string(),
+                            other => other.to_string(),
+                        };
+                        skills.add(sk, 1);
+                    } else if n == "Agent" || n == "Task" {
+                        let st = get(inp, "subagent_type");
+                        let ty = if truthy(st) { st.clone() } else { Value::from("general-purpose") };
+                        let plen = match get(inp, "prompt") {
+                            Value::String(s) => s.chars().count(),
+                            Value::Array(a) => a.len(),
+                            _ => 0,
+                        };
+                        let mut m = Map::new();
+                        m.insert("type".into(), ty);
+                        m.insert("model".into(), get(inp, "model").clone());
+                        m.insert("effort".into(), get(inp, "effort").clone());
+                        m.insert("bg".into(), get(inp, "run_in_background").clone());
+                        m.insert("plen".into(), Value::from(plen));
+                        agents.push(Value::Object(m));
+                    } else if n == "Bash" {
+                        let cmd_s = get(inp, "command").as_str().unwrap_or("").trim().to_string();
+                        let stripped = CD_PREFIX.replace(&cmd_s, "").into_owned();
+                        let cmd: Vec<&str> = stripped.split_whitespace().collect();
+                        const TWO: [&str; 13] = [
+                            "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node",
+                            "make", "cargo",
+                        ];
+                        if !cmd.is_empty() {
+                            let k = if TWO.contains(&cmd[0]) {
+                                cmd.iter().take(2).copied().collect::<Vec<_>>().join(" ")
+                            } else {
+                                pychars(cmd[0], 24)
                             };
-                            skills.add(sk, 1);
-                        } else if n == "Agent" || n == "Task" {
-                            let st = get(inp, "subagent_type");
-                            let ty = if truthy(st) { st.clone() } else { Value::from("general-purpose") };
-                            let plen = match get(inp, "prompt") {
-                                Value::String(s) => s.chars().count(),
-                                Value::Array(a) => a.len(),
-                                _ => 0,
-                            };
-                            let mut m = Map::new();
-                            m.insert("type".into(), ty);
-                            m.insert("model".into(), get(inp, "model").clone());
-                            m.insert("effort".into(), get(inp, "effort").clone());
-                            m.insert("bg".into(), get(inp, "run_in_background").clone());
-                            m.insert("plen".into(), Value::from(plen));
-                            agents.push(Value::Object(m));
-                        } else if n == "Bash" {
-                            let cmd_s = get(inp, "command").as_str().unwrap_or("").trim().to_string();
-                            let stripped = CD_PREFIX.replace(&cmd_s, "").into_owned();
-                            let cmd: Vec<&str> = stripped.split_whitespace().collect();
-                            const TWO: [&str; 13] = [
-                                "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node",
-                                "make", "cargo",
-                            ];
-                            if !cmd.is_empty() {
-                                let k = if TWO.contains(&cmd[0]) {
-                                    cmd.iter().take(2).copied().collect::<Vec<_>>().join(" ")
-                                } else {
-                                    pychars(cmd[0], 24)
-                                };
-                                bash.add(k, 1);
-                            }
+                            bash.add(k, 1);
                         }
                     }
                 }
-                let mid = get(msg, "id").to_string();
-                let u = or_empty(get(msg, "usage"));
-                let model = get(msg, "model");
-                if seen.contains(&mid) || !truthy(u) || model.as_str() == Some("<synthetic>") {
+                let mid = msg.id.or_empty();
+                let Some(u) = msg.usage.0.as_ref().filter(|u| !u.is_empty()) else { continue };
+                if seen.contains(mid) || msg.model.as_str() == Some("<synthetic>") {
                     continue;
                 }
-                seen.insert(mid);
-                let inp_t = as_i(get(u, "input_tokens"));
-                let cr = as_i(get(u, "cache_read_input_tokens"));
-                let cc = as_i(get(u, "cache_creation_input_tokens"));
+                seen.insert(mid.to_string());
+                let inp_t = u.input_tokens.get() as i64;
+                let cr = u.cache_read_input_tokens.get() as i64;
+                let cc = u.cache_creation_input_tokens.get() as i64;
                 let ctx = inp_t + cr + cc;
-                let mk = match model {
-                    Value::Null => None,
-                    Value::String(s) => Some(s.clone()),
-                    other => Some(other.to_string()),
-                };
+                let mk = msg.model.as_str().map(str::to_string);
                 models.add(mk, 1);
                 r.add("calls".into(), 1);
-                r.add("out".into(), as_i(get(u, "output_tokens")));
+                r.add("out".into(), u.output_tokens.get() as i64);
                 r.add("fresh_in".into(), inp_t + cc);
                 r.add("cache_read".into(), cr);
                 if first_ctx.is_none() && ctx != 0 {
@@ -447,33 +355,28 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                 peak = peak.max(ctx);
             }
             "user" => {
-                let content = get(msg, "content");
-                if let Some(arr) = content.as_array()
-                    && arr.iter().any(|x| x.is_object() && get(x, "type").as_str() == Some("tool_result"))
-                {
-                    for x in arr {
-                        if x.is_object() && get(x, "type").as_str() == Some("tool_result") && truthy(get(x, "is_error"))
-                        {
-                            let nm =
-                                names.get(&get(x, "tool_use_id").to_string()).cloned().unwrap_or_else(|| "?".into());
-                            let e = norm_error(&nm, get(x, "content"));
-                            if e.contains("hook error") {
-                                r.add("hook_denials".into(), 1);
-                            } else {
-                                r.add("tool_errors".into(), 1);
-                            }
-                            errors.add(e, 1);
+                let blocks = msg.content.blocks();
+                let is_result = |x: &&Block| x.kind.as_str() == Some("tool_result");
+                if blocks.iter().any(|x| is_result(&x)) {
+                    for x in blocks.iter().filter(is_result).filter(|x| x.is_error.0) {
+                        let nm = names.get(x.tool_use_id.or_empty()).map_or("?", String::as_str);
+                        let e = match &x.content {
+                            Body::Text(s) => norm_text(nm, s),
+                            Body::Json(v) => norm_error(nm, v),
+                        };
+                        if e.contains("hook error") {
+                            r.add("hook_denials".into(), 1);
+                        } else {
+                            r.add("tool_errors".into(), 1);
                         }
+                        errors.add(e, 1);
                     }
                     continue;
                 }
-                if truthy(get(&o, "isMeta"))
-                    || truthy(get(&o, "isCompactSummary"))
-                    || (truthy(get(&o, "isSidechain")) && !is_sub)
-                {
+                if o.is_meta.0 || o.is_compact_summary.0 || (o.is_sidechain.0 && !is_sub) {
                     continue;
                 }
-                let t = text_of(content);
+                let t = msg.content.text(" ");
                 if t.starts_with(INTERRUPT) {
                     r.add("interrupts".into(), 1);
                     continue;
@@ -487,12 +390,7 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                 }
                 if r.get(&"prompts".to_string()) == 1 && HANDOFF.is_match(&t) {
                     // r["from_handoff"] = 1
-                    if r.idx.contains_key("from_handoff") {
-                        let i = r.idx["from_handoff"];
-                        r.vals[i] = 1;
-                    } else {
-                        r.add("from_handoff".into(), 1);
-                    }
+                    r.set("from_handoff".into(), 1);
                 }
             }
             _ => {}
@@ -601,8 +499,8 @@ fn cmd_collect(a: &CollectArgs) {
             sub.insert("cache_read".into(), Value::from(scache));
             sub.insert("out".into(), Value::from(sout));
             sub.insert("tool_errors".into(), Value::from(serr));
-            sub.insert("models".into(), smodels.to_json(None));
-            sub.insert("effort".into(), seffort.to_json(None));
+            sub.insert("models".into(), counter_to_json(&smodels, None));
+            sub.insert("effort".into(), counter_to_json(&seffort, None));
             sub.insert("spawns".into(), Value::Array(spawns));
             let first = s.times[0];
             let last = *s.times.last().unwrap();
@@ -624,11 +522,11 @@ fn cmd_collect(a: &CollectArgs) {
             row.insert("peak_ctx".into(), Value::from(s.peak));
             row.insert("active_min".into(), fnum(pyround(s.active_s / 60.0, 1)));
             row.insert("wall_min".into(), fnum(pyround((last.micros - first.micros) as f64 / 1e6 / 60.0, 1)));
-            row.insert("stats".into(), s.r.to_json(None));
-            row.insert("tools".into(), s.tools.to_json(None));
-            row.insert("skills".into(), s.skills.to_json(None));
-            row.insert("bash".into(), s.bash.to_json(Some(&s.bash.most_common(Some(15)))));
-            row.insert("errors".into(), errors.to_json(Some(&errors.most_common(Some(20)))));
+            row.insert("stats".into(), counter_to_json(&s.r, None));
+            row.insert("tools".into(), counter_to_json(&s.tools, None));
+            row.insert("skills".into(), counter_to_json(&s.skills, None));
+            row.insert("bash".into(), counter_to_json(&s.bash, Some(&s.bash.most_common(Some(15)))));
+            row.insert("errors".into(), counter_to_json(&errors, Some(&errors.most_common(Some(20)))));
             row.insert("agent_calls".into(), Value::Array(s.agents.clone()));
             row.insert("sub".into(), Value::Object(sub));
             rows.push(Value::Object(row));
@@ -977,7 +875,7 @@ fn cmd_errors(a: &ErrorsArgs) {
         let mut total: Counter<String> = Counter::new();
         for r in &rows {
             let d: String = pychars(get(r, "start").as_str().unwrap_or(""), 10);
-            let e = Counter::from_json(get(r, "errors"));
+            let e = counter_from_json(get(r, "errors"));
             match days.iter_mut().find(|(k, _)| *k == d) {
                 Some((_, c)) => c.update(&e),
                 None => days.push((d, e.clone())),
@@ -998,7 +896,7 @@ fn cmd_errors(a: &ErrorsArgs) {
     let mut by: Vec<(String, Counter<String>)> = vec![];
     for r in &rows {
         let p = key_str(get(r, "project"));
-        let e = Counter::from_json(get(r, "errors"));
+        let e = counter_from_json(get(r, "errors"));
         match by.iter_mut().find(|(k, _)| *k == p) {
             Some((_, c)) => c.update(&e),
             None => by.push((p, e)),
@@ -1042,7 +940,7 @@ fn installed_skills() -> HashSet<String> {
 fn cmd_skills(a: &SimpleArgs) {
     let mut used: Counter<String> = Counter::new();
     for r in load(&a.inp) {
-        used.update(&Counter::from_json(get(&r, "skills")));
+        used.update(&counter_from_json(get(&r, "skills")));
     }
     let installed = installed_skills();
     out!("Used (Skill tool calls):");
@@ -1052,7 +950,7 @@ fn cmd_skills(a: &SimpleArgs) {
     out!("\nNames above that no longer exist were renamed or removed; check the skills repo history.");
     out!("Plugin skills and skillOverrides are not covered.");
     out!("\nInstalled in ~/.claude/skills, ~/*/.claude/skills or ~/work/*/.claude/skills, never called:");
-    let mut left: Vec<&String> = installed.iter().filter(|s| !used.idx.contains_key(*s)).collect();
+    let mut left: Vec<&String> = installed.iter().filter(|s| !used.contains(*s)).collect();
     left.sort();
     for s in left {
         out!("       {}", s);

@@ -7,6 +7,7 @@
 use super::{Doc, Skip};
 use crate::pycompat::{fname, list_dir, parse_ts_micros, truthy};
 use crate::redact::redact;
+use crate::transcript::{Block, Body, Line};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
@@ -149,24 +150,21 @@ fn doc(c: &FileCtx, time: i64, role: &str, text: &str) -> Option<Doc> {
 }
 
 /// Turn one transcript line into documents. `names` maps tool_use ids to tool names.
-fn line_docs(o: &Value, time: i64, c: &FileCtx, names: &mut HashMap<String, String>, out: &mut dyn FnMut(Doc)) {
-    let msg = val(o, "message");
-    let content = val(msg, "content");
-    match val(o, "type").as_str().unwrap_or("") {
+fn line_docs(o: &Line, time: i64, c: &FileCtx, names: &mut HashMap<String, String>, out: &mut dyn FnMut(Doc)) {
+    let content = &o.msg().content;
+    match o.kind.or_empty() {
         "assistant" => {
-            let Some(blocks) = content.as_array() else { return };
-            for b in blocks {
-                match val(b, "type").as_str() {
+            for b in content.blocks() {
+                match b.kind.as_str() {
                     Some("text") => {
-                        if let Some(d) = doc(c, time, "assistant", val(b, "text").as_str().unwrap_or("")) {
+                        if let Some(d) = doc(c, time, "assistant", b.text.or_empty()) {
                             out(d);
                         }
                     }
                     Some("tool_use") => {
-                        let name = val(b, "name").as_str().unwrap_or("?");
-                        names.insert(key_str(val(b, "id")), name.to_string());
-                        let input = val(b, "input");
-                        let arg = ["command", "file_path"].iter().find_map(|k| val(input, k).as_str()).unwrap_or("");
+                        let name = b.name.as_str().unwrap_or("?");
+                        names.insert(b.id.or_empty().to_string(), name.to_string());
+                        let arg = ["command", "file_path"].iter().find_map(|k| b.input.get(k)?.as_str()).unwrap_or("");
                         if let Some(d) = doc(c, time, "tool", &format!("{name} {arg}")) {
                             out(d);
                         }
@@ -176,30 +174,30 @@ fn line_docs(o: &Value, time: i64, c: &FileCtx, names: &mut HashMap<String, Stri
             }
         }
         "user" => {
-            let is_result = |x: &Value| x.is_object() && val(x, "type").as_str() == Some("tool_result");
-            if let Some(arr) = content.as_array()
-                && arr.iter().any(is_result)
-            {
-                for x in arr.iter().filter(|x| is_result(x)) {
-                    if !truthy(val(x, "is_error")) {
+            let is_result = |x: &&Block| x.kind.as_str() == Some("tool_result");
+            let blocks = content.blocks();
+            if blocks.iter().any(|x| is_result(&x)) {
+                for x in blocks.iter().filter(is_result) {
+                    if !x.is_error.0 {
                         continue;
                     }
-                    let name = names.get(&key_str(val(x, "tool_use_id"))).map_or("?", String::as_str);
+                    let name = names.get(x.tool_use_id.or_empty()).map_or("?", String::as_str);
+                    let text = match &x.content {
+                        Body::Text(s) => s.to_string(),
+                        Body::Json(v) => text_of(v),
+                    };
                     // Redact before the cut: a cut can split a token below the size the redactor needs.
-                    let body = clip(&redact(&text_of(val(x, "content"))), MAX_ERROR);
+                    let body = clip(&redact(&text), MAX_ERROR);
                     if let Some(d) = doc(c, time, "tool_error", &format!("{name}: {body}")) {
                         out(d);
                     }
                 }
                 return;
             }
-            if truthy(val(o, "isMeta"))
-                || truthy(val(o, "isCompactSummary"))
-                || (truthy(val(o, "isSidechain")) && !c.is_sub)
-            {
+            if o.is_meta.0 || o.is_compact_summary.0 || (o.is_sidechain.0 && !c.is_sub) {
                 return;
             }
-            let t = text_of(content);
+            let t = content.text(" ");
             if t.starts_with(INTERRUPT) || (t.trim_start().starts_with('<') && !t.contains("command-name")) {
                 return;
             }
@@ -223,11 +221,8 @@ fn read_file(path: &Path, c: &FileCtx, out: &mut dyn FnMut(Doc)) -> std::io::Res
             return Ok(());
         }
         let line = String::from_utf8_lossy(&buf);
-        let Ok(o) = serde_json::from_str::<Value>(line.trim()) else { continue };
-        if !o.is_object() {
-            continue;
-        }
-        if let Some(s) = val(&o, "timestamp").as_str()
+        let Some(o) = Line::parse_str(line.trim()) else { continue };
+        if let Some(s) = o.timestamp.as_str()
             && let Some((us, _)) = parse_ts_micros(s)
         {
             time = us.div_euclid(1_000_000);

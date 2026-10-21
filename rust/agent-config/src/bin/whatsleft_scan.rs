@@ -6,17 +6,16 @@
 
 use agent_config::guard_checks::expanduser;
 use agent_config::paths;
-use agent_config::pycompat::{
-    basename, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str, truthy,
-};
-use agent_config::scan::{Search, find_session};
+use agent_config::pycompat::{basename, dirname, fname, list_dir, mtime, parse_ts, py_splitlines, py_str, truthy};
+use agent_config::scan::{Search, find_session, py_dumps};
+use agent_config::transcript::{Body, Line};
 use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -116,7 +115,7 @@ static STATE: Mutex<State> = Mutex::new(State { me: 0, you: 0, check: 0, later: 
 
 fn emit(s: &str) {
     if !QUIET.load(Ordering::Relaxed) {
-        let _ = writeln!(std::io::stdout(), "{s}");
+        let _ = writeln!(io::stdout(), "{s}");
     }
 }
 
@@ -160,50 +159,6 @@ fn line(tag: &str, text: &str) {
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
-}
-
-/// json.dumps(v) with Python defaults.
-fn py_dumps(v: &Value) -> String {
-    let mut s = String::new();
-    dump(v, &mut s);
-    s
-}
-
-fn dump(v: &Value, out: &mut String) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            if n.is_i64() || n.is_u64() {
-                out.push_str(&n.to_string());
-            } else {
-                out.push_str(&py_float(n.as_f64().unwrap_or(0.0)));
-            }
-        }
-        Value::String(s) => json_str(out, s),
-        Value::Array(a) => {
-            out.push('[');
-            for (i, x) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                dump(x, out);
-            }
-            out.push(']');
-        }
-        Value::Object(o) => {
-            out.push('{');
-            for (i, (k, x)) in o.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                json_str(out, k);
-                out.push_str(": ");
-                dump(x, out);
-            }
-            out.push('}');
-        }
-    }
 }
 
 /// str(v or "")
@@ -363,23 +318,20 @@ fn clean_ask(t: &str) -> String {
     short(&t, 150)
 }
 
-fn is_human(obj: &Value, content: &Value) -> bool {
-    if truthy(get(obj, "isMeta")) || truthy(get(obj, "isSidechain")) {
+fn is_human(line: &Line) -> bool {
+    if line.is_meta.0 || line.is_sidechain.0 {
         return false;
     }
-    let origin = get(obj, "origin");
-    if origin.is_object() {
-        let k = get(origin, "kind");
-        if !(k.is_null() || k.as_str() == Some("human")) {
-            return false;
-        }
-    }
-    if let Some(a) = content.as_array()
-        && a.iter().any(|b| b.is_object() && get(b, "type").as_str() == Some("tool_result"))
+    if let Some(origin) = &line.origin.0
+        && !(origin.kind.is_null() || origin.kind.as_str() == Some("human"))
     {
         return false;
     }
-    !text_of(content).trim().is_empty()
+    let content = &line.msg().content;
+    if content.blocks().iter().any(|b| b.kind.as_str() == Some("tool_result")) {
+        return false;
+    }
+    !content.text("\n").trim().is_empty()
 }
 
 fn strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
@@ -427,6 +379,20 @@ struct Session {
 }
 
 impl Session {
+    /// Record the task notices in every string of a line that holds one. The line is read as plain
+    /// JSON again, because a notice can sit anywhere in it.
+    fn read_notices(&mut self, raw: &str) {
+        let Ok(obj) = serde_json::from_str::<Value>(raw) else { return };
+        let mut strs = vec![];
+        strings(&obj, &mut strs);
+        for txt in strs {
+            for n in NOTICE.captures_iter(txt) {
+                let summary = n.name("summary").map(|m| m.as_str().to_string()).unwrap_or_default();
+                self.notices.insert(n["tool"].to_string(), (n["status"].to_string(), summary));
+            }
+        }
+    }
+
     fn result(&self, uid: &str) -> (bool, &str) {
         match self.results.get(uid) {
             Some((e, b)) => (*e, b.as_str()),
@@ -437,28 +403,21 @@ impl Session {
 
 fn read_session(path: &Path) -> Session {
     let mut s = Session::default();
-    let text = String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned();
-    for raw in text.split('\n') {
-        let Ok(obj) = serde_json::from_str::<Value>(raw) else { continue };
-        if !obj.is_object() {
-            continue;
+    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let mut reader = BufReader::new(src);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if !reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            break;
         }
+        let text = String::from_utf8_lossy(&buf);
+        let raw = text.strip_suffix('\n').unwrap_or(&text);
+        let Some(o) = Line::parse_str(raw) else { continue };
         if raw.contains("<task-notification>") {
-            let mut strs = vec![];
-            strings(&obj, &mut strs);
-            for txt in strs {
-                for n in NOTICE.captures_iter(txt) {
-                    s.notices.insert(
-                        n["tool"].to_string(),
-                        (
-                            n["status"].to_string(),
-                            n.name("summary").map(|m| m.as_str().to_string()).unwrap_or_default(),
-                        ),
-                    );
-                }
-            }
+            s.read_notices(raw);
         }
-        let ts = get(&obj, "timestamp").as_str().and_then(parse_ts);
+        let ts = o.timestamp.as_str().and_then(parse_ts);
         if let Some(t) = ts
             && t != 0.0
         {
@@ -467,56 +426,45 @@ fn read_session(path: &Path) -> Session {
             }
             s.end = Some(t);
         }
-        let sidechain = truthy(get(&obj, "isSidechain"));
-        if let Some(c) = get(&obj, "cwd").as_str().filter(|c| !c.is_empty())
+        let sidechain = o.is_sidechain.0;
+        if let Some(c) = o.cwd.as_str().filter(|c| !c.is_empty())
             && !sidechain
         {
             s.cwds.insert(c.to_string());
         }
-        let empty = Value::Object(serde_json::Map::default());
-        let m = get(&obj, "message");
-        let msg = if truthy(m) && m.is_object() { m } else { &empty };
-        let content = get(msg, "content");
-        let typ = get(&obj, "type").as_str().unwrap_or("");
+        let content = &o.msg().content;
+        let typ = o.kind.or_empty();
         if typ == "user" && !sidechain {
-            if is_human(&obj, content) {
-                let ask = clean_ask(&text_of(content));
+            if is_human(&o) {
+                let ask = clean_ask(&content.text("\n"));
                 if !ask.is_empty() {
                     s.asks.push((ts, ask, s.order.len()));
                 }
             }
-            if let Some(arr) = content.as_array() {
-                for b in arr {
-                    if b.is_object() && get(b, "type").as_str() == Some("tool_result") {
-                        let c = get(b, "content");
-                        let body = match c {
-                            Value::String(x) => x.clone(),
-                            other => {
-                                let t = text_of(other);
-                                if t.is_empty() { pychars(&py_dumps(other), 0, 2000) } else { t }
-                            }
-                        };
-                        let id = py_str(get(b, "tool_use_id"));
-                        if !s.results.contains_key(&id) {
-                            s.results_keys.push(id.clone());
-                        }
-                        s.results.insert(id, (truthy(get(b, "is_error")), pychars(&body, 0, 2000)));
+            for b in content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_result")) {
+                let body = match &b.content {
+                    Body::Text(x) => x.to_string(),
+                    Body::Json(other) => {
+                        let t = text_of(other);
+                        if t.is_empty() { pychars(&py_dumps(other), 0, 2000) } else { t }
                     }
+                };
+                let id = b.tool_use_id.or_empty().to_string();
+                if !s.results.contains_key(&id) {
+                    s.results_keys.push(id.clone());
                 }
+                s.results.insert(id, (b.is_error.0, pychars(&body, 0, 2000)));
             }
-        } else if typ == "assistant" && !sidechain && content.is_array() {
-            for b in content.as_array().unwrap() {
-                if !b.is_object() {
-                    continue;
-                }
-                let bt = get(b, "type").as_str().unwrap_or("");
-                if bt == "text" && get(b, "text").as_str().is_some_and(|t| !t.trim().is_empty()) {
-                    s.texts.push(get(b, "text").as_str().unwrap().to_string());
+        } else if typ == "assistant" && !sidechain {
+            for b in content.blocks() {
+                let bt = b.kind.or_empty();
+                if bt == "text" && b.text.as_str().is_some_and(|t| !t.trim().is_empty()) {
+                    s.texts.push(b.text.or_empty().to_string());
                 } else if bt == "tool_use" {
-                    let inp0 = get(b, "input");
-                    let inp = if truthy(inp0) { inp0.clone() } else { Value::Object(serde_json::Map::default()) };
-                    let id = py_str(get(b, "id"));
-                    let name = get(b, "name").as_str().unwrap_or("").to_string();
+                    let inp =
+                        if truthy(&b.input) { b.input.clone() } else { Value::Object(serde_json::Map::default()) };
+                    let id = b.id.or_empty().to_string();
+                    let name = b.name.or_empty().to_string();
                     if !s.uses.contains_key(&id) {
                         s.uses_keys.push(id.clone());
                     }
@@ -526,7 +474,7 @@ fn read_session(path: &Path) -> Session {
                             name: name.clone(),
                             inp: inp.clone(),
                             ts,
-                            cwd: get(&obj, "cwd").as_str().map(ToString::to_string),
+                            cwd: o.cwd.as_str().map(ToString::to_string),
                             idx: s.order.len(),
                         },
                     );
