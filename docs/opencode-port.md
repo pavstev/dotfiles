@@ -1,186 +1,98 @@
 # Opencode port
 
-One source, three harnesses. `claude/` stays the source of truth. Claude Code gets it by
-symlink, exactly as before. Opencode (the `opencode` CLI and the Opencode app) gets it four
-ways: native compat (Opencode reads `~/.claude/skills` and falls back to
-`~/.claude/CLAUDE.md`), generated files under `~/.config/opencode`, and key-level JSON merges
-into the files Opencode also writes itself (`opencode.jsonc`, `tui.json`).
+How the Claude setup maps to Opencode (the `opencode` CLI and the app), and what Opencode cannot
+do. The overview is in [AI agents](ai-agents.md#opencode).
 
-Checked against Opencode v2.0.25. Sources: the Opencode docs on
+← [Docs](README.md)
+
+Checked against Opencode v2.0.25 (the plugin against 2.0.30). Sources: the Opencode docs on
 [config](https://opencode.ai/docs/config), [agents](https://opencode.ai/docs/agents),
 [rules](https://opencode.ai/docs/rules), [themes](https://opencode.ai/docs/themes),
-[skills](https://opencode.ai/docs/skills) and the JSON schemas at
-`https://opencode.ai/config.json` and `https://opencode.ai/tui.json`.
+[skills](https://opencode.ai/docs/skills) and the schemas at `https://opencode.ai/config.json`
+and `https://opencode.ai/tui.json`.
 
-## How it runs
+`scripts/agent-config` (the Rust build in `rust/agent-config`) writes every Opencode file and never
+writes under `~/.claude`. It runs inside `./dotfiles` on every `dots`, including `dots settings`.
+Generated Markdown carries `generated-by: dotfiles`; JSON merges keep your values and back up
+before a change. `opencode` itself comes from `tools.list` (step `12-tools`; on Windows through
+mise or `winget install SST.opencode`). Step `90-sign-in` offers `opencode auth login`.
 
-- `opencode` is a line in `tools.list`, so step `12-tools` installs the CLI
-  (step `58-opencode` verifies it and skips when present).
-- `./dotfiles` picks a profile (`dots`, `settings::profile`), links `~/.claude`,
-  links the skills, then runs `agent-config opencode` (wired into `dotfiles`
-  right after the skills step). That step is not an install step, so it runs on every `dots`,
-  including `dots settings`.
-- Step `90-sign-in` offers `opencode auth login` on the first run when
-  `opencode auth list` says `No authenticated integrations`.
-- On Windows there is no Homebrew; step `12-tools` installs the `opencode` CLI through mise, or
-  `winget install SST.opencode` as the fallback (warns and continues otherwise).
-- `scripts/agent-config` (the Rust build in `rust/agent-config`) generates every Opencode file. It never writes
-  under `~/.claude`. Generated Markdown carries `generated-by: dotfiles`; JSON merges keep the
-  user's values and back up before a change.
-
-## Skills — already shared, nothing new to wire
-
-Opencode auto-loads skills from `~/.claude/skills` (global compat source), and
-`dots` (the skills step) already links every `claude/skills/<name>` into `~/.claude/skills`.
-So all `ps:*` skills (and any future skill) work in Opencode, in every project, at once — no
-separate Opencode skills folder is needed (`~/.config/opencode` has no skills dir at all).
+## Mapping
 
 | Claude item | Opencode item | Method |
 |-------------|---------------|--------|
-| `skills/ps_*` | `~/.config/opencode` reads `~/.claude/skills/ps_*` | native compat; `dots` links per-skill |
+| `skills/ps_*` | `~/.claude/skills/ps_*` | native; `dots` links per skill. The colon in `ps:*` is outside the agentskills.io spec and Opencode loads it anyway (`skill: allow` is merged into `opencode.jsonc`). |
+| `CLAUDE.md` | `~/.config/opencode/AGENTS.md` | generate: marker, a tool-name note, the rules, the owner overlay (mode 0600) and the active output style as `# Reply style: <name>` |
+| `~/.claude/CLAUDE.md` | same file, as fallback | native; `AGENTS.md` wins when both exist |
+| project `CLAUDE.md` / `AGENTS.md` | same files | native (`AGENTS.md` first) |
+| `agents/*.md` | `~/.config/opencode/agents/<name>.md` | generate: `mode: subagent`, `permission.skill: allow`, `permission.edit: deny` for agents with no write tools. `model:`, `effort:` and `maxTurns:` are dropped: Opencode names models `provider/model-id`, so agents inherit the session model. |
+| `permissions.allow/deny` | `opencode.jsonc` `permission.bash/read/edit/tool` | merge, translated: `Bash(x:*)` to `bash "x *"`, `Read` to `read`, `Edit`/`Write` to `edit`, `Suggest*` to `tool deny` |
+| `permission.ask` | `permission.ask: {"*": "allow"}` | added so `/ps:askme` asks without a prompt |
+| MCP (`cursor/mcp.json`) | `opencode.jsonc` `mcp.<name>` | merge as `type: remote`; only with `OPENCODE_MCP="on"` or `DOTFILES_MCP=on` |
+| copper theme | `themes/copper.json` + `tui.json` `"theme": "copper"` | generate the file from the repo palette, then set the name. A `tui.json` that names another theme is yours and only gets reported. |
+| per-project config | `project/.opencode/opencode.jsonc` and `agents/*.md`, as links to the global ones | paths in `OPENCODE_PROJECTS` (`~` allowed); existing project files are never replaced |
+| guard | `plugins/dots-guard.ts` | generate (see below) |
+| `includeCoAuthoredBy`, `attribution` | none | Opencode attributes commits as the user; nothing to force off |
+| `statusLine` | none | no status line |
 
-The colon in `ps:*` is outside the agentskills.io spec, and Opencode loads them anyway
-(`skill: allow` is merged into `opencode.jsonc`).
+A `~/.config/opencode/AGENTS.md` without the marker is yours. `dots` leaves it and says to put
+personal rules in `~/.config/dotfiles/owner.md` instead.
 
-## Rules — generated
+A sidecar file, `~/.config/opencode/.dotfiles-managed.json`, records the permission rules `dots`
+added, so a rule dropped from `claude/settings.json` goes on the next run, unless you changed its
+effect. `opencode.jsonc` must be strict JSON: a file with comments is left alone with a warning.
 
-| Claude item | Opencode item | Method |
-|-------------|---------------|--------|
-| `CLAUDE.md` | `~/.config/opencode/AGENTS.md` | generate: the marker comment, an Opencode tool-name note, the rules, the owner overlay and the active output style |
-| `~/.claude/CLAUDE.md` | same file, as fallback | native compat; `~/.config/opencode/AGENTS.md` wins when both exist |
-| `~/.claude/rules/owner.md` | inside `AGENTS.md` (mode 0600) | generate; this is what carries the private rules into Opencode, since Claude loads that file separately |
-| `outputStyle` + `output-styles/<name>.md` | `# Reply style: <name>` inside `AGENTS.md` | generate from the active style |
-| project `CLAUDE.md` / `AGENTS.md` | same files | native (Opencode reads both, `AGENTS.md` first) |
-
-A `~/.config/opencode/AGENTS.md` without the marker is the user's: it is left alone and
-`dots` says where to put personal rules instead (`~/.config/dotfiles/owner.md`).
-
-## Agents
-
-`claude/agents/*.md` → `~/.config/opencode/agents/<name>.md`, generated by
-`agent-config opencode`:
-
-| Claude item | Opencode item | Method |
-|-------------|---------------|--------|
-| `agents/*.md` (subagents) | `~/.config/opencode/agents/<name>.md` | generate: `mode: subagent`, `permission.skill: allow`, `permission.edit: deny` for read-only agents |
-| `model: sonnet/opus/fable` | inherited from the session | dropped — Opencode uses `provider/model-id`, not Claude Code names |
-| `effort:` / `maxTurns:` | none | dropped |
-| `disallowedTools: Write, Edit` | `permission.edit: deny` | read-only agents (code-reviewer, task-reviewer) can't edit |
-
-The same agent files load in every project because they live in the global Opencode config.
-A project agent with the same name (in `.opencode/agents/`) still wins in its repo.
-
-## Permissions and MCP — merged into opencode.jsonc
-
-| Claude item | Opencode item | Method |
-|-------------|---------------|--------|
-| `permissions.allow/deny` (claude/settings.json) | `opencode.jsonc` `permission.bash/read/edit/tool` | translated: `Bash(x:*)` → `bash "x *"`, `Read` → `read`, `Edit`/`Write` → `edit`, `Suggest*` → `tool deny`; user's keys win |
-| stale rules | `~/.config/opencode/.dotfiles-managed.json` | sidecar: a rule dropped from `claude/settings.json` is removed on the next run, unless the user changed its effect |
-| `permission.ask` | `permission.ask: {"*": "allow"}` | added so `/ps:askme` asks without a prompt; the settings menu decides |
-| `includeCoAuthoredBy: false`, `attribution` | not set | Opencode attributes commits as the user by default; nothing to force off |
-| MCP (`cursor/mcp.json`, cloudflare-docs) | `opencode.jsonc` `mcp.<name>` | merged as `type: remote`; opt-in on every profile (`OPENCODE_MCP="on"` or `DOTFILES_MCP=on`) |
-| `statusLine` → `rust-bin statusline` | none | Opencode has no status line |
-| Copper theme (Ghostty/starship/etc.) | `~/.config/opencode/themes/copper.json` + `tui.json` `"theme": "copper"` | generate the theme file from the repo palette, then set the name; a tui.json that already names another theme is the user's and only gets reported |
-| Per-project config | `project/.opencode/opencode.jsonc` → symlink to global; `project/.opencode/agents/*.md` → symlinks to global agents | set `OPENCODE_PROJECTS` (space-separated paths, `~` allowed) via `dots settings` or `DOTFILES_PROJECTS` env; existing project files/agents never clobbered |
-
-Two schema facts that decide the theme layout: `tui.json` takes `theme` as a **name**
-(`"type": "string"`) and sets `additionalProperties: false`, so no marker key fits there and
-the palette has to live in its own `themes/<name>.json` file. A `permission` object is
-deprecated in the v2 schema in favour of the `permissions` ruleset array, but is still
-accepted and is what this repo writes.
-
-The theme loader reads **every** colour key and refuses the whole theme when one is missing
-(`Failed to load theme: copper`, 2026-10-16). The shipped themes in opencode 2.0.25 use 49
-keys; the docs example lists `syntaxBracket`, which no shipped theme has, and omits
-`syntaxNumber` and `syntaxType`, which all of them have. `COPPER_THEME` in
-`rust/agent-config/themes/copper.json` follows the shipped themes, and a test pins that key set.
+Schema facts behind the theme layout: `tui.json` takes `theme` as a name and allows no other keys,
+so the palette lives in its own `themes/<name>.json`. The loader refuses the whole theme when one
+colour key is missing (`Failed to load theme: copper`). The shipped themes use 49 keys, so
+`rust/agent-config/themes/copper.json` follows them, and a test pins that key set. Change the
+palette there, not in `~/.config/opencode`. A `permission` object is deprecated in the v2 schema
+in favour of a `permissions` array, but it is still accepted and is what this repo writes.
 
 ## Guard plugin
 
-`agent-config opencode` writes `~/.config/opencode/plugins/dots-guard.ts` (marker
-`generated-by: dotfiles`; a file of that name without the marker is yours and is left alone; the
-file is removed when `claude/hooks/rust-bin` is gone). The source text is
-`rust/agent-config/src/opencode_plugin.ts.tmpl`. Which check runs in which app is in the table
-in [`docs/ai-agents.md`](ai-agents.md#where-each-guard-check-runs).
+`agent-config opencode` writes `~/.config/opencode/plugins/dots-guard.ts` from
+`rust/agent-config/src/opencode_plugin.ts.tmpl`. A file of that name without the marker is yours.
+The plugin is removed when `claude/hooks/rust-bin` is gone. Which check runs where:
+[AI agents](ai-agents.md#where-each-guard-check-runs).
 
-- **Shape (Opencode 2.0.30):** a default export `{ id, setup(ctx) }` that calls
+- **Shape:** a default export `{ id, setup(ctx) }` that calls
   `ctx.tool.hook("execute.before", async (input) => ...)`. The older
   `export const X = async () => ({"tool.execute.before": ...})` form is refused. `setup` can run
-  twice, so the plugin keeps its state at module level and caches the verdict per call.
-- **Blocking:** a throw in the hook blocks the call and the model sees the error text. Verified live:
-  a bare `sed -i ...` came back as `G14: bare sed -i on macOS ...` and nothing ran. (At the time
-  the `sed -i ''` form was blocked too; G14 now lets a form with a suffix through.)
-- **Input:** `input.tool`, `input.input` (the args), `input.sessionID`, `input.id`.
-- **Tool names seen live:** `shell` (arg `command`; Claude's `Bash`), `read` (arg `path`),
-  `grep` (args `pattern`, `path`), `glob`, `execute`, and MCP tools as `<server>_<tool>`
-  (for example `chat_send_message`), which the plugin turns into `mcp__<server>__<tool>`.
-  The `execute` tool runs inner calls (`tools.chat.send_message(...)`), and each inner call fires
-  the hook again. The plugin skips `execute` itself and keys its verdict cache by call id, tool name
-  and the call input, because an inner call can share the id of the call that holds it (two inner
-  calls of one tool must not share a verdict). Verified live: a send tool
-  with a private word was blocked and a clean one went through.
-- **Answer:** exit code 2 (a deny) throws the guard's stderr text; an `ask` throws its reason with a
-  note that Opencode cannot ask. A missing launcher, a crash or an answer that is not JSON allows the
-  call and writes one `console.warn` per session.
-- **Settings:** the checks read `~/.config/dotfiles/settings` of the user that runs
-  Opencode, so the same presets, `GUARD_OFF` and `GUARD_SHADOW` apply as in Claude Code.
+  twice, so state lives at module level and the verdict is cached per call.
+- **Blocking:** a throw blocks the call and the model sees the text. Verified live: a bare
+  `sed -i ...` came back as `G14: bare sed -i on macOS ...` and nothing ran.
+- **Tool names seen live:** `shell` (arg `command`), `read` (arg `path`), `grep`, `glob`, `execute`,
+  and MCP tools as `<server>_<tool>`, which the plugin turns into `mcp__<server>__<tool>`. The
+  `execute` tool runs inner calls and each one fires the hook again, so the plugin skips `execute`
+  itself and keys its cache by call id, tool name and input.
+- **Answer:** exit code 2 (a deny) throws the guard's stderr text. An `ask` throws its reason with
+  a note that Opencode cannot ask. A missing launcher, a crash or a non-JSON answer allows the call
+  and writes one `console.warn` per session.
+- **Settings:** the checks read the settings of the user running Opencode, so the same presets,
+  `GUARD_OFF` and `GUARD_SHADOW` apply as in Claude Code.
+- **Windows:** the plugin starts `sh` to run `rust-bin`. A bare name there can find a program in
+  `System32` first (bash is the WSL launcher), so `dots` writes the full path of Git Bash's
+  `sh.exe` (`usr\bin`) into the plugin, never a `System32` path. With no usable `sh` on PATH it
+  falls back to `sh` by name, which needs Git Bash on PATH. Run `dots` from Git Bash.
 
 ## Gaps
 
 | Claude feature | Why Opencode cannot match it |
 |----------------|------------------------------|
-| Guard checks other than G14 to G17 (model+effort/deadline, polling, context ceiling, one question, hand-back cap, scratch) | The plugin sends only shell, read, grep and MCP calls, so rules about subagents, questions and hand-backs never see their events. A rule that looks at a shell command may fire; it is not tested. |
+| Guard checks other than G14 to G17 | The plugin sees only shell, read, grep and MCP calls, so rules about subagents, questions and hand-backs never see their events. A rule on a shell command may fire; it is not tested. |
 | Asking before a call (G16) | A plugin cannot ask. An `ask` blocks the call and the message says so. |
-| Output styles (`outputStyle`, `output-styles/`) | No output-style feature. The active style is appended to `AGENTS.md` as text; switching means editing `outputStyle` and running `dots`. |
-| `claude/` hooks directory | Not read. Opencode loads plugins from `~/.config/opencode/plugins/`; the guard plugin is generated there. |
-| `mode: primary` agents | All ported agents are `subagent`; there's no ported primary agent to set as `default_agent` |
-| Claude AI connectors (Linear, Sentry, Gmail…) | Tied to the claude.ai account; not portable |
-| Claude Code plugins (`enabledPlugins`) | Opencode reads Claude skills and prompts, not plugins |
+| Output styles | No such feature. The style is appended to `AGENTS.md`; switching means editing `outputStyle` and running `dots`. |
+| `claude/` hooks directory | Not read. Opencode loads plugins from `~/.config/opencode/plugins/`. |
+| `mode: primary` agents | All ported agents are `subagent`. |
+| claude.ai connectors, Claude Code plugins | Tied to the account, or not read (Opencode reads Claude skills and prompts, not plugins). |
 
 ## Decisions
 
-- Agents are `mode: subagent` and inherit the session model, so a wrong `provider/model-id` can never break an Opencode session. The Claude `model:` pin is documented here but not carried.
-- `skill: allow` is set on every ported agent and in `opencode.jsonc` so `/ps:*` skills load; `edit: deny` only on agents whose Claude frontmatter lists no write tools.
-- `AGENTS.md` is generated, not linked: Opencode rewrites nothing there, but a hand-written
-  file would hide both the owner rules and the output style, and the fallback to
-  `~/.claude/CLAUDE.md` alone carries neither.
-- `DOTFILES_MCP=on` (one env var) turns MCP on for both Cursor and Opencode; `CURSOR_MCP` and `OPENCODE_MCP` control each app separately.
-- `opencode.jsonc` is merged, never linked: Opencode rewrites it. Strict JSON only — a JSONC file with comments is left untouched with a warning.
-- `themes/copper.json` is ours by name and rewritten from the palette in `rust/agent-config/themes/copper.json`
-  (the same colours as Ghostty and the status line). Change the palette there, not in `~/.config/opencode`.
-  Verified in a real TUI: the copper background and accent are on screen.
-- `DOTFILES_STEPS=58-opencode ./dotfiles` runs only the Opencode step, for temp-HOME tests.
-  The config generation itself needs no step: it is part of `./dotfiles`.
-
-## Settings
-
-| Setting | Where | Meaning |
-|---------|-------|---------|
-| `OPENCODE_MCP` | `~/.config/dotfiles/settings` (`dots settings`) | Opencode MCP servers from dots: on/off; `DOTFILES_MCP=on` wins for one run |
-| `OPENCODE_PROJECTS` | `~/.config/dotfiles/settings` (`dots settings`) | project paths (`~` allowed) whose `.opencode/` mirrors the global Opencode config; `DOTFILES_PROJECTS` env wins for one run |
-| `DOTFILES_MCP` | env | turns MCP on for Cursor and Opencode at once |
-| `PROFILE` | `~/.config/dotfiles/settings` (`dots settings`) | `owner` also puts the private rules in `~/.config/opencode/AGENTS.md` |
-
-## Removing it
-
-```sh
-rm ~/.config/opencode/AGENTS.md ~/.config/opencode/.dotfiles-managed.json   # generated, ours
-rm ~/.config/opencode/themes/copper.json                                    # our theme
-```
-
-In `opencode.jsonc`, delete the keys under `permission` that came from
-`claude/settings.json` and the `mcp` entries from `cursor/mcp.json` (only there when MCP is
-on). Nothing is backed up for `themes/`; every `opencode.jsonc` change made by `dots`
-leaves a `opencode.jsonc.bak-<timestamp>` next to it.
-
-## Windows
-
-Opencode works the same on Windows (Git Bash). The CLI comes from mise or WinGet (`SST.opencode`, step
-`12-tools`) instead of Homebrew, and the clipboard uses `clip.exe`. Config is generated into
-`~/.config/opencode` the same as on macOS and Linux. No settings are Windows-specific.
-
-The guard plugin starts `sh` to run `claude/hooks/rust-bin` (plain POSIX sh, like every Claude and
-Cursor hook). A bare name on Windows can find a program in `System32` first, so `dots` writes the
-full path of Git Bash's `sh.exe` (`usr\bin`) into `dots-guard.ts` (never a path under `System32`).
-If no usable `sh` is on PATH when the plugin is written, the plugin falls back to `sh` by name, which
-then needs Git Bash on PATH. Run `dots` from Git Bash so the right one is found.
+- Agents inherit the session model, so a wrong `provider/model-id` can never break a session.
+- `AGENTS.md` is generated, not linked, because a hand-written file would hide the owner rules and
+  the output style that the `CLAUDE.md` fallback does not carry.
+- `opencode.jsonc` is merged, never linked: Opencode rewrites it.
+- `DOTFILES_MCP=on` turns MCP on for Cursor and Opencode at once; `CURSOR_MCP` and `OPENCODE_MCP`
+  control each app on its own.
+- `DOTFILES_STEPS=58-opencode ./dotfiles` runs only the Opencode check, for temp-HOME tests.
