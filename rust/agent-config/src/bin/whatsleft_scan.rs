@@ -6,10 +6,8 @@
 
 use agent_config::guard_checks::expanduser;
 use agent_config::paths;
-use agent_config::pycompat::{
-    basename, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str, truthy,
-};
-use agent_config::scan::{Search, find_session};
+use agent_config::pycompat::{basename, dirname, fname, list_dir, mtime, parse_ts, py_splitlines, py_str, truthy};
+use agent_config::scan::{Search, find_session, py_dumps};
 use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
@@ -160,50 +158,6 @@ fn line(tag: &str, text: &str) {
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
-}
-
-/// json.dumps(v) with Python defaults.
-fn py_dumps(v: &Value) -> String {
-    let mut s = String::new();
-    dump(v, &mut s);
-    s
-}
-
-fn dump(v: &Value, out: &mut String) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            if n.is_i64() || n.is_u64() {
-                out.push_str(&n.to_string());
-            } else {
-                out.push_str(&py_float(n.as_f64().unwrap_or(0.0)));
-            }
-        }
-        Value::String(s) => json_str(out, s),
-        Value::Array(a) => {
-            out.push('[');
-            for (i, x) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                dump(x, out);
-            }
-            out.push(']');
-        }
-        Value::Object(o) => {
-            out.push('{');
-            for (i, (k, x)) in o.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                json_str(out, k);
-                out.push_str(": ");
-                dump(x, out);
-            }
-            out.push('}');
-        }
-    }
 }
 
 /// str(v or "")

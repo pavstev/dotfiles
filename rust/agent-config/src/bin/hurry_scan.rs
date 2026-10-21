@@ -3,7 +3,7 @@
 
 use agent_config::paths;
 use agent_config::pycompat::{basename, dirname, json_str, parse_ts, py_float, py_str, truthy};
-use agent_config::scan::{Search, find_session};
+use agent_config::scan::{self, Search, find_session};
 use clap::Parser;
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -198,40 +198,7 @@ fn short_input(inp: &Value) -> String {
     String::new()
 }
 
-/// Insertion-ordered counter.
-#[derive(Default, Clone)]
-struct Counter {
-    keys: Vec<String>,
-    idx: HashMap<String, usize>,
-    vals: Vec<i64>,
-}
-
-impl Counter {
-    fn add(&mut self, k: &str, n: i64) {
-        if let Some(&i) = self.idx.get(k) {
-            self.vals[i] += n;
-        } else {
-            self.idx.insert(k.to_string(), self.keys.len());
-            self.keys.push(k.to_string());
-            self.vals.push(n);
-        }
-    }
-    fn get(&self, k: &str) -> i64 {
-        self.idx.get(k).map_or(0, |&i| self.vals[i])
-    }
-    fn most_common(&self, n: usize) -> Vec<(String, i64)> {
-        let mut it: Vec<(String, i64)> = self.keys.iter().cloned().zip(self.vals.iter().copied()).collect();
-        it.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
-        it.truncate(n);
-        it
-    }
-    fn total(&self) -> i64 {
-        self.vals.iter().sum()
-    }
-    fn is_empty(&self) -> bool {
-        self.keys.is_empty()
-    }
-}
+type Counter = scan::Counter<String>;
 
 struct Transcript {
     path: String,
@@ -313,7 +280,7 @@ fn scan_transcript(path: &Path) -> Transcript {
                 Value::Null => "?".into(),
                 other => other.to_string(),
             };
-            s.attach_by_type.add(&ty, clen(raw) as i64);
+            s.attach_by_type.add(ty, clen(raw) as i64);
             if let Some(names) = get(att, "addedNames").as_array() {
                 for n in names {
                     if let Some(n) = n.as_str()
@@ -349,10 +316,10 @@ fn scan_transcript(path: &Path) -> Transcript {
                         other => other.to_string(),
                     };
                     let inp = get(b, "input");
-                    s.tool_calls.add(&name, 1);
+                    s.tool_calls.add(name.clone(), 1);
                     pending.insert(get(b, "id").to_string(), (name.clone(), short_input(inp), ts));
                     if name == "Read" && inp.is_object() && truthy(get(inp, "file_path")) {
-                        s.reads.add(&py_str(get(inp, "file_path")), 1);
+                        s.reads.add(py_str(get(inp, "file_path")), 1);
                     }
                 }
             }
@@ -367,7 +334,7 @@ fn scan_transcript(path: &Path) -> Transcript {
                     let (name, summ, t0) =
                         pending.remove(&get(b, "tool_use_id").to_string()).unwrap_or(("?".into(), String::new(), None));
                     let size = result_size(get(b, "content"));
-                    s.tool_bytes.add(&name, size as i64);
+                    s.tool_bytes.add(name.clone(), size as i64);
                     s.results.push((size, name.clone(), summ.clone()));
                     if truthy(get(b, "is_error")) {
                         s.errors += 1;
@@ -634,8 +601,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
             "I will use offset/limit, rg, head, and subagents for big output.",
         );
     }
-    let rereads: Vec<(String, i64)> =
-        s.reads.keys.iter().zip(&s.reads.vals).filter(|(_, n)| **n >= 3).map(|(p, n)| (p.clone(), *n)).collect();
+    let rereads: Vec<(String, i64)> = s.reads.iter().filter(|(_, n)| *n >= 3).map(|(p, n)| (p.clone(), n)).collect();
     if !rereads.is_empty() {
         // max(rereads, key=count): first of the maximal
         let mut best = &rereads[0];
@@ -873,7 +839,7 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
     if !s.tool_bytes.is_empty() {
         let parts = s
             .tool_bytes
-            .most_common(4)
+            .most_common(Some(4))
             .iter()
             .map(|(n, b)| format!("{} {}", n, human(*b as f64)))
             .collect::<Vec<_>>()
@@ -883,7 +849,7 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
     if !s.attach_by_type.is_empty() {
         let top = s
             .attach_by_type
-            .most_common(4)
+            .most_common(Some(4))
             .iter()
             .map(|(k, v)| format!("{} ~{}t", k, ktok(tok(*v))))
             .collect::<Vec<_>>()

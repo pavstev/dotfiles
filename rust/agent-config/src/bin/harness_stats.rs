@@ -2,7 +2,8 @@
 
 use agent_config::guard_checks::{Fire, Gate, REGISTRY, expanduser, fire_log_path, read_fire_log};
 use agent_config::paths;
-use agent_config::pycompat::{fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
+use agent_config::pycompat::{fname, list_dir, parse_ts_micros, py_float, truthy};
+use agent_config::scan::{Counter, py_dumps};
 use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
@@ -11,7 +12,6 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::hash::Hash;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -111,50 +111,6 @@ fn pyround0(x: f64) -> i64 {
     x.round_ties_even() as i64
 }
 
-/// json.dumps(v) with Python defaults (ensure_ascii, ", " and ": ").
-fn py_dumps(v: &Value) -> String {
-    let mut s = String::new();
-    dump(v, &mut s);
-    s
-}
-
-fn dump(v: &Value, out: &mut String) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            if n.is_i64() || n.is_u64() {
-                out.push_str(&n.to_string());
-            } else {
-                out.push_str(&py_float(n.as_f64().unwrap_or(0.0)));
-            }
-        }
-        Value::String(s) => json_str(out, s),
-        Value::Array(a) => {
-            out.push('[');
-            for (i, x) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                dump(x, out);
-            }
-            out.push(']');
-        }
-        Value::Object(o) => {
-            out.push('{');
-            for (i, (k, x)) in o.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                json_str(out, k);
-                out.push_str(": ");
-                dump(x, out);
-            }
-            out.push('}');
-        }
-    }
-}
-
 /// bytes -> str like open(errors="ignore"): invalid sequences are dropped.
 fn decode_ignore(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len());
@@ -214,84 +170,35 @@ fn parse_ts(s: &str) -> Option<Dt> {
 }
 
 // ---------------------------------------------------------------------------
-// Insertion-ordered counter (collections.Counter)
+// Counters as JSON
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
-struct Counter<K: Clone + Eq + Hash> {
-    keys: Vec<K>,
-    idx: HashMap<K, usize>,
-    vals: Vec<i64>,
+/// The counter as a JSON object; `only` picks the items and their order, else all in insertion order.
+fn counter_to_json(c: &Counter<String>, only: Option<&[(String, i64)]>) -> Value {
+    let mut m = Map::new();
+    match only {
+        Some(items) => {
+            for (k, v) in items {
+                m.insert(k.clone(), Value::from(*v));
+            }
+        }
+        None => {
+            for (k, v) in c.iter() {
+                m.insert(k.clone(), Value::from(v));
+            }
+        }
+    }
+    Value::Object(m)
 }
 
-impl<K: Clone + Eq + Hash> Counter<K> {
-    fn new() -> Self {
-        Self { keys: vec![], idx: HashMap::new(), vals: vec![] }
-    }
-    fn add(&mut self, k: K, n: i64) {
-        if let Some(&i) = self.idx.get(&k) {
-            self.vals[i] += n;
-        } else {
-            self.idx.insert(k.clone(), self.keys.len());
-            self.keys.push(k);
-            self.vals.push(n);
+fn counter_from_json(v: &Value) -> Counter<String> {
+    let mut c = Counter::new();
+    if let Some(o) = v.as_object() {
+        for (k, x) in o {
+            c.add(k.clone(), as_i(x));
         }
     }
-    fn get(&self, k: &K) -> i64 {
-        self.idx.get(k).map_or(0, |&i| self.vals[i])
-    }
-    fn items(&self) -> Vec<(K, i64)> {
-        self.keys.iter().cloned().zip(self.vals.iter().copied()).collect()
-    }
-    fn update(&mut self, other: &Self) {
-        for (k, v) in other.items() {
-            self.add(k, v);
-        }
-    }
-    /// Descending by count, ties in insertion order; `None` = all.
-    fn most_common(&self, n: Option<i64>) -> Vec<(K, i64)> {
-        let mut it = self.items();
-        it.sort_by_key(|(_, v)| Reverse(*v));
-        match n {
-            None => it,
-            Some(n) if n <= 0 => vec![],
-            Some(n) => {
-                it.truncate(n as usize);
-                it
-            }
-        }
-    }
-    fn total(&self) -> i64 {
-        self.vals.iter().sum()
-    }
-}
-
-impl Counter<String> {
-    fn to_json(&self, only: Option<&[(String, i64)]>) -> Value {
-        let mut m = Map::new();
-        match only {
-            Some(items) => {
-                for (k, v) in items {
-                    m.insert(k.clone(), Value::from(*v));
-                }
-            }
-            None => {
-                for (k, v) in self.keys.iter().zip(&self.vals) {
-                    m.insert(k.clone(), Value::from(*v));
-                }
-            }
-        }
-        Value::Object(m)
-    }
-    fn from_json(v: &Value) -> Self {
-        let mut c = Self::new();
-        if let Some(o) = v.as_object() {
-            for (k, x) in o {
-                c.add(k.clone(), as_i(x));
-            }
-        }
-        c
-    }
+    c
 }
 
 fn fnum(x: f64) -> Value {
@@ -487,12 +394,7 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                 }
                 if r.get(&"prompts".to_string()) == 1 && HANDOFF.is_match(&t) {
                     // r["from_handoff"] = 1
-                    if r.idx.contains_key("from_handoff") {
-                        let i = r.idx["from_handoff"];
-                        r.vals[i] = 1;
-                    } else {
-                        r.add("from_handoff".into(), 1);
-                    }
+                    r.set("from_handoff".into(), 1);
                 }
             }
             _ => {}
@@ -601,8 +503,8 @@ fn cmd_collect(a: &CollectArgs) {
             sub.insert("cache_read".into(), Value::from(scache));
             sub.insert("out".into(), Value::from(sout));
             sub.insert("tool_errors".into(), Value::from(serr));
-            sub.insert("models".into(), smodels.to_json(None));
-            sub.insert("effort".into(), seffort.to_json(None));
+            sub.insert("models".into(), counter_to_json(&smodels, None));
+            sub.insert("effort".into(), counter_to_json(&seffort, None));
             sub.insert("spawns".into(), Value::Array(spawns));
             let first = s.times[0];
             let last = *s.times.last().unwrap();
@@ -624,11 +526,11 @@ fn cmd_collect(a: &CollectArgs) {
             row.insert("peak_ctx".into(), Value::from(s.peak));
             row.insert("active_min".into(), fnum(pyround(s.active_s / 60.0, 1)));
             row.insert("wall_min".into(), fnum(pyround((last.micros - first.micros) as f64 / 1e6 / 60.0, 1)));
-            row.insert("stats".into(), s.r.to_json(None));
-            row.insert("tools".into(), s.tools.to_json(None));
-            row.insert("skills".into(), s.skills.to_json(None));
-            row.insert("bash".into(), s.bash.to_json(Some(&s.bash.most_common(Some(15)))));
-            row.insert("errors".into(), errors.to_json(Some(&errors.most_common(Some(20)))));
+            row.insert("stats".into(), counter_to_json(&s.r, None));
+            row.insert("tools".into(), counter_to_json(&s.tools, None));
+            row.insert("skills".into(), counter_to_json(&s.skills, None));
+            row.insert("bash".into(), counter_to_json(&s.bash, Some(&s.bash.most_common(Some(15)))));
+            row.insert("errors".into(), counter_to_json(&errors, Some(&errors.most_common(Some(20)))));
             row.insert("agent_calls".into(), Value::Array(s.agents.clone()));
             row.insert("sub".into(), Value::Object(sub));
             rows.push(Value::Object(row));
@@ -977,7 +879,7 @@ fn cmd_errors(a: &ErrorsArgs) {
         let mut total: Counter<String> = Counter::new();
         for r in &rows {
             let d: String = pychars(get(r, "start").as_str().unwrap_or(""), 10);
-            let e = Counter::from_json(get(r, "errors"));
+            let e = counter_from_json(get(r, "errors"));
             match days.iter_mut().find(|(k, _)| *k == d) {
                 Some((_, c)) => c.update(&e),
                 None => days.push((d, e.clone())),
@@ -998,7 +900,7 @@ fn cmd_errors(a: &ErrorsArgs) {
     let mut by: Vec<(String, Counter<String>)> = vec![];
     for r in &rows {
         let p = key_str(get(r, "project"));
-        let e = Counter::from_json(get(r, "errors"));
+        let e = counter_from_json(get(r, "errors"));
         match by.iter_mut().find(|(k, _)| *k == p) {
             Some((_, c)) => c.update(&e),
             None => by.push((p, e)),
@@ -1042,7 +944,7 @@ fn installed_skills() -> HashSet<String> {
 fn cmd_skills(a: &SimpleArgs) {
     let mut used: Counter<String> = Counter::new();
     for r in load(&a.inp) {
-        used.update(&Counter::from_json(get(&r, "skills")));
+        used.update(&counter_from_json(get(&r, "skills")));
     }
     let installed = installed_skills();
     out!("Used (Skill tool calls):");
@@ -1052,7 +954,7 @@ fn cmd_skills(a: &SimpleArgs) {
     out!("\nNames above that no longer exist were renamed or removed; check the skills repo history.");
     out!("Plugin skills and skillOverrides are not covered.");
     out!("\nInstalled in ~/.claude/skills, ~/*/.claude/skills or ~/work/*/.claude/skills, never called:");
-    let mut left: Vec<&String> = installed.iter().filter(|s| !used.idx.contains_key(*s)).collect();
+    let mut left: Vec<&String> = installed.iter().filter(|s| !used.contains(*s)).collect();
     left.sort();
     for s in left {
         out!("       {}", s);
