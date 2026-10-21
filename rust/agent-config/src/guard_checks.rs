@@ -12,11 +12,11 @@ use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{LazyLock, mpsc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SECRET_FILE: &str = "~/.config/zsh/local.zsh";
 
@@ -49,8 +49,15 @@ pub enum Verdict {
     Deny(String),
 }
 
+/// A message means a refusal, no message means let it through.
+impl From<Option<String>> for Verdict {
+    fn from(msg: Option<String>) -> Self {
+        msg.map_or(Self::Allow, Self::Deny)
+    }
+}
+
 fn deny_or_allow(msg: Option<&str>) -> Verdict {
-    msg.map_or(Verdict::Allow, |m| Verdict::Deny(m.to_string()))
+    Verdict::from(msg.map(String::from))
 }
 
 // --- small path helpers (shared with the guard binary) ----------------------------
@@ -2166,18 +2173,65 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
 
 // --- private words, shadow mode ------------------------------------------------------
 
-/// The output of a git command run with HOME set to `home` (in `dir` when given), or "".
-fn git_out(home: &Path, dir: Option<&Path>, args: &[&str]) -> String {
+/// A child that ended in time: whether it exited with success, and what it wrote to stdout.
+pub struct Finished {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+}
+
+/// Run `cmd` (stdin and stderr closed, stdout read) and wait at most `limit` for it. None when it
+/// cannot start or runs past the limit; a child past the limit is killed. The one spawn helper of
+/// the guard, the Cursor adapter and the checks.
+pub fn run_limited(cmd: &mut Command, limit: Duration) -> Option<Finished> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    if let Ok(stdout) = rx.recv_timeout(limit) {
+        let success = child.wait().is_ok_and(|s| s.success());
+        Some(Finished { success, stdout })
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+}
+
+/// How long a git call of the private-word lookup may run.
+const GIT_LOOKUP_LIMIT: Duration = Duration::from_secs(5);
+
+/// The `remote.origin.url`, `user.email` and `user.name` of the git config in effect (HOME set to
+/// `home`, in `dir` when given), from one `git config -z --get-regexp` call. Missing ones are "".
+struct GitIdentity {
+    url: String,
+    email: String,
+    name: String,
+}
+
+fn git_identity(home: &Path, dir: Option<&Path>) -> GitIdentity {
+    let mut found = GitIdentity { url: String::new(), email: String::new(), name: String::new() };
     let mut c = Command::new("git");
-    c.args(args).env("HOME", home).stdin(Stdio::null()).stderr(Stdio::null());
+    c.args(["config", "-z", "--get-regexp", r"^(remote\.origin\.url|user\.(email|name))$"]).env("HOME", home);
     if let Some(d) = dir {
         c.current_dir(d);
     }
-    c.output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    let Some(done) = run_limited(&mut c, GIT_LOOKUP_LIMIT).filter(|d| d.success) else { return found };
+    // entries are `key\nvalue` split by NUL; the first url and the last identity win, as in `git config`
+    for entry in String::from_utf8_lossy(&done.stdout).split('\0') {
+        let Some((key, value)) = entry.split_once('\n') else { continue };
+        let value = value.trim().to_string();
+        match key {
+            "remote.origin.url" if found.url.is_empty() => found.url = value,
+            "user.email" => found.email = value,
+            "user.name" => found.name = value,
+            _ => {}
+        }
+    }
+    found
 }
 
 /// The words the repo must not leak, lower case and without repeats: `PRIVATE_PROJECTS` and
@@ -2202,13 +2256,9 @@ pub fn private_words_at(home: &Path, dir: Option<&Path>) -> Vec<String> {
             push(&mut out, w);
         }
     }
-    let url = git_out(home, dir, &["remote", "get-url", "origin"]).to_lowercase();
-    let idents = [
-        crate::setting(home, "GIT_EMAIL"),
-        crate::setting(home, "GIT_NAME"),
-        git_out(home, dir, &["config", "user.email"]),
-        git_out(home, dir, &["config", "user.name"]),
-    ];
+    let git = git_identity(home, dir);
+    let url = git.url.to_lowercase();
+    let idents = [crate::setting(home, "GIT_EMAIL"), crate::setting(home, "GIT_NAME"), git.email, git.name];
     for raw in idents {
         let name = raw.trim().to_lowercase();
         let joined: String = name.split_whitespace().collect();

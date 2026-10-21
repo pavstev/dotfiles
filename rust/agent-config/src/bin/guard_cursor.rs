@@ -13,9 +13,9 @@ use std::fs;
 use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const NUDGE_CONTEXT: i64 = 300_000;
 const SPAWN_CONTEXT: i64 = 350_000;
@@ -182,39 +182,13 @@ fn app_context(data: &Value) -> i64 {
     let escaped_conv = conv.replace('\'', "''").replace('\0', "");
     let query = format!("SELECT value FROM cursorDiskKV WHERE key = 'composerData:{escaped_conv}' LIMIT 1;");
     // Read-only, no rc file (-init /dev/null), fixed output mode, 1 s busy timeout.
-    let child = Command::new("sqlite3")
-        .args(["-readonly", "-batch", "-noheader", "-list", "-nullvalue", ""])
+    let mut cmd = Command::new("sqlite3");
+    cmd.args(["-readonly", "-batch", "-noheader", "-list", "-nullvalue", ""])
         .args(["-init", "/dev/null", "-cmd", ".timeout 1000"])
         .arg(&path)
-        .arg(&query)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else { return 0 };
-    let Some(mut stdout) = child.stdout.take() else { return 0 };
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let ok = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break false;
-            }
-        }
-    };
-    let bytes = reader.join().unwrap_or_default();
-    if !ok {
-        return 0;
-    }
-    let val_str = String::from_utf8_lossy(&bytes).to_string();
+        .arg(&query);
+    let Some(done) = gc::run_limited(&mut cmd, Duration::from_secs(3)).filter(|d| d.success) else { return 0 };
+    let val_str = String::from_utf8_lossy(&done.stdout);
     let trimmed = val_str.trim();
     if trimmed.is_empty() {
         return 0;

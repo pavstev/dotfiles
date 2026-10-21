@@ -3,8 +3,9 @@
 //! Warn = exit 0 with hookSpecificOutput.additionalContext JSON on stdout.
 //! Fail-open: any bad input, panic or unknown mode exits 0 with no output.
 //!
-//! Python semantics are mirrored on purpose (truthiness, `str()`, char-based lengths). Where the
-//! Python code would raise and so fail open, the Rust code returns `Err(Fail)`.
+//! The hook input is read once into [`HookInput`]; a field of another JSON type reads as absent.
+//! Lengths are counted in chars, as the Python guard did. A check that cannot read what it needs
+//! (a missing transcript) lets the call through.
 //!
 //! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
 //! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, H1 and W5 (preset workflow), G8 and
@@ -14,10 +15,7 @@
 //! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
 //! already passed in this session, with the git work tree unchanged since, gets a note to skip it.
 
-// Every check shares the `GuardFn` signature, so one that cannot fail still returns `Res`.
-#![allow(clippy::unnecessary_wraps)]
-
-use agent_config::guard_checks::{self as gc, Check, FireKind, expanduser, is_macos, realpath};
+use agent_config::guard_checks::{self as gc, Check, FireKind, Verdict, expanduser, is_macos, realpath};
 use agent_config::paths;
 use agent_config::proj;
 use agent_config::pycompat::{days_from_civil, truthy};
@@ -115,61 +113,84 @@ static WORDS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w{2,}").unwrap())
 static ENTRYPOINT: LazyLock<regex::bytes::Regex> =
     LazyLock::new(|| regex::bytes::Regex::new(r#""entrypoint"\s*:\s*"([^"]*)""#).unwrap());
 
-/// Python would have raised here: the whole hook fails open.
-struct Fail;
-type Res = Result<Option<String>, Fail>;
-
 static NULL: Value = Value::Null;
 
-// --- Python-flavoured helpers -------------------------------------------------
-
-/// `v.get(k)` on a dict, None (Null) when missing or not a dict.
+/// A record or block of a transcript: `v.get(k)`, Null when missing or not an object.
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
 }
 
-/// `x or {}` followed by `.get(...)`: falsy gives an empty dict, a truthy non-dict raises.
-fn obj_or_empty(v: &Value) -> Result<&Value, Fail> {
-    if !truthy(v) {
-        Ok(&NULL)
-    } else if v.is_object() {
-        Ok(v)
-    } else {
-        Err(Fail)
-    }
-}
-
-/// Python `str(v)` (approximate for containers and floats).
-fn py_str(v: &Value) -> String {
-    match v {
-        Value::Null => "None".to_string(),
-        Value::Bool(true) => "True".to_string(),
-        Value::Bool(false) => "False".to_string(),
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
-/// `str(v or "")`.
-fn py_str_or_empty(v: &Value) -> String {
-    if truthy(v) { py_str(v) } else { String::new() }
-}
-
-/// Python `int(v)` for the shapes JSON can hold; None where Python raises.
-fn py_int(v: &Value) -> Option<i64> {
-    match v {
-        Value::Bool(b) => Some(i64::from(*b)),
-        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
-        Value::String(s) => s.trim().parse::<i64>().ok(),
-        _ => None,
-    }
-}
-
-/// `_num`: int/float that is not a bool, else 0.
+/// A JSON number of a transcript field, else 0.
 fn num(v: &Value) -> f64 {
-    match v {
-        Value::Number(n) => n.as_f64().unwrap_or(0.0),
-        _ => 0.0,
+    v.as_f64().unwrap_or(0.0)
+}
+
+/// An integer counter of the state file, else 0.
+fn counter(v: Option<&Value>) -> i64 {
+    v.and_then(Value::as_i64).unwrap_or(0)
+}
+
+/// What every hook event carries, read once. A field of another JSON type reads as absent, and an
+/// id, name or path that is an empty string reads as absent too.
+struct HookInput<'a> {
+    session_id: Option<&'a str>,
+    transcript_path: Option<&'a str>,
+    cwd: Option<&'a str>,
+    tool_name: Option<&'a str>,
+    tool_input: &'a Value,
+    tool_use_id: Option<&'a str>,
+    agent_id: Option<&'a str>,
+    agent_type: Option<&'a str>,
+    agent_transcript_path: Option<&'a str>,
+    permission_mode: Option<&'a str>,
+    /// Unlike the fields above, an empty reply is still a reply.
+    last_assistant_message: Option<&'a str>,
+    stop_hook_active: bool,
+    /// `tool_response.interrupted`
+    interrupted: bool,
+}
+
+impl<'a> HookInput<'a> {
+    fn new(data: &'a Value) -> Self {
+        let text = |key: &str| data.get(key).and_then(Value::as_str);
+        let named = |key: &str| text(key).filter(|s| !s.is_empty());
+        HookInput {
+            session_id: named("session_id"),
+            transcript_path: named("transcript_path"),
+            cwd: named("cwd"),
+            tool_name: text("tool_name"),
+            tool_input: get(data, "tool_input"),
+            tool_use_id: named("tool_use_id"),
+            agent_id: named("agent_id"),
+            agent_type: text("agent_type"),
+            agent_transcript_path: named("agent_transcript_path"),
+            permission_mode: text("permission_mode"),
+            last_assistant_message: text("last_assistant_message"),
+            stop_hook_active: truthy(get(data, "stop_hook_active")),
+            interrupted: get(get(data, "tool_response"), "interrupted").as_bool() == Some(true),
+        }
+    }
+
+    /// A string field of the call's input.
+    fn input_str(&self, key: &str) -> Option<&'a str> {
+        self.tool_input.get(key).and_then(Value::as_str)
+    }
+
+    /// The command of a Bash call, when it is not empty.
+    fn bash_command(&self) -> Option<&'a str> {
+        if self.tool_name != Some("Bash") {
+            return None;
+        }
+        self.input_str("command").filter(|s| !s.is_empty())
+    }
+
+    fn is_main_thread(&self) -> bool {
+        self.agent_id.is_none() && !self.transcript_path.is_some_and(|p| p.contains("/subagents/"))
+    }
+
+    /// The working folder of the call, else the process folder.
+    fn call_cwd(&self) -> PathBuf {
+        self.cwd.map_or_else(|| env::current_dir().unwrap_or_default(), PathBuf::from)
     }
 }
 
@@ -244,18 +265,14 @@ fn check_enabled(check: Check) -> bool {
     cfg().gate.enabled(check)
 }
 
-/// Locked read-modify-write of the per-session state file (the keys count, pace, spawns).
-fn with_state<T>(data: &Value, f: impl FnOnce(&mut Map<String, Value>) -> T) -> Result<T, Fail> {
-    let sid_v = get(data, "session_id");
-    let sid = sanitize_key(&if truthy(sid_v) { py_str(sid_v) } else { "unknown".to_string() });
+/// Locked read-modify-write of the per-session state file (the keys count, pace, spawns). None
+/// when the state folder or file cannot be used.
+fn with_state<T>(data: &HookInput, f: impl FnOnce(&mut Map<String, Value>) -> T) -> Option<T> {
+    let sid = sanitize_key(data.session_id.unwrap_or("unknown"));
     let dir = state_dir();
-    fs::create_dir_all(&dir).map_err(|_| Fail)?;
+    fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("{sid}.json"));
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(format!("{sid}.json.lock")))
-        .map_err(|_| Fail)?;
+    let lock = fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{sid}.json.lock"))).ok()?;
     let _ = lock.lock(); // closing the file releases the lock; no lock support is not fatal
     let mut state = match fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
         Some(Value::Object(m)) => m,
@@ -268,15 +285,16 @@ fn with_state<T>(data: &Value, f: impl FnOnce(&mut Map<String, Value>) -> T) -> 
     // a read-only closure leaves the file alone (a missing file still gets written once)
     if text != before || !path.exists() {
         let tmp = dir.join(format!("{}.json.{}.tmp", sid, std::process::id()));
-        fs::write(&tmp, text).map_err(|_| Fail)?;
-        fs::rename(&tmp, &path).map_err(|_| Fail)?;
+        fs::write(&tmp, text).ok()?;
+        fs::rename(&tmp, &path).ok()?;
     }
-    Ok(out)
+    Some(out)
 }
 
+/// One running helper: the tool_use_id of its Agent call and when it started.
 #[derive(Clone)]
 struct Slot {
-    id: Value,
+    id: Option<String>,
     t: f64,
 }
 
@@ -289,7 +307,7 @@ fn live_spawns(state: &Map<String, Value>, now: f64) -> Vec<Slot> {
                 && let Some(t) = o.get("t").and_then(Value::as_f64)
                 && now - t < SPAWN_TTL
             {
-                slots.push(Slot { id: o.get("id").unwrap_or(&NULL).clone(), t });
+                slots.push(Slot { id: o.get("id").and_then(Value::as_str).map(String::from), t });
             }
         }
     }
@@ -303,7 +321,7 @@ fn slots_value(slots: &[Slot]) -> Value {
             .iter()
             .map(|s| {
                 let mut m = Map::new();
-                m.insert("id".into(), s.id.clone());
+                m.insert("id".into(), s.id.as_deref().map_or(Value::Null, Value::from));
                 m.insert("t".into(), serde_json::Number::from_f64(s.t).map_or(Value::Null, Value::Number));
                 Value::Object(m)
             })
@@ -314,23 +332,17 @@ fn slots_value(slots: &[Slot]) -> Value {
 fn read_counter(file: &Path, key: &str) -> i64 {
     let Ok(s) = fs::read_to_string(file) else { return 0 };
     let Ok(v) = serde_json::from_str::<Value>(&s) else { return 0 };
-    if !v.is_object() {
-        return 0;
-    }
-    match v.get(key) {
-        None => 0,
-        Some(x) => py_int(x).unwrap_or(0),
-    }
+    counter(v.get(key))
 }
 
 // --- transcript reading -------------------------------------------------------
 
-fn rev_lines(path: &Path) -> Result<transcript::RevLines, Fail> {
-    transcript::rev_lines(path).map_err(|_| Fail)
+fn rev_lines(path: &Path) -> Option<transcript::RevLines> {
+    transcript::rev_lines(path).ok()
 }
 
-fn context_size(path: &Value) -> i64 {
-    path.as_str().filter(|s| !s.is_empty()).map_or(0, |p| transcript::context_size(Path::new(p)))
+fn context_size(path: Option<&str>) -> i64 {
+    path.map_or(0, |p| transcript::context_size(Path::new(p)))
 }
 
 fn is_human_prompt(rec: &Value) -> bool {
@@ -364,9 +376,10 @@ fn message_content(rec: &Value) -> &Value {
 
 /// Earlier AskUserQuestion calls of this turn that still have no tool_result (G4). A call with a
 /// result, answered or refused, is done and does not count.
-fn asks_since_last_prompt(path: &Path, tool_use_id: &Value, tool_input: &Value) -> Result<usize, Fail> {
-    let mut found: Vec<(Value, Value)> = Vec::new(); // newest first
-    let mut answered: Vec<Value> = Vec::new(); // ids with a tool_result
+fn asks_since_last_prompt(path: &Path, tool_use_id: Option<&str>, tool_input: &Value) -> Option<usize> {
+    let mut found: Vec<(Option<String>, Value)> = Vec::new(); // newest first
+    let mut answered: Vec<Option<String>> = Vec::new(); // ids with a tool_result
+    let id_of = |b: &Value, key: &str| get(b, key).as_str().map(String::from);
     for line in rev_lines(path)? {
         if !has(&line, b"\"user\"") && !has(&line, b"AskUserQuestion") && !has(&line, b"askme") {
             continue;
@@ -374,7 +387,7 @@ fn asks_since_last_prompt(path: &Path, tool_use_id: &Value, tool_input: &Value) 
         let Some(rec) = loads(&line) else { continue };
         if is_human_prompt(&rec) {
             if has(&line, b"ps:askme") {
-                return Ok(0);
+                return Some(0);
             }
             break;
         }
@@ -383,7 +396,7 @@ fn asks_since_last_prompt(path: &Path, tool_use_id: &Value, tool_input: &Value) 
             if let Some(arr) = message_content(&rec).as_array() {
                 for b in arr {
                     if get(b, "type").as_str() == Some("tool_result") {
-                        answered.push(get(b, "tool_use_id").clone());
+                        answered.push(id_of(b, "tool_use_id"));
                     }
                 }
             }
@@ -397,28 +410,30 @@ fn asks_since_last_prompt(path: &Path, tool_use_id: &Value, tool_input: &Value) 
             if !b.is_object() {
                 continue;
             }
-            if get(b, "name").as_str() == Some("Skill") {
-                let input = obj_or_empty(get(b, "input"))?;
-                if py_str(get(input, "skill")).contains("askme") {
-                    return Ok(0);
-                }
+            if get(b, "name").as_str() == Some("Skill")
+                && get(get(b, "input"), "skill").as_str().is_some_and(|s| s.contains("askme"))
+            {
+                return Some(0);
             }
             if get(b, "type").as_str() == Some("tool_use") && get(b, "name").as_str() == Some("AskUserQuestion") {
-                let id = get(b, "id");
-                if !answered.contains(id) {
-                    found.push((id.clone(), get(b, "input").clone()));
+                let id = id_of(b, "id");
+                if !answered.contains(&id) {
+                    found.push((id, get(b, "input").clone()));
                 }
             }
         }
     }
     // Only asks made BEFORE the current call count.
-    for (idx, (i, inp)) in found.iter().enumerate() {
-        let is_current = if truthy(tool_use_id) { i == tool_use_id } else { inp == tool_input };
+    for (idx, (id, input)) in found.iter().enumerate() {
+        let is_current = match tool_use_id {
+            Some(current) => id.as_deref() == Some(current),
+            None => input == tool_input,
+        };
         if is_current {
-            return Ok(found.len() - idx - 1);
+            return Some(found.len() - idx - 1);
         }
     }
-    Ok(found.len())
+    Some(found.len())
 }
 
 // --- interval parsing (G2) ----------------------------------------------------
@@ -587,24 +602,22 @@ fn pct(v: Option<f64>) -> String {
     }
 }
 
+/// What a run computes at most once: the context size and the pace.
 struct Ctx<'a> {
-    data: &'a Value,
+    data: &'a HookInput<'a>,
     size: Cell<Option<i64>>,
     pace: RefCell<Option<PaceSt>>,
 }
 
 impl<'a> Ctx<'a> {
-    fn new(data: &'a Value) -> Self {
+    fn new(data: &'a HookInput<'a>) -> Self {
         Ctx { data, size: Cell::new(None), pace: RefCell::new(None) }
-    }
-    fn path_val(&self) -> &'a Value {
-        get(self.data, "transcript_path")
     }
     fn size(&self) -> i64 {
         if let Some(s) = self.size.get() {
             return s;
         }
-        let s = context_size(self.path_val());
+        let s = context_size(self.data.transcript_path);
         self.size.set(Some(s));
         s
     }
@@ -619,42 +632,25 @@ impl<'a> Ctx<'a> {
     fn reset_pace(&self) {
         *self.pace.borrow_mut() = None;
     }
-    /// `ctx.path`: Ok(None) when falsy; a truthy non-string fails open when used.
-    fn path(&self) -> Result<Option<&'a str>, Fail> {
-        let v = self.path_val();
-        if !truthy(v) {
-            return Ok(None);
-        }
-        v.as_str().map(Some).ok_or(Fail)
-    }
 }
 
-fn tool_name(data: &Value) -> Option<&str> {
-    get(data, "tool_name").as_str()
-}
-
-fn is_main_thread(data: &Value) -> bool {
-    !truthy(get(data, "agent_id")) && !py_str_or_empty(get(data, "transcript_path")).contains("/subagents/")
-}
-
-fn g3_pretool(data: &Value, ctx: &Ctx) -> Res {
-    if tool_name(data) == Some("Agent") && ctx.size() > SPAWN_CONTEXT {
-        return Ok(Some(format!(
+fn g3_pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
+    if data.tool_name == Some("Agent") && ctx.size() > SPAWN_CONTEXT {
+        return Verdict::Deny(format!(
             "guard: context is {}K (> {}K); do this step yourself instead of spawning a helper. Keep PROGRESS.md current; auto-compact carries the run.",
             ctx.size() / 1000,
             SPAWN_CONTEXT / 1000
-        )));
+        ));
     }
-    Ok(None)
+    Verdict::Allow
 }
 
 /// G1: the brief names a deadline and a hand-back cap (the router fills model and effort).
-fn g1_agent(data: &Value, _ctx: &Ctx) -> Res {
-    if tool_name(data) != Some("Agent") || !get(data, "tool_input").is_object() {
-        return Ok(None);
+fn g1_agent(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    if data.tool_name != Some("Agent") || !data.tool_input.is_object() {
+        return Verdict::Allow;
     }
-    let ti = get(data, "tool_input");
-    let prompt_text = get(ti, "prompt").as_str().unwrap_or("");
+    let prompt_text = data.input_str("prompt").unwrap_or("");
     let mut missing = Vec::new();
     if !DEADLINE_RE.is_match(prompt_text) {
         missing.push("a deadline");
@@ -662,64 +658,63 @@ fn g1_agent(data: &Value, _ctx: &Ctx) -> Res {
     if !CAP_RE.is_match(prompt_text) {
         missing.push("a hand-back cap");
     }
-    if !missing.is_empty() {
-        return Ok(Some(format!(
-            "guard: Agent prompt needs {}. Add `Deadline: 25 min.` and `Hand back at most 4,000 chars; write the rest to a file.`",
-            missing.join(" and ")
-        )));
+    if missing.is_empty() {
+        return Verdict::Allow;
     }
-    Ok(None)
+    Verdict::Deny(format!(
+        "guard: Agent prompt needs {}. Add `Deadline: 25 min.` and `Hand back at most 4,000 chars; write the rest to a file.`",
+        missing.join(" and ")
+    ))
 }
 
 /// G7: refuse general-purpose, claude and an untyped Agent call.
-fn g7_heavy(data: &Value, _ctx: &Ctx) -> Res {
-    if tool_name(data) != Some("Agent") || !get(data, "tool_input").is_object() {
-        return Ok(None);
+fn g7_heavy(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    if data.tool_name != Some("Agent") || !data.tool_input.is_object() {
+        return Verdict::Allow;
     }
-    let kind_v = get(get(data, "tool_input"), "subagent_type");
-    if kind_v.is_array() || kind_v.is_object() {
-        return Err(Fail); // unhashable in Python
+    let kind = match data.tool_input.get("subagent_type") {
+        None | Some(Value::Null) => "general-purpose",
+        Some(Value::String(s)) if s.is_empty() => "general-purpose",
+        Some(Value::String(s)) => s,
+        Some(_) => return Verdict::Allow,
+    };
+    if HEAVY_AGENTS.contains(&kind) {
+        return Verdict::Deny(format!("guard: a {kind} {MSG_HEAVY_TAIL}"));
     }
-    let kind = if truthy(kind_v) { py_str(kind_v) } else { "general-purpose".to_string() };
-    if HEAVY_AGENTS.contains(&kind.as_str()) {
-        return Ok(Some(format!("guard: a {kind} {MSG_HEAVY_TAIL}")));
-    }
-    Ok(None)
+    Verdict::Allow
 }
 
-fn g2_polling(data: &Value, ctx: &Ctx) -> Res {
-    let Some(tool @ ("CronCreate" | "ScheduleWakeup" | "Skill")) = tool_name(data) else { return Ok(None) };
-    let ti = obj_or_empty(get(data, "tool_input"))?;
-    if tool == "Skill" && get(ti, "skill").as_str() != Some("loop") {
-        return Ok(None);
+fn g2_polling(data: &HookInput, ctx: &Ctx) -> Verdict {
+    let Some(tool @ ("CronCreate" | "ScheduleWakeup" | "Skill")) = data.tool_name else { return Verdict::Allow };
+    let ti = data.tool_input;
+    if tool == "Skill" && data.input_str("skill") != Some("loop") {
+        return Verdict::Allow;
     }
-    if tool == "CronCreate" && get(ti, "recurring") == &Value::Bool(false) {
-        return Ok(None);
+    if tool == "CronCreate" && ti.get("recurring") == Some(&Value::Bool(false)) {
+        return Verdict::Allow;
     }
     if ctx.size() <= POLL_CONTEXT {
-        return Ok(None);
+        return Verdict::Allow;
     }
-    let bad = if tool == "CronCreate" {
-        cron_interval_minutes(&py_str(get(ti, "cron"))).is_some_and(|iv| iv < MIN_INTERVAL_MIN)
-    } else if tool == "ScheduleWakeup" {
-        match get(ti, "delaySeconds") {
-            Value::Bool(b) => i64::from(*b) < MIN_INTERVAL_MIN * 60,
-            Value::Number(n) => n.as_f64().is_some_and(|d| d < (MIN_INTERVAL_MIN * 60) as f64),
+    let bad = match tool {
+        "CronCreate" => data.input_str("cron").and_then(cron_interval_minutes).is_some_and(|iv| iv < MIN_INTERVAL_MIN),
+        "ScheduleWakeup" => match ti.get("delaySeconds") {
+            Some(Value::Bool(b)) => i64::from(*b) < MIN_INTERVAL_MIN * 60,
+            Some(Value::Number(n)) => n.as_f64().is_some_and(|d| d < (MIN_INTERVAL_MIN * 60) as f64),
             _ => false,
-        }
-    } else {
-        loop_interval_seconds(&py_str_or_empty(get(ti, "args"))).is_some_and(|s| s < MIN_INTERVAL_MIN * 60)
+        },
+        _ => loop_interval_seconds(data.input_str("args").unwrap_or("")).is_some_and(|s| s < MIN_INTERVAL_MIN * 60),
     };
-    Ok(if bad { Some(MSG_POLL.to_string()) } else { None })
+    Verdict::from(bad.then(|| MSG_POLL.to_string()))
 }
 
-fn g4_ask(data: &Value, ctx: &Ctx) -> Res {
-    if tool_name(data) != Some("AskUserQuestion") {
-        return Ok(None);
+fn g4_ask(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    if data.tool_name != Some("AskUserQuestion") {
+        return Verdict::Allow;
     }
-    let Some(path) = ctx.path()? else { return Ok(None) };
-    let n = asks_since_last_prompt(Path::new(path), get(data, "tool_use_id"), get(data, "tool_input"))?;
-    Ok(if n >= 1 { Some(MSG_ASK.to_string()) } else { None })
+    let Some(path) = data.transcript_path else { return Verdict::Allow };
+    let open = asks_since_last_prompt(Path::new(path), data.tool_use_id, data.tool_input).unwrap_or(0);
+    Verdict::from((open >= 1).then(|| MSG_ASK.to_string()))
 }
 
 // Differs from the other `text_of` copies on purpose (newline join, None when empty); see stores/claude.rs.
@@ -764,22 +759,17 @@ fn subagent_prompt(path: Option<&str>) -> Option<String> {
     None
 }
 
-fn subagent_transcript(data: &Value) -> Option<String> {
-    if let Some(atp) = get(data, "agent_transcript_path").as_str()
-        && !atp.is_empty()
-    {
+fn subagent_transcript(data: &HookInput) -> Option<String> {
+    if let Some(atp) = data.agent_transcript_path {
         return Some(atp.to_string());
     }
-    let tp = get(data, "transcript_path").as_str().filter(|s| !s.is_empty())?;
+    let tp = data.transcript_path?;
     if tp.contains("/subagents/") {
         return Some(tp.to_string());
     }
-    let aid = get(data, "agent_id");
-    if !truthy(aid) {
-        return None;
-    }
+    let aid = data.agent_id?;
     let base = tp.strip_suffix(".jsonl").unwrap_or(tp);
-    Some(format!("{}/subagents/agent-{}.jsonl", base, py_str(aid)))
+    Some(format!("{base}/subagents/agent-{aid}.jsonl"))
 }
 
 fn last_sentence(s: &str) -> &str {
@@ -838,8 +828,8 @@ fn prompt_cap(text: &str) -> Option<i64> {
     [handback, strong, weak, bound].into_iter().find(|v| !v.is_empty()).and_then(|v| v.into_iter().min())
 }
 
-fn default_cap(agent_type: &Value) -> i64 {
-    match agent_type.as_str() {
+fn default_cap(agent_type: Option<&str>) -> i64 {
+    match agent_type {
         Some("task-implementer" | "task-reviewer" | "researcher" | "ui-verifier" | "worker") => 3000,
         Some("code-reviewer") => 4000,
         Some("repo-scanner") => 2000,
@@ -848,29 +838,26 @@ fn default_cap(agent_type: &Value) -> i64 {
     }
 }
 
-fn handback_cap(data: &Value) -> i64 {
+fn handback_cap(data: &HookInput) -> i64 {
     let tr = subagent_transcript(data);
     let prompt = subagent_prompt(tr.as_deref());
     match prompt.as_deref().and_then(prompt_cap) {
         Some(cap) if cap != 0 => cap,
-        _ => default_cap(get(data, "agent_type")),
+        _ => default_cap(data.agent_type),
     }
 }
 
 /// G5: deny a hand-back over cap x 1.10, at most twice per agent; None = allow.
-fn check_handback(data: &Value, text: &Value) -> Option<String> {
-    let text = text.as_str().filter(|s| !s.is_empty())?;
+fn check_handback(data: &HookInput, text: Option<&str>) -> Option<String> {
+    let text = text.filter(|s| !s.is_empty())?;
     let cap = handback_cap(data);
     let n = text.chars().count();
     if (n as f64) <= (cap as f64) * HANDBACK_SLACK {
         return None;
     }
-    let ident = [get(data, "agent_id"), get(data, "session_id")]
-        .into_iter()
-        .find(|v| truthy(v))
-        .map_or_else(|| "unknown".to_string(), py_str);
+    let ident = data.agent_id.or(data.session_id).unwrap_or("unknown");
     let dir = state_dir();
-    let state_file = dir.join(format!("handback-{}.json", sanitize_key(&ident)));
+    let state_file = dir.join(format!("handback-{}.json", sanitize_key(ident)));
     let denies = read_counter(&state_file, "denies");
     if denies >= HANDBACK_MAX_DENIES {
         return None;
@@ -883,13 +870,11 @@ fn check_handback(data: &Value, text: &Value) -> Option<String> {
     ))
 }
 
-fn g5_handback(data: &Value, _ctx: &Ctx) -> Res {
-    if tool_name(data) != Some("SubagentHandback") {
-        return Ok(None);
+fn g5_handback(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    if data.tool_name != Some("SubagentHandback") {
+        return Verdict::Allow;
     }
-    let ti = get(data, "tool_input");
-    let msg = if ti.is_object() { get(ti, "message") } else { &NULL };
-    Ok(check_handback(data, msg))
+    Verdict::from(check_handback(data, data.input_str("message")))
 }
 
 fn basename(p: &str) -> &str {
@@ -898,7 +883,7 @@ fn basename(p: &str) -> &str {
 
 /// (hand-off path, assistant text written after it) for the newest hand-off Write since the last
 /// human prompt, or (None, "").
-fn handoff_this_turn(path: &Path) -> Result<(Option<String>, String), Fail> {
+fn handoff_this_turn(path: &Path) -> Option<(Option<String>, String)> {
     let mut texts: Vec<String> = Vec::new(); // newest first
     for line in rev_lines(path)? {
         let Some(rec) = loads(&line) else { continue };
@@ -918,18 +903,17 @@ fn handoff_this_turn(path: &Path) -> Result<(Option<String>, String), Fail> {
                 if let Some(t) = get(b, "text").as_str() {
                     texts.push(t.to_string());
                 }
-            } else if btype == Some("tool_use") && get(b, "name").as_str() == Some("Write") {
-                let input = obj_or_empty(get(b, "input"))?;
-                if let Some(fp) = get(input, "file_path").as_str()
-                    && HANDOFF_PATH.is_match(fp)
-                {
-                    texts.reverse();
-                    return Ok((Some(fp.to_string()), texts.join("\n")));
-                }
+            } else if btype == Some("tool_use")
+                && get(b, "name").as_str() == Some("Write")
+                && let Some(fp) = get(get(b, "input"), "file_path").as_str()
+                && HANDOFF_PATH.is_match(fp)
+            {
+                texts.reverse();
+                return Some((Some(fp.to_string()), texts.join("\n")));
             }
         }
     }
-    Ok((None, String::new()))
+    Some((None, String::new()))
 }
 
 /// The reply holds the paste line and a markdown link to the file.
@@ -941,20 +925,22 @@ fn handoff_given(fp: &str, text: &str) -> bool {
     LINK_TARGET.captures_iter(text).any(|c| c[1].ends_with(name))
 }
 
-fn g6_archive(data: &Value, ctx: &Ctx) -> Res {
-    if tool_name(data) != Some(ARCHIVE_TOOL) {
-        return Ok(None);
+fn g6_archive(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    if data.tool_name != Some(ARCHIVE_TOOL) {
+        return Verdict::Allow;
     }
-    let Some(path) = ctx.path()? else { return Ok(None) };
-    let ti = get(data, "tool_input");
-    let sid = get(ti, "session_id");
-    if !(sid.is_null() || sid.as_str() == Some("self")) {
-        return Ok(None);
+    let Some(path) = data.transcript_path else { return Verdict::Allow };
+    let own_session = match data.tool_input.get("session_id") {
+        None | Some(Value::Null) => true,
+        Some(sid) => sid.as_str() == Some("self"),
+    };
+    if !own_session {
+        return Verdict::Allow;
     }
-    let (fp, _) = handoff_this_turn(Path::new(path))?;
+    let Some((fp, _)) = handoff_this_turn(Path::new(path)) else { return Verdict::Allow };
     let fp = fp.filter(|f| Path::new(f).exists()); // a hand-off deleted since is not owed to the user
-    Ok(fp.map(|fp| {
-        let name = basename(&fp).to_string();
+    Verdict::from(fp.map(|fp| {
+        let name = basename(&fp);
         format!(
             "guard: you wrote the hand-off {fp} this turn. Do not archive yet: give the link [{name}]({fp}) and the block `Read {fp} and do it.`, end the turn, and archive after the user answers."
         )
@@ -1032,13 +1018,12 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
         } else if !in_turn {
             // before the turn starts: nothing to count
         } else if matches!(name, Some("Edit" | "Write" | "NotebookEdit")) {
-            let fp = get(inp, "file_path");
-            let p = if truthy(fp) { fp } else { get(inp, "notebook_path") };
-            if let Some(p) = p.as_str().filter(|s| !s.is_empty()) {
+            let named = |key: &str| get(inp, key).as_str().filter(|s| !s.is_empty());
+            if let Some(p) = named("file_path").or_else(|| named("notebook_path")) {
                 t.paths.push(p.to_string());
             }
         } else if name == Some("Bash") {
-            if GIT_COMMIT.is_match(&py_str_or_empty(get(inp, "command"))) {
+            if GIT_COMMIT.is_match(get(inp, "command").as_str().unwrap_or("")) {
                 t.committed = true;
             }
         } else if name == Some("AskUserQuestion") {
@@ -1048,7 +1033,7 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
 }
 
 /// One pass from the end of the transcript: this turn's facts and the update_plan calls.
-fn scan_turn(path: &Path) -> Result<Turn, Fail> {
+fn scan_turn(path: &Path) -> Option<Turn> {
     let mut t = Turn::default();
     let mut in_turn = true;
     for line in rev_lines(path)? {
@@ -1073,27 +1058,26 @@ fn scan_turn(path: &Path) -> Result<Turn, Fail> {
             scan_record(&rec, in_turn, &mut t);
         }
     }
-    Ok(t)
+    Some(t)
 }
 
 fn step_name(item: &Value) -> String {
-    if item.is_object() {
-        for k in ["content", "step", "title", "name", "text", "label", "description"] {
-            if let Some(s) = get(item, k).as_str().filter(|s| !s.is_empty()) {
-                return s.to_string();
-            }
-        }
+    match item {
+        Value::String(s) => s.clone(),
+        Value::Object(_) => ["content", "step", "title", "name", "text", "label", "description"]
+            .into_iter()
+            .find_map(|k| get(item, k).as_str().filter(|s| !s.is_empty()))
+            .map_or_else(|| item.to_string(), String::from),
+        other => other.to_string(),
     }
-    py_str(item)
 }
 
 fn step_status(item: &Value) -> String {
     if !item.is_object() {
         return "pending".to_string();
     }
-    let st = get(item, "status");
-    let s = if truthy(st) { py_str(st) } else { "pending".to_string() }.to_lowercase();
-    if matches!(s.as_str(), "in_progress" | "in-progress" | "active") { "in_progress".to_string() } else { s }
+    let status = get(item, "status").as_str().filter(|s| !s.is_empty()).unwrap_or("pending").to_lowercase();
+    if matches!(status.as_str(), "in_progress" | "in-progress" | "active") { "in_progress".to_string() } else { status }
 }
 
 fn apply_plan(steps: &mut Vec<(String, String)>, inp: &Value) {
@@ -1142,38 +1126,29 @@ fn open_steps(events: &[(bool, Value)]) -> Vec<String> {
         .collect()
 }
 
-/// Run git; Ok(None) when it failed, Err when it timed out or cannot start.
-fn git(args: &[&str], cwd: &str, deadline: Instant) -> Result<Option<String>, Fail> {
-    let left = deadline.checked_duration_since(Instant::now()).ok_or(Fail)?;
-    let mut child = std::process::Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| Fail)?;
-    let mut out = child.stdout.take().ok_or(Fail)?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = out.read_to_end(&mut buf);
-        let _ = tx.send(buf);
-    });
-    if let Ok(buf) = rx.recv_timeout(left) {
-        let ok = child.wait().is_ok_and(|s| s.success());
-        Ok(if ok { Some(String::from_utf8_lossy(&buf).into_owned()) } else { None })
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
-        Err(Fail)
+/// What one git call came to.
+enum Git {
+    Out(String),
+    /// git ran and exited with an error (no upstream, not a repo)
+    Failed,
+    /// git did not start or ran past the deadline
+    TimedOut,
+}
+
+fn git(args: &[&str], cwd: &str, deadline: Instant) -> Git {
+    let Some(left) = deadline.checked_duration_since(Instant::now()) else { return Git::TimedOut };
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0").env("GIT_TERMINAL_PROMPT", "0");
+    match gc::run_limited(&mut cmd, left) {
+        Some(done) if done.success => Git::Out(String::from_utf8_lossy(&done.stdout).into_owned()),
+        Some(_) => Git::Failed,
+        None => Git::TimedOut,
     }
 }
 
-/// True when any human prompt of the session says not to push or commit.
-fn said_no_push(path: &Path) -> Result<bool, Fail> {
+/// True when any human prompt of the session says not to push or commit; None when the transcript
+/// cannot be read.
+fn said_no_push(path: &Path) -> Option<bool> {
     for line in rev_lines(path)? {
         if !has(&line, b"\"user\"") {
             continue;
@@ -1183,10 +1158,10 @@ fn said_no_push(path: &Path) -> Result<bool, Fail> {
             continue;
         }
         if NO_PUSH.is_match(&text_of(message_content(&rec)).unwrap_or_default()) {
-            return Ok(true);
+            return Some(true);
         }
     }
-    Ok(false)
+    Some(false)
 }
 
 fn path_join(a: &str, b: &str) -> String {
@@ -1202,22 +1177,26 @@ fn path_join(a: &str, b: &str) -> String {
 /// G10: this turn's work is uncommitted or unpushed in the session's repo. It fires once per repo
 /// state: the session state keeps the last (repo, uncommitted, unpushed) it reported, and the same
 /// tuple at the next Stop stays quiet. A changed tuple, or a clean repo in between, fires again.
-fn g10_commit(data: &Value, t: &Turn) -> Res {
-    let Some(cwd) = get(data, "cwd").as_str().filter(|s| !s.is_empty()) else { return Ok(None) };
+fn g10_commit(data: &HookInput, t: &Turn) -> Option<String> {
+    let cwd = data.cwd?;
     if t.paths.is_empty() && !t.committed {
-        return Ok(None);
+        return None;
     }
     let deadline = Instant::now() + Duration::from_secs_f64(GIT_TIMEOUT);
-    let Some(top) = git(&["rev-parse", "--show-toplevel"], cwd, deadline)? else { return Ok(None) };
-    let count = git(&["rev-list", "--count", "@{u}..HEAD"], cwd, deadline)?; // fails without an upstream
+    let Git::Out(top) = git(&["rev-parse", "--show-toplevel"], cwd, deadline) else { return None };
+    let count = match git(&["rev-list", "--count", "@{u}..HEAD"], cwd, deadline) {
+        Git::Out(c) => Some(c),
+        Git::Failed => None, // no upstream
+        Git::TimedOut => return None,
+    };
     let top = realpath(top.trim());
     let unpushed: i64 = match (&count, t.committed) {
-        (Some(c), true) => c.trim().parse().map_err(|_| Fail)?,
+        (Some(c), true) => c.trim().parse().ok()?,
         _ => 0,
     };
     let mut dirty = 0;
     if !t.paths.is_empty() {
-        let Some(status) = git(&["status", "--porcelain", "-z", "-uall"], cwd, deadline)? else { return Ok(None) };
+        let Git::Out(status) = git(&["status", "--porcelain", "-z", "-uall"], cwd, deadline) else { return None };
         let mine: HashSet<String> = t.paths.iter().map(|p| realpath(&path_join(cwd, p))).collect();
         let parts: Vec<&str> = status.split('\0').collect();
         let mut i = 0;
@@ -1239,11 +1218,10 @@ fn g10_commit(data: &Value, t: &Turn) -> Res {
     }
     if dirty == 0 && unpushed == 0 {
         let _ = with_state(data, |st| st.remove("g10_last")); // clean again: the next dirty state may fire
-        return Ok(None);
+        return None;
     }
-    let tp = get(data, "transcript_path").as_str().ok_or(Fail)?;
-    if said_no_push(Path::new(tp))? {
-        return Ok(None);
+    if said_no_push(Path::new(data.transcript_path?))? {
+        return None;
     }
     // Once per repo state: the same (repo, uncommitted, unpushed) as the last time stays quiet.
     let tuple = serde_json::json!([top, dirty, unpushed]);
@@ -1252,81 +1230,72 @@ fn g10_commit(data: &Value, t: &Turn) -> Res {
         st.insert("g10_last".into(), tuple.clone());
         same
     });
-    if matches!(seen, Ok(true)) {
-        return Ok(None);
+    if seen == Some(true) {
+        return None;
     }
-    Ok(Some(format!(
+    Some(format!(
         "G10: this turn left work in {}: {} uncommitted file(s), {} unpushed commit(s). The ship-to-main preset asks: commit and push now, unless the user said not to. If the work is not finished, say what is left.",
         basename(&top),
         dirty,
         unpushed
-    )))
+    ))
 }
 
-fn final_reply(data: &Value, t: &Turn) -> String {
-    match get(data, "last_assistant_message").as_str() {
-        Some(s) => s.to_string(),
-        None => t.last_text.clone().unwrap_or_default(),
-    }
+fn final_reply(data: &HookInput, t: &Turn) -> String {
+    data.last_assistant_message.map_or_else(|| t.last_text.clone().unwrap_or_default(), String::from)
 }
 
 /// G11: a turn of 10 min or more ends without a clock time or a duration.
-fn g11_clock(data: &Value, t: &Turn) -> Res {
-    let Some(start) = t.start else { return Ok(None) };
+fn g11_clock(data: &HookInput, t: &Turn) -> Option<String> {
+    let start = t.start?;
     let minutes = ((now_secs() - start as f64) / 60.0).floor() as i64;
     if minutes >= CLOCK_TURN_MIN && !CLOCK.is_match(&final_reply(data, t)) {
         let zone = cfg().zone.as_ref().map(|z| format!(" in {z}")).unwrap_or_default();
-        return Ok(Some(format!(
+        return Some(format!(
             "G11: this turn ran {minutes} min. The clock preset asks: give the clock as a local time (HH:MM){zone} and one estimate with a range."
-        )));
+        ));
     }
-    Ok(None)
+    None
 }
 
 /// G12: task-list steps are still open and the turn asks nothing (quiet while a helper still runs).
-fn g12_open_steps(data: &Value, t: &Turn) -> Res {
+fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
     if t.asked || t.wrapped || final_reply(data, t).trim_end().ends_with('?') {
-        return Ok(None);
+        return None;
     }
-    if let Ok(true) = with_state(data, |st| !live_spawns(st, now_secs()).is_empty()) {
-        return Ok(None); // a background helper runs; the app wakes the session when it ends
+    if with_state(data, |st| !live_spawns(st, now_secs()).is_empty()) == Some(true) {
+        return None; // a background helper runs; the app wakes the session when it ends
     }
     let names = open_steps(&t.plan);
     if names.is_empty() {
-        return Ok(None);
+        return None;
     }
     let shown: Vec<String> = names.into_iter().take(3).collect();
-    Ok(Some(format!(
+    Some(format!(
         "G12: the task list still has open steps ({}). Finish them now, or end with what is done, what is left, and one question.",
         shown.join(", ")
-    )))
+    ))
 }
 
-fn g6_stop(data: &Value) -> Res {
-    let path = get(data, "transcript_path").as_str().ok_or(Fail)?;
-    let (fp, mut text) = handoff_this_turn(Path::new(path))?;
-    if let Some(last) = get(data, "last_assistant_message").as_str()
+fn g6_stop(data: &HookInput) -> Option<String> {
+    let (fp, mut text) = handoff_this_turn(Path::new(data.transcript_path?))?;
+    if let Some(last) = data.last_assistant_message
         && !text.contains(last)
     {
         text = format!("{text}\n{last}");
     }
-    if let Some(fp) = fp
-        && Path::new(&fp).exists()
-        && !handoff_given(&fp, &text)
-    {
-        let name = basename(&fp).to_string();
-        return Ok(Some(format!(
-            "guard: you wrote the hand-off {fp} this turn, but your reply does not give it to the user. End with the file link [{name}]({fp}) and a fenced block that holds only: Read {fp} and do it."
-        )));
-    }
-    Ok(None)
+    let fp = fp.filter(|fp| Path::new(fp).exists() && !handoff_given(fp, &text))?;
+    let name = basename(&fp);
+    Some(format!(
+        "guard: you wrote the hand-off {fp} this turn, but your reply does not give it to the user. End with the file link [{name}]({fp}) and a fenced block that holds only: Read {fp} and do it."
+    ))
 }
 
 /// Keep the "what is left" file of the session in step with the open task steps: `<n>\t<first
 /// open step>`, written only when the text changed, removed when nothing is open. Every IO error
 /// is ignored: the statusline is a courtesy and must never fail the hook.
-fn write_status(data: &Value, t: &Turn) {
-    let Some(sid) = get(data, "session_id").as_str().filter(|s| !s.is_empty()) else { return };
+fn write_status(data: &HookInput, t: &Turn) {
+    let Some(sid) = data.session_id else { return };
     let path = agent_config::status_path(sid);
     let names = open_steps(&t.plan);
     let Some(first) = names.first() else {
@@ -1353,42 +1322,37 @@ fn write_status(data: &Value, t: &Turn) {
 /// Stop checks, first message wins: G6, then G10 to G12 on the main thread. One reminder per turn.
 /// The status file for the statusline is updated first on the main thread, also on the final Stop
 /// after a forced continuation (`stop_hook_active`), which runs no check.
-fn stop(data: &Value) -> Res {
-    if !truthy(get(data, "transcript_path")) {
-        return Ok(None);
-    }
-    let again = truthy(get(data, "stop_hook_active"));
+fn stop(data: &HookInput) -> Option<String> {
+    let path = data.transcript_path?;
+    let again = data.stop_hook_active;
     if !again
         && check_enabled(Check::G6)
-        && let Ok(Some(m)) = g6_stop(data)
+        && let Some(m) = g6_stop(data)
     {
         gc::fire_log(Check::G6, FireKind::Stop);
-        return Ok(Some(m));
+        return Some(m);
     }
-    if !is_main_thread(data) {
-        return Ok(None);
+    if !data.is_main_thread() {
+        return None;
     }
-    type TurnCheck = fn(&Value, &Turn) -> Res;
+    type TurnCheck = fn(&HookInput, &Turn) -> Option<String>;
     let checks: [(Check, TurnCheck); 3] =
         [(Check::G10, g10_commit), (Check::G11, g11_clock), (Check::G12, g12_open_steps)];
     let active: Vec<_> = checks.into_iter().filter(|(check, _)| check_enabled(*check)).collect();
-    let Some(path) = get(data, "transcript_path").as_str() else { return Ok(None) };
-    let Ok(t) = scan_turn(Path::new(path)) else { return Ok(None) };
+    let t = scan_turn(Path::new(path))?;
     write_status(data, &t);
     if again {
-        return Ok(None);
+        return None;
     }
-    for (check, f) in active {
-        if let Ok(Some(m)) = f(data, &t) {
-            gc::fire_log(check, FireKind::Stop);
-            return Ok(Some(m));
-        }
-    }
-    Ok(None)
+    active.into_iter().find_map(|(check, f)| {
+        let m = f(data, &t)?;
+        gc::fire_log(check, FireKind::Stop);
+        Some(m)
+    })
 }
 
 /// SubagentStop: the oldest running spawn of this session is done.
-fn spawn_done(data: &Value) {
+fn spawn_done(data: &HookInput) {
     let _ = with_state(data, |st| {
         let live = live_spawns(st, now_secs());
         let rest: Vec<Slot> = live.into_iter().skip(1).collect();
@@ -1397,45 +1361,43 @@ fn spawn_done(data: &Value) {
 }
 
 /// PostToolUseFailure on Agent: free the slot of that tool_use_id (a failed spawn never stops).
-fn spawn_failed(data: &Value) {
-    let tid = get(data, "tool_use_id");
-    if !truthy(tid) || !(get(data, "tool_name").is_null() || tool_name(data) == Some("Agent")) {
+fn spawn_failed(data: &HookInput) {
+    let Some(tid) = data.tool_use_id else { return };
+    if !matches!(data.tool_name, None | Some("Agent")) {
         return;
     }
     let _ = with_state(data, |st| {
         let mut live = live_spawns(st, now_secs());
-        if let Some(i) = live.iter().position(|s| &s.id == tid) {
+        if let Some(i) = live.iter().position(|s| s.id.as_deref() == Some(tid)) {
             live.remove(i);
         }
         st.insert("spawns".into(), slots_value(&live));
     });
 }
 
-fn subagentstop(data: &Value) -> Res {
-    if truthy(get(data, "stop_hook_active")) {
+fn subagentstop(data: &HookInput) -> Option<String> {
+    if data.stop_hook_active {
         spawn_done(data);
-        return Ok(None);
+        return None;
     }
-    let msg = if check_enabled(Check::G5) { check_handback(data, get(data, "last_assistant_message")) } else { None };
+    let msg = if check_enabled(Check::G5) { check_handback(data, data.last_assistant_message) } else { None };
     if msg.is_none() {
         spawn_done(data); // the helper is really done; a denied hand-back keeps its slot
     } else {
         gc::fire_log(Check::G5, FireKind::Deny);
     }
-    Ok(msg)
+    msg
 }
 
 // --- scratch mode -------------------------------------------------------------
 
 /// Allow a write only under a temp or scratchpad folder; None = allow.
-fn scratch(data: &Value) -> Option<String> {
-    let ti = get(data, "tool_input");
-    let fp = get(ti, "file_path");
-    let path_v = if truthy(fp) { fp } else { get(ti, "notebook_path") };
-    let path = path_v.as_str().filter(|s| !s.is_empty())?;
+fn scratch(data: &HookInput) -> Option<String> {
+    let named = |key: &str| data.input_str(key).filter(|s| !s.is_empty());
+    let path = named("file_path").or_else(|| named("notebook_path"))?;
     let mut path = expanduser(path);
     if !path.starts_with('/')
-        && let Some(cwd) = get(data, "cwd").as_str().filter(|s| !s.is_empty())
+        && let Some(cwd) = data.cwd
     {
         path = if cwd.ends_with('/') { format!("{cwd}{path}") } else { format!("{cwd}/{path}") };
     }
@@ -1469,7 +1431,7 @@ fn is_browser(name: &str) -> bool {
 }
 
 /// Browser tool_use blocks since the last human prompt, not counting the current call.
-fn browser_calls_this_turn(path: &Path, tool_use_id: &Value) -> Result<usize, Fail> {
+fn browser_calls_this_turn(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
     let mut n = 0;
     for line in rev_lines(path)? {
         if !has(&line, b"\"user\"") && !has(&line, b"mcp__C") && !has(&line, b"mcp__c") {
@@ -1486,40 +1448,38 @@ fn browser_calls_this_turn(path: &Path, tool_use_id: &Value) -> Result<usize, Fa
         for b in content {
             if b.is_object()
                 && get(b, "type").as_str() == Some("tool_use")
-                && is_browser(&py_str_or_empty(get(b, "name")))
-                && get(b, "id") != tool_use_id
+                && is_browser(get(b, "name").as_str().unwrap_or(""))
+                && get(b, "id").as_str() != tool_use_id
             {
                 n += 1;
             }
         }
     }
-    Ok(n)
+    Some(n)
 }
 
-fn w3_browser(data: &Value, ctx: &Ctx) -> Res {
-    if !is_browser(&py_str_or_empty(get(data, "tool_name"))) {
-        return Ok(None);
+/// W3: a warning after the 5th browser call of a turn in the main window, then every 20th.
+fn w3_browser(data: &HookInput, _ctx: &Ctx) -> Option<String> {
+    if !is_browser(data.tool_name.unwrap_or("")) || data.agent_id.is_some() {
+        return None;
     }
-    if truthy(get(data, "agent_id")) {
-        return Ok(None);
-    }
-    let Some(path) = ctx.path()? else { return Ok(None) };
+    let path = data.transcript_path?;
     if path.contains("/subagents/") {
-        return Ok(None); // a subagent (ui-verifier) is where browser work belongs
+        return None; // a subagent (ui-verifier) is where browser work belongs
     }
-    let n = browser_calls_this_turn(Path::new(path), get(data, "tool_use_id"))?;
+    let n = browser_calls_this_turn(Path::new(path), data.tool_use_id)?;
     if n == BROWSER_WARN_AT || (n > BROWSER_WARN_AT && (n - BROWSER_WARN_AT).is_multiple_of(BROWSER_WARN_EVERY)) {
-        return Ok(Some(format!(
+        return Some(format!(
             "guard (warn): {} browser calls in this window this turn. Page dumps and screenshots fill the main context. For a check (layout, console, a click-through flow, a live URL), dispatch `ui-verifier`; it hands back pass or fail with evidence. Keep going here only when the user asked you to drive the browser for them.",
             n + 1
-        )));
+        ));
     }
-    Ok(None)
+    None
 }
 
 /// (Agent tool_use blocks so far, sum of totalTokens the finished Agent results report).
-fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
-    let data = fs::read(path).map_err(|_| Fail)?;
+fn session_spawns(path: &Path) -> Option<(usize, i64)> {
+    let data = fs::read(path).ok()?;
     let (mut spawns, mut tokens) = (0usize, 0i64);
     let mut tasks: HashSet<String> = HashSet::new();
     for line in data.split(|&b| b == b'\n') {
@@ -1541,7 +1501,7 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
             && let Some(rec) = loads(line)
         {
             let tur = get(&rec, "toolUseResult");
-            if tur.is_object() && num(get(tur, "totalTokens")) != 0.0 {
+            if tur.is_object() {
                 tokens += num(get(tur, "totalTokens")) as i64;
             }
         }
@@ -1552,15 +1512,14 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
             let att = get(&rec, "attachment");
             let usage = get(att, "usage");
             if att.is_object() && usage.is_object() && num(get(usage, "totalTokens")) != 0.0 {
-                let prompt = py_str_or_empty(get(att, "prompt"));
-                let key = if let Some(m) = TASK_ID.captures(&prompt) {
+                let prompt = get(att, "prompt").as_str().unwrap_or("");
+                let delivery = get(att, "delivery_id");
+                let key = if let Some(m) = TASK_ID.captures(prompt) {
                     format!("s{}", &m[1])
-                } else if truthy(get(att, "delivery_id")) {
-                    let d = get(att, "delivery_id");
-                    match d.as_str() {
-                        Some(s) => format!("s{s}"),
-                        None => format!("n{}", py_str(d)),
-                    }
+                } else if let Some(s) = delivery.as_str().filter(|s| !s.is_empty()) {
+                    format!("s{s}")
+                } else if truthy(delivery) {
+                    format!("n{delivery}")
                 } else {
                     format!("n{}", tasks.len())
                 };
@@ -1570,120 +1529,90 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
             }
         }
     }
-    Ok((spawns, tokens))
+    Some((spawns, tokens))
 }
 
 /// The current call is already in the transcript (written before the hook runs).
-fn has_tool_use(path: &Path, tool_use_id: &str) -> Result<bool, Fail> {
+fn has_tool_use(path: &Path, tool_use_id: &str) -> Option<bool> {
     let n1 = format!("\"id\":\"{tool_use_id}\"");
     let n2 = format!("\"id\": \"{tool_use_id}\"");
     for (i, line) in rev_lines(path)?.enumerate() {
         if has(&line, n1.as_bytes()) || has(&line, n2.as_bytes()) {
-            return Ok(true);
+            return Some(true);
         }
         if i > 50 {
-            return Ok(false);
+            return Some(false);
         }
     }
-    Ok(false)
+    Some(false)
 }
 
-fn w4_budget(data: &Value, ctx: &Ctx) -> Res {
-    if tool_name(data) != Some("Agent") {
-        return Ok(None);
+/// W4: a warning when the session spawned many helpers or used many subagent tokens.
+fn w4_budget(data: &HookInput, _ctx: &Ctx) -> Option<String> {
+    if data.tool_name != Some("Agent") {
+        return None;
     }
-    let Some(path) = ctx.path()? else { return Ok(None) };
-    let path = Path::new(path);
+    let path = Path::new(data.transcript_path?);
     let (spawns, tokens) = session_spawns(path)?;
     let mut prior = spawns;
-    let tid = get(data, "tool_use_id");
-    if truthy(tid) {
-        prior = if has_tool_use(path, &py_str(tid))? { spawns.saturating_sub(1) } else { spawns };
+    if let Some(tid) = data.tool_use_id {
+        prior = if has_tool_use(path, tid)? { spawns.saturating_sub(1) } else { spawns };
     }
     let over = prior >= SPAWN_CAP || tokens >= TOKEN_CAP;
     if over && prior % BUDGET_EVERY == 0 {
-        return Ok(Some(format!(
+        return Some(format!(
             "guard (warn): budget. This session has spawned {} agents ({}K subagent tokens; caps {} agents, {}K). Before more: call mcp__ccd_session_mgmt__get_usage, run the fan-out gate (parallel parts? pause? recovery? record? all no means no fan-out), and batch small tasks.",
             prior,
             tokens / 1000,
             SPAWN_CAP,
             TOKEN_CAP / 1000
-        )));
+        ));
     }
-    Ok(None)
-}
-
-fn bash_command(data: &Value) -> Option<String> {
-    if tool_name(data) != Some("Bash") {
-        return None;
-    }
-    let ti = get(data, "tool_input");
-    get(ti, "command").as_str().filter(|s| !s.is_empty()).map(String::from)
+    None
 }
 
 // --- G14 to G17 live in the library (`agent_config::guard_checks`) ---------------
 
-/// The refusal text of a verdict (only `Deny` refuses).
-fn deny_msg(v: gc::Verdict) -> Option<String> {
-    match v {
-        gc::Verdict::Deny(m) => Some(m),
-        _ => None,
-    }
-}
-
 /// G14: deny a bare BSD `sed -i` on macOS (it eats the script as the backup suffix). A suffix
 /// argument (`-i ''`, `-i.bak`, `-i '.bak'`) passes. Quoted text, `gsed` and `sed -n` pass.
-fn g14_sed(data: &Value, _ctx: &Ctx) -> Res {
-    let Some(cmd) = bash_command(data) else { return Ok(None) };
+fn g14_sed(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    let Some(cmd) = data.bash_command() else { return Verdict::Allow };
     if !check_enabled(Check::G14) {
-        return Ok(None);
+        return Verdict::Allow;
     }
-    Ok(deny_msg(gc::g14_sed(&cmd, is_macos())))
-}
-
-/// The hook's working folder: `cwd` of the call, else the process cwd.
-fn call_cwd(data: &Value) -> PathBuf {
-    match get(data, "cwd").as_str().filter(|s| !s.is_empty()) {
-        Some(c) => PathBuf::from(c),
-        None => env::current_dir().unwrap_or_default(),
-    }
+    gc::g14_sed(cmd, is_macos())
 }
 
 /// G17 (preset no-ai-attribution): deny an assistant co-author, noreply or "generated with" line in
 /// a commit, tag, merge, revert, note or gh PR, issue or release text. In shadow mode (`GUARD_SHADOW`)
 /// it logs what it would deny and lets the call through.
-fn g17_attr(data: &Value, _ctx: &Ctx) -> Res {
-    let Some(cmd) = bash_command(data) else { return Ok(None) };
-    let cwd = call_cwd(data);
-    let Ok(verdict) = std::panic::catch_unwind(|| gc::g17_attribution(&cmd, &cwd)) else { return Ok(None) };
-    let gc::Verdict::Deny(msg) = &verdict else { return Ok(None) };
+fn g17_attr(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    let Some(cmd) = data.bash_command() else { return Verdict::Allow };
+    let cwd = data.call_cwd();
+    let Ok(verdict) = std::panic::catch_unwind(|| gc::g17_attribution(cmd, &cwd)) else { return Verdict::Allow };
+    let Verdict::Deny(msg) = &verdict else { return Verdict::Allow };
     if gc::shadow(Check::G17) {
         gc::shadow_log(Check::G17, &verdict, msg);
-        return Ok(None);
+        return Verdict::Allow;
     }
-    Ok(Some(msg.clone()))
+    verdict
 }
 
 /// G15: deny reading local.zsh (Read, Grep or Bash) and printing full process command lines. The
 /// message names the safe command for the matched case (`pgrep -f`, `ps -o ... -p`, the exclude flag).
-fn g15_secrets(data: &Value, _ctx: &Ctx) -> Res {
-    let tool = tool_name(data);
-    let Some(tool @ ("Read" | "Grep" | "Bash")) = tool else { return Ok(None) };
+fn g15_secrets(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    let Some(tool @ ("Read" | "Grep" | "Bash")) = data.tool_name else { return Verdict::Allow };
     if !check_enabled(Check::G15) {
-        return Ok(None);
+        return Verdict::Allow;
     }
-    let cwd = match get(data, "cwd").as_str().filter(|s| !s.is_empty()) {
-        Some(c) => c.to_string(),
-        None => env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default(),
-    };
-    Ok(deny_msg(gc::g15_secrets_at(tool, get(data, "tool_input"), &cwd)))
+    gc::g15_secrets_at(tool, data.tool_input, &data.call_cwd().to_string_lossy())
 }
 
 // --- G13 silence note ------------------------------------------------------------
 
 /// Tool calls since the last assistant text with real words (or the last human prompt). With a
 /// tool_use_id the count ends at that call, so parallel calls each see their own number.
-fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Result<usize, Fail> {
+fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
     let mut n = 0usize;
     let mut active = tool_use_id.is_none();
     for line in rev_lines(path)? {
@@ -1725,7 +1654,7 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Result<usize, Fail> {
                     && let Some(text) = get(b, "text").as_str()
                     && WORDS.is_match(text)
                 {
-                    return Ok(n);
+                    return Some(n);
                 }
             }
         }
@@ -1733,46 +1662,42 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Result<usize, Fail> {
             break;
         }
     }
-    Ok(n)
+    Some(n)
 }
 
 /// G13 (PostToolUse, main thread): one JSON line after the 8th tool call with no text, else None.
-fn posttool(data: &Value) -> Option<String> {
+fn posttool(data: &HookInput) -> Option<String> {
     w5_record(data);
     if !check_enabled(Check::G13) || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
         return None; // the desktop app has its own nudge and its transcript can miss text blocks
     }
-    if !is_main_thread(data) {
+    if !data.is_main_thread() {
         return None;
     }
-    let path = get(data, "transcript_path").as_str().filter(|s| !s.is_empty())?;
-    let tid = get(data, "tool_use_id").as_str().filter(|s| !s.is_empty());
-    match g13_streak(Path::new(path), tid) {
-        Ok(n) if n == G13_AFTER => {
-            gc::fire_log(Check::G13, FireKind::Warn);
-            Some(hook_output("PostToolUse", MSG_G13))
-        }
-        _ => None,
+    if g13_streak(Path::new(data.transcript_path?), data.tool_use_id)? != G13_AFTER {
+        return None;
     }
+    gc::fire_log(Check::G13, FireKind::Warn);
+    Some(hook_output("PostToolUse", MSG_G13))
 }
 
 // --- W5 check once ------------------------------------------------------------------
 
 /// The `checks` entry of one command: where it ran and the command in one line.
-fn w5_key(data: &Value, cmd: &str) -> Option<String> {
+fn w5_key(data: &HookInput, cmd: &str) -> Option<String> {
     let plain = proj::plain_check(cmd)?;
-    Some(format!("{}|{}", call_cwd(data).display(), plain))
+    Some(format!("{}|{}", data.call_cwd().display(), plain))
 }
 
 /// W5, record side (PostToolUse runs only when the tool succeeded; a failed Bash goes to
 /// PostToolUseFailure): a plain check command that passed is stored with the fingerprint of the work
 /// tree after the run. The table keeps the 40 latest.
-fn w5_record(data: &Value) {
-    if !check_enabled(Check::W5) || get(get(data, "tool_response"), "interrupted").as_bool() == Some(true) {
+fn w5_record(data: &HookInput) {
+    if !check_enabled(Check::W5) || data.interrupted {
         return;
     }
-    let Some(key) = bash_command(data).and_then(|c| w5_key(data, &c)) else { return };
-    let Some(fp) = proj::tree_fingerprint(&call_cwd(data)) else { return };
+    let Some(key) = data.bash_command().and_then(|c| w5_key(data, c)) else { return };
+    let Some(fp) = proj::tree_fingerprint(&data.call_cwd()) else { return };
     let _ = with_state(data, |state| {
         let table = state.entry("checks").or_insert_with(|| Value::Object(Map::new()));
         if let Some(m) = table.as_object_mut() {
@@ -1791,13 +1716,12 @@ fn w5_record(data: &Value) {
 
 /// W5, warn side: the same plain check command passed in this session and the work tree is the same
 /// as right after that run. Any error says nothing.
-fn w5_repeat(data: &Value) -> Option<String> {
-    let key = w5_key(data, &bash_command(data)?)?;
-    let fp = proj::tree_fingerprint(&call_cwd(data))?;
+fn w5_repeat(data: &HookInput) -> Option<String> {
+    let key = w5_key(data, data.bash_command()?)?;
+    let fp = proj::tree_fingerprint(&data.call_cwd())?;
     let same = with_state(data, |state| {
         state.get("checks").and_then(|t| t.get(&key)).and_then(Value::as_str) == Some(fp.as_str())
-    })
-    .ok()?;
+    })?;
     same.then(|| {
         "W5: this check already passed in this session and nothing changed since (same commit, no edit, no new file). Skip it, or edit something first.".to_string()
     })
@@ -1806,9 +1730,9 @@ fn w5_repeat(data: &Value) -> Option<String> {
 // --- G8 helper cap, G9 plan gate, router -----------------------------------------
 
 /// G8: helpers running at once, per session. An allowed call is recorded here, so keep this last.
-fn g8_cap(data: &Value, ctx: &Ctx) -> Res {
-    if tool_name(data) != Some("Agent") {
-        return Ok(None);
+fn g8_cap(data: &HookInput, ctx: &Ctx) -> Verdict {
+    if data.tool_name != Some("Agent") {
+        return Verdict::Allow;
     }
     let now = now_secs();
     let st = ctx.pace(); // read before the lock: pace may take a moment
@@ -1828,17 +1752,16 @@ fn g8_cap(data: &Value, ctx: &Ctx) -> Res {
             state.insert("spawns".into(), slots_value(&spawns));
             return Some(msg);
         }
-        spawns.push(Slot { id: get(data, "tool_use_id").clone(), t: now });
+        spawns.push(Slot { id: data.tool_use_id.map(String::from), t: now });
         state.insert("spawns".into(), slots_value(&spawns));
         None
     });
-    Ok(r.unwrap_or(None)) // no state, no cap: fail open
+    Verdict::from(r.flatten()) // no state, no cap: fail open
 }
 
 /// `message.model` of the newest assistant record of a transcript (lowercase), or None.
 fn session_model(path: Option<&str>) -> Option<String> {
-    let lines = rev_lines(Path::new(path?)).ok()?;
-    for line in lines {
+    for line in rev_lines(Path::new(path?))? {
         if !has(&line, b"\"assistant\"") {
             continue;
         }
@@ -1874,43 +1797,41 @@ fn session_entrypoint(path: Option<&str>) -> Option<String> {
 }
 
 /// G9: planning skills only in plan mode; no plan mode when the week runs ahead.
-fn g9_plan_gate(data: &Value, ctx: &Ctx) -> Res {
-    let tool = tool_name(data);
-    if tool == Some("Skill") {
-        let ti = get(data, "tool_input");
-        let skill = get(if ti.is_object() { ti } else { &NULL }, "skill");
-        if !PLAN_SKILLS.iter().any(|s| skill.as_str() == Some(s)) || !is_main_thread(data) {
-            return Ok(None);
+fn g9_plan_gate(data: &HookInput, ctx: &Ctx) -> Verdict {
+    if data.tool_name == Some("Skill") {
+        let skill = data.input_str("skill");
+        if !PLAN_SKILLS.iter().any(|s| skill == Some(s)) || !data.is_main_thread() {
+            return Verdict::Allow;
         }
         let st = ctx.pace();
-        if get(data, "permission_mode").as_str() == Some("plan") || st.state.is_tight() {
-            return Ok(None);
+        if data.permission_mode == Some("plan") || st.state.is_tight() {
+            return Verdict::Allow;
         }
         // The main model decides: Opus and Fable already plan on Opus. Only Sonnet or Haiku is gated,
         // and only where the entrypoint is known (the CLI has opusplan; the desktop app has none).
-        let path = ctx.path_val().as_str().filter(|s| !s.is_empty());
+        let path = data.transcript_path;
         match session_model(path).and_then(|m| Model::of(&m)) {
             Some(m) if m < Model::Opus => {}
-            _ => return Ok(None),
+            _ => return Verdict::Allow,
         }
-        return Ok(match session_entrypoint(path).as_deref() {
+        return Verdict::from(match session_entrypoint(path).as_deref() {
             Some("cli") => Some(MSG_PLAN_GATE.to_string()),
             Some("claude-desktop") => Some(MSG_PLAN_GATE_APP.to_string()),
             _ => None,
         });
     }
-    if tool == Some("EnterPlanMode") {
+    if data.tool_name == Some("EnterPlanMode") {
         let st = ctx.pace();
         if st.state.is_tight() {
-            return Ok(Some(format!(
+            return Verdict::Deny(format!(
                 "guard: the week is {} (used {}, budget {}). Plan without plan mode so Sonnet plans.",
                 st.state,
                 pct(st.used),
                 pct(st.budget)
-            )));
+            ));
         }
     }
-    Ok(None)
+    Verdict::Allow
 }
 
 /// Router: (new tool_input or None, note or None) for a main-thread Agent call.
@@ -1919,23 +1840,23 @@ fn g9_plan_gate(data: &Value, ctx: &Ctx) -> Res {
 /// row never raises cost: the lower of the caller's model and the table's (Explore,
 /// claude-code-guide, statusline-setup: haiku; the rest: sonnet), effort high unless the caller
 /// asked for low or medium, none for haiku. xhigh and max never pass. `fork` is left alone.
-fn route_agent(data: &Value, ctx: &Ctx) -> (Option<Value>, Option<String>) {
-    if tool_name(data) != Some("Agent") || !is_main_thread(data) {
+fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
+    if data.tool_name != Some("Agent") || !data.is_main_thread() {
         return (None, None);
     }
-    let Some(ti) = get(data, "tool_input").as_object() else { return (None, None) };
-    let kind_v = ti.get("subagent_type").unwrap_or(&NULL);
-    let kind = kind_v.as_str();
+    let Some(ti) = data.tool_input.as_object() else { return (None, None) };
+    let text = |key: &str| ti.get(key).and_then(Value::as_str);
+    let kind = text("subagent_type");
     if kind == Some("fork") {
         return (None, None);
     }
-    let desc = py_str_or_empty(ti.get("description").unwrap_or(&NULL));
-    let head: String = py_str_or_empty(ti.get("prompt").unwrap_or(&NULL)).chars().take(400).collect();
-    let final_ = kind == Some("code-reviewer") && (FINAL_REVIEW.is_match(&desc) || FINAL_REVIEW.is_match(&head));
-    let opus_row = kind == Some("Plan") || (final_ && !PANEL_ANGLE.is_match(&desc));
+    let desc = text("description").unwrap_or("");
+    let head: String = text("prompt").unwrap_or("").chars().take(400).collect();
+    let final_ = kind == Some("code-reviewer") && (FINAL_REVIEW.is_match(desc) || FINAL_REVIEW.is_match(&head));
+    let opus_row = kind == Some("Plan") || (final_ && !PANEL_ANGLE.is_match(desc));
     let mut note: Option<String> = None;
-    let model: Value;
-    let effort: String;
+    let model: String;
+    let effort: &str;
     if opus_row {
         let st = ctx.pace();
         let mut m = "opus";
@@ -1943,33 +1864,33 @@ fn route_agent(data: &Value, ctx: &Ctx) -> (Option<Value>, Option<String>) {
             m = "sonnet";
             note = Some(format!("the week is {}, so opus became sonnet", st.state));
         }
-        model = Value::String(m.to_string());
-        effort = "high".to_string();
+        model = m.to_string();
+        effort = "high";
     } else {
         let table = if kind.is_some_and(|k| LOOKUP_AGENTS.contains(&k)) { Model::Haiku } else { Model::Sonnet };
-        let mut m = Value::String(table.name().to_string());
-        let given = ti.get("model").unwrap_or(&NULL);
-        if Model::of(&py_str_or_empty(given)).is_some_and(|g| g <= table) {
-            m = given.clone();
-        }
-        model = m;
-        effort = match ti.get("effort").and_then(|e| e.as_str()) {
-            Some(e @ ("low" | "medium")) => e.to_string(),
-            _ => "high".to_string(),
+        // the caller's own model name stays when it is not dearer than the table's
+        model = match text("model") {
+            Some(given) if Model::of(given).is_some_and(|g| g <= table) => given.to_string(),
+            _ => table.name().to_string(),
+        };
+        effort = match text("effort") {
+            Some(e @ ("low" | "medium")) => e,
+            _ => "high",
         };
     }
     let mut new = ti.clone();
-    new.insert("model".into(), model.clone());
-    if Model::of(&py_str(&model)) == Some(Model::Haiku) {
+    new.insert("model".into(), Value::String(model.clone()));
+    let shown = if Model::of(&model) == Some(Model::Haiku) {
         new.shift_remove("effort"); // haiku takes no effort
+        String::new()
     } else {
-        new.insert("effort".into(), Value::String(effort));
-    }
+        new.insert("effort".into(), Value::String(effort.to_string()));
+        format!(" ({effort})")
+    };
     if &new == ti {
         return (None, None);
     }
-    let shown = new.get("effort").filter(|e| truthy(e)).map(|e| format!(" ({})", py_str(e))).unwrap_or_default();
-    let mut msg = format!("guard router: helper runs on {}{}", py_str(&model), shown);
+    let mut msg = format!("guard router: helper runs on {model}{shown}");
     if let Some(n) = note {
         msg.push_str(" - ");
         msg.push_str(&n);
@@ -1979,9 +1900,11 @@ fn route_agent(data: &Value, ctx: &Ctx) -> (Option<Value>, Option<String>) {
 
 // --- modes --------------------------------------------------------------------
 
-type GuardFn = fn(&Value, &Ctx) -> Res;
+type GuardFn = fn(&HookInput, &Ctx) -> Verdict;
+/// A warning check: a note for the model, or nothing.
+type WarnFn = fn(&HookInput, &Ctx) -> Option<String>;
 
-fn pretool(data: &Value, ctx: &Ctx) -> Res {
+fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
     // g8_cap records the spawn it allows, so it runs after every other deny
     // each check runs only when its id is enabled (G14 and G15 also test their own id)
     let guards: [(Check, GuardFn); 12] = [
@@ -2002,33 +1925,34 @@ fn pretool(data: &Value, ctx: &Ctx) -> Res {
         if !check_enabled(check) {
             continue;
         }
-        if let Some(msg) = g(data, ctx)? {
+        let verdict = g(data, ctx);
+        if verdict != Verdict::Allow {
             gc::fire_log(check, FireKind::Deny);
-            return Ok(Some(msg));
+            return verdict;
         }
     }
-    Ok(None)
+    Verdict::Allow
 }
 
 /// G16 (core): a Bash or MCP call that sends text off the machine and holds a private word or a
 /// secret shape, or a body the guard cannot read. Returns the JSON line of an `ask`, or None. In
 /// shadow mode (`GUARD_SHADOW`) it logs what it would ask and lets the call through.
-fn outbound_ask(data: &Value) -> Option<String> {
+fn outbound_ask(data: &HookInput) -> Option<String> {
     if !check_enabled(Check::G16) {
         return None;
     }
-    let tool = tool_name(data)?;
-    let input = get(data, "tool_input");
+    let tool = data.tool_name?;
+    let input = data.tool_input;
     let verdict = std::panic::catch_unwind(|| {
         if !gc::g16_applies(tool, input) {
-            return gc::Verdict::Allow;
+            return Verdict::Allow;
         }
-        let cwd = call_cwd(data);
+        let cwd = data.call_cwd();
         let words = gc::private_words_at(&paths::home(), Some(&cwd));
         gc::g16_outbound(tool, input, &cwd, &words)
     })
     .ok()?;
-    let gc::Verdict::Ask(msg) = &verdict else { return None };
+    let Verdict::Ask(msg) = &verdict else { return None };
     if gc::shadow(Check::G16) {
         gc::shadow_log(Check::G16, &verdict, msg);
         return None;
@@ -2047,16 +1971,15 @@ fn outbound_ask(data: &Value) -> Option<String> {
 /// H1 (preset workflow): a Bash `sed -n` or `cat` of a code file `ctx` can outline gets a one-line
 /// tip, at most `H1_MAX` times per session (the count lives in the per-session state, and only a
 /// shown tip counts). A call that reads nothing like that costs no file access.
-fn h1_hint(data: &Value) -> Option<String> {
-    let file = gc::h1_read_target(&bash_command(data)?)?;
+fn h1_hint(data: &HookInput) -> Option<String> {
+    let file = gc::h1_read_target(data.bash_command()?)?;
     let show = with_state(data, |state| {
-        let n = state.get("ctx_hints").map_or(0, |v| py_int(v).unwrap_or(0));
+        let n = counter(state.get("ctx_hints"));
         if n < H1_MAX {
             state.insert("ctx_hints".into(), Value::from(n + 1));
         }
         n < H1_MAX
-    })
-    .ok()?;
+    })?;
     show.then(|| {
         format!(
             "Tip: ~/.claude/hooks/rust-bin ctx outline {file}, then ~/.claude/hooks/rust-bin ctx read {file} <symbol>"
@@ -2066,7 +1989,7 @@ fn h1_hint(data: &Value) -> Option<String> {
 
 /// Router and warnings for an allowed call: a JSON line for stdout, or None. The line holds
 /// additionalContext, plus permissionDecision allow and updatedInput when the router changed the call.
-fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
+fn pretool_warn(data: &HookInput, ctx: &Ctx) -> Option<String> {
     let mut notes: Vec<String> = Vec::new();
     let mut updated: Option<Value> = None;
     if check_enabled(Check::Router)
@@ -2086,8 +2009,8 @@ fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
         }
     };
     if check_enabled(Check::G3) {
-        for w in [w3_browser as GuardFn, w4_budget] {
-            add(Check::G3, FireKind::Warn, w(data, ctx).ok().flatten());
+        for w in [w3_browser as WarnFn, w4_budget] {
+            add(Check::G3, FireKind::Warn, w(data, ctx));
         }
     }
     if check_enabled(Check::H1) {
@@ -2113,13 +2036,13 @@ fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
 }
 
 /// The note for a pace state that was not announced yet (`last` = the state announced before).
-fn pace_note(st: &PaceSt, last: &Value) -> Option<String> {
+fn pace_note(st: &PaceSt, last: Option<&str>) -> Option<String> {
     let (used, budget) = (pct(st.used), pct(st.budget));
     match st.state {
         PaceState::Critical => Some(format!(
             "guard: the week is critical ({used} used, budget {budget} today). Sonnet only, no helpers. Tell the user once."
         )),
-        PaceState::Ahead if last.as_str() != Some("ahead") => Some(format!(
+        PaceState::Ahead if last != Some("ahead") => Some(format!(
             "guard: the week is ahead of pace ({used} used, budget {budget} today). Helpers run on Sonnet, max 1 at once, and plans go without plan mode. If the main model is Opus, tell the user once to pick Sonnet."
         )),
         _ => None,
@@ -2127,7 +2050,7 @@ fn pace_note(st: &PaceSt, last: &Value) -> Option<String> {
 }
 
 /// G3 nudge and pace notes: JSON for stdout (or None); counters live in the per-session state file.
-fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
+fn prompt(data: &HookInput, ctx: &Ctx) -> Option<String> {
     // Rescan the transcripts only when the last scan is partial, older than 2 min or from another
     // week. A fresh status line does not skip it: the scan also saves the calibration.
     if check_enabled(Check::Pace) {
@@ -2142,20 +2065,18 @@ fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
     let st = ctx.pace();
     let over = ctx.size() >= NUDGE_CONTEXT;
     let mut note: Option<String> = None;
-    let count = match with_state(data, |state| {
-        let prev = state.get("count").map_or(0, |v| py_int(v).unwrap_or(0));
+    let count = with_state(data, |state| {
+        let prev = counter(state.get("count"));
         let count = if over { prev + 1 } else { 0 };
         state.insert("count".into(), Value::from(count));
         if st.state != PaceState::Unknown && check_enabled(Check::Pace) {
             // a gap in the data does not reset what was announced
-            note = pace_note(&st, state.get("pace").unwrap_or(&NULL));
+            note = pace_note(&st, state.get("pace").and_then(Value::as_str));
             state.insert("pace".into(), Value::String(st.state.as_str().to_string()));
         }
         count
-    }) {
-        Ok(c) => c,
-        Err(_) => i64::from(over),
-    };
+    })
+    .unwrap_or_else(|| i64::from(over));
     let mut notes: Vec<String> = Vec::new();
     if count >= 1 && (count - 1) % NUDGE_EVERY == 0 && check_enabled(Check::G3) {
         notes.push(format!(
@@ -2188,37 +2109,31 @@ fn run() -> i32 {
     if !data.is_object() {
         return 0;
     }
-    let ctx = Ctx::new(&data);
+    let input = HookInput::new(&data);
+    let ctx = Ctx::new(&input);
     let mut out: Option<String> = None;
     let msg = match mode.as_str() {
         "posttoolfailure" => {
-            spawn_failed(&data);
+            spawn_failed(&input);
             None
         }
         "posttool" => {
-            out = posttool(&data);
+            out = posttool(&input);
             None
         }
-        "pretool" => match pretool(&data, &ctx) {
-            Ok(m) => {
-                if m.is_none() {
-                    out = outbound_ask(&data).or_else(|| pretool_warn(&data, &ctx));
-                }
-                m
+        "pretool" => {
+            if let Verdict::Deny(m) = pretool(&input, &ctx) {
+                Some(m)
+            } else {
+                out = outbound_ask(&input).or_else(|| pretool_warn(&input, &ctx));
+                None
             }
-            Err(_) => return 0,
-        },
-        "subagentstop" => match subagentstop(&data) {
-            Ok(m) => m,
-            Err(_) => return 0,
-        },
-        "stop" => match stop(&data) {
-            Ok(m) => m,
-            Err(_) => return 0,
-        },
-        "scratch" => scratch(&data),
+        }
+        "subagentstop" => subagentstop(&input),
+        "stop" => stop(&input),
+        "scratch" => scratch(&input),
         _ => {
-            out = prompt(&data, &ctx);
+            out = prompt(&input, &ctx);
             None
         }
     };
@@ -2383,8 +2298,8 @@ mod tests {
         let path = dir.path().join("t.jsonl");
         let text = recs.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
         fs::write(&path, text).unwrap();
-        assert_eq!(context_size(&json!(path.to_string_lossy())), 250_000);
-        assert_eq!(context_size(&json!(dir.path().join("nope.jsonl").to_string_lossy())), 0);
+        assert_eq!(context_size(Some(&path.to_string_lossy())), 250_000);
+        assert_eq!(context_size(Some(&dir.path().join("nope.jsonl").to_string_lossy())), 0);
     }
 
     #[test]
