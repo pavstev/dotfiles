@@ -4,13 +4,14 @@
 use agent_config::paths;
 use agent_config::pycompat::{basename, dirname, json_str, parse_ts, py_float, py_str, truthy};
 use agent_config::scan::{self, Search, find_session};
+use agent_config::transcript::{Body, Line};
 use clap::Parser;
 use regex::Regex;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -27,8 +28,8 @@ ranked report. Read-only: it never changes anything.
 static NULL: Value = Value::Null;
 
 macro_rules! out {
-    () => { let _ = writeln!(std::io::stdout()); };
-    ($($a:tt)*) => { let _ = writeln!(std::io::stdout(), $($a)*); };
+    () => { let _ = writeln!(io::stdout()); };
+    ($($a:tt)*) => { let _ = writeln!(io::stdout(), $($a)*); };
 }
 
 static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
@@ -247,14 +248,17 @@ fn scan_transcript(path: &Path) -> Transcript {
         mcp_tools: HashSet::new(),
     };
     let mut pending: HashMap<String, (String, String, Option<f64>)> = HashMap::new();
-    let text = read_text(path);
-    for raw in text.split_inclusive('\n') {
-        let Ok(o) = serde_json::from_str::<Value>(raw) else { continue };
-        if !o.is_object() {
-            continue;
+    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let mut reader = BufReader::new(src);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if !reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            break;
         }
-        let t = get(&o, "type").as_str().unwrap_or("");
-        let ts = if truthy(get(&o, "timestamp")) { get(&o, "timestamp").as_str().and_then(parse_ts) } else { None };
+        let raw = String::from_utf8_lossy(&buf);
+        let Some(o) = Line::parse_str(&raw) else { continue };
+        let ts = o.timestamp.as_str().and_then(parse_ts);
         if let Some(ts) = ts {
             if !s.first_ts.is_some_and(|f| f != 0.0) {
                 s.first_ts = Some(ts);
@@ -262,81 +266,72 @@ fn scan_transcript(path: &Path) -> Transcript {
             s.last_ts = Some(ts);
         }
         if s.cwd.as_deref().is_none_or(str::is_empty)
-            && let Some(c) = get(&o, "cwd").as_str()
+            && let Some(c) = o.cwd.as_str()
         {
             s.cwd = Some(c.to_string());
         }
-        if truthy(get(&o, "isSidechain")) {
+        if o.is_sidechain.0 {
             s.sidechain += 1;
         }
-        if t == "system" && get(&o, "subtype").as_str() == Some("compact_boundary") {
-            let meta = get(&o, "compactMetadata");
-            let pre = if truthy(get(meta, "preTokens")) { Some(num(get(meta, "preTokens"))) } else { None };
-            s.compactions.push(pre);
-        } else if t == "attachment" {
-            let att = get(&o, "attachment");
-            let ty = match get(att, "type") {
-                Value::String(x) => x.clone(),
-                Value::Null => "?".into(),
-                other => other.to_string(),
-            };
-            s.attach_by_type.add(ty, clen(raw) as i64);
-            if let Some(names) = get(att, "addedNames").as_array() {
-                for n in names {
-                    if let Some(n) = n.as_str()
-                        && n.starts_with("mcp__")
-                    {
+        let msg = o.msg();
+        match o.kind.or_empty() {
+            "system" if o.subtype.as_str() == Some("compact_boundary") => {
+                let pre = o.compact.0.as_ref().map(|c| &c.pre_tokens).filter(|v| truthy(v)).map(num);
+                s.compactions.push(pre);
+            }
+            "attachment" => {
+                let att = o.attachment.0.as_ref();
+                let ty = match att.map(|a| &a.kind) {
+                    None | Some(Value::Null) => "?".into(),
+                    Some(Value::String(x)) => x.clone(),
+                    Some(other) => other.to_string(),
+                };
+                // The old reader counted a CRLF line without its CR.
+                let len = clen(&raw) - usize::from(raw.ends_with("\r\n"));
+                s.attach_by_type.add(ty, len as i64);
+                for n in att.and_then(|a| a.added_names.0.as_deref()).unwrap_or_default() {
+                    if let Some(n) = n.as_str().filter(|n| n.starts_with("mcp__")) {
                         s.mcp_tools.insert(n.to_string());
                     }
                 }
             }
-        } else if t == "assistant" {
-            let msg = get(&o, "message");
-            s.turns_assistant += 1;
-            s.think_ms += num(get(&o, "thinkingDurationMs"));
-            if let Some(m) = get(msg, "model").as_str().filter(|m| !m.is_empty()) {
-                s.model = Some(m.to_string());
-            }
-            let u = get(msg, "usage");
-            let ctx = num(get(u, "input_tokens")) as i64
-                + num(get(u, "cache_read_input_tokens")) as i64
-                + num(get(u, "cache_creation_input_tokens")) as i64;
-            if ctx != 0 && !truthy(get(&o, "isSidechain")) {
-                s.ctx_now = ctx;
-                s.ctx_max = s.ctx_max.max(ctx);
-            }
-            if let Some(arr) = get(msg, "content").as_array() {
-                for b in arr {
-                    if !b.is_object() || get(b, "type").as_str() != Some("tool_use") {
-                        continue;
-                    }
-                    let name = match get(b, "name") {
-                        Value::Null => "?".to_string(),
-                        Value::String(x) => x.clone(),
-                        other => other.to_string(),
-                    };
-                    let inp = get(b, "input");
+            "assistant" => {
+                s.turns_assistant += 1;
+                s.think_ms += o.thinking_ms.get();
+                if let Some(m) = msg.model.as_str().filter(|m| !m.is_empty()) {
+                    s.model = Some(m.to_string());
+                }
+                let ctx = msg.usage.0.as_ref().map_or(0, |u| {
+                    u.input_tokens.get() as i64
+                        + u.cache_read_input_tokens.get() as i64
+                        + u.cache_creation_input_tokens.get() as i64
+                });
+                if ctx != 0 && !o.is_sidechain.0 {
+                    s.ctx_now = ctx;
+                    s.ctx_max = s.ctx_max.max(ctx);
+                }
+                for b in msg.content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_use")) {
+                    let name = b.name.as_str().unwrap_or("?").to_string();
                     s.tool_calls.add(name.clone(), 1);
-                    pending.insert(get(b, "id").to_string(), (name.clone(), short_input(inp), ts));
-                    if name == "Read" && inp.is_object() && truthy(get(inp, "file_path")) {
-                        s.reads.add(py_str(get(inp, "file_path")), 1);
+                    pending.insert(b.id.or_empty().to_string(), (name.clone(), short_input(&b.input), ts));
+                    if name == "Read"
+                        && let Some(p) = b.input.get("file_path").filter(|p| truthy(p))
+                    {
+                        s.reads.add(py_str(p), 1);
                     }
                 }
             }
-        } else if t == "user"
-            && let Some(arr) = get(get(&o, "message"), "content").as_array()
-        {
-            for b in arr {
-                if !b.is_object() {
-                    continue;
-                }
-                if let Some("tool_result") = get(b, "type").as_str() {
+            "user" => {
+                for b in msg.content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_result")) {
                     let (name, summ, t0) =
-                        pending.remove(&get(b, "tool_use_id").to_string()).unwrap_or(("?".into(), String::new(), None));
-                    let size = result_size(get(b, "content"));
+                        pending.remove(b.tool_use_id.or_empty()).unwrap_or(("?".into(), String::new(), None));
+                    let size = match &b.content {
+                        Body::Text(t) => clen(t),
+                        Body::Json(v) => result_size(v),
+                    };
                     s.tool_bytes.add(name.clone(), size as i64);
                     s.results.push((size, name.clone(), summ.clone()));
-                    if truthy(get(b, "is_error")) {
+                    if b.is_error.0 {
                         s.errors += 1;
                     }
                     if let (Some(t0), Some(ts)) = (t0.filter(|x| *x != 0.0), ts.filter(|x| *x != 0.0))
@@ -346,8 +341,14 @@ fn scan_transcript(path: &Path) -> Transcript {
                     }
                 }
             }
+            _ => {}
         }
     }
+    finish(s)
+}
+
+/// Order the results the way the report lists them.
+fn finish(mut s: Transcript) -> Transcript {
     s.results.sort_by(|a, b| b.cmp(a));
     s.slow.sort_by(|a, b| {
         b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal).then_with(|| b.1.cmp(&a.1)).then_with(|| b.2.cmp(&a.2))

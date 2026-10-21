@@ -4,15 +4,17 @@ use agent_config::guard_checks::{Fire, Gate, REGISTRY, expanduser, fire_log_path
 use agent_config::paths;
 use agent_config::pycompat::{fname, list_dir, parse_ts_micros, py_float, truthy};
 use agent_config::scan::{Counter, py_dumps};
-use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
+use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name};
+use agent_config::transcript::{Block, Body, Line};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
 use serde_json::{Map, Number, Value};
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -54,8 +56,8 @@ static NULL: Value = Value::Null;
 static EMPTY: LazyLock<Value> = LazyLock::new(|| Value::Object(Map::new()));
 
 macro_rules! out {
-    () => { let _ = writeln!(std::io::stdout()); };
-    ($($a:tt)*) => { let _ = writeln!(std::io::stdout(), $($a)*); };
+    () => { let _ = writeln!(io::stdout()); };
+    ($($a:tt)*) => { let _ = writeln!(io::stdout(), $($a)*); };
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,11 @@ fn decode_ignore(bytes: &[u8]) -> String {
             }
         }
     }
+}
+
+/// One line of bytes as text: valid UTF-8 is borrowed, invalid sequences are dropped.
+fn decode_line(bytes: &[u8]) -> Cow<'_, str> {
+    std::str::from_utf8(bytes).map_or_else(|_| Cow::Owned(decode_ignore(bytes)), Cow::Borrowed)
 }
 
 fn read_text_ignore(p: &Path) -> Option<String> {
@@ -222,7 +229,11 @@ fn norm_error(name: &str, content: &Value) -> String {
         Value::String(s) => s.clone(),
         other => py_dumps(other),
     };
-    let t = PATHS.replace_all(&t, "<path>").into_owned();
+    norm_text(name, &t)
+}
+
+fn norm_text(name: &str, t: &str) -> String {
+    let t = PATHS.replace_all(t, "<path>");
     let t = DIGITS.replace_all(&t, "N").replace('\n', " ");
     format!("{}: {}", name, pychars(&t, 110))
 }
@@ -253,99 +264,89 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
     let (mut first_ctx, mut peak): (Option<i64>, i64) = (None, 0);
     let mut names: HashMap<String, String> = HashMap::new();
     let mut version = Value::Null;
-    let text = read_text_ignore(path).unwrap_or_default();
-    for line in text.split('\n') {
-        let Ok(o) = serde_json::from_str::<Value>(line) else { continue };
-        if !o.is_object() {
-            continue;
+    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let mut reader = BufReader::new(src);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if !reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            break;
         }
-        if truthy(get(&o, "timestamp"))
-            && let Some(s) = get(&o, "timestamp").as_str()
-            && let Some(d) = parse_ts(s)
-        {
+        let text = decode_line(&buf);
+        let Some(o) = Line::parse_str(text.strip_suffix('\n').unwrap_or(&text)) else { continue };
+        if let Some(d) = o.timestamp.as_str().and_then(parse_ts) {
             times.push(d);
         }
-        let kind = get(&o, "type").as_str().unwrap_or("");
-        let msg = or_empty(get(&o, "message"));
+        let msg = o.msg();
         if !truthy(&version) {
-            version = get(&o, "version").clone();
+            version = o.version.clone();
         }
-        match kind {
-            "system" => match get(&o, "subtype").as_str() {
+        match o.kind.or_empty() {
+            "system" => match o.subtype.as_str() {
                 Some("compact_boundary") => r.add("compactions".into(), 1),
                 Some("api_error") => r.add("api_errors".into(), 1),
                 _ => {}
             },
             "assistant" => {
-                if let Some(arr) = get(msg, "content").as_array() {
-                    for c in arr {
-                        if !c.is_object() || get(c, "type").as_str() != Some("tool_use") {
-                            continue;
-                        }
-                        let n = get(c, "name").as_str().unwrap_or("").to_string();
-                        let inp = or_empty(get(c, "input"));
-                        names.insert(get(c, "id").to_string(), n.clone());
-                        tools.add(n.clone(), 1);
-                        if n == "Skill" {
-                            let sk = match get(inp, "skill") {
-                                Value::String(s) => s.clone(),
-                                Value::Null => "?".to_string(),
-                                other => other.to_string(),
+                for c in msg.content.blocks().iter().filter(|c| c.kind.as_str() == Some("tool_use")) {
+                    let n = c.name.or_empty().to_string();
+                    let inp = or_empty(&c.input);
+                    names.insert(c.id.or_empty().to_string(), n.clone());
+                    tools.add(n.clone(), 1);
+                    if n == "Skill" {
+                        let sk = match get(inp, "skill") {
+                            Value::String(s) => s.clone(),
+                            Value::Null => "?".to_string(),
+                            other => other.to_string(),
+                        };
+                        skills.add(sk, 1);
+                    } else if n == "Agent" || n == "Task" {
+                        let st = get(inp, "subagent_type");
+                        let ty = if truthy(st) { st.clone() } else { Value::from("general-purpose") };
+                        let plen = match get(inp, "prompt") {
+                            Value::String(s) => s.chars().count(),
+                            Value::Array(a) => a.len(),
+                            _ => 0,
+                        };
+                        let mut m = Map::new();
+                        m.insert("type".into(), ty);
+                        m.insert("model".into(), get(inp, "model").clone());
+                        m.insert("effort".into(), get(inp, "effort").clone());
+                        m.insert("bg".into(), get(inp, "run_in_background").clone());
+                        m.insert("plen".into(), Value::from(plen));
+                        agents.push(Value::Object(m));
+                    } else if n == "Bash" {
+                        let cmd_s = get(inp, "command").as_str().unwrap_or("").trim().to_string();
+                        let stripped = CD_PREFIX.replace(&cmd_s, "").into_owned();
+                        let cmd: Vec<&str> = stripped.split_whitespace().collect();
+                        const TWO: [&str; 13] = [
+                            "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node",
+                            "make", "cargo",
+                        ];
+                        if !cmd.is_empty() {
+                            let k = if TWO.contains(&cmd[0]) {
+                                cmd.iter().take(2).copied().collect::<Vec<_>>().join(" ")
+                            } else {
+                                pychars(cmd[0], 24)
                             };
-                            skills.add(sk, 1);
-                        } else if n == "Agent" || n == "Task" {
-                            let st = get(inp, "subagent_type");
-                            let ty = if truthy(st) { st.clone() } else { Value::from("general-purpose") };
-                            let plen = match get(inp, "prompt") {
-                                Value::String(s) => s.chars().count(),
-                                Value::Array(a) => a.len(),
-                                _ => 0,
-                            };
-                            let mut m = Map::new();
-                            m.insert("type".into(), ty);
-                            m.insert("model".into(), get(inp, "model").clone());
-                            m.insert("effort".into(), get(inp, "effort").clone());
-                            m.insert("bg".into(), get(inp, "run_in_background").clone());
-                            m.insert("plen".into(), Value::from(plen));
-                            agents.push(Value::Object(m));
-                        } else if n == "Bash" {
-                            let cmd_s = get(inp, "command").as_str().unwrap_or("").trim().to_string();
-                            let stripped = CD_PREFIX.replace(&cmd_s, "").into_owned();
-                            let cmd: Vec<&str> = stripped.split_whitespace().collect();
-                            const TWO: [&str; 13] = [
-                                "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node",
-                                "make", "cargo",
-                            ];
-                            if !cmd.is_empty() {
-                                let k = if TWO.contains(&cmd[0]) {
-                                    cmd.iter().take(2).copied().collect::<Vec<_>>().join(" ")
-                                } else {
-                                    pychars(cmd[0], 24)
-                                };
-                                bash.add(k, 1);
-                            }
+                            bash.add(k, 1);
                         }
                     }
                 }
-                let mid = get(msg, "id").to_string();
-                let u = or_empty(get(msg, "usage"));
-                let model = get(msg, "model");
-                if seen.contains(&mid) || !truthy(u) || model.as_str() == Some("<synthetic>") {
+                let mid = msg.id.or_empty();
+                let Some(u) = msg.usage.0.as_ref().filter(|u| !u.is_empty()) else { continue };
+                if seen.contains(mid) || msg.model.as_str() == Some("<synthetic>") {
                     continue;
                 }
-                seen.insert(mid);
-                let inp_t = as_i(get(u, "input_tokens"));
-                let cr = as_i(get(u, "cache_read_input_tokens"));
-                let cc = as_i(get(u, "cache_creation_input_tokens"));
+                seen.insert(mid.to_string());
+                let inp_t = u.input_tokens.get() as i64;
+                let cr = u.cache_read_input_tokens.get() as i64;
+                let cc = u.cache_creation_input_tokens.get() as i64;
                 let ctx = inp_t + cr + cc;
-                let mk = match model {
-                    Value::Null => None,
-                    Value::String(s) => Some(s.clone()),
-                    other => Some(other.to_string()),
-                };
+                let mk = msg.model.as_str().map(str::to_string);
                 models.add(mk, 1);
                 r.add("calls".into(), 1);
-                r.add("out".into(), as_i(get(u, "output_tokens")));
+                r.add("out".into(), u.output_tokens.get() as i64);
                 r.add("fresh_in".into(), inp_t + cc);
                 r.add("cache_read".into(), cr);
                 if first_ctx.is_none() && ctx != 0 {
@@ -354,33 +355,28 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                 peak = peak.max(ctx);
             }
             "user" => {
-                let content = get(msg, "content");
-                if let Some(arr) = content.as_array()
-                    && arr.iter().any(|x| x.is_object() && get(x, "type").as_str() == Some("tool_result"))
-                {
-                    for x in arr {
-                        if x.is_object() && get(x, "type").as_str() == Some("tool_result") && truthy(get(x, "is_error"))
-                        {
-                            let nm =
-                                names.get(&get(x, "tool_use_id").to_string()).cloned().unwrap_or_else(|| "?".into());
-                            let e = norm_error(&nm, get(x, "content"));
-                            if e.contains("hook error") {
-                                r.add("hook_denials".into(), 1);
-                            } else {
-                                r.add("tool_errors".into(), 1);
-                            }
-                            errors.add(e, 1);
+                let blocks = msg.content.blocks();
+                let is_result = |x: &&Block| x.kind.as_str() == Some("tool_result");
+                if blocks.iter().any(|x| is_result(&x)) {
+                    for x in blocks.iter().filter(is_result).filter(|x| x.is_error.0) {
+                        let nm = names.get(x.tool_use_id.or_empty()).map_or("?", String::as_str);
+                        let e = match &x.content {
+                            Body::Text(s) => norm_text(nm, s),
+                            Body::Json(v) => norm_error(nm, v),
+                        };
+                        if e.contains("hook error") {
+                            r.add("hook_denials".into(), 1);
+                        } else {
+                            r.add("tool_errors".into(), 1);
                         }
+                        errors.add(e, 1);
                     }
                     continue;
                 }
-                if truthy(get(&o, "isMeta"))
-                    || truthy(get(&o, "isCompactSummary"))
-                    || (truthy(get(&o, "isSidechain")) && !is_sub)
-                {
+                if o.is_meta.0 || o.is_compact_summary.0 || (o.is_sidechain.0 && !is_sub) {
                     continue;
                 }
-                let t = text_of(content);
+                let t = msg.content.text(" ");
                 if t.starts_with(INTERRUPT) {
                     r.add("interrupts".into(), 1);
                     continue;

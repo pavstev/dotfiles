@@ -485,6 +485,16 @@ pub struct Usage {
     pub cache_creation: Obj<CacheCreation>,
 }
 
+impl Usage {
+    /// True when the object has none of the four counts (an empty `usage` object).
+    pub fn is_empty(&self) -> bool {
+        !(self.input_tokens.present
+            || self.output_tokens.present
+            || self.cache_creation_input_tokens.present
+            || self.cache_read_input_tokens.present)
+    }
+}
+
 /// The cache writes of a message by time to live.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default)]
