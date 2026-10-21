@@ -100,7 +100,8 @@ Accepted for now:
   stands in for the platform in the macOS-only guard checks (a test hook), and G14 and G15
   assume `/` in paths.
 - `pace` skips a JSON NaN line or a lone surrogate in a transcript and ignores an unwritable
-  cache dir.
+  cache dir. Local time (the `pace` budget day, the scans) is UTC on Windows unless `TZ` is set:
+  jiff's system time zone links windows-link, which crashes next to tantivy's winapi there.
 - `guard_cursor` reads Cursor's context size with the `sqlite3` command (read-only, 1 s
   timeout). Without it (a plain Debian or Ubuntu) it reads 0 and never denies on app context;
   the transcript path still works.

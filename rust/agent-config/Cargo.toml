@@ -14,7 +14,10 @@ walkdir = "2"
 regex = "1"
 tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "stopwords", "stemmer"] }
 thiserror = "2"
-jiff = "0.2"
+# jiff's system time zone (`tz-system`) links windows-link (raw-dylib). Next to tantivy's winapi
+# import libraries that makes every exe crash before main on windows-gnu, so it is on for macOS and
+# Linux only (below). Windows reads the TZ variable, else UTC.
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated", "perf-inline"] }
 memchr = "2"
 
 # The prompt backend. crossterm pulls winapi 0.3, whose GNU import libraries clash with the
@@ -22,6 +25,7 @@ memchr = "2"
 # uses the console backend.
 [target.'cfg(not(windows))'.dependencies]
 inquire = { version = "0.9.4", default-features = false, features = ["crossterm", "editor"] }
+jiff = { version = "0.2", features = ["tz-system"] } # see the jiff line above
 
 [target.'cfg(windows)'.dependencies]
 inquire = { version = "0.9.4", default-features = false, features = ["console", "editor"] }
