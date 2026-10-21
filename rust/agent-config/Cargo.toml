@@ -6,7 +6,8 @@ rust-version = "1.89" # File::lock (the guard's state file)
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json ={ version = "1", features = ["preserve_order", "float_roundtrip"] }
 dirs = "6"
 sha2 = "0.10"
 tempfile = "3"
@@ -55,9 +56,6 @@ struct_field_names = "allow"
 items_after_statements = "allow"
 unreadable_literal = "allow"
 struct_excessive_bools = "allow" # flag structs of the command lines
-
-[dev-dependencies]
-serde = "1" # one test pretty-prints with a custom indent
 
 # Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
 # after a pull about 4 times slower, with the same start-up time. Keep the default
