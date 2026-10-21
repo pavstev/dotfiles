@@ -1110,6 +1110,40 @@ fn test_one_failing_part_does_not_stop_the_others() {
 }
 
 #[test]
+fn test_a_cli_config_part_of_another_shape_is_a_skipped_part() {
+    for body in [json!({"attribution": 3}), json!({"permissions": []})] {
+        let fx = Fx::new("ac-cursor-cli-shape");
+        wj(&fx.cdir().join("cli-config.json"), &body);
+        let (rc, _, err) = fx.ac(&["cursor"]);
+        assert_eq!(rc, 1, "{err}");
+        assert!(err.contains("is not a JSON object"), "{err}");
+        assert!(!err.contains("panicked"), "{err}");
+        assert_eq!(rj(&fx.cdir().join("cli-config.json")), body); // left as it was
+    }
+}
+
+#[test]
+fn test_cursor_files_keep_their_other_keys_in_place() {
+    let fx = Fx::new("ac-cursor-key-order");
+    fs::create_dir_all(fx.cdir()).unwrap();
+    let hooks = r#"{"zeta": 1, "version": 3, "hooks": {"stop": [{"command": "mine"}]}, "alpha": [2]}"#;
+    fs::write(fx.cdir().join("hooks.json"), hooks).unwrap();
+    let cli = r#"{"zeta": 1, "permissions": {"allow": ["Shell(ls)"]}, "model": {"a": 1}, "alpha": 2}"#;
+    fs::write(fx.cdir().join("cli-config.json"), cli).unwrap();
+    let (rc, _, err) = fx.ac(&["cursor"]);
+    assert_eq!(rc, 0, "{err}");
+    let keys = |file: &str| -> Vec<String> {
+        let text = fs::read_to_string(fx.cdir().join(file)).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        v.as_object().unwrap().keys().cloned().collect()
+    };
+    // known keys stay where they were, new ones come last
+    assert_eq!(keys("hooks.json"), ["zeta", "version", "hooks", "alpha"]);
+    assert_eq!(&keys("cli-config.json")[..4], ["zeta", "permissions", "model", "alpha"]);
+    assert_eq!(rj(&fx.cdir().join("hooks.json"))["version"], json!(3));
+}
+
+#[test]
 fn test_an_older_generated_tui_is_replaced() {
     let fx = Fx::new("ac-oc-theme-legacy");
     // the first layout put the palette inline, which the schema rejects
