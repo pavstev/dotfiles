@@ -1,25 +1,25 @@
-# Set this up on a friend's machine
+# Set up a new machine with Claude
 
-A runbook for Claude. The friend opens a Claude Code session on their own machine and asks Claude
+A runbook for Claude. The user opens a Claude Code session on their own machine and asks Claude
 to follow this file. Claude reads it from the repo page before the clone, and from
-`~/dotfiles/docs/FRIENDS-SETUP.md` after step 2. Claude follows the sections in order.
+`~/dotfiles/docs/SETUP-RUNBOOK.md` after step 2. Claude follows the sections in order.
 
 ## How to run this file
 
 Each step starts with a tag.
 
 - `[RUN]` Run the command yourself. Show the last line of its output.
-- `[ASK]` Ask the friend. Give two to four options, the recommended one first, and ask all the
-  questions of one section in one go. Use the default when the friend says "you pick".
+- `[ASK]` Ask the user. Give two to four options, the recommended one first, and ask all the
+  questions of one section in one go. Use the default when the user says "you pick".
 - `[CONFIRM]` Show what you are about to do, then wait for a yes.
 
 Rules for the whole run:
 
 - Stop on any failure. Quote the failing line, say what it means, and ask. Do not skip the step.
-- Never invent a value. A name, an email, a time zone or a plan comes from the friend or from the
+- Never invent a value. A name, an email, a time zone or a plan comes from the user or from the
   machine (`git config`, `date`), never from a guess.
 - Never ask for a password or a token in the chat, and never print one. Logins happen in the
-  friend's own terminal or browser.
+  user's own terminal or browser.
 - Never open `~/.config/zsh/local.zsh`. It holds secrets.
 - Keep to the OS of the machine. Run `uname -s` first: `Darwin` is macOS, `Linux` is Linux,
   `MINGW...` or `MSYS...` is Windows (Git Bash).
@@ -36,7 +36,7 @@ Rules for the whole run:
 | Windows | Git Bash; `git` and `curl` on PATH; Developer Mode on (Settings, System, For developers) | `command -v git curl` |
 
 `[CONFIRM]` If something is missing, show the fix (the README "Set up" section of the OS names it)
-and wait until the friend has done it.
+and wait until the user has done it.
 
 ## 2. Bootstrap
 
@@ -44,9 +44,9 @@ The one-line setup is in the [README](../README.md): pick the section for the OS
 "Set up Linux" or "Set up Windows"). Do not copy the line from here, the README is the one place
 that holds it.
 
-`[CONFIRM]` Tell the friend to paste that line in a plain terminal, not in a Claude Code window.
+`[CONFIRM]` Tell the user to paste that line in a plain terminal, not in a Claude Code window.
 The run asks questions and may ask for a password, and a Claude Code window can race with the
-files that the setup writes. Wait until the friend says it has finished.
+files that the setup writes. Wait until the user says it has finished.
 
 `[RUN]` Check that it cloned and ran:
 
@@ -54,7 +54,7 @@ files that the setup writes. Wait until the friend says it has finished.
 test -x ~/dotfiles/dotfiles && echo found
 ```
 
-Expected: `found`. If not, stop and ask for the last lines the friend saw.
+Expected: `found`. If not, stop and ask for the last lines the user saw.
 
 ## 3. First run
 
@@ -66,7 +66,7 @@ The bootstrap already ran `dotfiles` once. Its questions are:
   more after an update when they are not set yet)
 - on a Mac, whether to install the Claude desktop app
 
-`[RUN]` Read the last line of that run if the friend pasted it. It should say `dotfiles: done in <time>`.
+`[RUN]` Read the last line of that run if the user pasted it. It should say `dotfiles: done in <time>`.
 A long step prints `still working on <step> (…)` each minute. No new line for several minutes
 means it is stuck: Ctrl-C, then `bash ~/dotfiles/dotfiles -v`.
 A line with warnings is fine: read the `!` lines above it and report them.
@@ -92,12 +92,12 @@ Presets are opt-in working habits. A preset that is off costs no tokens. The lis
 | `clock` | say the local time and an estimate with a range |
 | `plain-writing` | no em dashes, short plain sentences |
 | `no-ai-attribution` | no assistant co-author or "generated with" line in commits and PRs |
-| `ship-to-main` | work lands on main in one commit. Off by default for a friend: a push to a work repo's main can hurt |
+| `ship-to-main` | work lands on main in one commit. Off by default for a shared machine: a push to a work repo's main can hurt |
 
 `[ASK]` Ask these together:
 
 1. Which presets? Options: all but `ship-to-main` (recommended), all, none, pick by name.
-2. Which Claude plan? Options: `pro`, `max5`, `max20`, `team`, `api`, `unknown` (recommended when the friend
+2. Which Claude plan? Options: `pro`, `max5`, `max20`, `team`, `api`, `unknown` (recommended when the user
    does not know). It sets the weekly pace budget.
 3. Which days do they work? Examples: `mon-fri` (default), `mon-sat`, `sun-thu`.
 4. Which time zone? An IANA name such as `UTC` or `Area/City`, or empty for the system zone.
@@ -114,7 +114,7 @@ TIMEZONE=""
 THEME="copper"
 ```
 
-Leave a name out for the default. An empty value is the default too. The friend can also run
+Leave a name out for the default. An empty value is the default too. The user can also run
 `bash ~/dotfiles/dotfiles settings` in a terminal for the same menu.
 
 `[RUN]` Write the lines (add to the file, keep the existing ones), then run `bash ~/dotfiles/dotfiles`
@@ -122,11 +122,11 @@ once more so the links and generated files follow. All names are in `settings.ex
 
 ## 5. Sign-ins
 
-The tools need a login. The friend does these in their own terminal. You never see a password or a token.
+The tools need a login. The user does these in their own terminal. You never see a password or a token.
 
 `[ASK]` Which to do now? Options: all (recommended), GitHub only, later.
 
-`[CONFIRM]` For each pick, name the command and wait until the friend says it is done:
+`[CONFIRM]` For each pick, name the command and wait until the user says it is done:
 
 | Tool | Command | What happens |
 |------|---------|--------------|
@@ -161,12 +161,12 @@ changes nothing. The eight checks:
 | `bins-fresh` | each Rust program is built and newer than its source | `bash ~/dotfiles/dotfiles` |
 | `guard-selftest` | the guard blocks what it should and lets `ls` through | `bash ~/dotfiles/dotfiles`, then run doctor again |
 | `presets` | the preset links equal the `PRESETS` setting | `bash ~/dotfiles/dotfiles` |
-| `generated` | the Cursor rule and Opencode files carry the `generated-by: dotfiles` marker | move away a file of the friend's own with that name, then `bash ~/dotfiles/dotfiles` |
+| `generated` | the Cursor rule and Opencode files carry the `generated-by: dotfiles` marker | move away a file of the user's own with that name, then `bash ~/dotfiles/dotfiles` |
 | `timezone` | `TIMEZONE` is empty or a real zone name | fix the value in the settings (macOS and Linux) |
 | `no-leak` | no private word in a tracked file | remove the word from that file |
 
 On a FAIL: apply the fix in the last column, run doctor again, and stop after a second failure of
-the same check. Quote the line to the friend.
+the same check. Quote the line to the user.
 
 ## 7. Result
 
@@ -188,5 +188,5 @@ last three rows are yes or no.
 | Signed in to Claude Code | |
 | Opened a new terminal and ran `claude`, then `/ps:` shows skills | |
 
-Last, tell the friend: open a new terminal, run `claude`, and type `/ps:` to see the skills. Run
+Last, tell the user: open a new terminal, run `claude`, and type `/ps:` to see the skills. Run
 `dots` any time to update and `dots doctor` any time to check.

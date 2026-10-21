@@ -4,8 +4,6 @@ Fixes for the problems people hit most.
 
 ← [Docs](README.md)
 
-## Troubleshooting
-
 **Something feels off.** Run `dots doctor`. Each FAIL line names the fix. A `bins-fresh` FAIL
 means a Rust program is older than its source or not built: run `dots`.
 

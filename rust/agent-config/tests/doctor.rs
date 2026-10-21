@@ -232,7 +232,7 @@ fn doctor_settings_ignores_other_hooks_but_needs_the_repo_ones() {
     let fx = fixture("doctor-own-hooks");
     let live = fx.home.join(".claude/settings.json");
     let mut v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&live).unwrap()).unwrap();
-    // a friend's own hooks, and the documented sample, next to the repo's
+    // the user's own hooks, and the documented sample, next to the repo's
     let own = serde_json::json!([{"hooks": [
         {"type": "command", "command": "bash ~/.claude/hooks/format-after-edit.sh"},
         {"type": "command", "command": "/usr/local/bin/my-own-hook"}

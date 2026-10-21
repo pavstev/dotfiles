@@ -81,8 +81,8 @@ stays clean.
   zoxide, eza, yazi, bottom and others) are for macOS and Linux only; zsh does not run on Windows.
   mise and its shims go on PATH for the run; open a new Git Bash afterwards.
 - **Links:** real symlinks, so Windows Developer Mode must be on (the script stops with the fix).
-  `.claude`, `.config/opencode`, `.config/gh/config.yml` and the VS Code and Cursor settings
-  (`%APPDATA%\{Code,Cursor}\User\`) link. `~/.gitconfig` is not linked; the git identity goes to
+  `.config/gh/config.yml`, the Claude config under `~/.claude` and the VS Code and Cursor settings
+  (`%APPDATA%\{Code,Cursor}\User\`, only with the `editor` look) link. `~/.gitconfig` is not linked; the git identity goes to
   `~/.gitconfig.local`, which your own `~/.gitconfig` includes.
 - **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
   print nothing (`dots -v` shows `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Nerd Font are macOS-only.

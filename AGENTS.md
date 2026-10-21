@@ -27,7 +27,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `scripts/linux-prereqs.txt` | the Linux packages per manager (apt-get, dnf, pacman, apk, other), read by the shim and by `dots`. |
 | `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`, `ensure_rust_bin` (find or install Rust, build one bin; used by `dotfiles` and `scripts/tools`). |
 | `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). The core rules are `claude/CLAUDE.md`; the opt-in habits are `claude/presets/<name>/` (`rules.md`, optional `settings.json`; list and how to add one: `claude/presets/README.md`). |
-| `docs/FRIENDS-SETUP.md` | the runbook for setting the repo up on a friend's machine: Claude runs it step by step, then `dots doctor`. |
+| `docs/SETUP-RUNBOOK.md` | the runbook for setting the repo up on a new machine: Claude runs it step by step, then `dots doctor`. |
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`). The Cursor guard adapter is the Rust bin `guard_cursor`. |
 | `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes). With no binary and no `cargo` it says "Run: dots" and exits 127. `--bins` builds every bin and always exits 0. The CLI: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
 | `claude/hooks/rust-bin` | launcher for hooks and skills: runs the Rust bin (`.exe` on Windows) when it exists, with no freshness check; never builds. With no binary, `--hook` fails open (exit 0, silent) and a skill call says "Run: dots" and exits 127. |
@@ -48,6 +48,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   agent-config, the skill bins), the tool resolver (`tools_core.rs`, fake sources) and a parse of the
   real `tools.list`. The pre-commit hook runs `rust-bin skill_check` and `cargo test --test
   skill_bins` for a staged skill change. No test needs Python.
+- `dots uninstall` (`rust/agent-config/src/dots/uninstall.rs`, the Cursor and Opencode part in `src/undo.rs`, test `cargo test --test uninstall`): removes our links, generated files and merged entries, keeps the user's. New thing `dots` writes or merges: add its undo to `undo.rs` and a line to the test.
 - `dots doctor` (`rust/agent-config/src/dots/doctor.rs`, test `cargo test --test doctor`): one
   `PASS` or `FAIL` line per check, exit 1 on any FAIL, changes nothing. Checks: `links`,
   `settings-built`, `bins-fresh`, `guard-selftest`, `presets`, `generated`, `timezone`, `no-leak`.
@@ -158,53 +159,41 @@ OS only where the behavior really differs.
 ## Linux
 
 `./dotfiles` runs on Debian, Ubuntu, Fedora, Arch and Alpine (a normal user with `sudo`). No Homebrew
-on Linux: the tools come from mise.
+on Linux. What users see: [`docs/platforms.md`](docs/platforms.md#linux).
 
 - Tools come from `tools.list` (step `12-tools`, `scripts/tools`): mise first, installed by its official
   script (musl too). The system package manager (apt, dnf, pacman or apk: `LINUX_PKG`) installs only
-  `LINUX_PREREQS` (`scripts/linux-prereqs.txt`, step `05-linux-prereqs`) and, on Alpine only, the `apk:` sources of `tools.list`
-  (native musl builds where the release binary needs glibc). Never add a system install of tools
-  anywhere else.
+  `LINUX_PREREQS` (`scripts/linux-prereqs.txt`, step `05-linux-prereqs`) and, on Alpine only, the `apk:`
+  sources of `tools.list`. Never add a system install of tools anywhere else.
 - Paths: `scripts/tools-env.sh` puts `~/.local/bin`, the mise shims and `~/.cargo/bin` on PATH for every
-  step. Editor settings keep their macOS path under
-  `home/Library/Application Support/` and link to `~/.config/{Code,Cursor}/User` on Linux.
+  step. Editor settings keep their macOS path under `home/Library/Application Support/` and link to
+  `~/.config/{Code,Cursor}/User` on Linux.
 - Test: `bash scripts/test-linux.sh debian:13` (also `ubuntu:24.04`, `fedora:latest`,
-  `archlinux:latest`, `alpine:latest`) exits 0 and the second run changes nothing. Needs podman or docker. `--keep` leaves the container, `--reuse` reruns your edits.
+  `archlinux:latest`, `alpine:latest`) exits 0 and the second run changes nothing. Needs podman or
+  docker. `--keep` leaves the container, `--reuse` reruns your edits.
 
 ## Windows
 
-`./dotfiles` runs on Windows in Git Bash (MSYS/MINGW). Windows is detected with `is_windows`
-(`scripts/setup-lib.sh`); WSL counts as Linux like any other Linux machine.
+`./dotfiles` runs in Git Bash (MSYS/MINGW), detected with `is_windows`; WSL counts as Linux. What users
+see: [`docs/platforms.md`](docs/platforms.md#windows).
 
-- **Steps:** a Windows run executes only `12-tools` (installs mise with WinGet `jdx.mise`, then the
-  `tools.list` tools for Windows: mise first, WinGet and Scoop as fallback sources; the zsh-only tools are
-  `unix` in the list) and `57-claude-code` (`Anthropic.ClaudeCode`, then the PowerShell installer).
-  Homebrew, zsh and the Brewfile do not exist there, so the other steps stay silent. `DOTFILES_STEPS` still runs any step by name.
+- **Steps:** only `12-tools` and `57-claude-code` run. Homebrew, zsh and the Brewfile do not exist
+  there. `DOTFILES_STEPS` still runs any step by name.
 - **Links:** Git Bash `ln -s` copies unless `MSYS=winsymlinks:nativestrict` (set in `setup-lib.sh`), and a
-  native link needs Windows Developer Mode. `./dotfiles` checks this first and stops with the fix. It links
-  only `.config/gh/config.yml`, `.claude` and `.config/opencode`; VS Code and Cursor settings link to
-  `%APPDATA%\{Code,Cursor}\User\`. `~/.gitconfig` is not linked (it sets `delta` and `code`): the git
-  identity goes to `~/.gitconfig.local`, which the user's own `~/.gitconfig` includes.
-- **Output:** links print one total line, not one per file. The first run skips the settings menu
-  (`bash ~/dotfiles/dotfiles settings` opens it).
+  native link needs Developer Mode. `./dotfiles` checks this first and stops with the fix. `~/.gitconfig`
+  is not linked (it sets `delta` and `code`): the git identity goes to `~/.gitconfig.local`, which the
+  user's own `~/.gitconfig` includes. Links print one total line. The first run skips the settings menu.
 - **Clone-safe paths:** a tracked path with `: < > " | ? *` or `\`, a trailing dot or space, or a device
   name (`con`, `nul`, ...) makes `git clone` fail on Windows ("invalid path") and leaves a clone with no
   checkout. So a skill folder is `ps_foo` while its `name:` stays `ps:foo`. The pre-commit hook and
   `scripts/test-dotfiles.sh` reject such paths. `.gitattributes` forces LF, and `bootstrap.sh` clones with
   `core.autocrlf=false` and repairs a clone that has no `./dotfiles` (a re-run of the one-liner fixes it).
-- **Skipped on Windows:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance`
-  print nothing (`dots -v` shows `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Nerd Font are
-  macOS-only.
-- **Shell:** Git Bash provides `zsh`, `git`, `ln -s` (symlinks) and `clip.exe`. `init.zsh` loads the
-  usual tools when they are on PATH.
-- **Opencode config:** `agent-config opencode` generates agents, permissions and MCP under
-  `~/.config/opencode` and uses `clip` for the clipboard — identical output on all three OSes.
-- **Rust:** `./dotfiles` runs the Rust `dots` here (there is no bash setup). With no Rust it installs rustup with the
+- **Rust:** `./dotfiles` runs the Rust `dots` here. With no Rust it installs rustup with the
   `x86_64-pc-windows-gnu` host (no Visual Studio Build Tools; Windows on Arm runs it under x64
-  emulation) and `llvm-tools`: the build needs LLVM's dlltool, which the shim copies to
-  `~/.cargo/dlltool`. It runs a copy of `dots.exe`, because Windows locks a running `.exe`.
-- **Python:** not needed. `scripts/agent-config` builds and runs the Rust version. Without `cargo`
-  the generated config steps warn and skip, and `dots` installs Rust on its next run.
+  emulation) and `llvm-tools`: that build needs LLVM's dlltool, which the shim copies to
+  `~/.cargo/dlltool` (`win_dlltool` in `setup-lib.sh`, only for a `-windows-gnu` host: a machine that
+  already has the MSVC toolchain builds with it and needs none). It runs a copy of `dots.exe`, because
+  Windows locks a running `.exe`. Python is not needed.
 - **Test VM (Mac only):** `scripts/os-check.sh windows` clones the UTM VM `win11-golden`
   (Windows 11 Arm64, OpenSSH Server, Developer Mode, Git, PowerShell 7), starts the clone,
   copies the tree over SSH, runs `./dotfiles` twice in Git Bash, then once more after a pull that
@@ -212,7 +201,8 @@ on Linux: the tools come from mise.
   `pwsh -Command exit`, then deletes the clone, also after a failure. It never starts
   the golden VM. Build the golden VM once with `bash scripts/win-golden.sh` (needs UTM and the
   Windows ISO in `~/VMs/iso`; the script reads your SSH key at run time). The VM, its answer
-  file and its login stay in `~/VMs`, outside the repo.
+  file and its login stay in `~/VMs`, outside the repo. A start failure (`utmctl` exit 142) means:
+  quit and reopen UTM, delete the leftover `win11-check-*` clone, run it again.
 
 ## Profiles
 

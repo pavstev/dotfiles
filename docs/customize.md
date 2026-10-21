@@ -1,6 +1,6 @@
 # Customize
 
-How to change things, the optional looks, where files live, and how to remove it all.
+How to change things, set the looks, and uninstall.
 
 ← [Docs](README.md)
 
@@ -43,106 +43,30 @@ and the **Looks** row (the `LOOKS` setting):
 When you turn a part off, `dots` removes its links and puts back the file it replaced (the
 newest `*.bak-<timestamp>`). Open a new terminal or restart the editor to see it.
 
-**Remove them by hand** (no `dots` needed). These are links into the repo, so deleting
-them is safe:
+To turn a look off, change the **Looks** row in `dots settings`. To drop Starship itself, run
+`mise uninstall starship`.
 
-```sh
-# macOS and Linux: the prompt
-rm ~/.config/starship.toml
-# macOS: editor settings
-rm ~/Library/Application\ Support/{Code,Cursor}/User/{settings,keybindings}.json
-# Linux: editor settings
-rm ~/.config/{Code,Cursor}/User/{settings,keybindings}.json
-# Windows (Git Bash): editor settings
-rm "$APPDATA"/{Code,Cursor}/User/{settings,keybindings}.json
-```
+## Where things are
 
-Then set `LOOKS="none"` with `dots settings`, so the next `dots` run does not link them again.
-Without `~/.config/starship.toml` the shell uses the plain prompt even when Starship is
-installed. Remove Starship itself with `mise uninstall starship` (or your package manager).
-
-## Repo layout
-
-```
-dotfiles/
-├── assets/logo.svg           # the logo
-├── AGENTS.md  CLAUDE.md      # how AI agents (Claude/Cursor/Opencode) operate this repo
-├── bootstrap.sh              # fresh-machine one-liner (macOS, Linux, Windows)
-├── dotfiles                  # the one command: pull + link + provision
-├── tools.list                # every command-line tool: name, commands, OSes, sources (the one list)
-├── Brewfile                  # the macOS apps, fonts + VS Code extensions (Brewfile.local for extras)
-├── claude/                   # Claude config, symlinked into ~/.claude
-│   ├── settings.json  CLAUDE.md
-│   └── skills/ agents/ hooks/ output-styles/ presets/
-├── cursor/                   # Cursor-only sources, merged into ~/.cursor
-│   └── mcp.json              # MCP servers (cloudflare-docs); your entries win
-├── docs/README.md            # the index of the docs
-├── docs/install.md           # set up each OS, check it, multi-machine, updating
-├── docs/features.md          # why, what is inside, daily workflow, cheat sheet, secrets
-├── docs/ai-agents.md         # Claude Code, Cursor, Opencode, presets, guard checks
-├── docs/platforms.md         # Linux and Windows details, and how to test them
-├── docs/customize.md         # this page
-├── docs/troubleshooting.md   # fixes
-├── docs/FRIENDS-SETUP.md     # the runbook Claude follows to set this repo up on a friend's machine
-├── docs/cursor-port.md       # Cursor port: profiles, mapping, gap table
-├── docs/opencode-port.md    # Opencode port: rules, agents, permissions, gaps
-├── home/                     # mirrors $HOME 1:1; only paths in `dotfiles`'s link list are touched
-│   ├── .zshrc  .gitconfig    # identity lives in ~/.gitconfig.local (gitignored, not here)
-│   └── .config/
-│       ├── zsh/{init,aliases,skill}.zsh
-│       ├── starship.toml  ghostty/config
-│       ├── atuin/  aerospace/aerospace.toml
-│       ├── gh/config.yml     # gh CLI aliases + protocol (hosts.yml never linked)
-│       ├── bat/config        # bat style settings
-│       ├── lazygit/config.yml  bottom/bottom.toml  yazi/yazi.toml
-│       └── tealdeer/config.toml  fastfetch/config.jsonc
-│   Library/Application Support/                     (still under home/, shown separately for width)
-│       Code/User/{settings,keybindings}.json         # VS Code: symlinked, edit either side
-│       Cursor/User/{settings,keybindings}.json       # Cursor: same
-├── scripts/
-│   ├── setup-lib.sh          # shell helpers for the few bash scripts (info/ok/warn/have, is_*, setting, ensure_rust_bin)
-│   ├── tools                 # shim: builds and runs the Rust `tools` bin (installs the tools of tools.list)
-│   ├── agent-config          # shim for the Rust build that generates and merges the Cursor and Opencode files
-│   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart, fake Linux
-│   │                         # (the provisioning steps are Rust: rust/agent-config/src/dots/install/)
-│   │                         # ordered, skip-aware steps, run by `./dotfiles`:
-│   │                         #   05 linux-prereqs (Linux only)
-│   │                         #   → 10 homebrew → 12 tools (every OS; mise + tools.list)
-│   │                         #   → 20 brew-bundle → 30 omz → 40 rust → 50 node → 55 gh
-│   │                         #   → 57 claude-code → 58 opencode → 60 cursor → 70 macos → 72 touch-id
-│   │                         #   → 75 terminal → 77 git-hooks → 78 linux-extras → 90 sign-in
-│   │                         #   (10, 20, 70, 72, 75: macOS only; 05, 78: Linux only)
-│   │                         #   (DOTFILES_STEPS="60-cursor" ./dotfiles runs only the named steps;
-│   │                         #    pull, links and skill sync still run)
-│   ├── fix-brew-permissions.sh   # macOS only
-│   ├── test-linux.sh         # runs ./dotfiles twice in a Linux container
-│   └── git-hooks/            # secret scan, private words, push check (step 77)
-```
+The folder map is in [AGENTS.md](../AGENTS.md#layout). The short version: `home/` mirrors
+`$HOME`, `claude/` is the Claude config (Cursor and Opencode read it too), `tools.list` lists the
+tools, and `rust/agent-config/` holds the Rust programs behind `dots`.
 
 ## Uninstall
 
-Nothing here holds your machine hostage:
-
 ```sh
-rm ~/.zshrc ~/.gitconfig ~/.config/starship.toml   # etc. These are symlinks; removing them is enough
+dots uninstall
 ```
 
-For `~/.claude`, remove the symlinks the same way. Any pre-existing config the link
-step overwrote is backed up as `*.bak-<timestamp>` next to the original path. Restore
-from there. The tools (mise), Homebrew apps, Oh My Zsh, and toolchains stay installed.
+It asks once (`-y` skips the question). Then it:
 
-For Cursor, delete the generated files and our merged entries:
+- removes every link into the repo and puts back the file each one replaced
+  (`*.bak-<timestamp>`);
+- deletes the generated Cursor and Opencode files (the ones with a `generated-by: dotfiles`
+  marker);
+- takes out the hooks, MCP servers, permissions and theme that `dots` merged into your own
+  `~/.cursor` and `~/.config/opencode` files. Your own entries stay.
 
-1. `rm ~/.cursor/rules/claude-global.mdc ~/.cursor/rules/claude-output-style.mdc`
-2. `rm $(grep -l 'generated-by: dotfiles' ~/.cursor/agents/*.md) ~/.cursor/.dotfiles-managed.json`
-3. In `~/.cursor/hooks.json`, delete the 5 entries that run `guard_cursor` (`rust-bin --hook guard_cursor`).
-4. In `~/.cursor/mcp.json`, delete `cloudflare-docs` (only there when MCP is on).
-
-For Opencode:
-
-1. `rm ~/.config/opencode/AGENTS.md $(grep -l 'generated-by: dotfiles' ~/.config/opencode/agents/*.md) ~/.config/opencode/.dotfiles-managed.json`
-2. `rm ~/.config/opencode/themes/copper.json` and drop `"theme"` from `tui.json`.
-3. In `~/.config/opencode/opencode.jsonc`, delete the `permission` keys that came from
-   `claude/settings.json` and the `mcp` entries from `cursor/mcp.json`. Each change `dots`
-   made there left a `opencode.jsonc.bak-<timestamp>` next to it.
-4. In every project listed in `OPENCODE_PROJECTS`: `rm -r .opencode` (symlinks only).
+It leaves these, on purpose: the repo, the tools (mise, Homebrew apps, Oh My Zsh, toolchains),
+your settings in `~/.config/dotfiles`, and `~/.claude/settings.json` (a real file that holds your
+own keys). Delete them by hand if you want them gone. Running it twice is safe.

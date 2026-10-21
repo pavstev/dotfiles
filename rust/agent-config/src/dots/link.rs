@@ -43,7 +43,7 @@ pub fn link_item(src: &Path, dst: &Path, quiet: bool) {
 /// `link_item` made. Anything else at `dst` is the user's and stays.
 pub fn unlink_item(src: &Path, dst: &Path) {
     if !os::is_symlink(dst) || os::readlink(dst).as_deref() != Some(src) { return; }
-    if fs::remove_file(dst).is_err() { warn(&format!("couldn't remove the link {}", dst.display())); return; }
+    if fs::remove_file(dst).or_else(|_| fs::remove_dir(dst)).is_err() { warn(&format!("couldn't remove the link {}", dst.display())); return; }
     let name = format!("{}.bak-", base(dst));
     let newest = dst.parent().and_then(|p| fs::read_dir(p).ok()).into_iter().flatten().flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with(&name))

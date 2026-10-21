@@ -18,6 +18,7 @@ pub mod os;
 pub mod settings;
 pub mod skills;
 pub mod steps;
+pub mod uninstall;
 
 use crate::out::{self, info, ok, step, step_end, uptodate, verbose, warn};
 use std::env;
@@ -39,7 +40,7 @@ pub fn repo() -> PathBuf {
 /// Run one agent-config command in this process. A panic counts as a failure.
 fn agent_config(args: &[&str]) -> bool { crate::run_args(args) == 0 }
 
-/// The `dots` command line: `dots [-v] [settings | doctor]`. Returns the exit code.
+/// The `dots` command line: `dots [-v] [settings | doctor | uninstall]`. Returns the exit code.
 /// It pulls the repo (and restarts on new commits), links files, builds the Claude config and runs the steps.
 pub fn main() -> i32 {
     let started = std::time::Instant::now();
@@ -51,6 +52,12 @@ pub fn main() -> i32 {
     if os::is_windows() { os::set_env("MSYS", "winsymlinks:nativestrict"); }
     os::brew_env();
     os::tool_paths(); // mise, cargo and WinGet tools on PATH for every step
+
+    // `dots uninstall` takes the links and generated files back: no pull, no steps.
+    if env::args().nth(1).as_deref() == Some("uninstall") {
+        let rest: Vec<String> = env::args().skip(2).collect();
+        return uninstall::run(&repo, &rest);
+    }
 
     // `dots doctor` only reads: no pull, no links, no steps.
     if env::args().nth(1).as_deref() == Some("doctor") {
@@ -69,7 +76,7 @@ pub fn main() -> i32 {
                 // no step: its config is written below on every run.
                 if env::var_os("DOTFILES_STEPS").is_none() { os::set_env("DOTFILES_STEPS", "60-cursor"); own_steps = true; }
             }
-            _ => { eprintln!("usage: dots [-v] [settings | doctor]"); return 2; }
+            _ => { eprintln!("usage: dots [-v] [settings | doctor | uninstall]"); return 2; }
         }
     }
 

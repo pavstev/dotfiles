@@ -44,7 +44,7 @@ Then it installs. A long step says `still working…` each minute, and the last 
 
 | | |
 |---|---|
-| 🤖 **One config, three agents** | Claude Code, Cursor and Opencode read the same rules, 18 `/ps:` skills and 7 agents from [`claude/`](claude). |
+| 🤖 **One config, three agents** | Claude Code, Cursor and Opencode read the same rules, 17 `/ps:` skills and 8 agents from [`claude/`](claude). |
 | 🛡️ **Guard hooks** | A Rust guard checks each tool call: risky git, secrets in files, private words, runaway helpers. |
 | 🧩 **Presets** | Opt-in working habits: workflow, pace, models, clock, plain writing and more. |
 | 🦀 **One command** | `dots` pulls, links and installs. It is idempotent, short, and `dots doctor` checks the result. |
@@ -61,22 +61,14 @@ Then it installs. A long step says `still working…` each minute, and the last 
 | `dots settings` | Change a setting: git identity, presets, looks, Java, private rules. |
 | `dots doctor` | Check the setup. One PASS or FAIL line per check, with the fix. |
 | `dots -v` | The same run, with every command shown. |
+| `dots uninstall` | Take it all back: links, generated files, merged entries. Your tools and settings stay. |
 
 In Claude Code, Opencode or Cursor, type `/ps:` to see the skills.
 Edit files in `~/dotfiles/home/` and `~/dotfiles/claude/`: they are linked, so a change is live at once.
 
 ## 📚 Docs
 
-| Page | Answers |
-|---|---|
-| [Install](docs/install.md) | How do I set up macOS, Linux or Windows, and check it works? |
-| [Features](docs/features.md) | What is inside, and which shortcuts do I get? |
-| [AI agents](docs/ai-agents.md) | How do Claude Code, Cursor and Opencode share skills, agents and guards? |
-| [Platforms](docs/platforms.md) | What is different on Linux and Windows? |
-| [Customize](docs/customize.md) | How do I change, turn off or uninstall things? |
-| [Troubleshooting](docs/troubleshooting.md) | Something is off. What do I do? |
-| [Friend setup](docs/FRIENDS-SETUP.md) | A runbook Claude follows to set up someone else's machine. |
-| [AGENTS.md](AGENTS.md) | How AI agents work on this repo. |
+Start with [Install](docs/install.md). Everything else is in the [docs index](docs/README.md): features, AI agents, platforms, customize and uninstall, troubleshooting, and the runbook Claude follows to set up a new machine. How AI agents work on this repo: [AGENTS.md](AGENTS.md).
 
 **Fork it:** change `DOTFILES_REPO` at the top of [`bootstrap.sh`](bootstrap.sh) and the URLs above.
 

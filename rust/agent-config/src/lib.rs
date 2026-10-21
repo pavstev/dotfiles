@@ -46,6 +46,7 @@ pub mod stores;
 pub mod tools_cli;
 pub mod tools_core;
 pub mod transcript;
+pub mod undo;
 pub use out::{color_enabled, verbose, ok, info, skip, header, summary, warn};
 #[allow(unused_imports)]
 use out::{g, y, d, b, z};

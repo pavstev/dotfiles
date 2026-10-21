@@ -57,6 +57,7 @@ dots                                            # pull + relink + reprovision: f
 dots settings                                   # the settings menu: git name, Java, private rules and more
 dots -v                                         # the same run, with every line (the default is one line per step)
 dots doctor                                     # check the setup: PASS or FAIL per check, changes nothing
+dots uninstall                                  # take it all back (asks first; -y skips the question)
 dot                                             # cd into the repo
 ```
 
