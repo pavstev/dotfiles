@@ -107,3 +107,7 @@ path = "src/bin/ctx.rs"
 [[bin]]
 name = "sessions"
 path = "src/bin/sessions.rs"
+
+[[bin]]
+name = "proj"
+path = "src/bin/proj.rs"
