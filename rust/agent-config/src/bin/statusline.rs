@@ -10,6 +10,7 @@
 //! guard's Stop pass left a status file for the session (`agent_config::status_path`). `NO_COLOR` set (non-empty) or `THEME=plain` in the
 //! dotfiles settings prints the same text without escape codes.
 
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -46,34 +47,140 @@ fn int_text(v: Option<&Value>) -> Option<String> {
         Value::String(s) => s.trim().parse::<f64>().ok()?,
         _ => return None,
     };
-    Some(format!("{n:.0}"))
+    Some(format!("{:.0}", n.round_ties_even()))
 }
 
-/// The last call's input plus cache tokens (`total_input_tokens` is a session running total).
-fn ctx_tokens(input: &Value) -> Option<f64> {
-    let from_usage = at(input, &["context_window", "current_usage"]).and_then(|u| {
-        let u = u.as_object()?;
+/// A part of the input that is missing, or not the shape asked for, reads as empty. (The input
+/// comes from Claude Code; a field of another shape must not blank the whole line.)
+struct Soft<T>(Option<T>);
+
+impl<T> Default for Soft<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Soft<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self(T::deserialize(d).ok()))
+    }
+}
+
+impl<T: Default> Soft<T> {
+    fn get(self) -> T {
+        self.0.unwrap_or_default()
+    }
+}
+
+/// The session JSON, as far as the line uses it. Leaves stay `Value`: `jq` reads a string, a
+/// number or a numeric string alike, and the helpers above keep that.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Input {
+    cwd: Option<Value>,
+    session_id: Option<Value>,
+    workspace: Soft<Workspace>,
+    model: Soft<Model>,
+    context_window: Soft<ContextWindow>,
+    rate_limits: Soft<RateLimits>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Workspace {
+    current_dir: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Model {
+    display_name: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ContextWindow {
+    current_usage: Soft<Usage>,
+    total_input_tokens: Option<Value>,
+    used_percentage: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Usage {
+    input_tokens: Option<Value>,
+    cache_creation_input_tokens: Option<Value>,
+    cache_read_input_tokens: Option<Value>,
+}
+
+impl Usage {
+    /// The last call's input plus cache tokens, or `None` when none is given or one is not a number
+    /// (`jq` would fail on the addition).
+    fn tokens(&self) -> Option<f64> {
         let mut sum = 0.0;
         let mut any = false;
-        for key in ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] {
-            match u.get(key) {
-                None | Some(Value::Null) => {}
+        for v in [&self.input_tokens, &self.cache_creation_input_tokens, &self.cache_read_input_tokens] {
+            match v {
+                None => {}
                 Some(Value::Number(n)) => {
                     sum += n.as_f64()?;
                     any = true;
                 }
-                Some(_) => return None, // jq would fail on the addition
+                Some(_) => return None,
             }
         }
         any.then_some(sum)
-    });
-    match from_usage {
-        Some(t) if t != 0.0 => Some(t),
-        _ => match at(input, &["context_window", "total_input_tokens"]) {
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct RateLimits {
+    five_hour: Soft<Window>,
+    seven_day: Soft<Window>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Window {
+    used_percentage: Option<Value>,
+}
+
+/// What the line shows, read from the input once.
+#[derive(Default)]
+struct View {
+    /// `workspace.current_dir`, else `cwd`; empty when neither is set.
+    cwd: String,
+    model: String,
+    /// Context size in tokens.
+    ctx_tokens: Option<f64>,
+    ctx_percent: Option<String>,
+    five_hour_percent: Option<String>,
+    seven_day_percent: Option<String>,
+    session_id: String,
+}
+
+impl View {
+    fn from_json(doc: &Value) -> Self {
+        let input = Input::deserialize(doc).unwrap_or_default();
+        let (ctx, limits) = (input.context_window.get(), input.rate_limits.get());
+        // `total_input_tokens` is a session running total: only the fallback.
+        let usage = ctx.current_usage.get().tokens().filter(|t| *t != 0.0);
+        let total = match &ctx.total_input_tokens {
             Some(Value::Number(n)) => n.as_f64(),
             Some(Value::String(s)) => s.trim().parse().ok(),
             _ => None,
-        },
+        };
+        let cwd = jq_str(input.workspace.get().current_dir.as_ref()).filter(|s| !s.is_empty());
+        Self {
+            cwd: cwd.or_else(|| jq_str(input.cwd.as_ref())).unwrap_or_default(),
+            model: jq_str(input.model.get().display_name.as_ref()).unwrap_or_default(),
+            ctx_tokens: usage.or(total),
+            ctx_percent: int_text(ctx.used_percentage.as_ref()),
+            five_hour_percent: int_text(limits.five_hour.get().used_percentage.as_ref()),
+            seven_day_percent: int_text(limits.seven_day.get().used_percentage.as_ref()),
+            session_id: jq_str(input.session_id.as_ref()).unwrap_or_default(),
+        }
     }
 }
 
@@ -177,14 +284,10 @@ fn parse_head(head: &str) -> Option<String> {
 }
 
 /// Build the line. `branch` is looked up by the caller so tests can pass it in.
-fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
-    let cwd = jq_str(at(input, &["workspace", "current_dir"]))
-        .filter(|s| !s.is_empty())
-        .or_else(|| jq_str(input.get("cwd")).filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| pwd.to_string());
-    let model = jq_str(at(input, &["model", "display_name"])).unwrap_or_default();
-    let dir = basename(&cwd);
-    let branch = branch_of(&cwd);
+fn render(input: &View, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
+    let cwd = if input.cwd.is_empty() { pwd } else { &input.cwd };
+    let dir = basename(cwd);
+    let branch = branch_of(cwd);
     let paint = |code: &str, text: &str| if color { format!("{code}{text}{RST}") } else { text.to_string() };
 
     let mut line = paint(COPPER, &format!(" {dir}"));
@@ -192,16 +295,16 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
         line.push_str("  ");
         line.push_str(&paint(SAGE, &format!(" {branch}")));
     }
-    if !model.is_empty() {
+    if !input.model.is_empty() {
         line.push_str("  ");
-        line.push_str(&paint(STONE, &model));
+        line.push_str(&paint(STONE, &input.model));
     }
 
-    if let Some(tok) = ctx_tokens(input) {
-        let k = (format!("{tok:.0}").parse::<f64>().unwrap_or(0.0) as i64) / 1000;
+    if let Some(tok) = input.ctx_tokens {
+        let k = (tok.round_ties_even() as i64) / 1000;
         let code = if k >= CTX_WARN_K { COPPER } else { STONE };
         let mut ctx = format!("ctx {k}K");
-        if let Some(p) = int_text(at(input, &["context_window", "used_percentage"])) {
+        if let Some(p) = &input.ctx_percent {
             let _ = write!(ctx, " {p}%");
         }
         line.push_str("  ");
@@ -209,10 +312,10 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
     }
 
     let mut caps = String::new();
-    if let Some(p) = int_text(at(input, &["rate_limits", "five_hour", "used_percentage"])) {
+    if let Some(p) = &input.five_hour_percent {
         caps = format!("5h {p}%");
     }
-    if let Some(p) = int_text(at(input, &["rate_limits", "seven_day", "used_percentage"])) {
+    if let Some(p) = &input.seven_day_percent {
         if !caps.is_empty() {
             caps.push_str(" · ");
         }
@@ -247,9 +350,11 @@ fn left_text(file: &str) -> Option<String> {
 
 /// The line segment for what is left in this session: written by the guard's Stop pass, so it
 /// only shows when the file for the input's `session_id` exists.
-fn left_segment(input: &Value, color: bool) -> Option<String> {
-    let sid = jq_str(input.get("session_id")).filter(|s| !s.is_empty())?;
-    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&sid)).ok()?)?;
+fn left_segment(input: &View, color: bool) -> Option<String> {
+    if input.session_id.is_empty() {
+        return None;
+    }
+    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&input.session_id)).ok()?)?;
     Some(if color { format!("{COPPER}{text}{RST}") } else { text })
 }
 
@@ -290,10 +395,10 @@ fn write_atomic(file: &Path, text: &str) -> std::io::Result<()> {
 fn main() {
     let mut raw = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut raw);
-    let input: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+    let doc: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
 
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    if let Some(json) = pace_json(&input, now) {
+    if let Some(json) = pace_json(&doc, now) {
         let _ = write_atomic(&agent_config::paths::cache().join("claude-pace.json"), &format!("{json}\n"));
     }
 
@@ -301,6 +406,7 @@ fn main() {
     let plain = agent_config::setting(&home_dir(), "THEME") == "plain";
     let pwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
     let color = !(no_color || plain);
+    let input = View::from_json(&doc);
     let mut line = render(&input, &pwd, &git_branch, color);
     if let Some(left) = left_segment(&input, color) {
         line.push_str("  ");
@@ -324,6 +430,31 @@ mod tests {
         fs::create_dir(t.path().join(".git")).unwrap();
         fs::write(t.path().join(".git/HEAD"), head).unwrap();
         t
+    }
+
+    #[test]
+    fn percents_round_half_to_even() {
+        for (given, shown) in [(0.5, "0"), (1.5, "2"), (2.5, "2"), (3.5, "4"), (-0.4, "-0"), (97.0, "97")] {
+            assert_eq!(int_text(Some(&Value::from(given))).as_deref(), Some(shown), "{given}");
+        }
+        assert_eq!(int_text(Some(&Value::from(" 2.5 "))).as_deref(), Some("2"));
+        assert_eq!(int_text(Some(&Value::Bool(true))), None);
+    }
+
+    #[test]
+    fn line_from_the_input() {
+        let doc: Value = serde_json::from_str(
+            r#"{"workspace": {"current_dir": "/w/app"}, "model": {"display_name": "Opus"},
+                "context_window": {"current_usage": {"input_tokens": 1500, "cache_read_input_tokens": 1000},
+                                   "used_percentage": 2.5},
+                "rate_limits": {"five_hour": {"used_percentage": 10.5}, "seven_day": {"used_percentage": 40}}}"#,
+        )
+        .unwrap();
+        let line = render(&View::from_json(&doc), "/elsewhere", &|_| "main".into(), false);
+        assert_eq!(line, " app   main  Opus  ctx 2K 2%  5h 10% · 7d 40%");
+        // no workspace and no cwd: the process folder
+        let line = render(&View::default(), "/elsewhere", &|_| String::new(), false);
+        assert_eq!(line, " elsewhere");
     }
 
     #[test]

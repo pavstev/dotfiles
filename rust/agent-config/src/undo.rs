@@ -3,7 +3,10 @@
 //! changed, stays. `dots uninstall` calls these.
 
 use crate::out::{info, ok, warn};
-use crate::{MANAGED, cursor_src_dir, is_symlink, load_json, read_text, remove_generated, save_json, setting, tilde};
+use crate::{
+    MANAGED, cursor_src_dir, is_guard_hook, is_symlink, load_json, read_text, remove_generated, save_json, setting,
+    tilde,
+};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -79,9 +82,7 @@ pub fn cursor_undo(home: &Path) {
         if let Some(h) = v.get_mut("hooks").and_then(|h| h.as_object_mut()) {
             for entries in h.values_mut() {
                 if let Some(a) = entries.as_array_mut() {
-                    a.retain(|e| {
-                        !e.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains("guard_cursor"))
-                    });
+                    a.retain(|e| !is_guard_hook(e));
                 }
             }
             h.retain(|_, e| e.as_array().is_none_or(|a| !a.is_empty()));

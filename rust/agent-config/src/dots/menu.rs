@@ -61,7 +61,7 @@ fn edit_profile() {
     pick_value(
         "🧩 Profile",
         "PROFILE",
-        &settings::profile(),
+        settings::profile().as_str(),
         &[
             ("🔒 owner: your private rules load", "owner", "profile: owner"),
             ("🌍 shared: no private rules", "shared", "profile: shared"),
@@ -74,7 +74,7 @@ fn edit_presets() {
     let all: Vec<String> = crate::presets::ALL.iter().map(ToString::to_string).collect();
     let profile = settings::profile();
     let home = super::os::home();
-    let on = crate::presets::enabled_quiet(&home, &profile);
+    let on = crate::presets::enabled_quiet(&home, profile);
     let picked: Vec<String> = if ask::fancy() {
         let marked: Vec<usize> = all.iter().enumerate().filter(|(_, n)| on.contains(n)).map(|(i, _)| i).collect();
         if let Some(v) = ask::many(
@@ -90,7 +90,7 @@ fn edit_presets() {
     } else {
         info(&format!("presets: {} (or all, or none)", all.join(" ")));
         let Some(v) =
-            ask::value("🧰 Presets that are on, split by spaces", &crate::presets::summary(&home, &profile), "all")
+            ask::value("🧰 Presets that are on, split by spaces", &crate::presets::summary(&home, profile), "all")
         else {
             return;
         };
@@ -453,6 +453,116 @@ fn rules_value() -> String {
     if fs::metadata(&md).is_ok_and(|m| m.len() > 0) { lines_of(&md) } else { s("none") }
 }
 
+/// One line of the menu: how it is named, how it shows the value now, and what Enter on it runs.
+struct MenuRow {
+    emoji: &'static str,
+    name: &'static str,
+    value: fn() -> String,
+    edit: fn(&Path),
+}
+
+/// The menu lines, in the order they show.
+const ROWS: [MenuRow; 18] = [
+    MenuRow {
+        emoji: "👤 ",
+        name: "Git name",
+        value: || or(settings::get("GIT_NAME"), "not set"),
+        edit: |_| edit_git_name(),
+    },
+    MenuRow {
+        emoji: "📧 ",
+        name: "Git email",
+        value: || or(settings::get("GIT_EMAIL"), "not set"),
+        edit: |_| edit_git_email(),
+    },
+    MenuRow { emoji: "🧩 ", name: "Profile", value: || settings::profile().to_string(), edit: |_| edit_profile() },
+    MenuRow {
+        emoji: "🧰 ",
+        name: "Presets",
+        value: || crate::presets::summary(&super::os::home(), settings::profile()),
+        edit: |_| edit_presets(),
+    },
+    MenuRow { emoji: "📊 ", name: "Plan", value: || or(settings::get("PLAN"), "unknown"), edit: |_| edit_plan() },
+    MenuRow {
+        emoji: "🕒 ",
+        name: "Time zone",
+        value: || or(settings::get("TIMEZONE"), "system"),
+        edit: |_| edit_zone(),
+    },
+    MenuRow {
+        emoji: "📅 ",
+        name: "Work days",
+        value: || or(settings::get("WORK_DAYS"), "mon-fri"),
+        edit: |_| edit_work_days(),
+    },
+    MenuRow { emoji: "🎨 ", name: "Theme", value: || or(settings::get("THEME"), "copper"), edit: |_| edit_theme() },
+    MenuRow { emoji: "🖌️ ", name: "Looks", value: super::looks::summary, edit: |_| super::looks::edit() },
+    MenuRow { emoji: "🔌 ", name: "Cursor MCP", value: || s(on_off("CURSOR_MCP")), edit: |_| edit_mcp() },
+    MenuRow {
+        emoji: "🔌 ", name: "Opencode MCP", value: || s(on_off("OPENCODE_MCP")), edit: |_| edit_opencode_mcp()
+    },
+    MenuRow { emoji: "☕ ", name: "Java", value: java_value, edit: edit_java },
+    MenuRow {
+        emoji: "⏩ ",
+        name: "Steps to skip",
+        value: || or(settings::get("SKIP_STEPS"), "none"),
+        edit: |_| edit_steps(),
+    },
+    MenuRow {
+        emoji: "📁 ",
+        name: "Private projects",
+        value: || or(settings::get("PRIVATE_PROJECTS"), "none"),
+        edit: |_| {
+            edit_words(
+                "PRIVATE_PROJECTS",
+                "📁 Private project names, split by spaces. The git hooks keep them out of commits.",
+                "acme-app side-project",
+                "private projects",
+            );
+        },
+    },
+    MenuRow {
+        emoji: "📂 ",
+        name: "Opencode projects",
+        value: || or(settings::get("OPENCODE_PROJECTS"), "none"),
+        edit: |_| {
+            edit_words(
+                "OPENCODE_PROJECTS",
+                "📂 Opencode project paths, split by spaces (folders whose .opencode/ mirrors dots; ~ works)",
+                "~/code/my-app ~/code/another-one",
+                "Opencode projects",
+            );
+        },
+    },
+    MenuRow {
+        emoji: "🧪 ",
+        name: "Test host",
+        value: || or(settings::get("TEST_HOST"), "this machine"),
+        edit: |_| {
+            edit_words(
+                "TEST_HOST",
+                "🧪 SSH host for the Linux check of scripts/os-check.sh (empty: this machine)",
+                "my-linux-box",
+                "test host",
+            );
+        },
+    },
+    MenuRow {
+        emoji: "🚫 ",
+        name: "Private words",
+        value: || or(settings::get("PRIVATE_WORDS"), "none"),
+        edit: |_| {
+            edit_words(
+                "PRIVATE_WORDS",
+                "🚫 More private words, split by spaces. Your git name and email count already.",
+                "client-name nickname",
+                "private words",
+            );
+        },
+    },
+    MenuRow { emoji: "🔒 ", name: "Private rules", value: rules_value, edit: |_| edit_rules() },
+];
+
 /// The `dots settings` menu: shows each setting, asks for changes and saves each one at once.
 /// Needs a terminal. Ends when the user picks Done.
 pub fn run(repo: &Path) {
@@ -463,26 +573,7 @@ pub fn run(repo: &Path) {
     let mut start = if first { done.clone() } else { String::new() };
     let mut last: Option<usize> = None;
     loop {
-        let rows = vec![
-            row("👤 ", "Git name", &or(settings::get("GIT_NAME"), "not set")),
-            row("📧 ", "Git email", &or(settings::get("GIT_EMAIL"), "not set")),
-            row("🧩 ", "Profile", &settings::profile()),
-            row("🧰 ", "Presets", &crate::presets::summary(&super::os::home(), &settings::profile())),
-            row("📊 ", "Plan", &or(settings::get("PLAN"), "unknown")),
-            row("🕒 ", "Time zone", &or(settings::get("TIMEZONE"), "system")),
-            row("📅 ", "Work days", &or(settings::get("WORK_DAYS"), "mon-fri")),
-            row("🎨 ", "Theme", &or(settings::get("THEME"), "copper")),
-            row("🖌️ ", "Looks", &super::looks::summary()),
-            row("🔌 ", "Cursor MCP", on_off("CURSOR_MCP")),
-            row("🔌 ", "Opencode MCP", on_off("OPENCODE_MCP")),
-            row("☕ ", "Java", &java_value()),
-            row("⏩ ", "Steps to skip", &or(settings::get("SKIP_STEPS"), "none")),
-            row("📁 ", "Private projects", &or(settings::get("PRIVATE_PROJECTS"), "none")),
-            row("📂 ", "Opencode projects", &or(settings::get("OPENCODE_PROJECTS"), "none")),
-            row("🧪 ", "Test host", &or(settings::get("TEST_HOST"), "this machine")),
-            row("🚫 ", "Private words", &or(settings::get("PRIVATE_WORDS"), "none")),
-            row("🔒 ", "Private rules", &rules_value()),
-        ];
+        let rows: Vec<String> = ROWS.iter().map(|r| row(r.emoji, r.name, &(r.value)())).collect();
         // The cursor goes back to the row just changed (its value may be new).
         if let Some(l) = last {
             start.clone_from(&rows[l]);
@@ -493,46 +584,7 @@ pub fn run(repo: &Path) {
             break;
         };
         let Some(i) = rows.iter().position(|r| *r == pick) else { break };
-        match i {
-            0 => edit_git_name(),
-            1 => edit_git_email(),
-            2 => edit_profile(),
-            3 => edit_presets(),
-            4 => edit_plan(),
-            5 => edit_zone(),
-            6 => edit_work_days(),
-            7 => edit_theme(),
-            8 => super::looks::edit(),
-            9 => edit_mcp(),
-            10 => edit_opencode_mcp(),
-            11 => edit_java(repo),
-            12 => edit_steps(),
-            13 => edit_words(
-                "PRIVATE_PROJECTS",
-                "📁 Private project names, split by spaces. The git hooks keep them out of commits.",
-                "acme-app side-project",
-                "private projects",
-            ),
-            14 => edit_words(
-                "OPENCODE_PROJECTS",
-                "📂 Opencode project paths, split by spaces (folders whose .opencode/ mirrors dots; ~ works)",
-                "~/code/my-app ~/code/another-one",
-                "Opencode projects",
-            ),
-            15 => edit_words(
-                "TEST_HOST",
-                "🧪 SSH host for the Linux check of scripts/os-check.sh (empty: this machine)",
-                "my-linux-box",
-                "test host",
-            ),
-            16 => edit_words(
-                "PRIVATE_WORDS",
-                "🚫 More private words, split by spaces. Your git name and email count already.",
-                "client-name nickname",
-                "private words",
-            ),
-            _ => edit_rules(),
-        }
+        (ROWS[i].edit)(repo);
         last = Some(i);
     }
     ok("settings: done");

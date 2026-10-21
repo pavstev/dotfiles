@@ -2,7 +2,9 @@
 //! Opencode) and the Claude `settings.json`. It also holds the modules behind the `dots`, `guard`
 //! and `tools` binaries. The `agent-config` bin and `dots` call it; hooks reach it through `rust-bin`.
 use clap::{Parser, Subcommand};
+use presets::Profile;
 use regex::Regex;
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,6 +45,9 @@ pub enum ConfigError {
     /// A permission list in `cli-config.json` is not an array.
     #[error("permissions.{0} in cli-config.json is not a list")]
     NotAList(&'static str),
+    /// A part of `cli-config.json` that dots edits is not an object.
+    #[error("{0} is not a JSON object")]
+    NotAnObject(&'static str),
 }
 
 /// A Claude permission rule: `Tool(arg)`.
@@ -246,17 +251,17 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
 }
 
 /// The private `owner.md` rules file, only for the `owner` profile and only when it exists.
-pub fn owner_overlay(home: &Path, profile: &str) -> Option<PathBuf> {
+pub fn owner_overlay(home: &Path, profile: Profile) -> Option<PathBuf> {
     let f = home.join(OWNER_MD);
-    if profile == "owner" && f.is_file() { Some(f) } else { None }
+    if profile == Profile::Owner && f.is_file() { Some(f) } else { None }
 }
 
-fn has_preset_rules(home: &Path, profile: &str) -> bool {
+fn has_preset_rules(home: &Path, profile: Profile) -> bool {
     !presets::rules_text(&repo_root(), &presets::enabled_quiet(home, profile)).is_empty()
 }
 
 /// The rules for Cursor and Opencode: the core, the enabled presets, then the private overlay.
-pub fn rules_text(home: &Path, profile: &str) -> String {
+pub fn rules_text(home: &Path, profile: Profile) -> String {
     let mut text = read_text(&claude_dir().join("CLAUDE.md")).unwrap_or_default();
     let on = presets::enabled(home, profile);
     let extra = presets::rules_text(&repo_root(), &on);
@@ -321,7 +326,7 @@ pub fn setting(home: &Path, name: &str) -> String {
 }
 
 /// The text to paste into Cursor User Rules: the Cursor note, the rules and the reply style.
-pub fn user_rules_text(home: &Path, profile: &str) -> String {
+pub fn user_rules_text(home: &Path, profile: Profile) -> String {
     let mut text = format!("{}{}", CURSOR_NOTE, rules_text(home, profile));
     if let Some((name, _, body)) = output_style(home) {
         text = format!("{}\n\n# Reply style: {}\n\n{}", text.trim_end_matches('\n'), name, body);
@@ -344,7 +349,7 @@ pub fn built_settings(home: &Path) -> Value {
 
 /// The repo base with the settings fragments of the enabled presets merged over it, in order.
 pub fn with_presets(home: &Path, base: &Value) -> Value {
-    let on = presets::enabled_quiet(home, &presets::profile(home));
+    let on = presets::enabled_quiet(home, presets::current_profile(home));
     presets::fragments(&repo_root(), &on).iter().fold(base.clone(), |acc, f| merge(&acc, f))
 }
 
@@ -542,7 +547,7 @@ pub fn opencode_mcp_wanted(home: &Path) -> bool {
 // Cursor parts
 /// Writes the Cursor rule files in `~/.cursor/rules` (core rules and reply style), or only checks
 /// them when the rules were pasted into Cursor User Rules.
-pub fn cursor_rules(home: &Path, profile: &str) {
+pub fn cursor_rules(home: &Path, profile: Profile) {
     let rules = home.join(".cursor").join("rules");
     let mark = home.join(USER_RULES_MARK);
     if mark.exists() {
@@ -560,7 +565,7 @@ pub fn cursor_rules(home: &Path, profile: &str) {
     let (desc, mode) = if overlay.is_some() {
         ("Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules", Some(0o600))
     } else {
-        if profile == "owner" {
+        if profile == Profile::Owner {
             warn(
                 "no ~/.config/dotfiles/owner.md, so the Cursor rule has no owner-only rules. Add them with: dots settings",
             );
@@ -664,87 +669,91 @@ fn shlex_quote(s: &str) -> String {
     }
 }
 
+/// One hook entry of ours in `hooks.json`. The field order is the key order in the file.
+#[derive(Serialize)]
+struct HookEntry {
+    command: String,
+    timeout: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    matcher: Option<&'static str>,
+}
+
+/// The events the guard hooks into: (event, `guard_cursor` mode, tool matcher).
+///
+/// `tool` mode runs the shared checks G14-G17 (src/bin/guard_cursor.rs). preToolUse carries the
+/// deny checks for the shell, read and grep tools; beforeShellExecution and beforeMCPExecution
+/// carry G16, because Cursor enforces `ask` only on those two (docs: cursor.com/docs/hooks).
+/// beforeReadFile carries G15 for reads with the documented `file_path`, so a renamed
+/// `tool_input` key on preToolUse cannot skip the secrets check.
+const HOOK_EVENTS: [(&str, &str, Option<&str>); 9] = [
+    ("beforeSubmitPrompt", "prompt", None),
+    ("subagentStart", "subagent", None),
+    ("preToolUse", "subagent", Some("^(Task|Subagent|mcp_task)$")),
+    ("preToolUse", "tool", Some("^(Shell|Read|Grep)$")),
+    ("beforeShellExecution", "tool", None),
+    ("beforeMCPExecution", "tool", None),
+    ("beforeReadFile", "tool", None),
+    ("preCompact", "compact", None),
+    ("afterAgentResponse", "response", None),
+];
+
+/// True for a hook entry that runs our `guard_cursor`.
+pub(crate) fn is_guard_hook(entry: &Value) -> bool {
+    entry.get("command").and_then(Value::as_str).is_some_and(|c| c.contains("guard_cursor"))
+}
+
 /// Puts the guard hook entries into `~/.cursor/hooks.json`, replacing our old ones and keeping the user's.
 pub fn cursor_hooks(home: &Path) {
     let path = home.join(".cursor").join("hooks.json");
-    let old = load_json(&path);
-    if old.is_none() {
+    let Some(old) = load_json(&path) else {
         if path.exists() {
             warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
         }
         return;
-    }
-    let old = old.unwrap();
-    let mut new = old.clone();
-    new.as_object_mut().unwrap().entry("version".to_string()).or_insert(serde_json::json!(1));
-    let hooks = new.as_object_mut().unwrap().entry("hooks".to_string()).or_insert(serde_json::json!({}));
-    if !hooks.is_object() {
+    };
+    // Edit a copy of the file's own map, so every other key keeps its place and bytes.
+    let Value::Object(mut doc) = old.clone() else {
+        warn(&format!("{} is not a JSON object, left untouched", tilde(&path)));
+        return;
+    };
+    doc.entry("version").or_insert(serde_json::json!(1));
+    let Value::Object(hooks) = doc.entry("hooks").or_insert_with(|| serde_json::json!({})) else {
         warn(&format!("{} has a non-object `hooks`, left untouched", tilde(&path)));
         return;
-    }
-    // drop our entries
+    };
+    // drop our entries, and note where the first of them sat
     let mut slots: BTreeMap<String, usize> = BTreeMap::new();
-    if let Some(hobj) = hooks.as_object_mut() {
-        let keys: Vec<String> = hobj.keys().cloned().collect();
-        for event in keys {
-            let entries = hobj.get(&event).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let ours: Vec<usize> = entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| e.get("command").and_then(|c| c.as_str()).is_some_and(|s| s.contains("guard_cursor")))
-                .map(|(i, _)| i)
-                .collect();
-            if !ours.is_empty() {
-                slots.insert(event.clone(), ours[0]);
-            }
-            let filtered: Vec<Value> =
-                entries.into_iter().enumerate().filter(|(i, _)| !ours.contains(i)).map(|(_, e)| e).collect();
-            if filtered.is_empty() {
-                hobj.remove(&event);
-            } else {
-                hobj.insert(event, Value::Array(filtered));
-            }
+    let events: Vec<String> = hooks.keys().cloned().collect();
+    for event in events {
+        let entries = hooks.get(&event).and_then(Value::as_array).cloned().unwrap_or_default();
+        if let Some(first) = entries.iter().position(is_guard_hook) {
+            slots.insert(event.clone(), first);
+        }
+        let kept: Vec<Value> = entries.into_iter().filter(|e| !is_guard_hook(e)).collect();
+        if kept.is_empty() {
+            hooks.remove(&event);
+        } else {
+            hooks.insert(event, Value::Array(kept));
         }
     }
-    let q = shlex_quote(guard_path().to_str().unwrap_or(""));
     let guard = guard_path();
     if guard.is_file() {
-        // `tool` mode runs the shared checks G14-G17 (src/bin/guard_cursor.rs). preToolUse carries the
-        // deny checks for the shell, read and grep tools; beforeShellExecution and beforeMCPExecution
-        // carry G16, because Cursor enforces `ask` only on those two (docs: cursor.com/docs/hooks).
-        // beforeReadFile carries G15 for reads with the documented `file_path`, so a renamed
-        // `tool_input` key on preToolUse cannot skip the secrets check.
-        let hook_events = [
-            ("beforeSubmitPrompt", "prompt", None::<&str>),
-            ("subagentStart", "subagent", None),
-            ("preToolUse", "subagent", Some("^(Task|Subagent|mcp_task)$")),
-            ("preToolUse", "tool", Some("^(Shell|Read|Grep)$")),
-            ("beforeShellExecution", "tool", None),
-            ("beforeMCPExecution", "tool", None),
-            ("beforeReadFile", "tool", None),
-            ("preCompact", "compact", None),
-            ("afterAgentResponse", "response", None),
-        ];
+        let q = shlex_quote(guard.to_str().unwrap_or(""));
         let mut placed: BTreeMap<&str, usize> = BTreeMap::new();
-        for (event, mode, matcher) in hook_events {
-            let mut entry = serde_json::json!({"command": format!("test -r {} || exit 0; sh {} --hook guard_cursor {}", q, q, mode), "timeout": 10});
-            if let Some(m) = matcher {
-                entry.as_object_mut().unwrap().insert("matcher".to_string(), Value::String(m.to_string()));
-            }
-            let hooks = new.get_mut("hooks").unwrap().as_object_mut().unwrap();
-            let entries = hooks.entry(event.to_string()).or_insert(serde_json::json!([])).as_array_mut().unwrap();
+        for (event, mode, matcher) in HOOK_EVENTS {
+            let command = format!("test -r {q} || exit 0; sh {q} --hook guard_cursor {mode}");
+            let entry = serde_json::to_value(HookEntry { command, timeout: 10, matcher }).unwrap_or_default();
+            let Some(entries) = hooks.entry(event).or_insert_with(|| serde_json::json!([])).as_array_mut() else {
+                continue;
+            };
             // an event can hold several of our entries: each goes after the ones placed before it
             let done = placed.entry(event).or_insert(0);
             let idx = slots.get(event).map_or(entries.len(), |s| s + *done);
             *done += 1;
-            if idx <= entries.len() {
-                entries.insert(idx, entry);
-            } else {
-                entries.push(entry);
-            }
+            entries.insert(idx.min(entries.len()), entry);
         }
     }
-    save_json(&path, &old, &new, false);
+    save_json(&path, &old, &Value::Object(doc), false);
 }
 
 /// Adds the servers of `cursor/mcp.json` that are missing from `~/.cursor/mcp.json`. Opt-in.
@@ -832,6 +841,20 @@ fn rule_path(arg: &str, kind: &str) -> String {
     }
 }
 
+/// The `statusLine` entry of `cli-config.json`. The field order is the key order in the file.
+#[derive(Serialize)]
+struct StatusLine {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    command: &'static str,
+    padding: u32,
+}
+
+/// The strings of a JSON array; anything else in it, or a value that is no array, adds nothing.
+fn strings(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array).into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect()
+}
+
 /// Merges translated permissions, the no-attribution flags and the status line into
 /// `~/.cursor/cli-config.json`. Rules it added before are tracked in a sidecar file.
 pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
@@ -842,76 +865,62 @@ pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
         }
         return Ok(());
     };
-    let mut new = old.clone();
-    new.as_object_mut().unwrap().entry("version".to_string()).or_insert(serde_json::json!(1));
-    new.as_object_mut().unwrap().entry("editor".to_string()).or_insert(serde_json::json!({"vimMode": false}));
-    // ensure `permissions` exists so the translation below can extend it
-    new.as_object_mut().unwrap().entry("permissions".to_string()).or_insert(serde_json::json!({}));
-    let mut new_mut = new.clone();
+    // Edit a copy of the file's own map, so every other key keeps its place and bytes.
+    let Value::Object(mut doc) = old.clone() else {
+        return Err(ConfigError::NotAnObject("cli-config.json"));
+    };
+    doc.entry("version").or_insert(serde_json::json!(1));
+    doc.entry("editor").or_insert(serde_json::json!({"vimMode": false}));
     let src = load_json(&claude_dir().join("settings.json")).unwrap_or(serde_json::json!({}));
-    let src_perms = src.get("permissions").cloned().unwrap_or(serde_json::json!({}));
     let side = home.join(".cursor").join(MANAGED);
-    let managed = load_json(&side).unwrap_or(serde_json::json!({}));
-    let managed = if managed.is_object() { managed } else { serde_json::json!({}) };
+    let managed = load_json(&side).filter(Value::is_object).unwrap_or(serde_json::json!({}));
     let mut added: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let new_perms = new_mut.get_mut("permissions").unwrap();
+    let Value::Object(perms) = doc.entry("permissions").or_insert(serde_json::json!({})) else {
+        return Err(ConfigError::NotAnObject("permissions in cli-config.json"));
+    };
     for kind in ["allow", "deny"] {
-        let have = new_perms
-            .as_object_mut()
-            .unwrap()
-            .entry(kind.to_string())
-            .or_insert(serde_json::json!([]))
-            .as_array_mut()
-            .ok_or(ConfigError::NotAList(kind))?;
-        let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let want: Vec<String> =
-            rules.iter().filter_map(|r| r.as_str()).filter_map(|r| translate_permission(r, kind)).collect();
-        let prev: BTreeSet<String> = managed
-            .get(kind)
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
-            .unwrap_or_default();
-        let mut have_vec: Vec<String> = have.iter().filter_map(|x| x.as_str().map(String::from)).collect();
-        have_vec.retain(|r| want.contains(r) || !prev.contains(r));
+        let Some(have) = perms.entry(kind).or_insert(serde_json::json!([])).as_array_mut() else {
+            return Err(ConfigError::NotAList(kind));
+        };
+        let rules = strings(src.get("permissions").and_then(|p| p.get(kind)));
+        let want: Vec<String> = rules.iter().filter_map(|r| translate_permission(r, kind)).collect();
+        let prev: BTreeSet<String> = strings(managed.get(kind)).into_iter().collect();
+        let mut kept: Vec<String> = have.iter().filter_map(|x| x.as_str().map(String::from)).collect();
+        kept.retain(|r| want.contains(r) || !prev.contains(r));
         for m in &want {
-            if !have_vec.contains(m) {
-                have_vec.push(m.clone());
+            if !kept.contains(m) {
+                kept.push(m.clone());
             }
         }
-        *have = have_vec.clone().into_iter().map(Value::String).collect();
+        *have = kept.into_iter().map(Value::String).collect();
         added.insert(kind.to_string(), want);
     }
     // attribution
-    let attr = new_mut
-        .as_object_mut()
-        .unwrap()
-        .entry("attribution".to_string())
-        .or_insert(serde_json::json!({}))
-        .as_object_mut()
-        .unwrap();
-    attr.insert("attributeCommitsToAgent".to_string(), Value::Bool(false));
-    attr.insert("attributePRsToAgent".to_string(), Value::Bool(false));
+    let Some(attr) = doc.entry("attribution").or_insert(serde_json::json!({})).as_object_mut() else {
+        return Err(ConfigError::NotAnObject("attribution in cli-config.json"));
+    };
+    for flag in ["attributeCommitsToAgent", "attributePRsToAgent"] {
+        attr.insert(flag.to_string(), Value::Bool(false));
+    }
     // statusLine: the Rust `statusline` bin, through the launcher (same as claude/settings.json)
     let launcher = home.join(".claude").join("hooks").join("rust-bin");
     // Older runs wrote `~/.claude/statusline.sh` (gone) and then ran the launcher through bash (slower
     // to start than sh): replace those two, keep any other command.
-    let old_statusline = new_mut.get("statusLine").is_some_and(|s| {
+    let old_statusline = doc.get("statusLine").is_some_and(|s| {
         s.get("command")
-            .and_then(|c| c.as_str())
+            .and_then(Value::as_str)
             .is_some_and(|c| c.contains("statusline.sh") || c == "bash ~/.claude/hooks/rust-bin statusline")
     });
-    if (new_mut.get("statusLine").is_none() || old_statusline) && launcher.exists() {
-        new_mut.as_object_mut().unwrap().insert(
-            "statusLine".to_string(),
-            serde_json::json!({"type":"command","command": "sh ~/.claude/hooks/rust-bin statusline","padding":0}),
-        );
+    if (!doc.contains_key("statusLine") || old_statusline) && launcher.exists() {
+        let line = StatusLine { kind: "command", command: "sh ~/.claude/hooks/rust-bin statusline", padding: 0 };
+        doc.insert("statusLine".to_string(), serde_json::to_value(line).unwrap_or_default());
     }
-    let old_clone = old;
-    save_json(&path, &old_clone, &new_mut, true);
+    let new = Value::Object(doc);
+    save_json(&path, &old, &new, true);
     // sidecar
     if !dry()
         && let Some(after) = load_json(&path)
-        && after == new_mut
+        && after == new
         && managed != serde_json::to_value(&added).ok().unwrap_or(Value::Null)
     {
         write_or_warn(&side, &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"), None);
@@ -1274,7 +1283,7 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
     let home = paths::home();
     header(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), args.profile));
     let parts = vec![
-        part(|| cursor_rules(&home, &args.profile)),
+        part(|| cursor_rules(&home, args.profile)),
         part(|| cursor_agents(&home)),
         part(|| cursor_hooks(&home)),
         part(|| cursor_mcp(&home)),
@@ -1287,16 +1296,16 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
 #[derive(Parser, Debug)]
 pub struct CursorArgs {
     /// owner pulls in the private owner.md rules
-    #[arg(long, default_value = "shared", value_parser = ["owner", "shared"])]
-    pub profile: String,
+    #[arg(long, default_value_t = Profile::Shared, value_parser = str::parse::<Profile>)]
+    pub profile: Profile,
     /// report what would change without writing
     #[arg(long)]
     pub dry_run: bool,
 }
 
 /// The profile of this machine (`owner` or `shared`), from the settings.
-pub fn default_profile() -> String {
-    presets::profile(&paths::home())
+pub fn default_profile() -> Profile {
+    presets::current_profile(&paths::home())
 }
 
 /// The command that copies stdin to the clipboard on this OS, or `None` when none is installed.
@@ -1338,7 +1347,7 @@ fn crate_which(cmd: &str, path: Option<&str>) -> bool {
 
 /// The `user-rules` command: prints the Cursor User Rules text, or with `copy` puts it on the
 /// clipboard and removes the file copies in `~/.cursor/rules`. Returns 1 when there is no clipboard tool.
-pub fn cmd_user_rules(profile: &str, copy: bool) -> i32 {
+pub fn cmd_user_rules(profile: Profile, copy: bool) -> i32 {
     let home = paths::home();
     let text = user_rules_text(&home, profile);
     if !copy {
@@ -1763,8 +1772,8 @@ pub enum Commands {
 #[derive(Parser, Debug)]
 pub struct UserRulesArgs {
     /// owner pulls in the private ~/.config/dotfiles/owner.md rules
-    #[arg(long, default_value_t = default_profile(), value_parser = ["owner", "shared"])]
-    pub profile: String,
+    #[arg(long, default_value_t = default_profile(), value_parser = str::parse::<Profile>)]
+    pub profile: Profile,
     /// copy to the clipboard and drop the file copy
     #[arg(long)]
     pub copy: bool,
@@ -1790,8 +1799,8 @@ pub struct ClaudeSettingsArgs {
 #[derive(Parser, Debug)]
 pub struct OpencodeArgs {
     /// owner pulls in the private ~/.config/dotfiles/owner.md rules
-    #[arg(long, default_value = "shared", value_parser = ["owner", "shared"])]
-    pub profile: String,
+    #[arg(long, default_value_t = Profile::Shared, value_parser = str::parse::<Profile>)]
+    pub profile: Profile,
     /// report what would change without writing
     #[arg(long)]
     pub dry_run: bool,
@@ -1831,7 +1840,7 @@ fn run_cli(cli: Cli) -> i32 {
         }
         Commands::UserRules(a) => {
             set_dry(a.dry_run);
-            (cmd_user_rules(&a.profile, a.copy), "user-rules")
+            (cmd_user_rules(a.profile, a.copy), "user-rules")
         }
         Commands::ClaudeSettings(a) => {
             set_dry(a.dry_run);
@@ -1884,7 +1893,7 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
         part(|| opencode_agents(&home)),
         part(|| opencode_plugin(&home)),
         part(|| opencode_config(&home)),
-        part(|| opencode_rules(&home, &a.profile)),
+        part(|| opencode_rules(&home, a.profile)),
         part(|| opencode_theme(&home)),
         part(|| opencode_projects(&home, projects)),
     ];
@@ -1892,7 +1901,7 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
 }
 
 /// Writes `~/.config/opencode/AGENTS.md`: the rules, enabled presets, owner overlay and reply style.
-pub fn opencode_rules(home: &Path, profile: &str) {
+pub fn opencode_rules(home: &Path, profile: Profile) {
     let path = home.join(".config").join("opencode").join("AGENTS.md");
     if is_symlink(&path) || (path.exists() && !read_text(&path).unwrap_or_default().contains(MARK)) {
         warn(&format!(
@@ -1912,7 +1921,7 @@ pub fn opencode_rules(home: &Path, profile: &str) {
     if overlay.is_some() {
         srcs.push("~/.config/dotfiles/owner.md");
         mode = Some(0o600);
-    } else if profile == "owner" {
+    } else if profile == Profile::Owner {
         warn(
             "no ~/.config/dotfiles/owner.md, so the OpenCode rules have no owner-only rules. Add them with: dots settings",
         );

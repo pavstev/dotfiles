@@ -326,31 +326,31 @@ fn test_setting_reads_like_setup_lib() {
 #[test]
 fn test_default_profile_order() {
     let fx = Fx::new();
-    assert_eq!(default_profile(), "shared");
+    assert_eq!(default_profile(), Profile::Shared);
     fx.setting_file("PROFILE=\"owner\"\n");
-    assert_eq!(default_profile(), "owner");
+    assert_eq!(default_profile(), Profile::Owner);
     set_env("DOTFILES_PROFILE", "shared");
-    assert_eq!(default_profile(), "shared"); // env beats the setting
+    assert_eq!(default_profile(), Profile::Shared); // env beats the setting
     set_env("DOTFILES_PROFILE", "bogus");
-    assert_eq!(default_profile(), "shared"); // invalid -> default
+    assert_eq!(default_profile(), Profile::Shared); // invalid -> default
 }
 
 #[test]
 fn test_default_profile_owner_when_overlay_exists() {
     let fx = Fx::new();
     fx.overlay("x\n");
-    assert_eq!(default_profile(), "owner");
+    assert_eq!(default_profile(), Profile::Owner);
     fx.setting_file("PROFILE=\"shared\"\n");
-    assert_eq!(default_profile(), "shared"); // the setting beats the overlay
+    assert_eq!(default_profile(), Profile::Shared); // the setting beats the overlay
     set_env("DOTFILES_PROFILE", "shared");
-    assert_eq!(default_profile(), "shared");
+    assert_eq!(default_profile(), Profile::Shared);
 }
 
 #[test]
 fn test_default_profile_garbage_in_setting() {
     let fx = Fx::new();
     fx.setting_file("PROFILE=\"admin\"\n");
-    assert_eq!(default_profile(), "shared");
+    assert_eq!(default_profile(), Profile::Shared);
 }
 
 // --- profiles -----------------------------------------------------------------
@@ -359,35 +359,38 @@ fn test_default_profile_garbage_in_setting() {
 fn test_owner_gets_source_then_overlay() {
     let fx = Fx::new();
     fx.overlay(OWNER_TEXT);
-    assert_eq!(rules_text(&fx.home, "owner"), format!("{}\n\n{}", CLAUDE_MD_TEXT.trim_end_matches('\n'), OWNER_TEXT));
+    assert_eq!(
+        rules_text(&fx.home, Profile::Owner),
+        format!("{}\n\n{}", CLAUDE_MD_TEXT.trim_end_matches('\n'), OWNER_TEXT)
+    );
 }
 
 #[test]
 fn test_owner_without_overlay_gets_the_source() {
     let fx = Fx::new();
-    assert_eq!(rules_text(&fx.home, "owner"), CLAUDE_MD_TEXT);
-    assert_eq!(owner_overlay(&fx.home, "owner"), None);
+    assert_eq!(rules_text(&fx.home, Profile::Owner), CLAUDE_MD_TEXT);
+    assert_eq!(owner_overlay(&fx.home, Profile::Owner), None);
 }
 
 #[test]
 fn test_shared_never_reads_the_overlay() {
     let fx = Fx::new();
     fx.overlay(OWNER_TEXT);
-    assert_eq!(rules_text(&fx.home, "shared"), CLAUDE_MD_TEXT);
-    assert_eq!(owner_overlay(&fx.home, "shared"), None);
+    assert_eq!(rules_text(&fx.home, Profile::Shared), CLAUDE_MD_TEXT);
+    assert_eq!(owner_overlay(&fx.home, Profile::Shared), None);
 }
 
 #[test]
 fn test_overlay_that_is_a_directory_is_ignored() {
     let fx = Fx::new();
     fs::create_dir_all(fx.home.join(OWNER_MD)).unwrap();
-    assert_eq!(rules_text(&fx.home, "owner"), CLAUDE_MD_TEXT);
+    assert_eq!(rules_text(&fx.home, Profile::Owner), CLAUDE_MD_TEXT);
 }
 
 #[test]
 fn test_user_rules_text_has_cursor_note_first() {
     let fx = Fx::new();
-    let text = user_rules_text(&fx.home, "owner");
+    let text = user_rules_text(&fx.home, Profile::Owner);
     assert!(text.starts_with(CURSOR_NOTE));
     assert!(text.ends_with(CLAUDE_MD_TEXT));
 }
@@ -398,10 +401,10 @@ fn test_user_rules_text_appends_output_style_after_the_overlay() {
     fx.overlay(OWNER_TEXT);
     fx.settings(json!({"outputStyle": "Terse"}));
     wr(&fx.claude.join("output-styles").join("terse.md"), "---\nname: Terse\n---\n\nBe brief.\n");
-    let text = user_rules_text(&fx.home, "shared");
+    let text = user_rules_text(&fx.home, Profile::Shared);
     assert!(text.contains("# Reply style: Terse\n\nBe brief.\n"));
     assert!(!text.contains("Off-limits"));
-    let text = user_rules_text(&fx.home, "owner");
+    let text = user_rules_text(&fx.home, Profile::Owner);
     assert!(text.find("## Off-limits").unwrap() < text.find("# Reply style: Terse").unwrap());
 }
 
@@ -556,7 +559,7 @@ fn mark(fx: &Fx, content: &str) {
 fn test_global_rule_for_each_profile() {
     let fx = Fx::new();
     fx.overlay(OWNER_TEXT);
-    call(|| cursor_rules(&fx.home, "shared"));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     let f = fx.cdir().join("rules").join("claude-global.mdc");
     let text = rd(&f);
     assert!(text.starts_with("---\ndescription: "));
@@ -564,7 +567,7 @@ fn test_global_rule_for_each_profile() {
     assert!(text.contains(MARK));
     assert!(!text.contains("Off-limits"));
     assert!(!text.contains("owner.md"));
-    call(|| cursor_rules(&fx.home, "owner"));
+    call(|| cursor_rules(&fx.home, Profile::Owner));
     assert!(rd(&f).contains("## Off-limits"));
     assert!(rd(&f).contains("claude/CLAUDE.md and ~/.config/dotfiles/owner.md"));
 }
@@ -573,12 +576,12 @@ fn test_global_rule_for_each_profile() {
 fn test_output_style_rule_written_then_removed() {
     let fx = Fx::new();
     style(&fx);
-    call(|| cursor_rules(&fx.home, "shared"));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     let sf = fx.cdir().join("rules").join("claude-output-style.mdc");
     assert!(rd(&sf).contains("# Reply style: Terse"));
     assert!(rd(&sf).contains("claude/output-styles/terse.md"));
     fx.settings(json!({"outputStyle": "default"}));
-    call(|| cursor_rules(&fx.home, "shared"));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(!sf.exists());
 }
 
@@ -587,7 +590,7 @@ fn test_user_owned_style_rule_is_not_removed() {
     let fx = Fx::new();
     let sf = fx.cdir().join("rules").join("claude-output-style.mdc");
     wr(&sf, "mine\n");
-    call(|| cursor_rules(&fx.home, "shared")); // no active style -> remove_generated
+    call(|| cursor_rules(&fx.home, Profile::Shared)); // no active style -> remove_generated
     assert_eq!(rd(&sf), "mine\n");
 }
 
@@ -596,7 +599,7 @@ fn test_user_owned_global_rule_is_not_overwritten() {
     let fx = Fx::new();
     let gf = fx.cdir().join("rules").join("claude-global.mdc");
     wr(&gf, "mine\n");
-    let ((), _, err) = call(|| cursor_rules(&fx.home, "shared"));
+    let ((), _, err) = call(|| cursor_rules(&fx.home, Profile::Shared));
     assert_eq!(rd(&gf), "mine\n");
     assert!(err.contains("not ours"), "{err}");
 }
@@ -605,7 +608,7 @@ fn test_user_owned_global_rule_is_not_overwritten() {
 fn test_unknown_style_name_means_no_style_file() {
     let fx = Fx::new();
     fx.settings(json!({"outputStyle": "Missing"}));
-    call(|| cursor_rules(&fx.home, "shared"));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(!fx.cdir().join("rules").join("claude-output-style.mdc").exists());
 }
 
@@ -614,7 +617,7 @@ fn test_style_matched_by_file_stem() {
     let fx = Fx::new();
     fx.settings(json!({"outputStyle": "terse"}));
     wr(&fx.claude.join("output-styles").join("terse.md"), "no frontmatter body\n");
-    call(|| cursor_rules(&fx.home, "shared"));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(rd(&fx.cdir().join("rules").join("claude-output-style.mdc")).contains("no frontmatter body"));
 }
 
@@ -622,11 +625,11 @@ fn test_style_matched_by_file_stem() {
 fn test_mark_present_removes_our_files_and_skips_when_hash_matches() {
     let fx = Fx::new();
     style(&fx);
-    call(|| cursor_rules(&fx.home, "shared")); // file copies exist
+    call(|| cursor_rules(&fx.home, Profile::Shared)); // file copies exist
     let rules = fx.cdir().join("rules");
     assert!(rules.join("claude-global.mdc").exists());
-    mark(&fx, &format!("{}\n", sha(&user_rules_text(&fx.home, "shared"))));
-    let ((), out, err) = call(|| cursor_rules(&fx.home, "shared"));
+    mark(&fx, &format!("{}\n", sha(&user_rules_text(&fx.home, Profile::Shared))));
+    let ((), out, err) = call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(!rules.join("claude-global.mdc").exists());
     assert!(!rules.join("claude-output-style.mdc").exists());
     assert!(out.contains("Cursor User Rules"), "{out}");
@@ -638,7 +641,7 @@ fn test_mark_present_removes_our_files_and_skips_when_hash_matches() {
 fn test_mark_present_warns_when_rules_changed() {
     let fx = Fx::new();
     mark(&fx, &format!("{}\n", sha("old text")));
-    let ((), out, err) = call(|| cursor_rules(&fx.home, "shared"));
+    let ((), out, err) = call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(err.contains("Run cursor-rules"), "{err}");
     assert!(!out.contains("already set up"), "{out}");
     assert!(!fx.cdir().join("rules").join("claude-global.mdc").exists());
@@ -649,8 +652,8 @@ fn test_mark_present_leaves_user_files_alone() {
     let fx = Fx::new();
     let gf = fx.cdir().join("rules").join("claude-global.mdc");
     wr(&gf, "mine\n");
-    mark(&fx, &sha(&user_rules_text(&fx.home, "shared")));
-    call(|| cursor_rules(&fx.home, "shared"));
+    mark(&fx, &sha(&user_rules_text(&fx.home, Profile::Shared)));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     assert_eq!(rd(&gf), "mine\n");
 }
 
@@ -658,18 +661,18 @@ fn test_mark_present_leaves_user_files_alone() {
 fn test_mark_hash_depends_on_profile() {
     let fx = Fx::new();
     fx.overlay(OWNER_TEXT);
-    mark(&fx, &sha(&user_rules_text(&fx.home, "owner")));
-    let ((), _, err) = call(|| cursor_rules(&fx.home, "shared"));
+    mark(&fx, &sha(&user_rules_text(&fx.home, Profile::Owner)));
+    let ((), _, err) = call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(err.contains("Run cursor-rules"), "{err}");
 }
 
 #[test]
 fn test_removing_the_mark_brings_the_file_copy_back() {
     let fx = Fx::new();
-    mark(&fx, &sha(&user_rules_text(&fx.home, "shared")));
-    call(|| cursor_rules(&fx.home, "shared"));
+    mark(&fx, &sha(&user_rules_text(&fx.home, Profile::Shared)));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     fs::remove_file(fx.home.join(USER_RULES_MARK)).unwrap();
-    call(|| cursor_rules(&fx.home, "shared"));
+    call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(fx.cdir().join("rules").join("claude-global.mdc").exists());
 }
 

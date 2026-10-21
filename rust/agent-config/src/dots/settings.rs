@@ -3,6 +3,7 @@
 
 use super::os;
 use crate::out::warn;
+use crate::presets::{self, Profile};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -110,18 +111,15 @@ pub fn set_mode(p: &Path, mode: u32) {
 #[cfg(not(unix))]
 pub fn set_mode(_p: &Path, _mode: u32) {}
 
-/// "owner" or "shared" (AGENTS.md "Profiles"): DOTFILES_PROFILE, then PROFILE in the
-/// settings, then "owner" when the private rules exist (saved as PROFILE), else "shared".
-pub fn profile() -> String {
-    let mut p = std::env::var("DOTFILES_PROFILE").unwrap_or_default();
-    if p.is_empty() {
-        p = get("PROFILE");
+/// The profile (AGENTS.md "Profiles"): DOTFILES_PROFILE, then PROFILE in the settings, then
+/// owner when the private rules exist (saved as PROFILE), else shared.
+pub fn profile() -> Profile {
+    let home = os::home();
+    let profile = presets::current_profile(&home);
+    if profile == Profile::Owner && presets::named_profile(&home).is_empty() {
+        let _ = crate::out::capture(|| set("PROFILE", Profile::Owner.as_str()));
     }
-    if p.is_empty() && owner_md().is_file() {
-        p = "owner".into();
-        let _ = crate::out::capture(|| set("PROFILE", "owner"));
-    }
-    if p == "owner" || p == "shared" { p } else { "shared".into() }
+    profile
 }
 
 #[cfg(test)]
