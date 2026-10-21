@@ -29,8 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[path = "../pace_core.rs"]
-mod pace;
+use agent_config::pace_core as pace;
 
 const POLL_CONTEXT: i64 = 100_000;
 const NUDGE_CONTEXT: i64 = 300_000;

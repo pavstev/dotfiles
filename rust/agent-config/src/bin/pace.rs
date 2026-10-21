@@ -1,6 +1,5 @@
 //! `pace status | refresh | seed <percent>`: the CLI of claude/hooks/pace.py.
-#[path = "../pace_core.rs"]
-mod pace;
+use agent_config::pace_core as pace;
 
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};

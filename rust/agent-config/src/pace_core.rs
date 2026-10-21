@@ -3,15 +3,12 @@
 //! status line always wins over the plan. With no plan, no calibration and no fresh status line
 //! the state is `unknown`.
 //!
-//! Included by `src/bin/pace.rs` and the guard with `#[path] mod`. The cache files keep the
-//! Python formats (compact JSON), so old and new caches read alike.
+//! Used by `src/bin/pace.rs` and the guard. The cache files keep the Python formats (compact
+//! JSON), so old and new caches read alike.
 //! Sources: the statusline cache (`claude-pace.json`) when fresh, else an estimate from the
 //! transcripts under `$CLAUDE_CONFIG_DIR/projects`. Caches live in `${XDG_CACHE_HOME:-~/.cache}`.
-#![allow(dead_code)] // the guard uses `status` only; the CLI uses the rest
 
-use agent_config::pycompat::{
-    civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float, truthy,
-};
+use crate::pycompat::{civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float, truthy};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -92,11 +89,8 @@ impl Paths {
         static SETTINGS: OnceLock<(String, i64)> = OnceLock::new();
         let (plan, days) = SETTINGS.get_or_init(|| {
             let h = home();
-            let plan = agent_config::setting(&h, "PLAN").trim().to_lowercase();
-            (
-                if plan.is_empty() { "unknown".to_string() } else { plan },
-                work_days(&agent_config::setting(&h, "WORK_DAYS")),
-            )
+            let plan = crate::setting(&h, "PLAN").trim().to_lowercase();
+            (if plan.is_empty() { "unknown".to_string() } else { plan }, work_days(&crate::setting(&h, "WORK_DAYS")))
         });
         Self { cache, projects: base.join("projects"), plan: plan.clone(), days: *days }
     }
@@ -1041,10 +1035,6 @@ mod tests {
         fn c1(&self, updated: i64, used: f64, resets: i64) {
             let v = json!({"updated": updated, "seven_day": {"used_percentage": used, "resets_at": resets}});
             write_text(&self.p.file("claude-pace.json"), &v.to_string());
-        }
-
-        fn weight(&self) -> f64 {
-            get(&load_result(&self.p).unwrap(), "weight").and_then(pynum).unwrap()
         }
     }
 

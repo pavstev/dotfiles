@@ -49,6 +49,8 @@ pub mod codeview;
 pub mod dots;
 pub mod guard_checks;
 pub mod out;
+pub mod pace_core;
+pub mod paths;
 pub mod presets;
 pub mod proj;
 pub mod pycompat;

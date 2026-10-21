@@ -13,6 +13,12 @@ tempfile = "3"
 walkdir = "2"
 regex = "1"
 tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "stopwords", "stemmer"] }
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+jiff = "0.2"
+memchr = "2"
+glob = "0.3"
 
 # The prompt backend. crossterm pulls winapi 0.3, whose GNU import libraries clash with the
 # raw-dylib ones of windows-sys: on windows-gnu the linked exe crashes before main. So Windows
@@ -66,9 +72,6 @@ used_underscore_binding = "allow"
 needless_continue = "allow"
 assertions_on_constants = "allow"
 match_same_arms = "allow"
-
-[dev-dependencies]
-serde = "1" # one test pretty-prints with a custom indent
 
 # Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
 # after a pull about 4 times slower, with the same start-up time. Keep the default
