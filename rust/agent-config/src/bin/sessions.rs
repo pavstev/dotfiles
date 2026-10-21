@@ -152,12 +152,14 @@ fn lock_writer(index: &Index) -> Res<Option<IndexWriter>> {
 type Stamps = BTreeMap<PathBuf, (u64, i64)>;
 
 /// What the last run indexed: the (size, mtime) of every transcript and how many documents each gave.
+/// A missing field reads as empty; a missing `version` reads as 0, so the version check drops the file.
 #[derive(Serialize, Deserialize)]
-#[serde(default)]
 struct State {
+    #[serde(default)]
     version: u64,
-    #[serde(with = "path_keys")]
+    #[serde(default, with = "path_keys")]
     claude: Stamps,
+    #[serde(default)]
     docs: BTreeMap<String, u64>,
 }
 
@@ -535,5 +537,19 @@ fn main() -> ExitCode {
             println!("• sessions: failed: {}", one_line(&e.to_string(), 150));
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_without_a_version_fails_the_version_check() {
+        let old: State = serde_json::from_str(r#"{"claude": {}, "docs": {}}"#).unwrap();
+        assert_eq!(old.version, 0);
+        let cur: State = serde_json::from_str(r#"{"version": 1}"#).unwrap();
+        assert_eq!(cur.version, STATE_VERSION);
+        assert!(cur.claude.is_empty() && cur.docs.is_empty());
     }
 }

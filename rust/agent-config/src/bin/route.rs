@@ -101,9 +101,11 @@ fn dumps(v: &Value, level: usize) -> String {
 fn json_error(text: &str, e: &serde_json::Error) -> String {
     let full = e.to_string();
     let msg = full.rsplit_once(" at line ").map_or(full.as_str(), |(m, _)| m);
-    let (line, col) = (e.line().max(1), e.column().max(1));
+    // serde counts the column in bytes; Python counts characters
+    let (line, byte_col) = (e.line().max(1), e.column().max(1));
     let line_start: usize = text.split_inclusive('\n').take(line - 1).map(str::len).sum();
-    let at = (line_start + col - 1).min(text.len());
+    let at = (line_start + byte_col - 1).min(text.len());
+    let col = text.get(line_start..at).map_or(byte_col, |s| s.chars().count() + 1);
     let pos = text.char_indices().take_while(|(i, _)| *i < at).count();
     format!("{msg}: line {line} column {col} (char {pos})")
 }
@@ -925,6 +927,9 @@ mod tests {
         // the line, the column and the character offset (not the byte offset) of the fault
         let err = json_loads("[\"é\",\n  x]").unwrap_err();
         assert!(err.ends_with(": line 2 column 3 (char 8)"), "{err}");
+        // a wide character before the fault on the same line counts once in the column too
+        let err = json_loads("[\"é\", x]").unwrap_err();
+        assert!(err.ends_with(": line 1 column 7 (char 6)"), "{err}");
         let err = json_loads("").unwrap_err();
         assert!(err.ends_with(": line 1 column 1 (char 0)"), "{err}");
     }

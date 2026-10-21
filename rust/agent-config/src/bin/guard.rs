@@ -1926,10 +1926,13 @@ fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
             continue;
         }
         let verdict = g(data, ctx);
-        if verdict != Verdict::Allow {
-            gc::fire_log(check, FireKind::Deny);
-            return verdict;
-        }
+        let kind = match verdict {
+            Verdict::Allow => continue,
+            Verdict::Ask(_) => FireKind::Ask,
+            Verdict::Deny(_) => FireKind::Deny,
+        };
+        gc::fire_log(check, kind);
+        return verdict;
     }
     Verdict::Allow
 }
