@@ -1109,7 +1109,7 @@ fn side_path(fx: &Fx) -> PathBuf {
     fx.cdir().join(MANAGED)
 }
 fn run_cfg(fx: &Fx) -> ((), String, String) {
-    call(|| cursor_cli_config(&fx.home))
+    call(|| cursor_cli_config(&fx.home).expect("cursor_cli_config"))
 }
 
 #[cfg(unix)]

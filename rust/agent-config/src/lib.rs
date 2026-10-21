@@ -8,9 +8,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MARK: &str = "generated-by: dotfiles";
@@ -36,14 +37,24 @@ pub fn set_dry(v: bool) {
     DRY.store(v, Ordering::Relaxed);
 }
 
-fn home_dir() -> PathBuf {
-    env::var("HOME")
-        .map(PathBuf::from)
-        .ok()
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
+/// Why a part of a command could not do its job. The command reports it as `skipped a part`.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// A permission list in `cli-config.json` is not an array.
+    #[error("permissions.{0} in cli-config.json is not a list")]
+    NotAList(&'static str),
 }
+
+/// A Claude permission rule: `Tool(arg)`.
+static RULE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+)\((.*)\)$").unwrap());
+/// The wildcard end of a Bash rule: `:*` or ` *`.
+static WILDCARD_END_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(:\*|\s\*)$").unwrap());
+/// The front matter block of a Markdown file.
+static FRONTMATTER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)^---\n(.*?)\n---\n?(.*)$").unwrap());
+/// A `key: value` line of front matter.
+static KEY_LINE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z0-9_-]+):(?:\s+(.*)|\s*)$").unwrap());
+/// A `- item` line of front matter.
+static ITEM_LINE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*-\s+(.*)$").unwrap());
 
 pub mod codeview;
 pub mod dots;
@@ -62,11 +73,11 @@ pub mod transcript;
 pub mod undo;
 #[allow(unused_imports)]
 use out::{b, d, g, y, z};
-pub use out::{color_enabled, header, info, ok, skip, summary, verbose, warn};
+pub use out::{color_enabled, header, info, ok, skip, summary, verbose, warn, wrote};
 
 /// The path with the home folder shown as `~`, for messages.
 pub fn tilde(p: &Path) -> String {
-    let home = home_dir();
+    let home = paths::home();
     let s = p.display().to_string();
     let h = home.display().to_string();
     if s == h {
@@ -160,11 +171,7 @@ pub fn unquote(v: &str) -> String {
 /// Text with no front matter gives an empty map and the whole text.
 pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let norm = text.replace("\r\n", "\n");
-    let re = Regex::new(r"(?s)^---\n(.*?)\n---\n?(.*)$").unwrap();
-    let caps = match re.captures(&norm) {
-        Some(c) => c,
-        None => return (BTreeMap::new(), text.to_string()),
-    };
+    let Some(caps) = FRONTMATTER_RE.captures(&norm) else { return (BTreeMap::new(), text.to_string()) };
     let meta_text = caps.get(1).unwrap().as_str();
     let body = caps.get(2).unwrap().as_str().to_string();
     let mut meta: BTreeMap<String, String> = BTreeMap::new();
@@ -192,16 +199,11 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
         }
     };
 
-    // Both patterns are constant, so compile them once instead of per line.
-    // Python uses `re.match`, which anchors at the line start: `^` here.
-    let km_re = Regex::new(r"^([A-Za-z0-9_-]+):(?:\s+(.*)|\s*)$").unwrap();
-    let lm_re = Regex::new(r"^\s*-\s+(.*)$").unwrap();
-
     for line in meta_text.split('\n') {
         if line.trim_start().starts_with('#') && style.is_none() {
             continue;
         }
-        if let Some(km) = km_re.captures(line) {
+        if let Some(km) = KEY_LINE_RE.captures(line) {
             flush(&mut key, &mut style, &mut items, &mut block, &mut meta);
             key = Some(km.get(1).unwrap().as_str().to_string());
             items = Vec::new();
@@ -222,7 +224,7 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
         if key.is_none() {
             continue;
         }
-        if let Some(lm) = lm_re.captures(line) {
+        if let Some(lm) = ITEM_LINE_RE.captures(line) {
             let k = key.clone().unwrap();
             if style.is_none() && meta.get(&k) == Some(&String::new()) {
                 items.push(unquote(lm.get(1).unwrap().as_str().trim()));
@@ -375,21 +377,21 @@ pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
 // Writers
 /// Writes the file through a temp file and a rename, so a reader never sees half a file.
 /// It creates missing folders and sets `mode` (else keeps the old mode, or 0644 for a new file).
-pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), String> {
+pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    fs::create_dir_all(parent)?;
     let mut builder = tempfile::Builder::new();
     let prefix = format!(".{}.", path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"));
     builder.prefix(&prefix);
-    let mut nt = builder.tempfile_in(parent).map_err(|e| e.to_string())?;
-    nt.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-    nt.flush().map_err(|e| e.to_string())?;
+    let mut nt = builder.tempfile_in(parent)?;
+    nt.write_all(text.as_bytes())?;
+    nt.flush()?;
     #[cfg(not(unix))]
     let _ = mode;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(nt.path()).map_err(|e| e.to_string())?.permissions();
+        let mut perms = fs::metadata(nt.path())?.permissions();
         if let Some(m) = mode {
             perms.set_mode(m);
         } else if path.exists() {
@@ -399,10 +401,17 @@ pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), St
         } else {
             perms.set_mode(0o644);
         }
-        fs::set_permissions(nt.path(), perms).map_err(|e| e.to_string())?;
+        fs::set_permissions(nt.path(), perms)?;
     }
-    nt.persist(path).map_err(|e| e.to_string())?;
+    nt.persist(path).map_err(|e| e.error)?;
     Ok(())
+}
+
+/// Writes a side file (a sidecar list, the last build) and warns when it cannot.
+fn write_or_warn(path: &Path, text: &str, mode: Option<u32>) {
+    if let Err(e) = atomic_write(path, text, mode) {
+        warn(&format!("could not write {}: {e}", tilde(path)));
+    }
 }
 
 /// Writes a generated file unless it already matches. A file that is a link or has no
@@ -441,10 +450,9 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
         info(&format!("would write {}", tilde(path)));
         return;
     }
-    if let Err(e) = atomic_write(path, text, mode) {
-        warn(&e);
-    } else {
-        ok(&format!("wrote {}", tilde(path)));
+    match atomic_write(path, text, mode) {
+        Ok(()) => wrote(&format!("wrote {}", tilde(path))),
+        Err(e) => warn(&format!("could not write {}: {e}", tilde(path))),
     }
 }
 
@@ -508,10 +516,9 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
         );
     }
     let mode = if private { Some(0o600) } else { None };
-    if let Err(e) = atomic_write(path, &(serde_json::to_string_pretty(new).unwrap_or_default() + "\n"), mode) {
-        warn(&e);
-    } else {
-        ok(&format!("updated {}", tilde(path)));
+    match atomic_write(path, &dump(new), mode) {
+        Ok(()) => wrote(&format!("updated {}", tilde(path))),
+        Err(e) => warn(&format!("could not write {}: {e}", tilde(path))),
     }
 }
 
@@ -551,21 +558,16 @@ pub fn cursor_rules(home: &Path, profile: &str) {
         return;
     }
     let overlay = owner_overlay(home, profile);
-    let (_srcs, desc, mode): (Vec<&str>, String, Option<u32>) = if overlay.is_some() {
-        (
-            vec!["claude/CLAUDE.md", "~/.config/dotfiles/owner.md"],
-            "Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules".to_string(),
-            Some(0o600),
-        )
+    let (desc, mode) = if overlay.is_some() {
+        ("Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules", Some(0o600))
     } else {
         if profile == "owner" {
             warn(
                 "no ~/.config/dotfiles/owner.md, so the Cursor rule has no owner-only rules. Add them with: dots settings",
             );
         }
-        (vec!["claude/CLAUDE.md"], "Global rules from the dotfiles repo (claude/CLAUDE.md)".to_string(), None)
+        ("Global rules from the dotfiles repo (claude/CLAUDE.md)", None)
     };
-    let _ = desc;
     let mut src_labels: Vec<&str> = vec!["claude/CLAUDE.md"];
     if has_preset_rules(home, profile) {
         src_labels.push("claude/presets");
@@ -574,91 +576,81 @@ pub fn cursor_rules(home: &Path, profile: &str) {
         src_labels.push("~/.config/dotfiles/owner.md");
     }
     let body = format!("{}{}{}", stamp(&src_labels), CURSOR_NOTE, rules_text(home, profile));
-    write_generated(&rules.join("claude-global.mdc"), &mdc(&desc, &body), mode);
+    write_generated(&rules.join("claude-global.mdc"), &mdc(desc, &body), mode);
 
     let target = rules.join("claude-output-style.mdc");
-    // update desc variable not used; recompute desc label
-    let style = output_style(home);
-    if style.is_none() {
+    let Some((name, style_file, sbody)) = output_style(home) else {
         remove_generated(&target, "its source is gone");
         return;
-    }
-    let (name, style_file, sbody) = style.unwrap();
-    let stampstr = stamp(&[&format!("claude/output-styles/{}", style_file.file_name().unwrap().to_str().unwrap())]);
-    // can't easily have &str into slice with formatted; use Vec<String> not accepted. Adjust: stamp takes &[&str]. Use local static? We'll call a variant manually.
-    let stamp_line = format!(
-        "<!-- {} (scripts/agent-config) from claude/output-styles/{}. Edit that file, then run dots. -->\n\n",
-        MARK,
-        style_file.file_name().unwrap().to_str().unwrap()
-    );
-    let _ = stampstr;
-    let body = format!("{stamp_line}# Reply style: {name}\n\n{sbody}");
+    };
+    let from = format!("claude/output-styles/{}", style_file.file_name().unwrap_or_default().to_string_lossy());
+    let body = format!("{}# Reply style: {name}\n\n{sbody}", stamp(&[&from]));
     write_generated(&target, &mdc(&format!("Reply style \"{name}\" (Claude outputStyle)"), &body), None);
+}
+
+/// The `.md` files directly in `dir`, sorted. A missing folder gives none.
+fn md_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> =
+        entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).collect();
+    files.sort();
+    files
+}
+
+/// What a harness needs to turn one `claude/agents/*.md` into its own agent file.
+struct AgentSrc<'a> {
+    /// The agent name: the front matter `name`, else the file name.
+    name: &'a str,
+    meta: &'a BTreeMap<String, String>,
+    /// The tools the agent lists.
+    tools: BTreeSet<&'a str>,
+}
+
+/// Writes `<dst>/<name>.md` for each `claude/agents/*.md` (its front matter from `front`) and removes
+/// generated files in `dst` whose source is gone.
+fn sync_agents(dst: &Path, front: impl Fn(&AgentSrc) -> Vec<String>) {
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    for src in md_files(&claude_dir().join("agents")) {
+        let file = src.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if file == "README.md" {
+            continue;
+        }
+        let (meta, body) = split_frontmatter(&fs::read_to_string(&src).unwrap_or_default());
+        let name =
+            meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap_or_default().to_string_lossy().into());
+        let tools = meta
+            .get("tools")
+            .map_or_else(BTreeSet::new, |t| t.split(',').map(str::trim).filter(|t| !t.is_empty()).collect());
+        let lines = front(&AgentSrc { name: &name, meta: &meta, tools });
+        let text = format!(
+            "---\n{}\n---\n{}{}",
+            lines.join("\n"),
+            stamp(&[&format!("claude/agents/{file}")]),
+            body.trim_start()
+        );
+        wanted.insert(format!("{name}.md"));
+        write_generated(&dst.join(format!("{name}.md")), &text, None);
+    }
+    for f in md_files(dst) {
+        if !wanted.contains(f.file_name().unwrap_or_default().to_string_lossy().as_ref()) {
+            remove_generated(&f, "its source is gone");
+        }
+    }
 }
 
 /// Writes `~/.cursor/agents/<name>.md` from `claude/agents/*.md` and removes generated ones whose source is gone.
 pub fn cursor_agents(home: &Path) {
-    let dst = home.join(".cursor").join("agents");
-    let mut wanted: BTreeSet<String> = BTreeSet::new();
-    let agents_dir = claude_dir().join("agents");
-    if let Ok(entries) = fs::read_dir(&agents_dir) {
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-            .collect();
-        files.sort();
-        for src in files {
-            if src.file_name().and_then(|s| s.to_str()) == Some("README.md") {
-                continue;
-            }
-            let raw = fs::read_to_string(&src).unwrap_or_default();
-            let (meta, body) = split_frontmatter(&raw);
-            let name =
-                meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap().to_str().unwrap().to_string());
-            let mut lines = vec![format!("name: {}", name)];
-            if let Some(desc) = meta.get("description") {
-                lines.push(format!("description: {}", yaml_str(desc)));
-            }
-            lines.push("model: inherit".to_string());
-            let tools: BTreeSet<String> = meta
-                .get("tools")
-                .unwrap_or(&String::new())
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-            let has_write = tools.iter().any(|t| WRITE_TOOLS.contains(&t.as_str()));
-            if !tools.is_empty() && !has_write {
-                lines.push("readonly: true".to_string());
-            }
-            // stamp needs &[&str], dynamic not possible. Use manual stamp:
-            let stamp_line = format!(
-                "<!-- {} (scripts/agent-config) from claude/agents/{}. Edit that file, then run dots. -->\n\n",
-                MARK,
-                src.file_name().unwrap().to_str().unwrap()
-            );
-            let text = format!("---\n{}\n---\n{}{}", lines.join("\n"), stamp_line, body.trim_start());
-            let out = dst.join(format!("{name}.md"));
-            wanted.insert(out.file_name().unwrap().to_str().unwrap().to_string());
-            write_generated(&out, &text, None);
+    sync_agents(&home.join(".cursor").join("agents"), |a| {
+        let mut lines = vec![format!("name: {}", a.name)];
+        if let Some(desc) = a.meta.get("description") {
+            lines.push(format!("description: {}", yaml_str(desc)));
         }
-    }
-    if dst.is_dir() {
-        let mut fslist: Vec<PathBuf> = fs::read_dir(&dst)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-            .collect();
-        fslist.sort();
-        for f in fslist {
-            let fname = f.file_name().unwrap().to_str().unwrap().to_string();
-            if !wanted.contains(&fname) {
-                remove_generated(&f, "its source is gone");
-            }
+        lines.push("model: inherit".to_string());
+        if !a.tools.is_empty() && !a.tools.iter().any(|t| WRITE_TOOLS.contains(t)) {
+            lines.push("readonly: true".to_string());
         }
-    }
+        lines
+    });
 }
 
 // Not Python's `shlex.quote` byte for byte: the empty string stays empty (Python gives `''`) and a
@@ -790,53 +782,67 @@ pub fn cursor_mcp(home: &Path) {
 
 /// A Claude permission rule as a Cursor CLI rule (`Shell(cmd)`, `Read(path)`), or `None` when Cursor has no match.
 pub fn translate_permission(rule: &str, kind: &str) -> Option<String> {
-    let re = Regex::new(r"^(\w+)\((.*)\)$").unwrap();
-    let caps = re.captures(rule.trim())?;
-    let tool = caps.get(1)?.as_str();
-    let arg = caps.get(2)?.as_str();
-    if tool == "Bash" {
-        let re2 = Regex::new(r"(:\*|\s\*)$").unwrap();
-        if re2.is_match(arg) {
-            let cmd = re2.replace(arg, "").trim().to_string();
-            if !cmd.is_empty() && !cmd.contains('*') {
-                return Some(format!("Shell({cmd})"));
-            }
-            return None;
-        }
-        let trimmed = arg.trim();
-        let (exe, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
-        let rest = rest.trim();
-        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') {
-            return Some(format!("Shell({exe}:{rest})"));
-        }
-        return None;
+    let (tool, arg) = split_rule(rule)?;
+    match tool {
+        "Bash" => Some(match parse_bash(arg)? {
+            BashRule::Prefix(cmd) => format!("Shell({cmd})"),
+            BashRule::Exact { exe, rest } => format!("Shell({exe}:{rest})"),
+        }),
+        "Read" => Some(format!("Read({})", rule_path(arg, kind))),
+        "Edit" | "Write" => Some(format!("Write({})", rule_path(arg, kind))),
+        "WebFetch" => arg.strip_prefix("domain:").map(|d| format!("WebFetch({d})")),
+        _ => None,
     }
-    if tool == "Read" || tool == "Edit" || tool == "Write" {
-        let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
-        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
-            path = format!("**/{path}");
-        }
-        let readwrite = if tool == "Read" { "Read" } else { "Write" };
-        return Some(format!("{readwrite}({path})"));
+}
+
+/// A Claude rule `Tool(arg)` as (tool, arg).
+fn split_rule(rule: &str) -> Option<(&str, &str)> {
+    let caps = RULE_RE.captures(rule.trim())?;
+    // The captures borrow `rule.trim()`, which lives as long as `rule`.
+    Some((caps.get(1)?.as_str(), caps.get(2)?.as_str()))
+}
+
+/// The two forms of a Bash rule that both harnesses can express.
+enum BashRule {
+    /// `git status:*` or `git status *`: the command and anything after it.
+    Prefix(String),
+    /// `git push origin main`: the program and its exact arguments.
+    Exact { exe: String, rest: String },
+}
+
+/// The Bash rule argument as a `BashRule`, or `None` when it uses a wildcard in the middle or is empty.
+fn parse_bash(arg: &str) -> Option<BashRule> {
+    if WILDCARD_END_RE.is_match(arg) {
+        let cmd = WILDCARD_END_RE.replace(arg, "").trim().to_string();
+        return (!cmd.is_empty() && !cmd.contains('*')).then_some(BashRule::Prefix(cmd));
     }
-    if tool == "WebFetch" && arg.starts_with("domain:") {
-        return Some(format!("WebFetch({})", &arg["domain:".len()..]));
+    let trimmed = arg.trim();
+    let (exe, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
+    let (exe, rest) = (exe.trim(), rest.trim());
+    (!exe.is_empty() && !rest.is_empty() && !arg.contains('*'))
+        .then(|| BashRule::Exact { exe: exe.to_string(), rest: rest.to_string() })
+}
+
+/// A path of a Read, Edit or Write rule. A deny rule on a relative path matches it anywhere.
+fn rule_path(arg: &str, kind: &str) -> String {
+    let path = arg.strip_prefix("./").unwrap_or(arg);
+    if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
+        format!("**/{path}")
+    } else {
+        path.to_string()
     }
-    None
 }
 
 /// Merges translated permissions, the no-attribution flags and the status line into
 /// `~/.cursor/cli-config.json`. Rules it added before are tracked in a sidecar file.
-pub fn cursor_cli_config(home: &Path) {
+pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
     let path = home.join(".cursor").join("cli-config.json");
-    let old = load_json(&path);
-    if old.is_none() {
+    let Some(old) = load_json(&path) else {
         if path.exists() {
             warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
         }
-        return;
-    }
-    let old = old.unwrap();
+        return Ok(());
+    };
     let mut new = old.clone();
     new.as_object_mut().unwrap().entry("version".to_string()).or_insert(serde_json::json!(1));
     new.as_object_mut().unwrap().entry("editor".to_string()).or_insert(serde_json::json!({"vimMode": false}));
@@ -857,7 +863,7 @@ pub fn cursor_cli_config(home: &Path) {
             .entry(kind.to_string())
             .or_insert(serde_json::json!([]))
             .as_array_mut()
-            .unwrap_or_else(|| panic!("TypeError: permissions.{kind} in cli-config.json is not a list"));
+            .ok_or(ConfigError::NotAList(kind))?;
         let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let want: Vec<String> =
             rules.iter().filter_map(|r| r.as_str()).filter_map(|r| translate_permission(r, kind)).collect();
@@ -909,86 +915,28 @@ pub fn cursor_cli_config(home: &Path) {
         && after == new_mut
         && managed != serde_json::to_value(&added).ok().unwrap_or(Value::Null)
     {
-        let _ = atomic_write(&side, &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"), None);
+        write_or_warn(&side, &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"), None);
     }
+    Ok(())
 }
 
 // Opencode
 /// Writes `~/.config/opencode/agents/<name>.md` from `claude/agents/*.md` and removes generated ones whose source is gone.
 pub fn opencode_agents(home: &Path) {
-    let dst = home.join(".config").join("opencode").join("agents");
-    let mut wanted: BTreeSet<String> = BTreeSet::new();
-    let agents_dir = claude_dir().join("agents");
-    if let Ok(entries) = fs::read_dir(&agents_dir) {
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-            .collect();
-        files.sort();
-        for src in files {
-            if src.file_name().and_then(|s| s.to_str()) == Some("README.md") {
-                continue;
-            }
-            let raw = fs::read_to_string(&src).unwrap_or_default();
-            let (meta, body) = split_frontmatter(&raw);
-            let name =
-                meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap().to_str().unwrap().to_string());
-            let mut lines: Vec<String> = Vec::new();
-            if let Some(desc) = meta.get("description") {
-                lines.push(format!("description: {}", yaml_str(desc)));
-            }
-            lines.push("mode: subagent".to_string());
-            let tools: BTreeSet<String> = meta
-                .get("tools")
-                .unwrap_or(&String::new())
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-            let write_tools = tools
-                .intersection(&BTreeSet::from([
-                    "Write".to_string(),
-                    "Edit".to_string(),
-                    "MultiEdit".to_string(),
-                    "NotebookEdit".to_string(),
-                ]))
-                .count()
-                > 0;
-            if write_tools {
-                lines.push("permission:".to_string());
-                lines.push("  skill: allow".to_string());
-            } else {
-                lines.push("permission:".to_string());
-                lines.push("  edit: deny".to_string());
-                lines.push("  skill: allow".to_string());
-            }
-            let stamp_line = format!(
-                "<!-- {} (scripts/agent-config) from claude/agents/{}. Edit that file, then run dots. -->\n\n",
-                MARK,
-                src.file_name().unwrap().to_str().unwrap()
-            );
-            let text = format!("---\n{}\n---\n{}{}", lines.join("\n"), stamp_line, body.trim_start());
-            let out = dst.join(format!("{name}.md"));
-            wanted.insert(out.file_name().unwrap().to_str().unwrap().to_string());
-            write_generated(&out, &text, None);
+    sync_agents(&home.join(".config").join("opencode").join("agents"), |a| {
+        let mut lines = Vec::new();
+        if let Some(desc) = a.meta.get("description") {
+            lines.push(format!("description: {}", yaml_str(desc)));
         }
-    }
-    if dst.is_dir() {
-        let mut fslist: Vec<PathBuf> = fs::read_dir(&dst)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-            .collect();
-        fslist.sort();
-        for f in fslist {
-            let fname = f.file_name().unwrap().to_str().unwrap().to_string();
-            if !wanted.contains(&fname) {
-                remove_generated(&f, "its source is gone");
-            }
+        lines.push("mode: subagent".to_string());
+        lines.push("permission:".to_string());
+        // Bash alone does not count here: Opencode's `edit` permission covers file edits only.
+        if !["Write", "Edit", "MultiEdit", "NotebookEdit"].iter().any(|t| a.tools.contains(t)) {
+            lines.push("  edit: deny".to_string());
         }
-    }
+        lines.push("  skill: allow".to_string());
+        lines
+    });
 }
 
 /// The guard plugin text (`opencode_plugin.ts.tmpl`) with the launcher path filled in.
@@ -1032,46 +980,18 @@ fn plugin_sh(windows: bool, found: Option<PathBuf>) -> String {
 
 /// A Claude permission rule as an Opencode (tool, pattern, action) triple, or `None` when Opencode has no match.
 pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, String)> {
-    let re = Regex::new(r"^(\w+)\((.*)\)$").unwrap();
-    let caps = re.captures(rule.trim())?;
-    let tool = caps.get(1)?.as_str();
-    let arg = caps.get(2)?.as_str();
-    if tool == "Bash" {
-        let re2 = Regex::new(r"(:\*|\s\*)$").unwrap();
-        if re2.is_match(arg) {
-            let cmd = re2.replace(arg, "").trim().to_string();
-            if !cmd.is_empty() && !cmd.contains('*') {
-                return Some(("bash".to_string(), format!("{cmd} *"), kind.to_string()));
-            }
-            return None;
-        }
-        let trimmed = arg.trim();
-        let (exe, rest_raw) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
-        let exe = exe.trim();
-        let rest = rest_raw.trim();
-        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') {
-            return Some(("bash".to_string(), format!("{exe} {rest}"), kind.to_string()));
-        }
-        return None;
-    }
-    if tool == "Read" {
-        let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
-        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
-            path = format!("**/{path}");
-        }
-        return Some(("read".to_string(), path, kind.to_string()));
-    }
-    if tool == "Edit" || tool == "Write" {
-        let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
-        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
-            path = format!("**/{path}");
-        }
-        return Some(("edit".to_string(), path, kind.to_string()));
-    }
-    if tool == "SuggestPluginInstall" || tool == "SearchPlugins" || tool == "SuggestSkills" {
-        return Some(("tool".to_string(), tool.to_string(), "deny".to_string()));
-    }
-    None
+    let (tool, arg) = split_rule(rule)?;
+    let (cat, pattern, effect) = match tool {
+        "Bash" => match parse_bash(arg)? {
+            BashRule::Prefix(cmd) => ("bash", format!("{cmd} *"), kind),
+            BashRule::Exact { exe, rest } => ("bash", format!("{exe} {rest}"), kind),
+        },
+        "Read" => ("read", rule_path(arg, kind), kind),
+        "Edit" | "Write" => ("edit", rule_path(arg, kind), kind),
+        "SuggestPluginInstall" | "SearchPlugins" | "SuggestSkills" => ("tool", tool.to_string(), "deny"),
+        _ => return None,
+    };
+    Some((cat.to_string(), pattern, effect.to_string()))
 }
 
 /// Merges translated permissions and (when on) the MCP servers into `~/.config/opencode/opencode.jsonc`.
@@ -1174,7 +1094,7 @@ pub fn opencode_config(home: &Path) {
         && after == new
         && managed != serde_json::to_value(&want).unwrap_or(Value::Null)
     {
-        let _ = atomic_write(&side, &(serde_json::to_string_pretty(&want).unwrap_or_default() + "\n"), None);
+        write_or_warn(&side, &(serde_json::to_string_pretty(&want).unwrap_or_default() + "\n"), None);
     }
 }
 
@@ -1185,33 +1105,16 @@ pub fn opencode_theme(home: &Path) {
         return;
     }
     let themes = home.join(".config").join("opencode").join("themes");
-    let text = include_str!("../themes/copper.json").to_string();
+    let text = include_str!("../themes/copper.json");
     let path = themes.join("copper.json");
-    if path.exists() {
-        if let Some(oldt) = read_text(&path) {
-            if oldt == text {
-                skip(&tilde(&path));
-            } else if dry() {
-                info(&format!("would write {}", tilde(&path)));
-            } else {
-                let _ = fs::create_dir_all(&themes);
-                let _ = atomic_write(&path, &text, None);
-                ok(&format!("wrote {}", tilde(&path)));
-            }
-        } else if dry() {
-            info(&format!("would write {}", tilde(&path)));
-        } else {
-            let _ = fs::create_dir_all(&themes);
-            let _ = atomic_write(&path, &text, None);
-            ok(&format!("wrote {}", tilde(&path)));
-        }
+    if read_text(&path).as_deref() == Some(text) {
+        skip(&tilde(&path));
+    } else if dry() {
+        info(&format!("would write {}", tilde(&path)));
     } else {
-        if dry() {
-            info(&format!("would write {}", tilde(&path)));
-        } else {
-            let _ = fs::create_dir_all(&themes);
-            let _ = atomic_write(&path, &text, None);
-            ok(&format!("wrote {}", tilde(&path)));
+        match atomic_write(&path, text, None) {
+            Ok(()) => wrote(&format!("wrote {}", tilde(&path))),
+            Err(e) => warn(&format!("could not write {}: {e}", tilde(&path))),
         }
     }
 
@@ -1330,46 +1233,55 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
 /// Serializes the swap of the panic hook in `run_part`.
 static PART_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Run one part of a command. Like the Python tool, one bad file must not stop the other parts:
-/// a failing part is reported as `skipped a part: <why>` and counted. True when it ran clean.
-fn run_part(part: impl FnOnce()) -> bool {
+/// A part of a command: it reports its own problems with `warn`, and returns an error only when it
+/// cannot go on.
+type Part<'a> = Box<dyn FnOnce() -> Result<(), ConfigError> + 'a>;
+
+/// A part that cannot fail: it only warns.
+fn part<'a>(f: impl FnOnce() + 'a) -> Part<'a> {
+    Box::new(move || {
+        f();
+        Ok(())
+    })
+}
+
+/// Runs the parts of a command in order. One bad file must not stop the other parts: a failing part
+/// is reported as `skipped a part: <why>` and counted. A panic is caught as a last safety net and
+/// reported the same way. Returns how many parts failed.
+fn run_parts(parts: Vec<Part<'_>>) -> usize {
     let _g = PART_HOOK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {})); // the warning below is the report, not a backtrace
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(part));
-    std::panic::set_hook(prev);
-    match r {
-        Ok(()) => true,
-        Err(p) => {
-            let why = p
+    let mut failed = 0;
+    for p in parts {
+        let why = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(p)) {
+            Ok(Ok(())) => continue,
+            Ok(Err(e)) => e.to_string(),
+            Err(p) => p
                 .downcast_ref::<&str>()
                 .map(ToString::to_string)
                 .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "unknown error".to_string());
-            warn(&format!("skipped a part: {why}"));
-            false
-        }
+                .unwrap_or_else(|| "unknown error".to_string()),
+        };
+        warn(&format!("skipped a part: {why}"));
+        failed += 1;
     }
+    std::panic::set_hook(prev);
+    failed
 }
 
 /// The `cursor` command: runs each Cursor part. Returns 1 when a part failed, else 0.
 pub fn cmd_cursor(args: &CursorArgs) -> i32 {
-    let home = home_dir();
+    let home = paths::home();
     header(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), args.profile));
-    let parts: [Box<dyn FnOnce() + '_>; 5] = [
-        Box::new(|| cursor_rules(&home, &args.profile)),
-        Box::new(|| cursor_agents(&home)),
-        Box::new(|| cursor_hooks(&home)),
-        Box::new(|| cursor_mcp(&home)),
-        Box::new(|| cursor_cli_config(&home)),
+    let parts = vec![
+        part(|| cursor_rules(&home, &args.profile)),
+        part(|| cursor_agents(&home)),
+        part(|| cursor_hooks(&home)),
+        part(|| cursor_mcp(&home)),
+        Box::new(|| cursor_cli_config(&home)) as Part,
     ];
-    let mut failed = 0;
-    for part in parts {
-        if !run_part(part) {
-            failed += 1;
-        }
-    }
-    i32::from(failed > 0)
+    i32::from(run_parts(parts) > 0)
 }
 
 /// Arguments of the `cursor` command.
@@ -1385,7 +1297,7 @@ pub struct CursorArgs {
 
 /// The profile of this machine (`owner` or `shared`), from the settings.
 pub fn default_profile() -> String {
-    presets::profile(&home_dir())
+    presets::profile(&paths::home())
 }
 
 /// The command that copies stdin to the clipboard on this OS, or `None` when none is installed.
@@ -1427,9 +1339,8 @@ fn crate_which(cmd: &str, path: Option<&str>) -> bool {
 
 /// The `user-rules` command: prints the Cursor User Rules text, or with `copy` puts it on the
 /// clipboard and removes the file copies in `~/.cursor/rules`. Returns 1 when there is no clipboard tool.
-pub fn cmd_user_rules(profile: &str, copy: bool, dry_run: bool) -> i32 {
-    let _ = dry_run;
-    let home = home_dir();
+pub fn cmd_user_rules(profile: &str, copy: bool) -> i32 {
+    let home = paths::home();
     let text = user_rules_text(&home, profile);
     if !copy {
         print!("{text}");
@@ -1453,7 +1364,7 @@ pub fn cmd_user_rules(profile: &str, copy: bool, dry_run: bool) -> i32 {
         let _ = stdin.write_all(text.as_bytes());
     }
     let _ = child.wait();
-    let _ = atomic_write(&home.join(USER_RULES_MARK), &(sha(&text) + "\n"), None);
+    write_or_warn(&home.join(USER_RULES_MARK), &(sha(&text) + "\n"), None);
     for f in ["claude-global.mdc", "claude-output-style.mdc"] {
         remove_generated(&home.join(".cursor").join("rules").join(f), "the rules move to Cursor User Rules");
     }
@@ -1713,7 +1624,7 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         skip(&tilde(&live_f));
         // still maybe update last
         if !dry() && (!last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) {
-            let _ = atomic_write(&last_f, &text, Some(0o600));
+            write_or_warn(&last_f, &text, Some(0o600));
         }
         return 0;
     }
@@ -1729,9 +1640,9 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         warn(&format!("could not write {}: {e}", tilde(&live_f)));
         return 1;
     }
-    ok(&format!("built {} (repo base + private layer)", tilde(&live_f)));
+    wrote(&format!("built {} (repo base + private layer)", tilde(&live_f)));
     if !dry() && (!last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) {
-        let _ = atomic_write(&last_f, &text, Some(0o600));
+        write_or_warn(&last_f, &text, Some(0o600));
     }
     0
 }
@@ -1927,7 +1838,7 @@ fn run_cli(cli: Cli) -> i32 {
         }
         Commands::UserRules(a) => {
             set_dry(a.dry_run);
-            (cmd_user_rules(&a.profile, a.copy, a.dry_run), "user-rules")
+            (cmd_user_rules(&a.profile, a.copy), "user-rules")
         }
         Commands::ClaudeSettings(a) => {
             set_dry(a.dry_run);
@@ -1949,7 +1860,7 @@ fn cmd_cursor_dispatch(a: &CursorArgs) -> i32 {
 
 fn cmd_claude_settings_dispatch(a: &ClaudeSettingsArgs) -> i32 {
     set_dry(a.dry_run);
-    let home = home_dir();
+    let home = paths::home();
     if a.action == "promote" {
         let Some(key) = a.key.as_deref().filter(|k| !k.is_empty()) else {
             warn("promote needs a key, e.g. permissions.allow");
@@ -1969,31 +1880,22 @@ fn cmd_claude_settings_dispatch(a: &ClaudeSettingsArgs) -> i32 {
 
 fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
     set_dry(a.dry_run);
-    let home = home_dir();
+    let home = paths::home();
     header(&format!("Opencode config from {} (profile: {})", tilde(&claude_dir()), a.profile));
     let projects = a
         .projects
         .as_ref()
         .filter(|s| !s.is_empty())
         .map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>());
-    let parts: [Box<dyn FnOnce() + '_>; 6] = [
-        Box::new(|| opencode_agents(&home)),
-        Box::new(|| opencode_plugin(&home)),
-        Box::new(|| opencode_config(&home)),
-        Box::new(|| opencode_rules(&home, &a.profile)),
-        Box::new(|| opencode_theme(&home)),
-        Box::new({
-            let home = &home;
-            move || opencode_projects(home, projects)
-        }),
+    let parts = vec![
+        part(|| opencode_agents(&home)),
+        part(|| opencode_plugin(&home)),
+        part(|| opencode_config(&home)),
+        part(|| opencode_rules(&home, &a.profile)),
+        part(|| opencode_theme(&home)),
+        part(|| opencode_projects(&home, projects)),
     ];
-    let mut failed = 0;
-    for part in parts {
-        if !run_part(part) {
-            failed += 1;
-        }
-    }
-    i32::from(failed > 0)
+    i32::from(run_parts(parts) > 0)
 }
 
 /// Writes `~/.config/opencode/AGENTS.md`: the rules, enabled presets, owner overlay and reply style.
