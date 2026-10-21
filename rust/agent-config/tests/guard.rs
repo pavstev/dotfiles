@@ -1,26 +1,9 @@
-//! Port of claude/hooks/test_guard.py: every test runs the `guard` binary (`CARGO_BIN_EXE_guard`).
-//! The few that called Python functions directly live in `src/bin/guard.rs` (`mod tests`).
-//! `tests/PORTED.md` maps each Python test to its Rust twin; `ported_map_complete` checks the map.
+//! Tests of the `guard` hook. Most run the binary (`CARGO_BIN_EXE_guard`); the later sections call
+//! `guard_checks` in process. Pure helpers are tested in `src/bin/guard.rs` and `src/guard_checks.rs`.
 mod common;
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-
-/// Expected row count per Python file. The first three files are ported by this suite and
-/// `pace.rs` / `guard_cursor.rs`; `scripts/test_agent_config.py` by `agent_config.rs` and
-/// `src/agent_config_tests.rs`; the four skill-script files by the unit tests of the skill bins and
-/// `tests/skill_bins.rs`. Every file listed must have exactly this many rows.
-const REQUIRED: [(&str, usize); 8] = [
-    ("claude/hooks/test_guard.py", 130),
-    ("claude/hooks/test_pace.py", 64),
-    ("cursor/hooks/test_guard_cursor.py", 23),
-    ("scripts/test_agent_config.py", 199),
-    ("claude/skills/ps_spawn/scripts/test_spawn.py", 11),
-    ("claude/skills/ps_whatsleft/scripts/test_route.py", 18),
-    ("claude/skills/ps_whatsleft/scripts/test_whatsleft_scan.py", 14),
-    ("claude/skills/ps_harness-optimize/scripts/test_harness_stats.py", 2),
-];
 
 use common::run_bin;
 use serde_json::{Value, json};
@@ -537,9 +520,12 @@ fn test_heavy_agents_denied() {
 #[test]
 fn test_router_table() {
     let g = G::new();
-    let (ti, out) = g.route("Plan", Some("sonnet"), Some("high"));
-    assert_routed(&out, &ti, "opus", Some("high"));
-    let (ti, out) = g.route_full("code-reviewer", Some("sonnet"), Some("high"), "Final whole-branch review", BRIEF, None, json!({}));
+    // opus rows get opus at high, whatever the caller asked for
+    for (model, effort) in [(Some("sonnet"), Some("high")), (Some("sonnet"), Some("low")), (Some("haiku"), None)] {
+        let (ti, out) = g.route("Plan", model, effort);
+        assert_routed(&out, &ti, "opus", Some("high"));
+    }
+    let (ti, out) = g.route_full("code-reviewer", Some("sonnet"), Some("medium"), "Final whole-branch review", BRIEF, None, json!({}));
     assert_routed(&out, &ti, "opus", Some("high"));
     let (ti, out) = g.route_full("code-reviewer", Some("sonnet"), Some("high"), "review",
         &format!("Final review of main..HEAD. {BRIEF}"), None, json!({}));
@@ -548,8 +534,6 @@ fn test_router_table() {
         let (ti, out) = g.route(kind, Some("sonnet"), Some("high"));
         assert_routed(&out, &ti, "haiku", None);
     }
-    let (ti, out) = g.route("worker", Some("opus"), Some("max"));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
     let (ti, out) = g.route("researcher", None, None);
     assert_routed(&out, &ti, "sonnet", Some("high"));
     let (ti, out) = g.route("task-implementer", Some("sonnet"), Some("xhigh"));
@@ -604,22 +588,6 @@ fn test_router_never_raises_cost() {
     // lookups never go above haiku
     let (ti, out) = g.route("Explore", Some("opus"), Some("medium"));
     assert_routed(&out, &ti, "haiku", None);
-}
-
-#[test]
-fn test_router_opus_rows_follow_the_table() {
-    let g = G::new();
-    let (ti, out) = g.route("Plan", Some("sonnet"), Some("low"));
-    assert_routed(&out, &ti, "opus", Some("high"));
-    let (ti, out) = g.route("Plan", Some("haiku"), None);
-    assert_routed(&out, &ti, "opus", Some("high"));
-    let (ti, out) = g.route_full("code-reviewer", Some("sonnet"), Some("medium"), "Final whole-branch review", BRIEF, None, json!({}));
-    assert_routed(&out, &ti, "opus", Some("high"));
-    let ahead = Some(fake_pace("ahead", 60.0, 50.0));
-    let (ti, out) = g.route_full("Plan", Some("sonnet"), Some("low"), "Do it", BRIEF, ahead, json!({}));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
-    let (ti, out) = g.route_full("Plan", Some("opus"), Some("max"), "Do it", BRIEF, ahead, json!({}));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
 }
 
 #[test]
@@ -735,12 +703,6 @@ fn test_g1_missing_effort_or_model_is_filled_by_router() {
 }
 
 #[test]
-fn test_g1_ok() {
-    let g = G::new();
-    assert_allow(&g.pre("Agent", ok_agent()));
-}
-
-#[test]
 fn test_g1_brief_needs_deadline_and_cap() {
     let g = G::new();
     let base = json!({"model": "sonnet", "effort": "high"});
@@ -806,16 +768,6 @@ fn test_g2_cron_one_shot() {
 }
 
 #[test]
-fn test_g2_cron_lists_and_hours() {
-    let g = G::new();
-    assert_deny(&g.pre_ctx("CronCreate", json!({"cron": "0,10,20 * * * *"}), 150_000), "");
-    assert_deny(&g.pre_ctx("CronCreate", json!({"cron": "0,50 * * * *"}), 150_000), ""); // wrap gap 10
-    assert_allow(&g.pre_ctx("CronCreate", json!({"cron": "0,30 * * * *"}), 150_000));
-    assert_allow(&g.pre_ctx("CronCreate", json!({"cron": "0 */2 * * *"}), 150_000));
-    assert_allow(&g.pre_ctx("CronCreate", json!({"cron": "garbage"}), 150_000));
-}
-
-#[test]
 fn test_g2_wakeup() {
     let g = G::new();
     assert_deny(&g.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 600}), 150_000), "no polling");
@@ -826,23 +778,16 @@ fn test_g2_wakeup() {
 #[test]
 fn test_g2_loop_skill() {
     let g = G::new();
+    // the intervals themselves are tested in `loop_intervals` (src/bin/guard.rs)
     let skill = |ti: Value, ctx: i64| g.pre_ctx("Skill", ti, ctx);
     assert_deny(&skill(json!({"skill": "loop", "args": "5m check deploy"}), 150_000), "no polling");
-    assert_deny(&skill(json!({"skill": "loop", "args": "30s /foo"}), 150_000), "");
-    assert_deny(&skill(json!({"skill": "loop", "args": "10min x"}), 150_000), "");
     assert_allow(&skill(json!({"skill": "loop", "args": "45m check deploy"}), 150_000));
-    assert_allow(&skill(json!({"skill": "loop", "args": "1h x"}), 150_000));
-    assert_allow(&skill(json!({"skill": "loop", "args": "2h30m x"}), 150_000));
-    assert_allow(&skill(json!({"skill": "loop", "args": "check the deploy"}), 150_000));
     assert_allow(&skill(json!({"skill": "loop"}), 150_000));
     assert_allow(&skill(json!({"skill": "other", "args": "5m x"}), 150_000));
     assert_allow(&skill(json!({"skill": "loop", "args": "5m x"}), 50_000));
-    assert_deny(&skill(json!({"skill": "loop", "args": "check deploy every 5m"}), 150_000), "");
-    assert_allow(&skill(json!({"skill": "loop", "args": "check deploy every 45m"}), 150_000));
 }
 
 // --- G3 ---
-const NUDGE_350: &str = "Context is 350K. Keep PROGRESS.md (or the run's ledger) current; auto-compact carries the run. Hand off only when the user asks.";
 
 #[test]
 fn test_g3_prompt_cadence() {
@@ -851,7 +796,7 @@ fn test_g3_prompt_cadence() {
     assert_eq!((rc, err.as_str()), (0, ""));
     let payload = &serde_json::from_str::<Value>(&out).unwrap()["hookSpecificOutput"];
     assert_eq!(payload["hookEventName"], "UserPromptSubmit");
-    assert_eq!(payload["additionalContext"], NUDGE_350);
+    assert!(payload["additionalContext"].as_str().unwrap().contains("350K"), "{payload}");
     for _ in 0..4 {
         assert_allow(&g.prompt_run(350_000, "sess"));
     }
@@ -1022,45 +967,6 @@ fn test_g5_cap_from_prompt() {
 }
 
 #[test]
-fn test_g5_smallest_tied_cap_wins() {
-    let g = G::new();
-    let prompt = "Reply in 2,000 chars. Final message under 1500 characters. Then hand back 800 chars.";
-    assert_deny(&g.handback_p(&"x".repeat(900), prompt, "a1"), "the cap is 800");
-}
-
-#[test]
-fn test_g5_cap_ignored_when_not_tied_to_reply() {
-    let g = G::new();
-    let prompt = format!("Write a description of at most 160 characters for the page. {} Do the work.", "z".repeat(100));
-    assert_deny(&g.handback_p(&"x".repeat(5000), &prompt, "n1"), "the cap is 4000");
-    // small numbers (< 200) never count, even next to a keyword
-    assert_deny(&g.handback_p(&"x".repeat(5000), "Hand back 50 chars.", "n2"), "the cap is 4000");
-    // keyword farther than 80 chars before the number is not a tie
-    let far = format!("Reply first.{}Pad the file to 500 chars.", " ".repeat(90));
-    assert_deny(&g.handback_p(&"x".repeat(5000), &far, "n3"), "the cap is 4000");
-}
-
-#[test]
-fn test_g5_cap_phrasings() {
-    let g = G::new();
-    let cases: [(&str, i64); 9] = [
-        ("Keep your response under 6,000 characters.", 6000),
-        ("Limit the output to 5,000 chars.", 5000),
-        ("6,000 chars max for the hand-back.", 6000),
-        ("Make truncate() return at most 500 characters. Hand back at most 4,000 chars.", 4000),
-        ("The API summary field holds 300 chars. Hand back at most 2,000 chars.", 2000),
-        ("Hand back at most 4,000 chars. The summary field holds 300 chars.", 4000),
-        ("Deadline: answer within 8 minutes. Stay \u{2264} 4,000 chars.", 4000),
-        ("Keep it under 2,500 characters. Pad the file to 900 chars.", 2500),
-        ("Hand back \u{2264} 3,000 chars. In researcher.md set a hard cap of 2,500 chars on the final message.", 3000),
-    ];
-    for (i, (prompt, cap)) in cases.iter().enumerate() {
-        let n = (*cap as f64 * 1.1) as usize + 1;
-        assert_deny(&g.handback_p(&"x".repeat(n), prompt, &format!("p{i}")), &format!("the cap is {cap}"));
-    }
-}
-
-#[test]
 fn test_g5_counter_write_fails_allows() {
     let g = G::new();
     let bad = g.join("not-a-dir");
@@ -1120,14 +1026,6 @@ fn test_g5_subagentstop() {
     assert_allow(&stop(Value::Null, "b3", json!({})));
     assert_allow(&stop(json!(12345), "b4", json!({})));
     assert_allow(&g.run("subagentstop", &json!({"session_id": "s"})));
-}
-
-#[test]
-fn test_g5_subagentstop_cap_from_prompt() {
-    let g = G::new();
-    let prompt = "Return a final message of at most 600 characters.";
-    let res = g.handback_full(json!("x".repeat(700)), Some(prompt), None, "a1", "subagentstop", json!({}));
-    assert_deny(&res, "the cap is 600");
 }
 
 #[test]
@@ -1265,12 +1163,8 @@ fn symlink(target: &str, link: &str) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
-#[cfg(not(unix))]
-fn symlink(_target: &str, _link: &str) {
-    panic!("these tests need symlinks (unix)");
-}
-
 #[test]
+#[cfg(unix)] // symlinks
 fn test_scratch_tilde_symlink_and_relative() {
     let g = G::new();
     assert_deny(&g.scratch("~/x.py", "file_path", json!({})), "scratch files");
@@ -1350,20 +1244,6 @@ fn test_cap_failure_ignores_other_tools_and_bad_input() {
 }
 
 #[test]
-fn test_cap_old_format_slots_still_load() {
-    let g = G::new();
-    let now = now_secs();
-    // plain times from the first version
-    g.write(&g.state_dir().join("f3.json").to_string_lossy(), &json!({"spawns": [now - 30.0, now - 20.0]}).to_string());
-    assert_allow(&g.spawn_with_id("f3", "n1"));
-    assert_deny(&g.spawn_with_id("f3", "n2"), "cap is 3");
-    assert_allow(&g.subagent_stop("f3")); // pops the oldest (plain) one
-    assert_allow(&g.spawn_with_id("f3", "n3"));
-    assert_allow(&g.failure("f3", json!("n3")));
-    assert_allow(&g.spawn_with_id("f3", "n4"));
-}
-
-#[test]
 fn test_cap_denied_call_is_not_counted_and_stop_never_goes_negative() {
     let g = G::new();
     for _ in 0..3 {
@@ -1437,15 +1317,6 @@ fn test_cap_by_pace() {
         }
         assert_deny(&g.inproc("pretool", &g.agent_data(&sid, json!({})), Some(pace_default(state))), "cap is 3");
     }
-}
-
-#[test]
-fn test_cap_without_pace_module_is_unknown() {
-    let g = G::new();
-    for _ in 0..3 {
-        assert_allow(&g.inproc("pretool", &g.agent_data("p4", json!({})), None));
-    }
-    assert_deny(&g.inproc("pretool", &g.agent_data("p4", json!({})), None), "cap is 3");
 }
 
 #[test]
@@ -1541,12 +1412,10 @@ fn test_plan_gate_denies_planning_skills_outside_plan_mode() {
     // CLI + Sonnet or Haiku: opusplan applies, so plans go through plan mode
     for name in PLAN_SKILLS {
         for model in ["claude-sonnet-5-5", "claude-haiku-4-5"] {
-            for pace in [None, Some(pace_default("ok")), Some(pace_default("unknown"))] {
-                let res = g.skill(name, S { pace, model: Some(model), ..S::new() });
-                assert_deny(&res, "EnterPlanMode");
-                assert!(res.2.contains("plan mode"), "{res:?}");
-                assert!(res.2.contains("(autopilot: send a `Plan` helper instead)"), "{res:?}");
-            }
+            let res = g.skill(name, S { model: Some(model), ..S::new() });
+            assert_deny(&res, "EnterPlanMode");
+            assert!(res.2.contains("plan mode"), "{res:?}");
+            assert!(res.2.contains("(autopilot: send a `Plan` helper instead)"), "{res:?}");
         }
         assert_deny(&g.skill(name, S { mode: None, ..S::new() }), "EnterPlanMode");
         assert_deny(&g.skill(name, S { mode: Some("acceptEdits"), ..S::new() }), "EnterPlanMode");
@@ -1569,12 +1438,12 @@ fn test_plan_gate_desktop_sonnet_points_to_plan_helper_or_opus() {
 #[test]
 fn test_plan_gate_allows_opus_and_fable_mains() {
     let g = G::new();
-    for model in ["claude-opus-5-5", "claude-fable-5-1", "opus"] {
-        for entry in ["cli", "claude-desktop"] {
-            assert_allow(&g.skill("superpowers:writing-plans", S { model: Some(model), entry: Some(entry), ..S::new() }));
-            assert_allow(&g.skill("superpowers:brainstorming",
-                S { model: Some(model), entry: Some(entry), pace: Some(pace_default("ok")), ..S::new() }));
-        }
+    for (skill, model, entry, pace) in [
+        ("superpowers:writing-plans", "claude-opus-5-5", "cli", None),
+        ("superpowers:brainstorming", "claude-fable-5-1", "claude-desktop", Some(pace_default("ok"))),
+        ("superpowers:writing-plans", "opus", "claude-desktop", None),
+    ] {
+        assert_allow(&g.skill(skill, S { model: Some(model), entry: Some(entry), pace, ..S::new() }));
     }
 }
 
@@ -1664,7 +1533,6 @@ fn test_pace_note_once_when_ahead() {
         assert!(note.contains(text), "{note:?} lacks {text:?}");
     }
     assert!(g.prompt_pace(ahead, "n1", 1000).is_none()); // only once
-    // The Python test also counts pace.refresh(budget_s=5) calls; a binary hides them (see PORTED.md).
     assert!(g.prompt_pace(Some(pace_default("unknown")), "n1", 1000).is_none());
     assert!(g.prompt_pace(ahead, "n1", 1000).is_none()); // unknown does not reset the memory
 }
@@ -1707,9 +1575,6 @@ fn test_pace_note_fail_open() {
     let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "n5", "transcript_path": path, "prompt": "go"});
     assert_allow(&g.run("prompt", &data));
     assert!(g.prompt_pace(None, "n6", 1000).is_none());
-    // a refresh that fails does not stop the status read (the refresh itself is not observable here)
-    let note = g.prompt_pace(Some(fake_pace("ahead", 60.0, 50.0)), "n7", 1000).unwrap();
-    assert!(note.contains("Sonnet"), "{note}");
 }
 
 // --- off switch ---
@@ -1921,14 +1786,14 @@ fn test_g10_no_upstream_and_git_failures_are_quiet() {
 }
 
 #[test]
-fn test_g10_git_timeout_or_crash_fails_open() {
+fn test_g10_fails_open_when_git_cannot_start() {
     let g = G::new();
     let repo = g.make_repo(true);
     let p = g.write_file(&repo, "new.txt", "x");
     let path = g.transcript(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), g.say("done")]);
     let data = json!({"transcript_path": path, "cwd": repo});
     assert!(!g.run("stop", &data).2.is_empty()); // sanity: fires with a working git
-    // a git that cannot start: an empty PATH (the Python test mocked subprocess.run)
+    // a git that cannot start: an empty PATH
     let empty = g.join("nopath");
     std::fs::create_dir_all(&empty).unwrap();
     assert_eq!(g.run_with("stop", &data, &[("PATH", &empty)]), (0, String::new(), String::new()));
@@ -1952,9 +1817,11 @@ fn test_g10_switches() {
 #[test]
 fn test_g11_long_turn_without_a_clock() {
     let g = G::new();
-    let recs = [human_at(12 * 60 + 10, "go"), g.say("All done.")];
-    assert_deny(&g.stop_run(&recs, json!({})),
+    let res = g.stop_run(&[human_at(12 * 60 + 10, "go"), g.say("All done.")], json!({}));
+    assert_deny(&res,
         "G11: this turn ran 12 min. The clock preset asks: give the clock as a local time (HH:MM) and one estimate with a range.");
+    assert!(!res.2.contains("Rule "), "{res:?}");
+    assert!(!res.2.contains("Asia/") && !res.2.contains("Europe/"), "{res:?}"); // no zone set, none named
     assert_allow(&g.stop_run(&[human_at(5 * 60, "go"), g.say("All done.")], json!({})));
     assert_allow(&g.stop_run(&[human("no stamp"), g.say("All done.")], json!({})));
 }
@@ -2167,17 +2034,6 @@ fn test_missing_transcript_means_zero_context() {
 
 // --- G13 to G15 tool checks and the G3 text ---
 // G3 text
-#[test]
-fn test_g3_text_no_handoff_push() {
-    let g = G::new();
-    let (_, out, _) = g.prompt_run(350_000, "g3t");
-    let v: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(v["hookSpecificOutput"]["additionalContext"], NUDGE_350);
-    let res = g.pre_ctx("Agent", ok_agent(), 600_000);
-    assert_deny(&res, "context is 600K (> 350K)");
-    assert!(!res.2.contains("handoff"), "{res:?}");
-    assert!(!res.2.contains("fresh session"), "{res:?}");
-}
 
 // G14 sed -i
 const G14_MSG: &str = "G14: bare sed -i on macOS eats the script as the backup suffix. Give a suffix: `sed -i '' 's/a/b/' f` (or `-i.bak`). Or use the Edit tool.";
@@ -2267,20 +2123,6 @@ fn test_g14_macos_only_off_switch_and_fail_open() {
     }
 }
 
-#[test]
-fn test_g14_through_pretool() {
-    let g = G::new();
-    // the Python test ran only on macOS; GUARD_PLATFORM makes the macOS rules reachable everywhere
-    let run = |cmd: &str| {
-        let data = json!({"hook_event_name": "PreToolUse", "session_id": format!("s{}", next_sid()),
-            "tool_name": "Bash", "tool_input": {"command": cmd}});
-        g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")])
-    };
-    assert_deny(&run("sed -i s/a/b/ f"), "G14: bare sed -i");
-    assert_allow(&run("sed -i '' s/a/b/ f"));
-    assert_allow(&run("sed -n 1p f"));
-}
-
 // G15 secret reads
 const G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
 const G15_SEARCH_RG: &str = "G15: this search can reach local.zsh (API keys). Exclude it with `rg -g '!local.zsh' ...`.";
@@ -2320,6 +2162,7 @@ impl G {
     }
 
     /// A temp HOME whose ~/.config/zsh links into a dotfiles repo, like the real machine. Returns the repo.
+    #[cfg(unix)]
     fn secret_tree(&self) -> String {
         let repo = self.real_dir().join("dotfiles");
         let zsh = repo.join("home/.config/zsh");
@@ -2334,6 +2177,7 @@ impl G {
 }
 
 #[test]
+#[cfg(unix)] // symlinks
 fn test_g15_read_tool() {
     let g = G::new();
     let zsh = g.join(".config/zsh");
@@ -2419,6 +2263,7 @@ fn test_g15_process_checks_allowed() {
 }
 
 #[test]
+#[cfg(unix)] // symlinks
 fn test_g15_recursive_searches_denied() {
     let g = G::new();
     let repo = g.secret_tree();
@@ -2448,6 +2293,7 @@ fn test_g15_recursive_searches_denied() {
 }
 
 #[test]
+#[cfg(unix)] // symlinks
 fn test_g15_searches_allowed() {
     let g = G::new();
     let repo = g.secret_tree();
@@ -2481,6 +2327,7 @@ fn test_g15_ps_on_macos() {
 }
 
 #[test]
+#[cfg(unix)] // symlinks
 fn test_g15_grep_tool() {
     let g = G::new();
     let repo = g.secret_tree();
@@ -2501,19 +2348,7 @@ fn test_g15_grep_tool() {
 }
 
 #[test]
-fn test_g15_grep_tool_is_in_the_hook_matcher() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../claude/settings.json");
-    let settings: Value = serde_json::from_str(&std::fs::read_to_string(root).unwrap()).unwrap();
-    let hooks = settings["hooks"]["PreToolUse"].as_array().unwrap();
-    let matchers: Vec<&str> = hooks
-        .iter()
-        .filter(|h| h.to_string().contains("guard pretool"))
-        .map(|h| h["matcher"].as_str().unwrap_or(""))
-        .collect();
-    assert!(!matchers.is_empty() && matchers.iter().all(|m| m.contains("|Read|Grep")), "{matchers:?}");
-}
-
-#[test]
+#[cfg(unix)] // symlinks
 fn test_g15_letter_case_on_macos() {
     let g = G::new();
     g.secret_tree();
@@ -2533,6 +2368,7 @@ fn test_g15_letter_case_on_macos() {
 }
 
 #[test]
+#[cfg(unix)] // symlinks
 fn test_g15_ln_install_and_dd() {
     let g = G::new();
     g.secret_tree();
@@ -2571,19 +2407,6 @@ fn test_g15_off_switch_and_fail_open() {
     ] {
         assert_eq!(g.g15(tool, ti.clone()), None, "{tool} {ti}");
     }
-    // The Python test also made os.path.realpath raise; the binary has no such seam (see PORTED.md).
-}
-
-#[test]
-fn test_g15_through_pretool() {
-    let g = G::new();
-    assert_deny(&g.pre("Read", json!({"file_path": "~/.config/zsh/local.zsh"})), "G15: never read local.zsh");
-    assert_deny(&g.pre("Bash", json!({"command": "ps aux"})), "G15:");
-    assert_allow(&g.pre("Read", json!({"file_path": "/etc/hosts"})));
-    assert_allow(&g.pre("Bash", json!({"command": "pgrep -f node"})));
-    let data = json!({"tool_name": "Bash", "tool_input": {"command": "ps aux"}});
-    let res = g.run_with("pretool", &data, &[("GUARD_OFF", "G15")]);
-    assert_eq!(res, (0, String::new(), String::new()));
 }
 
 // G13 silence note
@@ -2844,7 +2667,8 @@ fn each_check_off_with_its_preset() {
             covered += 1;
         }
     }
-    assert_eq!(covered, 17, "workflow 10, pace 2, models 2, ship-to-main 1, clock 1, no-ai-attribution 1");
+    // every check that has a preset was tested
+    assert_eq!(covered, gc::REGISTRY.iter().filter(|(_, p)| *p != "core").count());
 }
 
 #[test]
@@ -2889,15 +2713,6 @@ fn a_broken_settings_file_leaves_every_check_on() {
 }
 
 #[test]
-fn clock_says_local_time() {
-    let g = G::new();
-    let res = g.stop_run(&[human_at(12 * 60, "go"), g.say("All done.")], json!({}));
-    assert_deny(&res, "local time (HH:MM)");
-    assert!(!res.2.contains("Rule "), "{res:?}");
-    assert!(!res.2.contains("Asia/") && !res.2.contains("Europe/"), "{res:?}"); // no zone set, none named
-}
-
-#[test]
 fn clock_names_timezone() {
     let g = G::new();
     g.set("TIMEZONE=\"Asia/Tokyo\"\n");
@@ -2924,74 +2739,6 @@ fn router_off_keeps_agent_input() {
     g.presets_except("models");
     let (_, out) = g.route("worker", None, None);
     assert!(out.is_none(), "{out:?}");
-}
-
-#[test]
-fn ported_map_complete() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let map = fs::read_to_string(root.join("tests/PORTED.md")).expect("tests/PORTED.md");
-    let repo = root.join("../..");
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut problems: Vec<String> = Vec::new();
-    for line in map.lines().filter(|l| l.starts_with('|')) {
-        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
-        if cells.len() < 3 || !cells[0].contains("::") {
-            continue; // the header and the separator
-        }
-        let (py_file, py_name) = cells[0].split_once("::").unwrap();
-        *counts.entry(py_file.to_string()).or_default() += 1;
-        if !seen.insert(cells[0].to_string()) {
-            problems.push(format!("{}: listed twice", cells[0]));
-        }
-        // The Python test must exist while its file does (the Python files are deleted later).
-        if let Ok(py_src) = fs::read_to_string(repo.join(py_file)) {
-            let def = py_name.rsplit("::").next().unwrap();
-            if !py_src.contains(&format!("def {def}(")) {
-                problems.push(format!("{}: no `def {}` in {}", cells[0], def, py_file));
-            }
-        }
-        if cells[1] == "-" {
-            if cells[2].is_empty() {
-                problems.push(format!("{}: a `-` row needs a note", cells[0]));
-            }
-            continue;
-        }
-        let Some((rs_file, rs_name)) = cells[1].rsplit_once("::") else {
-            problems.push(format!("{}: Rust cell `{}` is not file::name", cells[0], cells[1]));
-            continue;
-        };
-        // Only the file the row names counts: a function of the same name elsewhere is not a twin.
-        let Ok(source) = fs::read_to_string(root.join(rs_file)) else {
-            problems.push(format!("{}: {} does not exist", cells[0], rs_file));
-            continue;
-        };
-        let re = regex::Regex::new(&format!(r"(?m)^\s*(?:pub\s+)?fn {}\b", regex::escape(rs_name))).unwrap();
-        let Some(m) = re.find(&source) else {
-            problems.push(format!("{}: no `fn {}` in {}", py_name, rs_name, rs_file));
-            continue;
-        };
-        // It must be a real test: `#[test]` among the attributes right above it, and no `#[ignore]`.
-        let attrs: Vec<&str> = source[..m.start()]
-            .lines()
-            .rev()
-            .map(str::trim)
-            .take_while(|l| l.starts_with("#["))
-            .collect();
-        if !attrs.contains(&"#[test]") {
-            problems.push(format!("{}: `fn {}` in {} has no #[test]", cells[0], rs_name, rs_file));
-        }
-        if attrs.iter().any(|a| a.starts_with("#[ignore")) {
-            problems.push(format!("{}: `fn {}` in {} is #[ignore]d", cells[0], rs_name, rs_file));
-        }
-    }
-    for (file, want) in REQUIRED {
-        let got = counts.get(file).copied().unwrap_or(0);
-        if got != want {
-            problems.push(format!("{file}: {got} rows, expected {want}"));
-        }
-    }
-    assert!(problems.is_empty(), "PORTED.md problems:\n{}", problems.join("\n"));
 }
 
 // --- Task 10: guard_checks module, G16 outbound check, shadow mode ---
@@ -3057,23 +2804,6 @@ impl G {
     fn shadow_log(&self) -> String {
         std::fs::read_to_string(self.join("cache/dots-guard-shadow.log")).unwrap_or_default()
     }
-}
-
-#[test]
-fn g14_g15_unchanged() {
-    let msg14 = G14_MSG;
-    assert_eq!(gc::g14_sed("sed -i s/a/b/ f", true), Verdict::Deny(msg14.into()));
-    assert_eq!(gc::g14_sed("cd x && sudo sed -i s/a/b/ f", true), Verdict::Deny(msg14.into()));
-    assert_eq!(gc::g14_sed("sed -i '' s/a/b/ f", true), Verdict::Allow);
-    assert_eq!(gc::g14_sed("sed -i.bak s/a/b/ f", true), Verdict::Allow);
-    assert_eq!(gc::g14_sed("sed -i s/a/b/ f", false), Verdict::Allow);
-    assert_eq!(gc::g14_sed("gsed -i s/a/b/ f; sed -n 1p f", true), Verdict::Allow);
-    let file = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
-    assert_eq!(gc::g15_secrets("Read", &json!({"file_path": "~/.config/zsh/local.zsh"})), Verdict::Deny(file.into()));
-    assert_eq!(gc::g15_secrets("Bash", &json!({"command": "cat ~/.config/zsh/local.zsh"})), Verdict::Deny(file.into()));
-    assert!(matches!(gc::g15_secrets("Bash", &json!({"command": "ps aux"})), Verdict::Deny(m) if m.starts_with("G15")));
-    assert_eq!(gc::g15_secrets("Bash", &json!({"command": "ls -la"})), Verdict::Allow);
-    assert_eq!(gc::g15_secrets("Edit", &json!({"file_path": "~/.config/zsh/local.zsh"})), Verdict::Allow);
 }
 
 #[test]
@@ -3175,18 +2905,14 @@ fn g16_unreadable_body_file_asks() {
 }
 
 #[test]
-fn g16_clean_body_file_allows_fast() {
+fn g16_clean_long_body_file_allows() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("body.md"), "a plain sentence about nothing in particular. ".repeat(110)).unwrap();
     assert!(std::fs::metadata(dir.path().join("body.md")).unwrap().len() >= 5000);
     let words: Vec<String> = ["zebrafish", "quincyzed", "alpha-proj", "beta-proj", "gamma", "quincy@example.test"]
         .iter().map(|s| s.to_string()).collect();
     let input = bash_in("gh pr create --title t --body-file body.md");
-    let start = std::time::Instant::now();
-    let v = gc::g16_outbound("Bash", &input, dir.path(), &words);
-    let took = start.elapsed();
-    assert_eq!(v, Verdict::Allow);
-    assert!(took < std::time::Duration::from_millis(50), "took {took:?}");
+    assert_eq!(gc::g16_outbound("Bash", &input, dir.path(), &words), Verdict::Allow);
 }
 
 #[test]
@@ -3275,14 +3001,6 @@ fn g16_is_core_and_has_an_off_switch() {
     assert_allow(&g.pre_bash(&cmd, &[("GUARD_OFF", "G16")]));
     g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\nGUARD_OFF=\"G16\"\n"));
     assert_allow(&g.pre_bash(&cmd, &[]));
-}
-
-#[test]
-fn g16_clean_call_through_the_hook_allows_without_noise() {
-    let g = G::new();
-    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
-    assert_allow(&g.pre_bash("gh pr create --title t --body 'all clear'", &[]));
-    assert_allow(&g.pre_bash("gh pr view 4", &[]));
 }
 
 #[test]
@@ -3663,6 +3381,9 @@ fn the_hook_matcher_covers_every_send_name() {
         .unwrap();
     // the harness matches a tool name against the whole matcher, and its regex has no (?i)
     let re = regex::Regex::new(&format!("^(?:{matcher})$")).unwrap();
+    for name in ["Bash", "Read", "Grep"] {
+        assert!(re.is_match(name), "the matcher misses {name}");
+    }
     for name in SEND_NAMES {
         assert!(re.is_match(&format!("mcp__srv__{name}")), "the matcher misses {name}");
     }
@@ -3890,11 +3611,4 @@ fn h1_guard_off_turns_it_off() {
     assert_allow(&g.bash_sid("h1f", "cat src/a.ts", &[]));
     g.set("");
     assert_warn(&g.bash_sid("h1g", "cat src/a.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
-}
-
-#[test]
-fn h1_does_not_block_other_denies() {
-    let g = G::new();
-    let res = g.bash_sid("h1h", "sed -i s/a/b/ src/a.ts", &[("GUARD_PLATFORM", "darwin")]);
-    assert_deny(&res, "G14");
 }

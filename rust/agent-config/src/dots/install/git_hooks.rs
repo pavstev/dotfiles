@@ -40,10 +40,10 @@ mod tests {
     fn wires_the_hooks_once_in_a_temp_repo() {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
-        if !Command::new("git").arg("init").arg("-q").arg(r).status().map(|s| s.success()).unwrap_or(false) { return; }
+        let init = Command::new("git").arg("init").arg("-q").arg(r).status();
+        assert!(init.is_ok_and(|s| s.success()), "git is needed for this test");
         std::fs::create_dir_all(r.join(HOOKS_DIR)).unwrap();
-        let first = lines(|| step(r));
-        assert!(first.contains("core.hooksPath = scripts/git-hooks (the git hooks are now active)"), "{}", first);
+        lines(|| step(r));
         assert_eq!(git::out(&["-C", &r.to_string_lossy(), "config", "core.hooksPath"]).as_deref(), Some(HOOKS_DIR));
         let second = lines(|| step(r));
         assert!(!second.contains("now active"), "{}", second);

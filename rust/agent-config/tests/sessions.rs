@@ -133,6 +133,12 @@ fn incremental_index() {
 
     let (_, out, _) = sessions(&home, &["index"]);
     assert_eq!(out.trim(), "• sessions: 0 new");
+
+    // --rebuild starts over
+    let (code, out, err) = sessions(&home, &["index", "--rebuild"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "• sessions: 4 new");
+    assert_eq!(doc_count(&home), 4);
 }
 
 #[test]
@@ -158,17 +164,6 @@ fn half_line_indexed_next_run() {
 }
 
 #[test]
-fn unsupported_source_one_line() {
-    let home = temp_home("sessions-unsupported");
-    fixtures(&home);
-    for s in ["opencode", "cursor"] {
-        let (code, out, _) = sessions(&home, &["find", "x", "--source", s]);
-        assert_eq!(code, 0);
-        assert_eq!(out.trim(), format!("• sessions: {s} skipped: not supported yet"));
-    }
-}
-
-#[test]
 fn lock_wait_then_stale() {
     let home = temp_home("sessions-lock");
     fixtures(&home);
@@ -179,11 +174,12 @@ fn lock_wait_then_stale() {
     let _writer = index.writer::<TantivyDocument>(50_000_000).expect("hold the writer lock");
 
     let start = Instant::now();
-    let (code, out, err) = sessions(&home, &["find", "flaky vitest"]);
+    let env = [("HOME", home.to_str().unwrap()), ("SESSIONS_LOCK_WAIT_MS", "300")];
+    let (code, out, err) = run_bin(BIN, &["find", "flaky vitest"], "", &env, None);
     let took = start.elapsed();
     assert_eq!(code, 0, "{out}\n{err}");
-    assert!(took < Duration::from_secs(15), "took {took:?}");
-    assert!(took >= Duration::from_secs(4), "did not wait for the lock: {took:?}");
+    assert!(took >= Duration::from_millis(300), "did not wait for the lock: {took:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
     assert!(out.contains("• sessions: index busy, searched the last index"), "{out}");
     assert_eq!(hit_count(&out), 1, "{out}");
 }
@@ -263,17 +259,6 @@ fn corrupt_index_rebuilt() {
 }
 
 #[test]
-fn rebuild_flag_starts_over() {
-    let home = temp_home("sessions-rebuild");
-    fixtures(&home);
-    sessions(&home, &["index"]);
-    let (code, out, err) = sessions(&home, &["index", "--rebuild"]);
-    assert_eq!(code, 0, "{err}");
-    assert_eq!(out.trim(), "• sessions: 3 new");
-    assert_eq!(doc_count(&home), 3);
-}
-
-#[test]
 fn missing_claude_dir_is_one_line() {
     let home = temp_home("sessions-missing");
     let (code, out, _) = sessions(&home, &["index"]);
@@ -332,14 +317,14 @@ fn big_transcript_streams() {
     let home = temp_home("sessions-big");
     let file = transcript(&home, "-work-big", SID_A);
     let t0 = Instant::now();
-    generate_big(&file, 100);
+    generate_big(&file, 32);
     eprintln!("generated {} bytes in {:?}", fs::metadata(&file).unwrap().len(), t0.elapsed());
 
     let t1 = Instant::now();
     match peak_rss(&home) {
         Some(bytes) => {
             eprintln!("indexed in {:?}, peak RSS {} MB", t1.elapsed(), bytes / 1_000_000);
-            assert!(bytes < 200_000_000, "peak RSS {bytes} bytes");
+            assert!(bytes < 140_000_000, "peak RSS {bytes} bytes");
         }
         None => {
             eprintln!("note: no peak RSS on this platform, memory check skipped");

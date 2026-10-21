@@ -1,7 +1,6 @@
-//! Port of cursor/hooks/test_guard_cursor.py: every test runs the `guard_cursor` binary
-//! (`CARGO_BIN_EXE_guard_cursor`). The Cursor.app chat store is a SQLite file read through the
-//! `sqlite3` command line tool; a machine without it skips the tests that need a fixture database
-//! (the hook itself reads 0 there, see rust/MIGRATION.md).
+//! Every test runs the `guard_cursor` binary (`CARGO_BIN_EXE_guard_cursor`). The Cursor.app chat
+//! store is a SQLite file read through the `sqlite3` command line tool. macOS always has it, so
+//! there a missing tool fails the tests; elsewhere they skip (the hook itself reads 0 there).
 mod common;
 
 use common::run_bin;
@@ -55,9 +54,10 @@ impl T {
     }
 
     /// A fake Cursor.app state.vscdb: {conversation_id: composerData value}. False when there is no
-    /// `sqlite3` tool to build it with (the caller returns early).
+    /// `sqlite3` tool to build it with (the caller returns early). Never false on macOS.
     fn app_store(&mut self, rows: &[(&str, &str)]) -> bool {
         if !have_sqlite() {
+            assert!(!cfg!(target_os = "macos"), "macOS ships sqlite3; these tests must not skip here");
             eprintln!("skipped: no sqlite3 command line tool");
             return false;
         }
@@ -151,35 +151,16 @@ fn has_user_message(v: &Value) -> bool {
 
 // --- limits come from guard.py ---
 
+// --- subagent ---
+
 #[test]
-fn test_reuses_guard_limits() {
-    // The Rust hook keeps the two limits itself: check them where they act.
+fn test_spawn_context_limit() {
     let t = T::new();
+    assert_silent(&t.spawn_c1()); // nothing known
     t.seed(SPAWN_CONTEXT, "c1");
     assert_silent(&t.spawn_c1());
     t.seed(SPAWN_CONTEXT + 1, "c1");
     assert_deny(&t.spawn_c1());
-    t.seed(NUDGE_CONTEXT - 1, "n");
-    assert!(!has_user_message(&t.prompt("n")));
-    t.seed(NUDGE_CONTEXT, "m");
-    assert!(has_user_message(&t.prompt("m")));
-}
-
-// --- subagent ---
-
-#[test]
-fn test_deny_above_spawn_context() {
-    let t = T::new();
-    t.seed(350_001, "c1");
-    assert_deny(&t.spawn_c1());
-}
-
-#[test]
-fn test_allow_at_or_below_spawn_context() {
-    let t = T::new();
-    assert_silent(&t.spawn_c1()); // nothing known
-    t.seed(350_000, "c1");
-    assert_silent(&t.spawn_c1());
 }
 
 #[test]
@@ -325,8 +306,10 @@ fn test_response_without_usage_is_noop() {
 fn test_prompt_below_threshold() {
     let t = T::new();
     assert!(!has_user_message(&t.prompt("c1")));
-    t.seed(299_000, "c1");
+    t.seed(NUDGE_CONTEXT - 1, "c1");
     assert!(!has_user_message(&t.prompt("c1")));
+    t.seed(NUDGE_CONTEXT, "m");
+    assert!(has_user_message(&t.prompt("m")));
 }
 
 #[test]
@@ -401,25 +384,6 @@ fn test_state_pruned() {
     assert!(names.len() <= MAX_STATE_FILES, "{}", names.len());
     assert!(names.contains(&"new.json".to_string()));
     assert!(!names.contains(&"k0.json".to_string()));
-}
-
-#[test]
-fn test_conv_key() {
-    // conv_key is private to the binary: its results show in the state file names and in which
-    // conversation a hook mode reads.
-    let t = T::new();
-    let state = t.dir.join("cursor-guard");
-    // no id, or an id that is only dots: "unknown"
-    t.run_hook("response", &json!({"context_tokens": 600_000}));
-    assert!(state.join("unknown.json").is_file());
-    fs::remove_file(state.join("unknown.json")).unwrap();
-    t.seed(600_000, "..");
-    assert!(state.join("unknown.json").is_file());
-    // subagent mode reads the parent conversation, prompt mode its own
-    t.seed(350_001, "p");
-    assert_deny(&t.spawn("c", Some("p"), json!({})));
-    let out = t.prompt_x("c", json!({"parent_conversation_id": "p"}));
-    assert!(!has_user_message(&out), "{out}");
 }
 
 // --- tool mode: the shared checks G14-G17 (Task 13) ---

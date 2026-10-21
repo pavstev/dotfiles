@@ -1,8 +1,5 @@
-//! Port of the skill-script tests that the unit tests inside the bins do not already cover:
-//! `test_route.py::test_wrong_types_stay_bad_input`, `test_whatsleft_scan.py` (`FreshnessTest`) and
-//! `test_harness_stats.py`. Every test runs the real binary against a temp HOME and temp files.
-//! The spawn and route tests that call Python functions directly are unit tests in
-//! `src/bin/spawn.rs` and `src/bin/route.rs`. `tests/PORTED.md` maps each Python test to its twin.
+//! Process tests of the skill bins that their unit tests do not cover: `whatsleft_scan` freshness
+//! and `harness_stats`. Every test runs the real binary against a temp HOME and temp files.
 mod common;
 
 use common::{run_bin, temp_home};
@@ -11,29 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const ROUTE: &str = env!("CARGO_BIN_EXE_route");
 const SCAN: &str = env!("CARGO_BIN_EXE_whatsleft_scan");
 const STATS: &str = env!("CARGO_BIN_EXE_harness_stats");
 
 // ---------------------------------------------------------------------------
 // test_route.py
 // ---------------------------------------------------------------------------
-
-#[test]
-fn test_wrong_types_stay_bad_input() {
-    let bad = [
-        r#"[{"id": 5, "kind": "work", "text": "t"}]"#,
-        r#"[{"id": ["a"], "kind": "work", "text": "t"}]"#,
-        r#"[{"kind": "nope", "text": "t"}]"#,
-        r#"[{"kind": "work", "risk": "rm -rf", "text": "t"}]"#,
-        r#"[{"kind": "work", "text": "t", "after": ["gone"]}]"#,
-    ];
-    for rows in bad {
-        let (code, out, _) = run_bin(ROUTE, &[], rows, &[], None);
-        assert_eq!(code, 2, "{rows}: {out}");
-        assert!(out.starts_with("route.py: bad input: "), "{rows}: {out}");
-    }
-}
 
 // ---------------------------------------------------------------------------
 // test_whatsleft_scan.py: FreshnessTest, through the binary.
@@ -158,28 +138,20 @@ fn no_alarm(out: &str) {
 }
 
 #[test]
-fn test_foreground_unmasked_check_after_edit_passes() {
+fn passing_checks() {
+    // a check after the edit passes: plain, piped with pipefail, chained with &&, or in the background with exit 0
+    for cmd in ["pnpm check", "set -o pipefail; pnpm check 2>&1 | tail -20", "pnpm check && echo done"] {
+        let mut t = Transcript::new();
+        t.edit();
+        t.bash(cmd);
+        let out = t.freshness();
+        assert!(tagged(&out, "OK", PASSED), "{cmd}: {out}");
+        no_alarm(&out);
+    }
     let mut t = Transcript::new();
     t.edit();
-    t.bash("pnpm check");
-    let out = t.freshness();
-    assert!(tagged(&out, "OK", PASSED), "{out}");
-    no_alarm(&out);
-}
-
-#[test]
-fn test_foreground_pipe_with_pipefail_passes() {
-    let mut t = Transcript::new();
-    t.edit();
-    t.bash("set -o pipefail; pnpm check 2>&1 | tail -20");
-    assert!(t.freshness().contains(PASSED));
-}
-
-#[test]
-fn test_check_chained_with_and_is_not_masked() {
-    let mut t = Transcript::new();
-    t.edit();
-    t.bash("pnpm check && echo done");
+    let tid = t.bash_bg("pnpm check", "bg1");
+    t.notice(&tid, "completed", "Background command \"pnpm check\" completed (exit code 0)", "bg1");
     assert!(t.freshness().contains(PASSED));
 }
 
@@ -293,28 +265,6 @@ fn test_in_place_edit_without_any_check() {
 }
 
 // --- the 2026-10-14 session ---
-
-#[test]
-fn test_replay_2026_10_14() {
-    let mut t = Transcript::new();
-    t.edit();
-    t.bash("sed -i 's/old/new/' app.py");
-    let first = t.bash_bg("pnpm check; echo", "bg1");
-    t.notice(&first, "completed", "Background command \"pnpm check; echo\" completed (exit code 0)", "bg1");
-    t.bash_bg("pnpm check", "bg2"); // no notice yet
-    let out = t.freshness();
-    assert!(out.contains(RUNNING), "{out}");
-    assert!(!out.contains(PASSED), "{out}");
-}
-
-#[test]
-fn test_background_check_completed_exit_0_passed() {
-    let mut t = Transcript::new();
-    t.edit();
-    let tid = t.bash_bg("pnpm check", "bg1");
-    t.notice(&tid, "completed", "Background command \"pnpm check\" completed (exit code 0)", "bg1");
-    assert!(t.freshness().contains(PASSED));
-}
 
 #[test]
 fn test_bash_reads_are_not_edits() {

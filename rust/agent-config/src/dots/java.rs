@@ -182,8 +182,8 @@ mod tests {
         assert!(is_lts(8) && is_lts(11) && is_lts(17) && is_lts(21) && is_lts(25) && !is_lts(22) && !is_lts(9));
         assert!(rank_key("21.0.5") > rank_key("17.0.9"));
         assert!(rank_key("17.0.9") > rank_key("23.0.1")); // LTS first
-        assert_eq!(rank_key("1.8.0_432"), (true, 8_000_432));
-        assert_eq!(rank_key("21.0.5").1, 21_000_005);
+        assert!(rank_key("11.0.2") > rank_key("1.8.0_432")); // the old 1.8 form is Java 8
+        assert!(rank_key("1.8.0_432") > rank_key("1.8.0_400"));
     }
     #[test]
     fn paths() {

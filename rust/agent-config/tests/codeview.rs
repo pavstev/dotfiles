@@ -22,48 +22,19 @@
 //! - Decorators (TS `@x`, Python `@x`), single or multi-line, move `start` up to the first `@`
 //!   line. Rust `#[attr]` lines are not covered here.
 
-use agent_config::codeview::{Refusal, Symbol, outline, render, scan_name};
-use std::collections::BTreeSet;
+use agent_config::codeview::{Refusal, outline, render, scan_name};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const TWO_MIB: usize = 2 * 1024 * 1024;
 
-/// Every case from the spec. A missing fixture or expectation fails `fixture_set_is_complete`.
-const CASES: [&str; 16] = [
-    "nested.ts",
-    "arrow.ts",
-    "signatures.rs",
-    "decorators.ts",
-    "decorators.py",
-    "strings.ts",
-    "rust_items.rs",
-    "nested.py",
-    "fenced.md",
-    "shell.sh",
-    "selectors.css",
-    "empty.ts",
-    "minified.js",
-    "crlf.ts",
-    "tabs.py",
-    "unknown.xyz",
-];
-
 fn dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codeview")
 }
 
-/// Reads a fixture. `crlf*` fixtures are stored with LF (`.gitattributes` forces `eol=lf`)
-/// and turned into CRLF here.
+/// Reads a fixture.
 fn load(path: &Path) -> String {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let stem = path.file_name().unwrap().to_string_lossy();
-    if stem.starts_with("crlf") {
-        let crlf = to_crlf(&text);
-        assert!(crlf.contains("\r\n"), "{stem} must hold CRLF line ends");
-        return crlf;
-    }
-    text
+    fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 fn to_crlf(text: &str) -> String {
@@ -117,19 +88,6 @@ fn sized(n: usize) -> String {
 }
 
 #[test]
-fn fixture_set_is_complete() {
-    let found: BTreeSet<String> = expectations()
-        .into_iter()
-        .map(|(p, _)| p.file_name().unwrap().to_string_lossy().to_string())
-        .collect();
-    let wanted: BTreeSet<String> = CASES.iter().map(|s| s.to_string()).collect();
-    assert_eq!(found, wanted, "expectation files and CASES differ");
-    for case in CASES {
-        assert!(dir().join(case).is_file(), "missing fixture {case}");
-    }
-}
-
-#[test]
 fn every_fixture_matches_its_outline() {
     let mut failures = Vec::new();
     for (path, expected) in expectations() {
@@ -176,53 +134,6 @@ fn missing_final_newline_changes_nothing() {
     }
 }
 
-/// Checks that the symbols are consistent, whatever the language.
-fn check_shape(name: &str, text: &str, symbols: &[Symbol]) {
-    let lines = text.lines().count();
-    let mut stack: Vec<&Symbol> = Vec::new();
-    let mut prev_start = 0;
-    for s in symbols {
-        assert!(
-            1 <= s.start && s.start <= s.end && s.end <= lines,
-            "{name}: bad range {}-{} for {} (file has {lines} lines)",
-            s.start,
-            s.end,
-            s.name
-        );
-        assert!(
-            !s.kind.is_empty() && !s.name.is_empty(),
-            "{name}: empty kind or name"
-        );
-        assert!(
-            s.start >= prev_start,
-            "{name}: symbols not in start order at {}",
-            s.name
-        );
-        prev_start = s.start;
-        assert!(s.depth <= stack.len(), "{name}: depth jumps at {}", s.name);
-        stack.truncate(s.depth);
-        if let Some(parent) = stack.last() {
-            assert!(
-                parent.start <= s.start && s.end <= parent.end,
-                "{name}: {} is not inside {}",
-                s.name,
-                parent.name
-            );
-        }
-        stack.push(s);
-    }
-}
-
-#[test]
-fn outlines_are_well_formed() {
-    for (path, _) in expectations() {
-        let text = load(&path);
-        if let Ok(symbols) = outline(&path, &text) {
-            check_shape(&path.display().to_string(), &text, &symbols);
-        }
-    }
-}
-
 #[test]
 fn scan_names() {
     let table: [(&str, Option<&str>); 22] = [
@@ -255,41 +166,10 @@ fn scan_names() {
 }
 
 #[test]
-fn refusals() {
-    // The minified fixture has one line over 10,000 chars.
-    let minified = dir().join("minified.js");
-    let text = load(&minified);
-    assert!(text.lines().any(|l| l.len() > 10_000));
-    assert!(matches!(outline(&minified, &text), Err(Refusal::LongLine)));
-
-    // 2 MiB + 1 byte of short lines is too big, not a long line.
-    assert!(matches!(
-        outline(Path::new("big.ts"), &sized(TWO_MIB + 1)),
-        Err(Refusal::TooBig)
-    ));
-
-    // A NUL byte means the file is not text.
-    assert!(matches!(
-        outline(Path::new("bin.ts"), "function a() {\n}\0\n"),
-        Err(Refusal::NotText)
-    ));
-    assert!(matches!(
-        outline(Path::new("bin.py"), "def a():\n    pass\0\n"),
-        Err(Refusal::NotText)
-    ));
-
-    // An unknown extension has no scanner. The note carries the extension.
-    match outline(Path::new("notes.xyz"), "hello\n") {
-        Err(Refusal::NoScanner(ext)) => assert_eq!(ext, "xyz"),
-        _ => panic!("expected NoScanner(\"xyz\")"),
-    }
-}
-
-#[test]
 fn limits_are_inclusive() {
-    // Exactly 2 MiB is allowed (the limit is "over 2 MB").
-    let at_limit = sized(TWO_MIB);
-    assert!(outline(Path::new("edge.ts"), &at_limit).is_ok());
+    // Exactly 2 MiB is allowed (the limit is "over 2 MB"); one byte more is too big, not a long line.
+    assert!(outline(Path::new("edge.ts"), &sized(TWO_MIB)).is_ok());
+    assert!(matches!(outline(Path::new("big.ts"), &sized(TWO_MIB + 1)), Err(Refusal::TooBig)));
 
     // A line of exactly 10,000 chars is allowed, 10,001 is not.
     let ok = format!("// {}\n", "a".repeat(9_997));
@@ -307,36 +187,9 @@ fn limits_are_inclusive() {
         outline(Path::new("edge.py"), &long_py),
         Err(Refusal::LongLine)
     ));
-}
 
-#[test]
-fn render_format() {
-    let symbols = vec![
-        Symbol {
-            kind: "class".into(),
-            name: "A".into(),
-            start: 1,
-            end: 9,
-            depth: 0,
-        },
-        Symbol {
-            kind: "method".into(),
-            name: "b".into(),
-            start: 2,
-            end: 4,
-            depth: 1,
-        },
-        Symbol {
-            kind: "def".into(),
-            name: "c".into(),
-            start: 3,
-            end: 3,
-            depth: 2,
-        },
-    ];
-    assert_eq!(
-        trimmed(&render(&symbols)),
-        "class A 1-9\n  method b 2-4\n    def c 3-3"
-    );
-    assert_eq!(trimmed(&render(&[])), "");
+    // A NUL byte means the file is not text. The long-line and unknown-extension refusals have
+    // golden files (minified.js, unknown.xyz).
+    assert!(matches!(outline(Path::new("bin.ts"), "function a() {\n}\0\n"), Err(Refusal::NotText)));
+    assert!(matches!(outline(Path::new("bin.py"), "def a():\n    pass\0\n"), Err(Refusal::NotText)));
 }

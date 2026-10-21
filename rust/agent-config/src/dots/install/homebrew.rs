@@ -1,4 +1,4 @@
-//! 10-homebrew: make sure Homebrew is installed (macOS only: it installs the apps). Also the setup-lib.sh helper `ensure_brew`.
+//! 10-homebrew: make sure Homebrew is installed (macOS only: it installs the apps).
 //! Tolerant: a failed install warns and the run goes on (the brew steps skip without brew).
 
 use super::super::os;

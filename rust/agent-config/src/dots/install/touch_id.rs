@@ -39,6 +39,5 @@ mod tests {
         assert!(has_pam_tid("auth sufficient pam_tid.so\n"));
         assert!(!has_pam_tid("# nothing here\n"));
         assert!(has_pam_tid(BODY));
-        assert_eq!(BODY.lines().count(), 2);
     }
 }

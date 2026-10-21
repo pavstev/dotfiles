@@ -34,7 +34,7 @@ The code asks the OS with `is_macos`, `is_linux` and `is_windows` (`scripts/setu
 - **Other distros:** without apt, dnf, pacman or apk, the prerequisites step prints the commands
   to install yourself and carries on.
 - **Skills:** `ps:bag-mode` is for a Mac laptop. On Linux and Windows it says so and stops.
-  `ps:spawn` needs `tmux`, so it runs on macOS and Linux only. The other skill scripts run on all three.
+  The other skill scripts run on all three.
 
 ### Test it
 

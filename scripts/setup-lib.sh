@@ -6,7 +6,7 @@
 #
 #  Sourced, never executed.
 #
-#  Provides: info · ok · warn · skip · step · note · step_end  (logging; quiet unless DOTFILES_VERBOSE=1)
+#  Provides: info · ok · warn                    (one output line each; the Rust dots has its own)
 #            have <cmd>                       (is a command on PATH?)
 #            is_macos · is_linux · is_windows · is_musl  (which OS; Alpine is musl)
 #            linux_prereqs · at_terminal      (Linux: install the system packages dots needs)
@@ -20,74 +20,14 @@ if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   _c_b=$'\033[38;5;73m'    # teal     — info / in-progress
   _c_g=$'\033[38;5;108m'   # sage     — success
   _c_y=$'\033[38;5;179m'   # amber    — warning
-  _c_d=$'\033[38;5;245m'   # stone    — skipped / dim
-  _c_a=$'\033[1;38;5;173m' # copper   — section heading (the signature colour)
   _c_0=$'\033[0m'
 else
-  _c_b='' _c_g='' _c_y='' _c_d='' _c_a='' _c_0=''
+  _c_b='' _c_g='' _c_y='' _c_0=''
 fi
 
-# Output. A run prints one short line per step. DOTFILES_VERBOSE=1 (or dots -v) prints it all.
-# A step header waits until the step prints something. A step that only finds things
-# up to date ends as one line: "• Title: 5 up to date". Warnings and errors always print.
-verbose() { [[ -n "${DOTFILES_VERBOSE:-}" && "${DOTFILES_VERBOSE}" != 0 ]]; }
-
-_STEP_TITLE="" _STEP_SHOWN="" _STEP_SKIPS=0
-_step_head() {   # print the waiting step header, once
-  if [[ -n "$_STEP_TITLE" && -z "$_STEP_SHOWN" ]]; then
-    printf '\n%s▸ %s%s\n' "$_c_a" "$_STEP_TITLE" "$_c_0"
-    _STEP_SHOWN=1
-  fi
-}
-# step_end: close the step in progress with its count line. Runs on its own at exit.
-step_end() {
-  if [[ -n "$_STEP_TITLE" && $_STEP_SKIPS -gt 0 ]]; then
-    if [[ "$_STEP_SHOWN" == 1 ]]; then
-      printf '%s•%s %s up to date\n' "$_c_d" "$_c_0" "$_STEP_SKIPS"
-    elif [[ $_STEP_SKIPS -eq 1 ]]; then
-      printf '%s•%s %s: up to date\n' "$_c_d" "$_c_0" "$_STEP_TITLE"
-    else
-      printf '%s•%s %s: %s up to date\n' "$_c_d" "$_c_0" "$_STEP_TITLE" "$_STEP_SKIPS"
-    fi
-  fi
-  _STEP_TITLE="" _STEP_SHOWN="" _STEP_SKIPS=0
-}
-step() {
-  step_end
-  if verbose; then
-    printf '\n%s▸ %s%s\n' "$_c_a" "$*" "$_c_0"
-    _STEP_SHOWN=1
-  else
-    trap step_end EXIT
-  fi
-  _STEP_TITLE="$*"
-}
-info() { _step_head; printf '%s»»%s %s\n'  "$_c_b" "$_c_0" "$*"; }
-ok()   { _step_head; printf '%s✓%s %s\n'   "$_c_g" "$_c_0" "$*"; }
-# warn also adds a line to DOTFILES_WARN_FILE (./dotfiles sets it), so the last line of a
-# run can count the warnings of every step.
-warn() {
-  _step_head; printf '%s!%s  %s\n'  "$_c_y" "$_c_0" "$*" >&2
-  if [[ -n "${DOTFILES_WARN_FILE:-}" ]]; then printf '%s\n' "$*" >>"$DOTFILES_WARN_FILE" 2>/dev/null || true; fi
-}
-# skip <what>: it was already there. Counted in a step, printed in verbose mode.
-skip() {
-  if verbose || [[ -z "$_STEP_TITLE" ]]; then
-    printf '%s•%s %s %s(already set up, skipping)%s\n' "$_c_d" "$_c_0" "$*" "$_c_d" "$_c_0"
-  else
-    _STEP_SKIPS=$((_STEP_SKIPS + 1))
-  fi
-}
-# uptodate <msg>: the step found nothing to do. A line in verbose mode, a count otherwise.
-uptodate() { if verbose; then ok "$*"; else skip "$*"; fi; }
-# ok_if_changed <msg>: a closing line, only when the step did or said something before.
-ok_if_changed() { if verbose || [[ -n "$_STEP_SHOWN" || -z "$_STEP_TITLE" ]]; then ok "$*"; fi; }
-# note <msg>: the whole step in one line ("• Title: msg"), when there is nothing to do.
-note() {
-  if verbose || [[ -z "$_STEP_TITLE" ]]; then info "$*"; return; fi
-  printf '%s•%s %s: %s\n' "$_c_d" "$_c_0" "$_STEP_TITLE" "$*"
-  _STEP_SHOWN=2
-}
+info() { printf '%s»»%s %s\n' "$_c_b" "$_c_0" "$*"; }
+ok()   { printf '%s✓%s %s\n'  "$_c_g" "$_c_0" "$*"; }
+warn() { printf '%s!%s  %s\n' "$_c_y" "$_c_0" "$*" >&2; }
 
 # have <cmd> — true if <cmd> resolves on PATH. The basis of "skip if installed".
 have() { command -v "$1" >/dev/null 2>&1; }

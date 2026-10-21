@@ -1179,13 +1179,6 @@ mod tests {
     }
 
     #[test]
-    fn test_wait_on_do_reruns() {
-        let rows = p(r#"[{"id": "a", "kind": "work", "text": "build"},
-                         {"id": "b", "kind": "work", "text": "test", "after": ["a"]}]"#);
-        assert_eq!(route(&rows, false, CAP).unwrap().then, "rerun");
-    }
-
-    #[test]
     fn test_answers_unlock() {
         // second round: the user said yes to m3, m1 and m2 are done
         let Py::List(mut rows) = p(SCENARIO) else { panic!() };
@@ -1279,97 +1272,44 @@ mod tests {
     }
 
     #[test]
-    fn test_bad_input() {
-        let bad = [
-            r#"[{"id": "x", "kind": "nope", "text": "t"}]"#,
-            r#"[{"id": "x", "kind": "no-tool", "text": "t"}]"#,
-            r#"[{"id": "x", "kind": "work", "text": "t", "after": ["zz"]}]"#,
-            r#"[{"id": "x", "kind": "work", "text": "t"}, {"id": "x", "kind": "work", "text": "u"}]"#,
-            r#"[{"id": "x", "kind": "decision", "risk": "push", "text": "t"}]"#,
-            r#"[{"id": "x", "kind": "work", "risk": "rm -rf", "text": "t"}]"#,
-            r#"{"id": "x"}"#,
+    fn test_bad_input_messages() {
+        // each bad row is an error that names the row and the field
+        let cases = [
+            (r#"[{"id": "x", "kind": "nope", "text": "t"}]"#, "x: kind 'nope' not in"),
+            (r#"[{"id": "x", "kind": [1], "text": "t"}]"#, "x: kind"),
+            (r#"[{"id": "x", "text": "t"}]"#, "x: kind"),
+            (r#"[{"id": "x", "kind": "work", "risk": "rm -rf", "text": "t"}]"#, "x: risk 'rm -rf' not in"),
+            (r#"[{"id": "x", "kind": "work", "text": "t", "who": null}]"#, "x: who must be me or you"),
+            (r#"{"id": "x"}"#, "rows must be a JSON list"),
+            (r#"[5]"#, "row 1: not an object"),
+            (r#"[{"id": "ok", "kind": "work", "text": "t"}, 5]"#, "row 2: not an object"),
+            (r#"[{"id": 5, "kind": "work", "text": "t"}]"#, "row 1: id must be a string"),
+            (r#"[{"id": ["a"], "kind": "work", "text": "t"}]"#, "row 1: id must be a string"),
+            (r#"[{"id": "x", "kind": "work", "text": "t"}, {"id": "x", "kind": "work", "text": "u"}]"#, "row 2: duplicate id x"),
+            (r#"[{"id": "x", "kind": "work", "text": "t", "after": ["x"]}]"#, "x: waits on itself"),
+            (r#"[{"id": "x", "kind": "work", "text": "t", "after": ["zz"]}]"#, "x: after names unknown id zz"),
+            (r#"[{"kind": "work", "text": "t", "after": ["gone"]}]"#, "r1: after names unknown id gone"), // the default id
+            (r#"[{"id": "x", "kind": "decision", "risk": "push", "text": "t"}]"#, "x: risk only goes on kind work"),
+            (r#"[{"id": "x", "kind": "no-tool", "tried": "  ", "text": "t"}]"#, "x: no-tool needs 'tried'"),
         ];
-        for rows in bad {
-            assert!(route(&p(rows), false, CAP).is_err(), "{}", rows);
+        for (src, want) in cases {
+            let err = route(&p(src), false, CAP).err().unwrap_or_else(|| panic!("{src} was accepted"));
+            assert!(err.starts_with(want), "{src}: {err}");
         }
-    }
-
-    #[test]
-    fn test_bad_input_messages_are_pythons() {
-        let msg = |s: &str| route(&p(s), false, CAP).err().unwrap();
-        assert_eq!(
-            msg(r#"[{"id": "x", "kind": "nope", "text": "t"}]"#),
-            "x: kind 'nope' not in ['decision', 'login', 'no-tool', 'optional', 'payment', 'refused', 'secret', 'task', 'value', 'work']"
-        );
-        assert_eq!(msg(r#"[{"id": "x", "kind": [1], "text": "t"}]"#).split(" not in ").next().unwrap(), "x: kind [1]");
-        assert_eq!(msg(r#"[{"id": "x", "text": "t"}]"#).split(" not in ").next().unwrap(), "x: kind None");
-        assert_eq!(
-            msg(r#"[{"id": "x", "kind": "work", "risk": "rm -rf", "text": "t"}]"#),
-            "x: risk 'rm -rf' not in ['delete', 'deploy', 'paid', 'prod-config', 'push']"
-        );
-        assert_eq!(msg(r#"[{"id": "x", "kind": "work", "text": "t", "who": null}]"#), "x: who must be me or you");
-        assert_eq!(msg(r#"{"id": "x"}"#), "rows must be a JSON list");
-        assert_eq!(msg(r#"[5]"#), "row 1: not an object");
-        assert_eq!(msg(r#"[{"id": 5, "kind": "work", "text": "t"}]"#), "row 1: id must be a string");
-        // a row with no text is dropped, never an error
+        // a row with no text is dropped, never an error, and a later row cannot name it
         let res = route(&p(r#"[{"id": "x", "kind": "work", "text": ""}]"#), false, CAP).unwrap();
         assert!(res.routes.is_empty());
         assert_eq!(res.dropped, ["dropped row x: no text"]);
-        assert_eq!(
-            msg(r#"[{"id": "x", "kind": "work", "text": "t"}, {"id": "x", "kind": "work", "text": "u"}]"#),
-            "row 2: duplicate id x"
-        );
-        assert_eq!(msg(r#"[{"id": "x", "kind": "work", "text": "t", "after": ["x"]}]"#), "x: waits on itself");
-        assert_eq!(msg(r#"[{"id": "x", "kind": "work", "text": "t", "after": ["zz"]}]"#), "x: after names unknown id zz");
-        assert_eq!(
-            msg(r#"[{"id": "x", "kind": "decision", "risk": "push", "text": "t"}]"#),
-            "x: risk only goes on kind work"
-        );
-        assert_eq!(
-            msg(r#"[{"id": "x", "kind": "no-tool", "tried": "  ", "text": "t"}]"#),
-            "x: no-tool needs 'tried': name the tool you tried first"
-        );
-        // Python takes str(None) = "None" as a name for the tool tried
-        assert!(route(&p(r#"[{"id": "x", "kind": "no-tool", "tried": null, "text": "t"}]"#), false, CAP).is_ok());
+        let res = route(&p(r#"[{"id": "a", "kind": "work", "text": "t", "after": ["b"]}, {"id": "b"}]"#), false, CAP).unwrap();
+        assert_eq!(r(&res, "a"), "DO");
     }
 
     #[test]
-    fn test_python_truthiness_and_text_types() {
-        let rows = p(r#"[{"id": "a", "kind": "work", "text": 5, "done": 1},
-                         {"id": "b", "kind": "work", "text": ["x"], "skip": "yes"},
-                         {"id": "c", "kind": "work", "risk": null, "text": 1.5e20, "asked": 0}]"#);
-        let res = route(&rows, false, CAP).unwrap();
-        assert_eq!(routes_of(&res), pairs(&[("a", "DONE"), ("b", "SKIP"), ("c", "DO")]));
-        let out = render(&res);
-        assert!(out.contains("DONE    a    5"));
-        assert!(out.contains("SKIP    b    ['x']"));
-        assert!(out.contains("DO      c    1.5e+20"));
-    }
-
-    #[test]
-    fn test_json_errors_are_pythons() {
-        let cases = [
-            ("", "Expecting value: line 1 column 1 (char 0)"),
-            ("[", "Expecting value: line 1 column 2 (char 1)"),
-            ("{", "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"),
-            ("{\"a\"", "Expecting ':' delimiter: line 1 column 5 (char 4)"),
-            ("{\"a\":1", "Expecting ',' delimiter: line 1 column 7 (char 6)"),
-            ("[1,]", "Expecting value: line 1 column 4 (char 3)"),
-            ("\"abc", "Unterminated string starting at: line 1 column 1 (char 0)"),
-            ("\"a\\x\"", "Invalid \\escape: line 1 column 3 (char 2)"),
-            ("\"\\u12\"", "Invalid \\uXXXX escape: line 1 column 3 (char 2)"),
-            ("\"a\tb\"", "Invalid control character at: line 1 column 3 (char 2)"),
-            ("01", "Extra data: line 1 column 2 (char 1)"),
-            ("[1] x", "Extra data: line 1 column 5 (char 4)"),
-            ("\u{feff}[]", "Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)"),
-            ("[\n1\n,\n]", "Expecting value: line 4 column 1 (char 6)"),
-        ];
-        for (src, want) in cases {
-            assert_eq!(json_loads(src).err().unwrap(), want, "{:?}", src);
+    fn test_json_errors() {
+        for src in ["", "[", "{", "{\"a\"", "{\"a\":1", "[1,]", "\"abc", "\"a\\x\"", "\"\\u12\"", "\"a\tb\"", "01", "[1] x", "\u{feff}[]", "[\n1\n,\n]"] {
+            assert!(json_loads(src).is_err(), "{src:?}");
         }
         assert_eq!(p("\"\\ud83d\\ude00\""), Py::Str("\u{1F600}".into()));
-        assert_eq!(p("-0"), Py::Int("0".into()));
-        assert!(matches!(p("NaN"), Py::Float(f) if f.is_nan()));
     }
 
     fn cli(args: &[&str], stdin: &str) -> Outcome {
@@ -1416,25 +1356,6 @@ mod tests {
     }
 
     #[test]
-    fn test_wrong_types_stay_bad_input_with_pythons_messages() {
-        let msg = |s: &str| route(&p(s), false, CAP).err().unwrap();
-        assert_eq!(msg(r#"[{"id": 5, "kind": "work", "text": "t"}]"#), "row 1: id must be a string");
-        assert_eq!(msg(r#"[{"id": ["a"], "kind": "work", "text": "t"}]"#), "row 1: id must be a string");
-        assert_eq!(msg(r#"[{"id": "ok", "kind": "work", "text": "t"}, 5]"#), "row 2: not an object");
-        assert_eq!(
-            msg(r#"[{"kind": "nope", "text": "t"}]"#),
-            "r1: kind 'nope' not in ['decision', 'login', 'no-tool', 'optional', 'payment', 'refused', 'secret', 'task', 'value', 'work']"
-        );
-        assert_eq!(
-            msg(r#"[{"kind": "work", "text": "t", "after": ["gone"]}]"#),
-            "r1: after names unknown id gone"
-        );
-        // a dropped row is gone: it cannot be named as unknown
-        let res = route(&p(r#"[{"id": "a", "kind": "work", "text": "t", "after": ["b"]}, {"id": "b"}]"#), false, CAP).unwrap();
-        assert_eq!(r(&res, "a"), "DO");
-    }
-
-    #[test]
     fn test_cli_json_lists_the_dropped_rows() {
         let o = cli(&["--json"], r#"[{"id":"a","kind":"work","text":"x"},{"id":"b"}]"#);
         assert_eq!(o.code, 0);
@@ -1446,9 +1367,10 @@ mod tests {
     #[test]
     fn test_cli() {
         // an empty file is not JSON
-        let o = cli(&["/dev/null"], "");
+        let empty = temp_file("");
+        let o = cli(&[empty.path().to_str().unwrap()], "");
         assert_eq!(o.code, 2);
-        assert_eq!(o.stdout, "route.py: bad input: Expecting value: line 1 column 1 (char 0)\n");
+        assert!(o.stdout.starts_with("route.py: bad input: "), "{}", o.stdout);
 
         let f = temp_file(SCENARIO);
         let path = f.path().to_str().unwrap().to_string();
@@ -1456,21 +1378,14 @@ mod tests {
         assert_eq!(o.code, 0);
         assert!(o.stdout.contains("NEXT 2 ps:askme: whatsleft: m3 "));
 
-        // argparse exits 2 on a bad option value
-        for bad in [["--cap", "0"], ["--cap", "-1"]] {
-            let o = cli(&[bad[0], bad[1], &path], "");
-            assert_eq!(o.code, 2);
-            assert_eq!(
-                o.stderr,
-                format!("{}route.py: error: argument --cap: must be 1 or more\n", USAGE)
-            );
+        // a bad option value, a missing file and wrong types exit 2
+        for cap in ["0", "-1"] {
+            assert_eq!(cli(&["--cap", cap, &path], "").code, 2, "--cap {cap}");
         }
         let missing = std::env::temp_dir().join("no-such-rows.json");
         let o = cli(&[missing.to_str().unwrap()], "");
         assert_eq!(o.code, 2);
-        assert!(o.stdout.starts_with("route.py: bad input: [Errno 2] No such file or directory: '"));
-
-        // wrong types are bad input, not a crash
+        assert!(o.stdout.starts_with("route.py: bad input: "), "{}", o.stdout);
         let f = temp_file(r#"[{"id": 5, "kind": "work", "text": "t"}, {"id": "x", "kind": [1], "text": "t"}]"#);
         assert_eq!(cli(&[f.path().to_str().unwrap()], "").code, 2);
     }
@@ -1479,53 +1394,18 @@ mod tests {
     fn test_cli_stdin_json_and_flags() {
         let o = cli(&["--json"], r#"[{"id":"a","kind":"work","text":"x"}]"#);
         assert_eq!(o.code, 0);
-        assert_eq!(
-            o.stdout,
-            "{\n  \"routes\": [\n    {\n      \"id\": \"a\",\n      \"route\": \"DO\",\n      \"text\": \"x\"\n    }\n  ],\n  \"do\": [\n    \"a\"\n  ],\n  \"ask\": [],\n  \"default\": [],\n  \"you\": [],\n  \"then\": \"mic-drop\",\n  \"dropped\": []\n}\n"
-        );
+        let v: serde_json::Value = serde_json::from_str(&o.stdout).unwrap();
+        assert_eq!(v["routes"], serde_json::json!([{"id": "a", "route": "DO", "text": "x"}]));
+        assert_eq!(v["do"], serde_json::json!(["a"]));
+        assert_eq!(v["then"], "mic-drop");
         let o = cli(&["--kill", "--cap=1"], r#"[{"id":"t","kind":"task","stop":true,"text":"x"}]"#);
         assert!(o.stdout.starts_with("DO      t    x\n"));
         assert_eq!(cli(&["-h"], "").code, 0);
-        assert_eq!(cli(&["--bogus"], "").stderr, format!("{}route.py: error: unrecognized arguments: --bogus\n", USAGE));
-        assert_eq!(
-            cli(&["--kill=1"], "").stderr,
-            format!("{}route.py: error: argument --kill: ignored explicit argument '1'\n", USAGE)
-        );
-        assert_eq!(
-            cli(&["--cap"], "").stderr,
-            format!("{}route.py: error: argument --cap: expected one argument\n", USAGE)
-        );
-        assert_eq!(
-            cli(&["--cap", "x"], "").stderr,
-            format!("{}route.py: error: argument --cap: invalid positive_int value: 'x'\n", USAGE)
-        );
-        assert_eq!(
-            cli(&["a", "b"], "").stderr,
-            format!("{}route.py: error: unrecognized arguments: b\n", USAGE)
-        );
-    }
-
-    fn skill_md(name: &str) -> String {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../claude/skills")
-            .join(name.replace(':', "_"))
-            .join("SKILL.md");
-        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {}", p.display(), e))
-    }
-
-    #[test]
-    fn test_whatsleft_links() {
-        let s = skill_md("ps:whatsleft");
-        for needle in ["rust-bin route", "ps:askme", "ps:mic-drop", "AskQuestion", "AskUserQuestion", "whatsleft:"] {
-            assert!(s.contains(needle), "{}", needle);
+        for bad in [&["--bogus"][..], &["--kill=1"], &["--cap"], &["--cap", "x"], &["a", "b"]] {
+            let o = cli(bad, "");
+            assert_eq!(o.code, 2, "{bad:?}");
+            assert!(o.stderr.starts_with(USAGE), "{bad:?}: {}", o.stderr);
         }
     }
 
-    #[test]
-    fn test_askme_links() {
-        let s = skill_md("ps:askme");
-        for needle in ["ps:whatsleft", "whatsleft:", "AskQuestion", "AskUserQuestion", "`route`", "ps:mic-drop"] {
-            assert!(s.contains(needle), "{}", needle);
-        }
-    }
 }

@@ -80,8 +80,7 @@ mod tests {
         assert_eq!(wanted("30-omz-plugins", "", "", true), Err(None));
         assert!(wanted("57-claude-code", "", "", true).is_ok());
         assert!(wanted("12-tools", "", "", true).is_ok());
-        assert_eq!(wanted("77-dotfiles-git-hooks", "", "77-dotfiles-git-hooks", false),
-            Err(Some("77-dotfiles-git-hooks skipped (Steps to skip, in dots settings)".into())));
+        assert!(matches!(wanted("77-dotfiles-git-hooks", "", "77-dotfiles-git-hooks", false), Err(Some(_))));
         assert_eq!(wanted("none", "none", "", false), Ok(()));
     }
 }

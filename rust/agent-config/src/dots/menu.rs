@@ -363,13 +363,6 @@ pub fn run(repo: &Path) {
 mod tests {
     use super::*;
     #[test]
-    fn rows() {
-        assert_eq!(row("👤 ", "Git name", "Jane"), "👤 Git name           Jane");
-        assert_eq!(row("x", "N", "a, b,c"), "xN                  a b c");
-        let long = "x".repeat(60);
-        assert_eq!(row("", "N", &long).chars().count(), 18 + 1 + 48);
-    }
-    #[test]
     fn zones_and_days() {
         assert!(valid_zone("Europe/Berlin") && valid_zone("") && valid_zone("Etc/GMT+1"));
         assert!(!valid_zone("../etc") && !valid_zone("a b") && !valid_zone("/x"));

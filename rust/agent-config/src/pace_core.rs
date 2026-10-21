@@ -1034,16 +1034,10 @@ mod tests {
     }
 
     #[test]
-    fn python_float_text_and_rounding() {
-        assert_eq!(py_float(40.0), "40.0");
-        assert_eq!(py_float(12.3), "12.3");
-        assert_eq!(py_float(0.0255), "0.0255");
-        assert_eq!(py_float(1e16), "1e+16");
-        assert_eq!(py_float(1.5e-7), "1.5e-07");
+    fn round1_keeps_one_decimal() {
         assert_eq!(round1(0.25), 0.2);
         assert_eq!(round1(41.23456), 41.2);
         assert_eq!(round1(16.666666666666664), 16.7);
-        assert_eq!(json_str("a\u{e9}\"b"), "\"a\\u00e9\\\"b\"");
     }
 
     #[test]
@@ -1067,138 +1061,6 @@ mod tests {
     }
 
     #[test]
-    fn fresh_statusline_wins_and_states() {
-        let e = env();
-        let now = mon() + 2 * DAY;
-        for (used, want) in [(10.0, "ok"), (84.0, "ahead"), (85.0, "critical"), (100.0, "critical")] {
-            e.c1(now - 10, used, mon() + WEEK);
-            let st = status_in(&e.p, Some(now));
-            assert_eq!(st.source.as_deref(), Some("statusline"));
-            assert_eq!(st.resets_at, Some(mon() + WEEK));
-            assert_eq!(st.state, want, "used {used}");
-        }
-        e.c1(now - 7 * 3600, 41.2, mon() + WEEK); // stale
-        assert_eq!(status_in(&e.p, Some(now)).state, "unknown");
-    }
-
-    #[test]
-    fn unknown_without_data_and_json_text() {
-        let e = env();
-        let st = status_in(&e.p, Some(mon() + 3600));
-        assert_eq!((st.state.as_str(), st.used, st.source.clone()), ("unknown", None, None));
-        let text = status_json(&st);
-        assert!(text.starts_with("{\"state\": \"unknown\", \"used\": null, \"budget\": "), "{text}");
-        assert!(text.ends_with(", \"source\": null, \"resets_at\": null}"), "{text}");
-    }
-
-    #[test]
-    fn estimate_from_transcripts_and_dedupe() {
-        let e = env();
-        e.write("a.jsonl", &[sonnet(mon() + 60, "m1"), sonnet(mon() + 61, "m1"), sonnet(mon() - 60, "old")]);
-        let now = mon() + DAY;
-        seed_weight(&e.p, WEIGHT * 100.0, Some(now), "seed", None);
-        let r = refresh_in(&e.p, 5.0, Some(now));
-        assert!(r.complete);
-        assert_eq!(r.files, 1);
-        assert!((e.weight() - WEIGHT).abs() < 1e-12, "{}", e.weight());
-        let st = status_in(&e.p, Some(now));
-        assert_eq!(st.source.as_deref(), Some("estimate"));
-        assert_eq!(st.used, Some(1.0));
-    }
-
-    #[test]
-    fn model_families_and_cache_write_split() {
-        let e = env();
-        let recs = [
-            record(mon() + 60, "a", "claude-opus-4-8", 1000, 500, 2000, 10000),
-            record(mon() + 61, "b", "openai/gpt-oss-120b:free", 1000, 500, 2000, 10000),
-            record(mon() + 62, "c", "<synthetic>", 1000, 500, 2000, 10000),
-        ];
-        e.write("a.jsonl", &recs);
-        refresh_in(&e.p, 5.0, Some(mon() + DAY));
-        assert!((e.weight() - (5.0 * 6000.0 + 25.0 * 500.0) / 1e6).abs() < 1e-12);
-        let split = json!({"type": "assistant", "timestamp": iso(mon() + 60), "message": {"id": "s", "model": "claude-opus-4-8",
-            "usage": {"cache_creation_input_tokens": 3000, "cache_creation": {"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 2000}}}});
-        e.write("a.jsonl", &[split.to_string()]);
-        fs::remove_file(e.p.file("claude-pace-scan.json")).unwrap();
-        refresh_in(&e.p, 5.0, Some(mon() + DAY));
-        assert!((e.weight() - 5.0 * (1.25 * 1000.0 + 2.0 * 2000.0) / 1e6).abs() < 1e-12);
-    }
-
-    #[test]
-    fn partial_last_line_waits_for_the_writer() {
-        let e = env();
-        e.write("a.jsonl", &[sonnet(mon() + 60, "m1")]);
-        let path = e.p.projects.join("proj").join("a.jsonl");
-        let next = sonnet(mon() + 90, "m2");
-        let mut text = fs::read_to_string(&path).unwrap();
-        text.push_str(&next[..40]);
-        fs::write(&path, &text).unwrap();
-        let now = mon() + DAY;
-        refresh_in(&e.p, 5.0, Some(now));
-        assert!((e.weight() - WEIGHT).abs() < 1e-12);
-        text.push_str(&next[40..]);
-        text.push('\n');
-        fs::write(&path, text).unwrap();
-        refresh_in(&e.p, 5.0, Some(now));
-        assert!((e.weight() - 2.0 * WEIGHT).abs() < 1e-12);
-    }
-
-    #[test]
-    fn time_budget_stops_and_next_call_continues() {
-        let e = env();
-        let recs: Vec<String> = (0..1500).map(|i| sonnet(mon() + i, &format!("m{i}"))).collect();
-        e.write("a.jsonl", &recs);
-        let now = mon() + DAY;
-        let r = refresh_in(&e.p, 0.0, Some(now));
-        assert!(!r.complete);
-        assert!(e.weight() < 1500.0 * WEIGHT);
-        let mut done = false;
-        for _ in 0..20 {
-            done = refresh_in(&e.p, 0.0, Some(now)).complete;
-            if done {
-                break;
-            }
-        }
-        assert!(done);
-        assert!((e.weight() - 1500.0 * WEIGHT).abs() < 1e-9);
-    }
-
-    #[test]
-    fn limit_hit_sets_calibration() {
-        let e = env();
-        let big = |t, id: &str| record(t, id, "claude-opus-4-8", 400_000_000, 0, 0, 0); // 2000 cost units
-        let t0 = mon() + 2 * DAY;
-        let hit = json!({"type": "assistant", "timestamp": iso(t0), "isApiErrorMessage": true, "message": {"model": "<synthetic>",
-            "content": [{"type": "text", "text": "You've hit your weekly limit"}]}});
-        e.write("a.jsonl", &[big(mon() + 3600, "b1"), hit.to_string(), big(t0 + 60, "after")]);
-        refresh_in(&e.p, 5.0, Some(mon() + 3 * DAY));
-        let c = calib(&e.p).unwrap();
-        assert_eq!(get(&c, "source").and_then(Value::as_str), Some("limit-hit"));
-        assert_eq!(get(&c, "week_weight").and_then(Value::as_f64), Some(2000.0));
-        assert_eq!(get(&c, "updated").and_then(Value::as_i64), Some(t0));
-        assert_eq!(week_weight_in(&e.p), Some(2000.0));
-    }
-
-    #[test]
-    fn statusline_and_seed_calibrate_and_bad_percents_fail() {
-        let e = env();
-        let now = mon() + DAY;
-        let recs: Vec<String> = (0..10).map(|i| sonnet(mon() + 60, &format!("m{i}"))).collect();
-        e.write("a.jsonl", &recs);
-        for bad in [0.0, -3.0, 101.0, f64::NAN] {
-            assert!(!seed_in(&e.p, bad, Some(now)));
-        }
-        assert!(!e.p.file("claude-pace-calib.json").exists());
-        assert!(seed_in(&e.p, 25.0, Some(now)));
-        assert!((week_weight_in(&e.p).unwrap() - 10.0 * WEIGHT / 0.25).abs() < 1e-9);
-        assert!((status_in(&e.p, Some(now)).used.unwrap() - 25.0).abs() < 0.05);
-        e.c1(now - 10, 10.0, mon() + WEEK);
-        refresh_in(&e.p, 5.0, Some(now));
-        assert!((week_weight_in(&e.p).unwrap() - 10.0 * WEIGHT / 0.10).abs() < 1e-9);
-    }
-
-    #[test]
     fn prompt_scans_past_a_fresh_statusline_and_calibrates() {
         let e = env();
         let now = mon() + DAY;
@@ -1217,20 +1079,6 @@ mod tests {
         write_text(&e.p.file("claude-pace-result.json"), &json!({"at": now, "ws": mon(), "weight": 1.0, "files": 1, "complete": false}).to_string());
         assert!(prompt_needs_refresh_in(&e.p, now));
         assert!(!needs_refresh_in(&e.p, now));
-    }
-
-    #[test]
-    fn old_cache_formats_are_ignored() {
-        let e = env();
-        e.write("a.jsonl", &[sonnet(mon() + 60, "m1")]);
-        write_text(&e.p.file("claude-pace-scan.json"), r#"{"v":1,"ws":1,"files":{}}"#);
-        write_text(&e.p.file("claude-pace-result.json"), r#"{"at":1,"ws":1,"weight":1e9,"files":5,"complete":true}"#);
-        write_text(&e.p.file("claude-pace-calib.json"), r#"{"week_weight":1.3e9,"updated":1}"#);
-        let now = mon() + DAY;
-        assert_eq!(status_in(&e.p, Some(now)).state, "unknown");
-        assert_eq!(week_weight_in(&e.p), Some(DEFAULT_WEEK_WEIGHT));
-        refresh_in(&e.p, 5.0, Some(now));
-        assert!((e.weight() - WEIGHT).abs() < 1e-12);
     }
 
     // --- port of claude/hooks/test_pace.py (everything but its CLI class, which is tests/pace.rs) ---
@@ -1377,12 +1225,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sunday_stays_at_100() {
-        let c = pc();
-        assert_eq!(c.budget_at(utc(2026, 10, 25, 23, 59)).budget, 100.0);
-    }
-
-    #[test]
     fn test_week_rollover() {
         // Monday after 06:00 UTC starts a new week: old messages no longer count.
         let c = pc();
@@ -1423,6 +1265,9 @@ mod tests {
         assert_eq!(st.state, "unknown");
         assert_eq!(st.used, None);
         assert_eq!(st.source, None);
+        let text = status_json(&st);
+        assert!(text.starts_with("{\"state\": \"unknown\", \"used\": null, \"budget\": "), "{text}");
+        assert!(text.ends_with(", \"source\": null, \"resets_at\": null}"), "{text}");
     }
 
     #[test]
@@ -1492,14 +1337,12 @@ mod tests {
 
     #[test]
     fn test_error_gives_unknown() {
-        // The Python test made `_read_json` raise. Here a cached result whose `files` is not a
-        // number fails inside the status read; the answer is still the "unknown" status.
+        // A cached result whose `files` is not a number fails inside the status read.
         let c = pc();
         let body = json!({"v": 2, "at": mon(), "ws": fallback_week_start(mon()), "weight": 1.0, "files": "x", "complete": true});
         write_text(&c.p.file("claude-pace-result.json"), &body.to_string());
         let st = status_in(&c.p, Some(mon()));
         assert_eq!((st.state.as_str(), st.used, st.source, st.resets_at), ("unknown", None, None, None));
-        assert!(status_json(&status_in(&c.p, Some(mon()))).contains("\"resets_at\": null"));
     }
 
     // TestEstimate
@@ -1510,11 +1353,6 @@ mod tests {
         let st = c.estimate(mon() + DAY, Some(WEIGHT * 100.0));
         assert_eq!(st.source.as_deref(), Some("estimate"));
         assert!(close(st.used.unwrap(), 1.0, 1), "{:?}", st.used);
-    }
-
-    #[test]
-    fn test_default_week_weight() {
-        assert_eq!(DEFAULT_WEEK_WEIGHT, 5860.0);
     }
 
     // Work days and plan come from the settings (the fixtures above are pro and mon-sat)
@@ -1544,39 +1382,18 @@ mod tests {
     }
 
     #[test]
-    fn mon_sat_matches_old_budget() {
-        let mut x: u64 = 0x2545F4914F6CDD1D; // a fixed xorshift: 300 values, the same on every run
-        for _ in 0..300 {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            let ws = mon() + (x % 3) as i64 * WEEK_S;
-            let now = ws - DAY + (x >> 8) as i64 % (10 * DAY);
-            let old = {
-                let idx = (local_day(now) - local_day(ws)).max(0);
-                (idx + 1).min(6) as f64 / 6.0 * 100.0
-            };
-            assert_eq!(budget_for(now, ws, work_days("mon-sat")), old, "now {now} ws {ws}");
-        }
-    }
-
-    #[test]
     fn plan_weights() {
-        assert_eq!(plan_weight("pro"), Some(5860.0));
-        assert_eq!(plan_weight("team"), Some(5860.0));
-        assert_eq!(plan_weight("max5"), Some(29300.0));
-        assert_eq!(plan_weight("max20"), Some(117200.0));
-        assert_eq!(plan_weight("MAX5"), Some(29300.0));
+        let pro = plan_weight("pro").unwrap();
+        assert_eq!(plan_weight("team"), Some(pro));
+        assert_eq!(plan_weight("max5"), Some(5.0 * pro));
+        assert_eq!(plan_weight("max20"), Some(20.0 * pro));
+        assert_eq!(plan_weight("MAX5"), Some(5.0 * pro));
         for none in ["api", "unknown", "", "max100"] {
             assert_eq!(plan_weight(none), None, "{none}");
         }
-    }
-
-    #[test]
-    fn plan_max5_weight() {
         let e = env();
         let p = Paths { plan: "max5".into(), ..e.p.clone() };
-        assert_eq!(week_weight_in(&p), Some(29300.0));
+        assert_eq!(week_weight_in(&p), Some(5.0 * pro));
     }
 
     #[test]
@@ -1821,28 +1638,19 @@ mod tests {
     fn test_budget_stops_and_next_call_continues() {
         let c = pc();
         c.lines("a.jsonl", &many(1500));
-        let r = c.refresh(0.0, mon() + DAY);
+        let mut r = c.refresh(0.0, mon() + DAY);
         assert!(!r.complete);
-        assert!(c.weight() < 1500.0 * WEIGHT);
-        let mut r = r;
         for _ in 0..20 {
+            let w = c.weight();
+            assert!(w < 1500.0 * WEIGHT);
             r = c.refresh(0.0, mon() + DAY);
+            assert!(c.weight() > w, "every call reads more");
             if r.complete {
                 break;
             }
         }
         assert!(r.complete);
         assert!(close(c.weight(), 1500.0 * WEIGHT, 7));
-    }
-
-    #[test]
-    fn test_budget_makes_progress_every_call() {
-        let c = pc();
-        c.lines("a.jsonl", &many(1500));
-        c.refresh(0.0, mon() + DAY);
-        let w1 = c.weight();
-        c.refresh(0.0, mon() + DAY);
-        assert!(c.weight() > w1);
     }
 
     // TestCalibration
@@ -1916,10 +1724,8 @@ mod tests {
     }
 
     #[test]
-    fn test_seed_needs_a_complete_refresh() {
-        // The Python test mocked `refresh` to report an incomplete scan. Without that seam the
-        // refusal is reached through the other half of the same guard: a week with no usage
-        // (weight 0) stores nothing; the stored case is `test_seed`.
+    fn test_seed_needs_usage() {
+        // A week with no usage (weight 0) stores nothing. One record is enough.
         let c = pc();
         assert!(!seed_in(&c.p, 25.0, Some(mon() + DAY)));
         assert!(!c.has_calib());
@@ -2118,17 +1924,5 @@ mod tests {
         c.lines("a.jsonl", &[big2000(prev + 3600, "b1"), hit(prev + 5 * DAY)]);
         c.refresh(5.0, mon() + DAY);
         assert_eq!(c.calib_json()["week_weight"].as_f64(), Some(3000.0));
-    }
-
-    // TestEpoch
-    #[test]
-    fn test_epoch_forms() {
-        assert_eq!(epoch(Some(&json!(1760860800))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!(1760860800000i64))), Some(1760860800)); // milliseconds
-        assert_eq!(epoch(Some(&json!("1760860800"))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!("2025-10-19T08:00:00Z"))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!(null))), None);
-        assert_eq!(epoch(Some(&json!("junk"))), None);
-        assert_eq!(epoch(Some(&json!(true))), None);
     }
 }

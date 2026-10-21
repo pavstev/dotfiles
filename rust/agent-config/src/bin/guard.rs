@@ -14,13 +14,14 @@
 
 use agent_config::guard_checks::{self as gc, expanduser, is_macos, realpath};
 use agent_config::pycompat::{days_from_civil, truthy};
+use agent_config::transcript;
 use regex::Regex;
 use serde_json::{Map, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -166,10 +167,6 @@ fn num(v: &Value) -> f64 {
         Value::Number(n) => n.as_f64().unwrap_or(0.0),
         _ => 0.0,
     }
-}
-
-fn is_blank(b: &[u8]) -> bool {
-    b.iter().all(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
 }
 
 fn has(hay: &[u8], needle: &[u8]) -> bool {
@@ -321,20 +318,16 @@ struct Slot {
     t: f64,
 }
 
-/// Running slots, oldest first; a slot written as a plain time loads without an id.
+/// Running slots, oldest first.
 fn live_spawns(state: &Map<String, Value>, now: f64) -> Vec<Slot> {
     let mut slots = Vec::new();
     if let Some(Value::Array(a)) = state.get("spawns") {
         for s in a {
-            let (t, id) = match s {
-                Value::Object(o) => (o.get("t").unwrap_or(&NULL), o.get("id").unwrap_or(&NULL).clone()),
-                other => (other, Value::Null),
-            };
-            if let Value::Number(n) = t
-                && let Some(t) = n.as_f64()
+            if let Value::Object(o) = s
+                && let Some(t) = o.get("t").and_then(Value::as_f64)
                 && now - t < SPAWN_TTL
             {
-                slots.push(Slot { id, t });
+                slots.push(Slot { id: o.get("id").unwrap_or(&NULL).clone(), t });
             }
         }
     }
@@ -370,87 +363,12 @@ fn read_counter(file: &Path, key: &str) -> i64 {
 
 // --- transcript reading -------------------------------------------------------
 
-struct RevLines {
-    f: fs::File,
-    pos: u64,
-    chunk: u64,
-    buf: Vec<u8>,
-    pending: Vec<Vec<u8>>, // forward order; pop() yields the newest
-    finished: bool,
-}
-
-fn rev_lines(path: &Path) -> Result<RevLines, Fail> {
-    let mut f = fs::File::open(path).map_err(|_| Fail)?;
-    let len = f.seek(SeekFrom::End(0)).map_err(|_| Fail)?;
-    Ok(RevLines { f, pos: len, chunk: 1 << 16, buf: Vec::new(), pending: Vec::new(), finished: false })
-}
-
-impl Iterator for RevLines {
-    type Item = Vec<u8>;
-
-    fn next(&mut self) -> Option<Vec<u8>> {
-        loop {
-            if let Some(l) = self.pending.pop() {
-                return Some(l);
-            }
-            if self.pos == 0 {
-                if self.finished {
-                    return None;
-                }
-                self.finished = true;
-                let b = std::mem::take(&mut self.buf);
-                return if is_blank(&b) { None } else { Some(b) };
-            }
-            let n = self.chunk.min(self.pos);
-            self.pos -= n;
-            let mut data = vec![0u8; n as usize];
-            if self.f.seek(SeekFrom::Start(self.pos)).is_err() || self.f.read_exact(&mut data).is_err() {
-                self.pos = 0;
-                self.buf.clear();
-                continue;
-            }
-            data.extend_from_slice(&self.buf);
-            let parts: Vec<&[u8]> = data.split(|&b| b == b'\n').collect();
-            if parts.len() == 1 {
-                self.chunk *= 2; // one giant line: read bigger pieces
-            }
-            let first = parts[0].to_vec();
-            let pend: Vec<Vec<u8>> = parts[1..].iter().filter(|l| !is_blank(l)).map(|l| l.to_vec()).collect();
-            self.buf = first;
-            self.pending = pend;
-        }
-    }
+fn rev_lines(path: &Path) -> Result<transcript::RevLines, Fail> {
+    transcript::rev_lines(path).map_err(|_| Fail)
 }
 
 fn context_size(path: &Value) -> i64 {
-    let Some(p) = path.as_str().filter(|s| !s.is_empty()) else { return 0 };
-    let Ok(lines) = rev_lines(Path::new(p)) else { return 0 };
-    for line in lines {
-        if (has(&line, b"compact_boundary") || has(&line, b"isCompactSummary"))
-            && let Some(rec) = loads(&line)
-            && (get(&rec, "subtype").as_str() == Some("compact_boundary") || truthy(get(&rec, "isCompactSummary")))
-        {
-            return 0;
-        }
-        if !has(&line, b"\"assistant\"") {
-            continue;
-        }
-        let Some(rec) = loads(&line) else { continue };
-        if get(&rec, "type").as_str() != Some("assistant") {
-            continue;
-        }
-        let usage = get(get(&rec, "message"), "usage");
-        if !usage.is_object() {
-            continue;
-        }
-        let total = num(get(usage, "input_tokens"))
-            + num(get(usage, "cache_creation_input_tokens"))
-            + num(get(usage, "cache_read_input_tokens"));
-        if total > 0.0 {
-            return total as i64;
-        }
-    }
-    0
+    path.as_str().filter(|s| !s.is_empty()).map_or(0, |p| transcript::context_size(Path::new(p)))
 }
 
 fn is_human_prompt(rec: &Value) -> bool {
@@ -2291,7 +2209,13 @@ mod tests {
         let cases: &[(&str, Option<i64>)] = &[
             ("Keep your response under 6,000 characters.", Some(6000)),
             ("Limit the output to 5,000 chars.", Some(5000)),
+            ("6,000 chars max for the hand-back.", Some(6000)),
             ("Make truncate() return at most 500 characters. Hand back at most 4,000 chars.", Some(4000)),
+            ("The API summary field holds 300 chars. Hand back at most 2,000 chars.", Some(2000)),
+            (
+                "Hand back \u{2264} 3,000 chars. In researcher.md set a hard cap of 2,500 chars on the final message.",
+                Some(3000),
+            ),
             ("Hand back at most 4,000 chars. The summary field holds 300 chars.", Some(4000)),
             ("Deadline: answer within 8 minutes. Stay \u{2264} 4,000 chars.", Some(4000)),
             ("Keep it under 2,500 characters. Pad the file to 900 chars.", Some(2500)),
@@ -2381,21 +2305,12 @@ mod tests {
         assert_eq!(cron_interval_minutes("5 * * * *"), Some(60));
         assert_eq!(cron_interval_minutes("0-30/10 * * * *"), Some(10));
         assert_eq!(cron_interval_minutes("0 */3 * * *"), Some(180));
-        assert_eq!(cron_interval_minutes("0,50 * * * *"), Some(10));
+        assert_eq!(cron_interval_minutes("0,50 * * * *"), Some(10)); // the gap wraps past the hour
+        assert_eq!(cron_interval_minutes("0,10,20 * * * *"), Some(10));
+        assert_eq!(cron_interval_minutes("0,30 * * * *"), Some(30));
+        assert_eq!(cron_interval_minutes("0 */2 * * *"), Some(120));
         assert_eq!(cron_interval_minutes("0 9 * * *"), None);
         assert_eq!(cron_interval_minutes("nope"), None);
-    }
-
-    #[test]
-    fn test_cron_interval_function() {
-        let f = cron_interval_minutes;
-        assert_eq!(f("* * * * *"), Some(1));
-        assert_eq!(f("*/15 * * * *"), Some(15));
-        assert_eq!(f("5 * * * *"), Some(60));
-        assert_eq!(f("0-30/10 * * * *"), Some(10));
-        assert_eq!(f("0 */3 * * *"), Some(180));
-        assert_eq!(f("0 9 * * *"), None);
-        assert_eq!(f("nope"), None);
     }
 
     #[test]
@@ -2429,36 +2344,19 @@ mod tests {
         assert_eq!(loop_interval_seconds("30s /foo"), Some(30));
         assert_eq!(loop_interval_seconds("10min x"), Some(600));
         assert_eq!(loop_interval_seconds("2h30m x"), Some(9000));
+        assert_eq!(loop_interval_seconds("45m check deploy"), Some(2700));
+        assert_eq!(loop_interval_seconds("1h x"), Some(3600));
         assert_eq!(loop_interval_seconds("check deploy every 5m"), Some(300));
+        assert_eq!(loop_interval_seconds("check deploy every 45m"), Some(2700));
         assert_eq!(loop_interval_seconds("check the deploy"), None);
         assert_eq!(loop_interval_seconds("5mx"), None);
     }
 
     #[test]
-    fn py_json_matches_json_dumps() {
-        let want = "{\"hookSpecificOutput\": {\"hookEventName\": \"E\", \"additionalContext\": \"a\\\"b\\n\\u00e9\"}}";
-        assert_eq!(hook_output("E", "a\"b\n\u{e9}"), want);
-    }
-
-    #[test]
-    fn handoff_link_and_block() {
-        let fp = "/repo/.agents/handoffs/x.md";
-        let good = format!("[x.md](.agents/handoffs/x.md)\n```\nRead {} and do it.\n```", fp);
-        assert!(handoff_given(fp, &good));
-        assert!(!handoff_given(fp, &format!("Read {} and do it.", fp)));
-        assert!(HANDOFF_PATH.is_match(fp));
-        assert!(!HANDOFF_PATH.is_match("/repo/notes.md"));
-    }
-
-    #[test]
-    fn truthiness_and_brief_rules() {
+    fn truthiness() {
         assert!(!truthy(&json!({})));
         assert!(!truthy(&json!(0)));
         assert!(truthy(&json!("x")));
-        let data = json!({"tool_name": "Agent", "tool_input": {"prompt": "do work", "description": "build it"}});
-        let ctx = Ctx::new(&data);
-        let msg = g1_agent(&data, &ctx).ok().flatten().unwrap();
-        assert!(msg.contains("a deadline and a hand-back cap"));
     }
 
     #[test]

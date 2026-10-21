@@ -723,7 +723,8 @@ mod tests {
         let t = list("fastfetch | fastfetch | unix | apk:fastfetch mise:aqua:fastfetch-cli/fastfetch\n");
         let mut f = Fake::with(&["fastfetch"], &["apk", "mise"]).provide("apk:fastfetch", &["fastfetch"]);
         f.broken.insert("fastfetch".into());
-        // apk reinstalls it, but the fake still marks it broken, so it is undone: the point is that it was tried.
+        // On Alpine a binary that does not start counts as missing, so apk installs it again.
+        // The fake keeps it broken, so only the attempt is checked.
         let out = resolve(&t, ALPINE, &mut f, &[]);
         assert!(f.log.contains(&"apk:fastfetch".to_string()), "{out:?}");
         let mut g = Fake::with(&["fastfetch"], &["apk"]);

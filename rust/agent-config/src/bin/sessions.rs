@@ -31,8 +31,12 @@ type Res<T> = Result<T, Box<dyn Error>>;
 
 /// Writer heap. One indexing thread, so the budget is not split.
 const HEAP: usize = 50_000_000;
-/// How long `index` and `find` wait for the writer lock held by another run.
-const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// How long `index` and `find` wait for the writer lock held by another run: 5 s, or
+/// `SESSIONS_LOCK_WAIT_MS` (the tests set it).
+fn lock_wait() -> Duration {
+    let ms = std::env::var("SESSIONS_LOCK_WAIT_MS").ok().and_then(|v| v.parse().ok());
+    ms.map_or(Duration::from_secs(5), Duration::from_millis)
+}
 const STATE_VERSION: u64 = 1;
 const SNIPPET_CHARS: usize = 200;
 const DEFAULT_LIMIT: usize = 10;
@@ -124,9 +128,9 @@ fn open_index(dir: &Path) -> Res<(Index, Fields)> {
     Ok((index, f))
 }
 
-/// Take the writer lock, retrying for up to `LOCK_WAIT`. None means another run holds it.
+/// Take the writer lock, retrying for up to `lock_wait()`. None means another run holds it.
 fn lock_writer(index: &Index) -> Res<Option<IndexWriter>> {
-    let deadline = Instant::now() + LOCK_WAIT;
+    let deadline = Instant::now() + lock_wait();
     loop {
         match index.writer_with_num_threads::<TantivyDocument>(1, HEAP) {
             Ok(w) => return Ok(Some(w)),

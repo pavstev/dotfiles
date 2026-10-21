@@ -13,5 +13,3 @@ Pick the page that answers your question. The start page is the [README](../READ
 | [Friends setup](FRIENDS-SETUP.md) | How does Claude set this repo up on a friend's machine, step by step? |
 | [Cursor port](cursor-port.md) | How does the Claude setup map to Cursor, and what are the gaps? |
 | [Opencode port](opencode-port.md) | How does the Claude setup map to Opencode, and what are the gaps? |
-
-The old long guide, [guide.md](guide.md), is now a short map to these pages.

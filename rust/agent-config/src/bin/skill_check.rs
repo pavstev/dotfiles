@@ -15,6 +15,7 @@
 #[path = "../quiet_out.rs"]
 mod quiet_out;
 
+use agent_config::pycompat::py_repr_str;
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -53,27 +54,6 @@ struct Report {
     warns: Vec<String>,
 }
 
-/// Python `repr()` of a str, as far as these messages need it.
-fn py_repr(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::from(q);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == q => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(q);
-    out
-}
-
 type Fields = Vec<(String, String)>;
 
 fn field<'a>(fields: &'a Fields, key: &str) -> &'a str {
@@ -100,7 +80,7 @@ fn parse_frontmatter(text: &str) -> (Fields, String, Vec<String>) {
             continue; // nested value (hooks:, metadata:) — not validated here
         }
         let Some((key, value)) = raw.split_once(':') else {
-            errors.push(format!("frontmatter line is not key: value → {}", py_repr(raw)));
+            errors.push(format!("frontmatter line is not key: value → {}", py_repr_str(raw)));
             continue;
         };
         let (key, value) = (key.trim().to_string(), value.trim().to_string());
@@ -119,7 +99,7 @@ fn parse_frontmatter(text: &str) -> (Fields, String, Vec<String>) {
             errors.push(format!("{key}: unquoted value contains ': ' — quote the whole value"));
         }
         if "[]{}&*!|>%@`".contains(q) {
-            errors.push(format!("{key}: unquoted value starts with {} — quote it", py_repr(&q.to_string())));
+            errors.push(format!("{key}: unquoted value starts with {} — quote it", py_repr_str(&q.to_string())));
         }
         if value.contains(" #") {
             errors.push(format!("{key}: unquoted ' #' starts a YAML comment — quote the value"));

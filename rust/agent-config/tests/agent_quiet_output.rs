@@ -1,10 +1,9 @@
-//! `QuietOutputTest` of `scripts/test_agent_config.py`: the default output is a count line per
+//! Quiet output of `agent-config`: the default output is a count line per
 //! command, not one line per file that is up to date. `skip`, `ok`, `header` and `summary` are
 //! called directly and their output is taken with `out::capture`.
 //!
 //! The skip and written counters and the verbose switch are process-wide. They live in a test file of
-//! their own, with a lock, so no other test spends the counts. `tests/PORTED.md` maps each Python test
-//! to its twin here.
+//! their own, with a lock, so no other test spends the counts.
 use agent_config::out::{self, capture, header, ok, skip};
 use std::sync::{Mutex, MutexGuard};
 
@@ -63,12 +62,6 @@ fn test_written_files_keep_their_line_and_join_the_count() {
     assert!(o.contains("✓ wrote ~/x"), "{o}");
     assert!(o.contains("✓ removed ~/y"), "{o}");
     assert_eq!(call(|| out::summary("Cursor config")), "• Cursor config: 1 up to date, 1 written\n");
-}
-
-#[test]
-fn test_nothing_skipped_prints_no_count_line() {
-    let _g = quiet();
-    assert_eq!(call(|| out::summary("Cursor config")), "");
 }
 
 #[test]

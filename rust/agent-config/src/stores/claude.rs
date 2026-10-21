@@ -107,7 +107,7 @@ struct FileCtx<'a> {
     is_sub: bool,
 }
 
-fn text_of(content: &Value) -> String {
+pub fn text_of(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
         Value::Array(a) => a

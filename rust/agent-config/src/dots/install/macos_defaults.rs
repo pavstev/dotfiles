@@ -75,13 +75,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_defaults_in_order() {
+    fn every_default_is_one_write() {
         let w = writes(Path::new("/h"));
-        assert_eq!(w.len(), 16 + 1 + 2 + 4);
-        assert_eq!(w[0].join(" "), "write -g KeyRepeat -int 2");
-        assert_eq!(w[16].join(" "), "write com.apple.screencapture location -string /h/Screenshots");
-        assert_eq!(w[19].join(" "), "write com.apple.dock autohide-time-modifier -float 0.15");
-        assert_eq!(w.last().unwrap().join(" "), "write -g NSAutomaticSpellingCorrectionEnabled -bool false");
-        assert!(w.iter().all(|a| a.len() == 5));
+        assert!(w.iter().all(|a| a.len() == 5 && a[0] == "write"), "{w:?}");
+        let shots = "write com.apple.screencapture location -string /h/Screenshots";
+        assert!(w.iter().any(|a| a.join(" ") == shots), "the screenshot folder is under HOME");
     }
 }

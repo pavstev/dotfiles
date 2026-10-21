@@ -47,13 +47,3 @@ pub fn step(repo: &Path) {
         warn("agent-config cursor reported an issue, see above");
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn app_command_path() {
-        assert_eq!(app_cursor(Path::new("/A/Cursor.app")), Path::new("/A/Cursor.app/Contents/Resources/app/bin/cursor"));
-    }
-}

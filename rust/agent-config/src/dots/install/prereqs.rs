@@ -169,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn install_commands_match_the_bash() {
+    fn install_commands_per_manager() {
         let m = vec!["git".to_string(), "zsh".to_string()];
         let apt = install_commands("apt-get", &m);
         assert_eq!(apt[0].join(" "), "env DEBIAN_FRONTEND=noninteractive apt-get update -qq");

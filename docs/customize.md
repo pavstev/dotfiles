@@ -83,7 +83,6 @@ dotfiles/
 ├── docs/platforms.md         # Linux and Windows details, and how to test them
 ├── docs/customize.md         # this page
 ├── docs/troubleshooting.md   # fixes
-├── docs/guide.md             # stub: maps the old guide sections to the new pages
 ├── docs/FRIENDS-SETUP.md     # the runbook Claude follows to set this repo up on a friend's machine
 ├── docs/cursor-port.md       # Cursor port: profiles, mapping, gap table
 ├── docs/opencode-port.md    # Opencode port: rules, agents, permissions, gaps
@@ -101,7 +100,7 @@ dotfiles/
 │       Code/User/{settings,keybindings}.json         # VS Code: symlinked, edit either side
 │       Cursor/User/{settings,keybindings}.json       # Cursor: same
 ├── scripts/
-│   ├── setup-lib.sh          # shell helpers for the few bash scripts (step/info/ok/warn/have, is_*, setting, ensure_rust_bin)
+│   ├── setup-lib.sh          # shell helpers for the few bash scripts (info/ok/warn/have, is_*, setting, ensure_rust_bin)
 │   ├── tools                 # shim: builds and runs the Rust `tools` bin (installs the tools of tools.list)
 │   ├── agent-config          # shim for the Rust build that generates and merges the Cursor and Opencode files
 │   ├── test-dotfiles.sh      # ./dotfiles in a temp HOME: profile, owner rules, rerun, pull restart, fake Linux

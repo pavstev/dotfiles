@@ -44,6 +44,7 @@ pub mod redact;
 pub mod stores;
 pub mod tools_cli;
 pub mod tools_core;
+pub mod transcript;
 pub use out::{color_enabled, verbose, ok, info, skip, header, summary, warn};
 #[allow(unused_imports)]
 use out::{g, y, d, b, z};
@@ -762,13 +763,13 @@ pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, St
         let re2 = Regex::new(r"(:\*|\s\*)$").unwrap();
         if re2.is_match(arg) {
             let cmd = re2.replace(arg, "").trim().to_string();
-            if !cmd.is_empty() && !cmd.contains('*') { return Some(("bash".to_string(), format!("{} *", cmd), "allow".to_string())); } else { return None; }
+            if !cmd.is_empty() && !cmd.contains('*') { return Some(("bash".to_string(), format!("{} *", cmd), kind.to_string())); } else { return None; }
         }
         let trimmed = arg.trim();
         let (exe, rest_raw) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
         let exe = exe.trim();
         let rest = rest_raw.trim();
-        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') { return Some(("bash".to_string(), format!("{} {}", exe, rest), "allow".to_string())); }
+        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') { return Some(("bash".to_string(), format!("{} {}", exe, rest), kind.to_string())); }
         return None;
     }
     if tool == "Read" {
@@ -807,16 +808,12 @@ pub fn opencode_config(home: &Path) {
     for kind in ["allow", "deny"] {
         let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         for r in rules {
+            // Deny rules come second, so a pattern in both lists ends as a deny, as in Claude Code.
             if let Some(rulestr) = r.as_str()
-                && let Some((cat, pat, _eff)) = opencode_permission(rulestr, kind)
+                && let Some((cat, pat, effect)) = opencode_permission(rulestr, kind)
+                && let Some(obj) = want.entry(cat).or_insert(serde_json::json!({})).as_object_mut()
             {
-                let eff = if cat == "bash" { "allow".to_string() } else { kind.to_string() };
-                // use opencode_permission's effect? Python uses eff from tuple except bash 'allow' hardcoded; actually tuple eff for read/edit is kind. Keep:
-                let _ = eff;
-                if !want.get(&cat).map(|v|v.is_object()).unwrap_or(false) { want.insert(cat.to_string(), serde_json::json!({})); }
-                // determine effect from tuple last field for non-bash
-                let effect = opencode_permission(rulestr, kind).unwrap().2;
-                want.get_mut(&cat).unwrap().as_object_mut().unwrap().insert(pat.clone(), Value::String(effect));
+                obj.insert(pat, Value::String(effect));
             }
         }
     }
@@ -832,9 +829,10 @@ pub fn opencode_config(home: &Path) {
         if !have.is_object() { *have = serde_json::json!({}); }
         let have_obj = have.as_object_mut().unwrap();
         let ours_obj = ours.as_object().cloned().unwrap_or_default();
+        // A rule we wrote before and the user left alone goes when we drop it or change its effect.
         if let Some(was) = managed.get(cat).and_then(|v| v.as_object()) {
             for (pat, eff) in was {
-                if !ours_obj.contains_key(pat)
+                if ours_obj.get(pat) != Some(eff)
                     && have_obj.get(pat).and_then(|v| v.as_str()) == eff.as_str() { have_obj.remove(pat); }
             }
         }
@@ -899,7 +897,7 @@ pub fn opencode_theme(home: &Path) {
         && !theme.is_null() && theme.as_str() != Some("copper") && !legacy
     {
         let copperfile = home.join(".config").join("opencode").join("themes").join("copper.json");
-        let shown = match theme { Value::String(s) => s.clone(), other => py_repr(other) };
+        let shown = match theme { Value::String(s) => s.clone(), other => crate::pycompat::py_repr(other) };
         info(&format!("{} uses your Opencode theme ({}); the copper one is in {}", tilde(&path), shown, tilde(&copperfile)));
         return;
     }
@@ -910,24 +908,6 @@ pub fn opencode_theme(home: &Path) {
     obj.entry("$schema".to_string()).or_insert(serde_json::json!("https://opencode.ai/tui.json"));
     obj.insert("theme".to_string(), Value::String("copper".to_string()));
     save_json(&path, &old, &new, false);
-}
-
-/// Python's `repr` of a JSON value, for a message (`{'background': '#fff'}`).
-fn py_repr(v: &Value) -> String {
-    match v {
-        Value::Null => "None".into(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => {
-            let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-            let esc = s.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
-            let esc = if q == '\'' { esc.replace('\'', "\\'") } else { esc };
-            format!("{q}{esc}{q}")
-        }
-        Value::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
-        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, v)| format!("{}: {}", py_repr(&Value::String(k.clone())), py_repr(v))).collect::<Vec<_>>().join(", ")),
-    }
 }
 
 /// Mirrors the global Opencode config and agents into each listed project's `.opencode/` as links.
@@ -1045,6 +1025,11 @@ pub fn clipboard_command() -> Option<Vec<String>> {
 pub fn clipboard_command_in(path: Option<&str>) -> Option<Vec<String>> {
     if cfg!(target_os = "macos") { return Some(vec!["pbcopy".to_string()]); }
     if cfg!(target_os = "windows") { return Some(vec!["clip".to_string()]); }
+    linux_clipboard_in(path)
+}
+
+/// The first Linux clipboard tool found on `path`.
+fn linux_clipboard_in(path: Option<&str>) -> Option<Vec<String>> {
     for cand in [vec!["wl-copy"], vec!["xclip", "-selection", "clipboard"], vec!["xsel", "--clipboard", "--input"]] {
         if crate_which(cand[0], path) { return Some(cand.into_iter().map(String::from).collect()); }
     }
@@ -1558,95 +1543,13 @@ mod tests {
         assert_eq!(plugin_sh(false, Some(PathBuf::from("/bin/sh"))), "");
     }
     #[test]
-    fn translate_bash_prefix() {
-        assert_eq!(translate_permission("Bash(git status:*)", "allow"), Some("Shell(git status)".to_string()));
-        assert_eq!(translate_permission("Bash(npm run *)", "allow"), Some("Shell(npm run)".to_string()));
-        assert_eq!(translate_permission("Bash(*)", "allow"), None);
-    }
-    #[test]
-    fn translate_read_exact() {
-        assert_eq!(translate_permission("Bash(git status)", "allow"), Some("Shell(git:status)".to_string()));
-        assert_eq!(translate_permission("Read(./foo)", "deny"), Some("Read(**/foo)".to_string()));
-    }
-    #[test]
-    fn frontmatter_basic() {
-        let (meta, body) = split_frontmatter("---\nname: x\ndescription: d\n---\nbody");
-        assert_eq!(meta.get("name").unwrap(), "x");
-        assert_eq!(meta.get("description").unwrap(), "d");
-        assert_eq!(body, "body");
-    }
-    #[test]
-    fn yaml_str_quotes() {
-        assert_eq!(yaml_str("safe"), "safe");
-        assert!(yaml_str("a: b").starts_with('"'));
-    }
-    #[test]
-    fn opencode_permission_basic() {
-        assert_eq!(opencode_permission("Bash(git status:*)", "allow"), Some(("bash".to_string(), "git status *".to_string(), "allow".to_string())));
-    }
-    #[test]
-    fn merge_union() {
-        let base = serde_json::json!({"permissions":{"allow":["a"]}});
-        let layer = serde_json::json!({"permissions":{"allow":["b"]}});
-        let out = merge(&base,&layer);
-        assert!(out["permissions"]["allow"].as_array().unwrap().contains(&serde_json::json!("b")));
-    }
-    #[test]
-    fn drift_change() {
-        let last = serde_json::json!({"x":1});
-        let live = serde_json::json!({"x":2});
-        let (patch, notes) = drift(&last,&live);
-        assert!(!notes.is_empty());
-        assert_eq!(patch["x"], 2);
-    }
-    #[test]
-    fn is_symlink_tmp() {
-        let d = std::env::temp_dir();
-        let p = d.join("agentcfg-test-link");
-        let t = d.join("agentcfg-test-target");
-        let _ = std::fs::write(&t, "x");
-        let _ = std::fs::remove_file(&p);
-        #[cfg(unix)] let _ = std::os::unix::fs::symlink(&t,&p);
-        assert!(is_symlink(&p));
-        let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(&t);
-    }
-
-    #[test]
-    fn translate_webfetch_and_deny() {
-        assert_eq!(translate_permission("WebFetch(domain:example.com)", "allow"), Some("WebFetch(example.com)".to_string()));
-        assert_eq!(translate_permission("Read(./src/main.rs)", "deny"), Some("Read(**/src/main.rs)".to_string()));
-    }
-    #[test]
-    fn opencode_permission_deny_prefix_and_exact() {
-        assert_eq!(opencode_permission("Read(./foo)", "deny"), Some(("read".to_string(), "**/foo".to_string(), "deny".to_string())));
-        assert_eq!(opencode_permission("Bash(git push origin main)", "allow"), Some(("bash".to_string(), "git push origin main".to_string(), "allow".to_string())));
-        // deny bash exact still becomes allow in Python parity
-        assert_eq!(opencode_permission("Bash(git push origin main)", "deny"), Some(("bash".to_string(), "git push origin main".to_string(), "allow".to_string())));
-    }
-    #[test]
-    fn merge_replace_scalar() {
-        let base = serde_json::json!({"a": 1, "b": {"x": 2}});
-        let layer = serde_json::json!({"a": 3, "b": {"y": 4}});
-        let out = merge(&base, &layer);
-        assert_eq!(out["a"], 3);
-        assert_eq!(out["b"]["x"], 2);
-        assert_eq!(out["b"]["y"], 4);
-    }
-    #[test]
-    fn apply_patch_sets() {
-        let layer = serde_json::json!({"a": 1});
-        let patch = serde_json::json!({"a": 2});
-        let out = apply_patch(&layer, &patch);
-        assert_eq!(out["a"], 2);
-    }
-    #[test]
-    fn frontmatter_block_scalar_and_list() {
-        let txt = "---\nname: x\ntools:\n  - Read\n  - Write\nbody: |\n  line1\n  line2\n---\nBODY";
-        let (meta, body) = split_frontmatter(txt);
-        assert_eq!(meta.get("name").unwrap(), "x");
-        assert_eq!(meta.get("tools").unwrap(), "Read, Write");
-        assert_eq!(meta.get("body").unwrap(), "line1\nline2");
-        assert_eq!(body, "BODY");
+    fn opencode_permission_keeps_the_effect() {
+        let t = |cat: &str, pat: &str, eff: &str| Some((cat.to_string(), pat.to_string(), eff.to_string()));
+        assert_eq!(opencode_permission("Read(./foo)", "deny"), t("read", "**/foo", "deny"));
+        assert_eq!(opencode_permission("Bash(git status:*)", "allow"), t("bash", "git status *", "allow"));
+        assert_eq!(opencode_permission("Bash(git push origin main)", "allow"), t("bash", "git push origin main", "allow"));
+        // A deny stays a deny, for Bash too: it once came out as an allow.
+        assert_eq!(opencode_permission("Bash(git push origin main)", "deny"), t("bash", "git push origin main", "deny"));
+        assert_eq!(opencode_permission("Bash(rm:*)", "deny"), t("bash", "rm *", "deny"));
     }
 }

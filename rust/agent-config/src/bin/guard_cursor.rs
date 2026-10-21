@@ -3,13 +3,14 @@
 //! ceiling (guard G3) from a per-conversation state file. Mode `tool` runs the shared checks
 //! G14 to G17. It fails open: a bad input or a panic exits 0.
 use agent_config::guard_checks as gc;
+use agent_config::transcript;
 use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -260,110 +261,11 @@ fn app_context(data: &Value) -> i64 {
     n
 }
 
-/// Lazy newest-first line iterator: reads the file backwards in chunks, so a
-/// caller that stops early never reads the rest of the file.
-struct RevLines {
-    f: fs::File,
-    pos: u64,
-    chunk: u64,
-    buf: Vec<u8>,
-    pending: Vec<String>, // forward order; pop() yields the newest
-    finished: bool,
-}
-
-fn reverse_lines(path: &Path) -> RevLines {
-    let mut f = fs::File::open(path).ok();
-    let len = f.as_mut().and_then(|f| f.seek(SeekFrom::End(0)).ok());
-    match (f, len) {
-        (Some(f), Some(len)) => RevLines { f, pos: len, chunk: 1 << 16, buf: Vec::new(), pending: Vec::new(), finished: false },
-        _ => {
-            // Unreadable: an empty iterator.
-            let f = fs::File::open("/dev/null").expect("/dev/null");
-            RevLines { f, pos: 0, chunk: 1, buf: Vec::new(), pending: Vec::new(), finished: true }
-        }
-    }
-}
-
-impl Iterator for RevLines {
-    type Item = String;
-
-    fn next(&mut self) -> Option<String> {
-        loop {
-            if let Some(l) = self.pending.pop() {
-                return Some(l);
-            }
-            if self.pos == 0 {
-                if self.finished {
-                    return None;
-                }
-                self.finished = true;
-                let s = String::from_utf8_lossy(&std::mem::take(&mut self.buf)).trim().to_string();
-                return if s.is_empty() { None } else { Some(s) };
-            }
-            let n = self.chunk.min(self.pos);
-            self.pos -= n;
-            let mut data = vec![0u8; n as usize];
-            if self.f.seek(SeekFrom::Start(self.pos)).is_err() || self.f.read_exact(&mut data).is_err() {
-                self.pos = 0;
-                self.buf.clear();
-                continue;
-            }
-            data.extend_from_slice(&self.buf);
-            let parts: Vec<&[u8]> = data.split(|&b| b == b'\n').collect();
-            if parts.len() == 1 {
-                self.chunk *= 2; // one giant line: read bigger pieces
-            }
-            let first = parts[0].to_vec();
-            let pend: Vec<String> = parts[1..]
-                .iter()
-                .map(|l| String::from_utf8_lossy(l).trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect();
-            self.buf = first;
-            self.pending = pend;
-        }
-    }
-}
-
-fn transcript_context_size(path: &Path) -> i64 {
-    if !path.is_file() {
-        return 0;
-    }
-    for line in reverse_lines(path) {
-        if (line.contains("compact_boundary") || line.contains("isCompactSummary"))
-            && let Ok(rec) = serde_json::from_str::<Value>(&line)
-                && (rec.get("subtype").and_then(|v| v.as_str()) == Some("compact_boundary")
-                    || rec.get("isCompactSummary").and_then(|v| v.as_bool()) == Some(true))
-                {
-                    return 0;
-                }
-        if !line.contains("\"assistant\"") {
-            continue;
-        }
-        if let Ok(rec) = serde_json::from_str::<Value>(&line) {
-            if rec.get("type").and_then(|v| v.as_str()) != Some("assistant") {
-                continue;
-            }
-            if let Some(msg) = rec.get("message")
-                && let Some(usage) = msg.get("usage")
-            {
-                let total = to_int(usage.get("input_tokens"))
-                    + to_int(usage.get("cache_creation_input_tokens"))
-                    + to_int(usage.get("cache_read_input_tokens"));
-                if total > 0 {
-                    return total;
-                }
-            }
-        }
-    }
-    0
-}
-
 fn estimate(data: &Value, st: &BTreeMap<String, Value>) -> i64 {
     if let Some(p) = data.get("transcript_path").and_then(|v| v.as_str()) {
         let path = PathBuf::from(p);
         if path.is_file() {
-            let n = transcript_context_size(&path);
+            let n = transcript::context_size(&path);
             if n > 0 {
                 return n;
             }
@@ -671,6 +573,9 @@ mod tests {
         assert_eq!(conv_key(&d, "prompt"), "abc");
         let d = json!({"parent_conversation_id": "", "conversation_id": ""});
         assert_eq!(conv_key(&d, "subagent"), "unknown");
+        // The key names a state file, so an id of dots alone never points outside its folder.
+        assert_eq!(conv_key(&json!({"conversation_id": ".."}), "prompt"), "unknown");
+        assert_eq!(conv_key(&json!({"conversation_id": "../x"}), "prompt"), ".._x");
     }
 
     #[test]
@@ -684,20 +589,5 @@ mod tests {
         assert_eq!(state_dir_from(Some(String::new())), PathBuf::from("/tmp/cursor-guard"));
         assert_eq!(state_dir_from(None), PathBuf::from("/tmp/cursor-guard"));
         assert_eq!(state_dir_from(Some("/x".into())), PathBuf::from("/x/cursor-guard"));
-    }
-
-    #[test]
-    fn reverse_lines_is_newest_first_and_lazy() {
-        let p = env::temp_dir().join(format!("gc-rev-{}.txt", std::process::id()));
-        let mut body = String::new();
-        for i in 0..20000 {
-            body.push_str(&format!("line{}\n\n", i));
-        }
-        fs::write(&p, body).unwrap();
-        let mut it = reverse_lines(&p);
-        assert_eq!(it.next().as_deref(), Some("line19999"));
-        assert_eq!(it.next().as_deref(), Some("line19998"));
-        assert_eq!(it.count(), 19998);
-        let _ = fs::remove_file(&p);
     }
 }

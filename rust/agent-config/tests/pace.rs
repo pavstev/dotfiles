@@ -113,8 +113,10 @@ fn work_days_from_the_setting_change_the_budget() {
     let mon_fri = budget("PLAN=\"pro\"\nWORK_DAYS=\"mon-fri\"\n");
     let unset = budget("PLAN=\"pro\"\n");
     assert_eq!(mon_fri, unset, "mon-fri is the default");
-    assert!(mon_fri >= mon_sat, "{mon_fri} vs {mon_sat}"); // fewer days: never a smaller budget
     assert!([20.0, 40.0, 60.0, 80.0, 100.0].contains(&mon_fri), "{mon_fri}");
+    assert!([16.7, 33.3, 50.0, 66.7, 83.3, 100.0].contains(&mon_sat), "{mon_sat}");
+    // Monday to Friday the two settings differ; on the weekend both are 100
+    assert!(mon_fri > mon_sat || (mon_fri, mon_sat) == (100.0, 100.0), "{mon_fri} vs {mon_sat}");
 }
 
 #[test]

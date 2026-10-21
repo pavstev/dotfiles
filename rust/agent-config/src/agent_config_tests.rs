@@ -1,7 +1,6 @@
-//! Unit tests ported from `scripts/test_agent_config.py`: the helpers and the parts that write files,
-//! called as functions. The command-level tests (`agent-config cursor|opencode|user-rules|
-//! claude-settings` as a process) are in `tests/agent_config.rs`. `tests/PORTED.md` maps each Python
-//! test to its twin here.
+//! Unit tests of `agent-config`: the helpers and the parts that write files, called as functions.
+//! The command-level tests (`agent-config cursor|opencode|user-rules|claude-settings` as a process)
+//! are in `tests/agent_config.rs`.
 //!
 //! Every test gets its own temp HOME and its own fake repo (`claude/`, `cursor/`). The functions read
 //! HOME and the repo from the environment (`HOME`, `DOTFILES_REPO`) and the dry-run flag from a
@@ -143,86 +142,46 @@ impl Drop for Fx {
 
 // --- pure text helpers --------------------------------------------------------
 
-fn t(rule: &str) -> Option<String> {
-    translate_permission(rule, "allow")
-}
-fn td(rule: &str) -> Option<String> {
-    translate_permission(rule, "deny")
-}
-fn s(x: &str) -> Option<String> {
-    Some(x.to_string())
-}
-
 #[test]
-fn test_bash_prefix_forms() {
-    assert_eq!(t("Bash(git status:*)"), s("Shell(git status)"));
-    assert_eq!(t("Bash(npm run *)"), s("Shell(npm run)"));
-    assert_eq!(t("Bash(ls:*)"), s("Shell(ls)"));
-    assert_eq!(td("Bash(rm -rf *)"), s("Shell(rm -rf)"));
-}
-
-#[test]
-fn test_bash_prefix_edge_cases_are_skipped() {
-    assert_eq!(t("Bash(*)"), None);
-    assert_eq!(t("Bash(:*)"), None);
-    assert_eq!(t("Bash(a* b:*)"), None); // star inside the command part
-}
-
-#[test]
-fn test_bash_exact_form() {
-    assert_eq!(t("Bash(git status)"), s("Shell(git:status)"));
-    assert_eq!(td("Bash(git push origin main)"), s("Shell(git:push origin main)"));
-}
-
-#[test]
-fn test_bash_exact_without_args_or_with_star_is_skipped() {
-    assert_eq!(t("Bash(ls)"), None);
-    assert_eq!(t("Bash(git * foo)"), None);
-}
-
-#[test]
-fn test_read_edit_write_allow_keeps_relative_path() {
-    assert_eq!(t("Read(./src/**)"), s("Read(src/**)"));
-    assert_eq!(t("Read(.env)"), s("Read(.env)"));
-    assert_eq!(t("Read(/etc/hosts)"), s("Read(/etc/hosts)"));
-}
-
-#[test]
-fn test_edit_and_write_both_become_write() {
-    assert_eq!(t("Edit(./docs/**)"), s("Write(docs/**)"));
-    assert_eq!(t("Write(notes.md)"), s("Write(notes.md)"));
-}
-
-#[test]
-fn test_deny_relative_path_gets_double_star_prefix() {
-    assert_eq!(td("Read(./.env)"), s("Read(**/.env)"));
-    assert_eq!(td("Read(.env)"), s("Read(**/.env)"));
-    assert_eq!(td("Edit(secrets/**)"), s("Write(**/secrets/**)"));
-}
-
-#[test]
-fn test_deny_absolute_home_and_glob_paths_unchanged() {
-    assert_eq!(td("Read(/etc/x)"), s("Read(/etc/x)"));
-    assert_eq!(td("Read(~/.ssh/**)"), s("Read(~/.ssh/**)"));
-    assert_eq!(td("Read(**/.env)"), s("Read(**/.env)"));
-}
-
-#[test]
-fn test_webfetch_domain() {
-    assert_eq!(t("WebFetch(domain:example.com)"), s("WebFetch(example.com)"));
-    assert_eq!(t("WebFetch(https://example.com)"), None);
-}
-
-#[test]
-fn test_unknown_or_malformed_rules() {
-    for rule in ["WebSearch(x)", "Task(foo)", "mcp__srv__tool", "Read", "", "Bash", "Bash(unclosed"] {
-        assert_eq!(t(rule), None, "{rule}");
+fn translate_permission_cases() {
+    let cases: &[(&str, &str, Option<&str>)] = &[
+        // Bash prefix forms
+        ("Bash(git status:*)", "allow", Some("Shell(git status)")),
+        ("Bash(npm run *)", "allow", Some("Shell(npm run)")),
+        ("Bash(ls:*)", "allow", Some("Shell(ls)")),
+        ("Bash(rm -rf *)", "deny", Some("Shell(rm -rf)")),
+        ("  Bash(git status:*)  ", "allow", Some("Shell(git status)")),
+        ("Bash(*)", "allow", None),
+        ("Bash(:*)", "allow", None),
+        ("Bash(a* b:*)", "allow", None), // star inside the command part
+        // Bash exact forms
+        ("Bash(git status)", "allow", Some("Shell(git:status)")),
+        ("Bash(git push origin main)", "deny", Some("Shell(git:push origin main)")),
+        ("Bash(ls)", "allow", None),
+        ("Bash(git * foo)", "allow", None),
+        // an allow keeps a relative path; Edit and Write both become Write
+        ("Read(./src/**)", "allow", Some("Read(src/**)")),
+        ("Read(.env)", "allow", Some("Read(.env)")),
+        ("Read(/etc/hosts)", "allow", Some("Read(/etc/hosts)")),
+        ("Edit(./docs/**)", "allow", Some("Write(docs/**)")),
+        ("Write(notes.md)", "allow", Some("Write(notes.md)")),
+        // a deny of a relative path gets a **/ prefix; absolute, home and glob paths stay
+        ("Read(./.env)", "deny", Some("Read(**/.env)")),
+        ("Read(.env)", "deny", Some("Read(**/.env)")),
+        ("Edit(secrets/**)", "deny", Some("Write(**/secrets/**)")),
+        ("Read(/etc/x)", "deny", Some("Read(/etc/x)")),
+        ("Read(~/.ssh/**)", "deny", Some("Read(~/.ssh/**)")),
+        ("Read(**/.env)", "deny", Some("Read(**/.env)")),
+        // WebFetch takes a domain only
+        ("WebFetch(domain:example.com)", "allow", Some("WebFetch(example.com)")),
+        ("WebFetch(https://example.com)", "allow", None),
+    ];
+    for (rule, kind, want) in cases {
+        assert_eq!(translate_permission(rule, kind).as_deref(), *want, "{rule} ({kind})");
     }
-}
-
-#[test]
-fn test_surrounding_whitespace_is_ignored() {
-    assert_eq!(t("  Bash(git status:*)  "), s("Shell(git status)"));
+    for rule in ["WebSearch(x)", "Task(foo)", "mcp__srv__tool", "Read", "", "Bash", "Bash(unclosed"] {
+        assert_eq!(translate_permission(rule, "allow"), None, "{rule}");
+    }
 }
 
 // --- split_frontmatter --------------------------------------------------------
@@ -304,12 +263,6 @@ fn test_tilde() {
     assert_eq!(tilde(&fx.home), "~");
     assert_eq!(tilde(Path::new("/elsewhere/x")), "/elsewhere/x");
     assert_eq!(tilde(Path::new(&format!("{h}-other/x"))), format!("{h}-other/x"));
-}
-
-#[test]
-fn test_mdc_and_stamp() {
-    assert_eq!(mdc("d", "B"), "---\ndescription: d\nalwaysApply: true\n---\nB");
-    assert!(stamp(&["claude/CLAUDE.md"]).contains(MARK));
 }
 
 #[cfg(unix)]
@@ -430,17 +383,6 @@ fn test_user_rules_text_has_cursor_note_first() {
 }
 
 #[test]
-fn test_cursor_note_routes_named_agents_through_general_purpose() {
-    // Cursor's Task rejects `code-reviewer`; the note must say what to send instead.
-    let fx = Fx::new();
-    for word in ["generalPurpose", "explore", "cursor-guide", "ci-investigator", "bugbot", "security-review", "best-of-n-runner", "~/.claude/agents/<name>.md"] {
-        assert!(CURSOR_NOTE.contains(word), "{word}");
-    }
-    assert!(CURSOR_NOTE.contains("Read ~/.claude/agents/<name>.md first and follow it"));
-    assert!(user_rules_text(&fx.home, "shared").contains(CURSOR_NOTE));
-}
-
-#[test]
 fn test_user_rules_text_appends_output_style_after_the_overlay() {
     let fx = Fx::new();
     fx.overlay(OWNER_TEXT);
@@ -483,10 +425,8 @@ fn test_unchanged_text_is_skipped() {
     let fx = Fx::new();
     let f = fx.cdir().join("rules").join("x.md");
     call(|| write_generated(&f, &gen_text(), None));
-    let before = fs::metadata(&f).unwrap().modified().unwrap();
     let ((), out, _) = call(|| write_generated(&f, &gen_text(), None));
     assert!(out.contains("already set up"), "{out}");
-    assert_eq!(fs::metadata(&f).unwrap().modified().unwrap(), before);
 }
 
 #[test]
@@ -620,14 +560,6 @@ fn test_global_rule_for_each_profile() {
 }
 
 #[test]
-fn test_cursor_rules_rerun_is_idempotent() {
-    let fx = Fx::new();
-    call(|| cursor_rules(&fx.home, "shared"));
-    let ((), out, _) = call(|| cursor_rules(&fx.home, "shared"));
-    assert!(out.contains("already set up"), "{out}");
-}
-
-#[test]
 fn test_output_style_rule_written_then_removed() {
     let fx = Fx::new();
     style(&fx);
@@ -732,19 +664,15 @@ fn test_removing_the_mark_brings_the_file_copy_back() {
 }
 
 #[test]
-fn test_plain_when_safe() {
-    assert_eq!(yaml_str("Reviews a diff, then reports."), "Reviews a diff, then reports.");
-}
-
-#[test]
-fn test_quotes_when_needed() {
+fn test_yaml_str() {
+    assert_eq!(yaml_str("Reviews a diff, then reports."), "Reviews a diff, then reports."); // plain when safe
     for v in ["a: b", "x #y", "- dash", "'q", "multi\nline", " pad"] {
         assert_eq!(serde_json::from_str::<String>(&yaml_str(v)).unwrap(), v, "{v}");
     }
 }
 
 // The indented line `  Use it: after edits` is a continuation line, not a new key `it`: the key match
-// is anchored at the line start, like `re.match` in agent-config.py.
+// is anchored at the line start.
 #[test]
 fn test_description_with_colon_is_quoted_and_round_trips() {
     let fx = Fx::new();
@@ -944,26 +872,6 @@ fn test_user_entries_and_keys_are_kept() {
 }
 
 #[test]
-fn cursor_hooks_json_uses_rust_bin() {
-    let fx = Fx::new();
-    call(|| cursor_hooks(&fx.home));
-    let text = rd(&hooks_path(&fx));
-    assert!(text.contains("rust-bin --hook guard_cursor"), "{text}");
-    assert!(!text.contains("python"), "{text}");
-    let data = rj(&hooks_path(&fx));
-    // the tool mode runs on the shell, MCP and read events, and the entries keep their order on a rerun
-    let modes = |event: &str| -> Vec<String> {
-        data["hooks"][event].as_array().unwrap().iter().map(|e| e["command"].as_str().unwrap().rsplit(' ').next().unwrap().to_string()).collect()
-    };
-    assert_eq!(modes("preToolUse"), ["subagent", "tool"]);
-    assert_eq!(modes("beforeShellExecution"), ["tool"]);
-    assert_eq!(modes("beforeMCPExecution"), ["tool"]);
-    assert_eq!(modes("beforeReadFile"), ["tool"]);
-    call(|| cursor_hooks(&fx.home));
-    assert_eq!(rj(&hooks_path(&fx)), data);
-}
-
-#[test]
 fn test_our_entry_keeps_its_place_between_user_entries() {
     let fx = Fx::new();
     call(|| cursor_hooks(&fx.home));
@@ -992,30 +900,20 @@ fn test_rerun_is_idempotent_and_makes_no_backup() {
 }
 
 #[test]
-fn test_old_entries_for_a_moved_script_are_replaced() {
-    let fx = Fx::new();
-    let old = json!({"command": "python3 /old/home/cursor/hooks/guard_cursor.py prompt"});
-    wj(&hooks_path(&fx), json!({"version": 1, "hooks": {"beforeSubmitPrompt": [old]}}));
-    call(|| cursor_hooks(&fx.home));
-    let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["beforeSubmitPrompt"].as_array().unwrap().iter().map(|e| e["command"].as_str().unwrap().to_string()).collect();
-    assert_eq!(cmds.len(), 1);
-    assert!(!cmds[0].contains("/old/home"));
-    assert_eq!(baks(&fx.cdir(), "hooks.json"), 1);
-}
-
-#[test]
 fn test_old_python_entries_are_replaced_by_the_rust_launcher() {
     let fx = Fx::new();
     let mine = json!({"command": "echo mine"});
+    let moved = json!({"command": "python3 /old/home/cursor/hooks/guard_cursor.py prompt"}); // a moved repo
     let old_cmd = format!("test -r '{0}/cursor/hooks/guard_cursor.py' || exit 0; python3 '{0}/cursor/hooks/guard_cursor.py' prompt", fx.repo.display());
     let old = json!({"command": old_cmd, "timeout": 10});
-    wj(&hooks_path(&fx), json!({"version": 1, "hooks": {"beforeSubmitPrompt": [mine, old]}}));
+    wj(&hooks_path(&fx), json!({"version": 1, "hooks": {"beforeSubmitPrompt": [mine, moved, old]}}));
     call(|| cursor_hooks(&fx.home));
     let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["beforeSubmitPrompt"].as_array().unwrap().iter().map(|e| e["command"].as_str().unwrap().to_string()).collect();
     assert_eq!(cmds.len(), 2, "{cmds:?}");
     assert_eq!(cmds[0], "echo mine");
     assert!(cmds[1].ends_with(&format!("sh {} --hook guard_cursor prompt", fx.guard.display())), "{cmds:?}");
     assert!(!cmds.iter().any(|c| c.contains("guard_cursor.py") || c.contains("python")), "{cmds:?}");
+    assert_eq!(baks(&fx.cdir(), "hooks.json"), 1);
 }
 
 #[test]
@@ -1155,15 +1053,6 @@ fn test_skips_without_opt_in_on_every_profile() {
 }
 
 #[test]
-fn test_opt_in_setting() {
-    let fx = mcp_fx();
-    ours(&fx, json!({"docs": {}}));
-    fx.setting_file("CURSOR_MCP=\"on\"\n");
-    call(|| cursor_mcp(&fx.home));
-    assert!(rj(&mcp_path(&fx))["mcpServers"].get("docs").is_some());
-}
-
-#[test]
 fn test_off_setting() {
     let fx = mcp_fx();
     ours(&fx, json!({"docs": {}}));
@@ -1185,15 +1074,6 @@ fn test_env_wins_over_setting() {
     set_env("DOTFILES_MCP", "1");
     call(|| cursor_mcp(&fx.home));
     assert!(mcp_path(&fx).exists());
-}
-
-#[test]
-fn test_change_makes_backup() {
-    let fx = mcp_fx();
-    ours(&fx, json!({"docs": {}}));
-    wj(&mcp_path(&fx), json!({"mcpServers": {}}));
-    call(|| cursor_mcp(&fx.home));
-    assert_eq!(baks(&fx.cdir(), "mcp.json"), 1);
 }
 
 // --- cursor_cli_config --------------------------------------------------------
@@ -1333,16 +1213,6 @@ fn test_user_deleting_our_rule_gets_it_back() {
 }
 
 #[test]
-fn test_user_rule_equal_to_ours_is_kept_once() {
-    // A hand-written rule that equals one of ours stays, and is not added twice.
-    let fx = Fx::new();
-    fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&cfg_path(&fx), json!({"permissions": {"allow": ["Shell(git status)"]}}));
-    run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["permissions"]["allow"], json!(["Shell(git status)"]));
-}
-
-#[test]
 fn test_corrupt_sidecar_is_survivable() {
     let fx = Fx::new();
     fx.perms(&["Bash(git status:*)"], &[]);
@@ -1408,13 +1278,16 @@ fn test_user_statusline_wins() {
 }
 
 #[test]
-fn test_old_statusline_sh_command_is_replaced() {
+fn test_old_statusline_commands_are_replaced() {
     let fx = Fx::new();
     wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
-    let old = fx.home.join(".claude").join("statusline.sh");
-    wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": old.to_str().unwrap(), "padding": 0}}));
-    run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["statusLine"], json!({"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline", "padding": 0}));
+    let old_sh = fx.home.join(".claude").join("statusline.sh");
+    for old in [old_sh.to_str().unwrap(), "bash ~/.claude/hooks/rust-bin statusline"] {
+        wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": old, "padding": 0}}));
+        run_cfg(&fx);
+        let want = json!({"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline", "padding": 0});
+        assert_eq!(rj(&cfg_path(&fx))["statusLine"], want, "{old}");
+    }
     // a second run keeps the new command, and another user command still wins
     run_cfg(&fx);
     assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "sh ~/.claude/hooks/rust-bin statusline");
@@ -1423,47 +1296,18 @@ fn test_old_statusline_sh_command_is_replaced() {
     assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "~/bin/my-line");
 }
 
-#[test]
-fn test_old_bash_statusline_command_is_replaced() {
-    let fx = Fx::new();
-    wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
-    wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": "bash ~/.claude/hooks/rust-bin statusline", "padding": 0}}));
-    run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "sh ~/.claude/hooks/rust-bin statusline");
-}
-
-#[test]
-fn test_missing_source_settings_is_fine() {
-    let fx = Fx::new();
-    run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["permissions"], json!({"allow": [], "deny": []}));
-}
-
 // --- clipboard ----------------------------------------------------------------
 
+#[cfg(unix)] // the search path splits on ':'
 #[test]
-fn test_clipboard_command_picks_the_tool_for_the_platform() {
-    // The Rust code picks the tool at compile time (`cfg!`), where Python patched `sys.platform`:
-    // this runs the arm of the platform the test runs on.
+fn test_linux_clipboard_tool_is_found_on_the_path() {
     let fx = Fx::new();
-    #[cfg(target_os = "macos")]
-    assert_eq!(clipboard_command(), Some(vec!["pbcopy".to_string()]));
-    #[cfg(target_os = "windows")]
-    assert_eq!(clipboard_command(), Some(vec!["clip".to_string()]));
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let bin = fx.tmp.join("bin");
-        fs::create_dir_all(&bin).unwrap();
-        let xclip = bin.join("xclip");
-        fs::write(&xclip, "#!/bin/sh\n").unwrap();
-        fs::set_permissions(&xclip, fs::Permissions::from_mode(0o755)).unwrap();
-        let found = clipboard_command_in(bin.to_str());
-        let none = clipboard_command_in(fx.tmp.join("nothing-here").to_str());
-        assert_eq!(found, Some(vec!["xclip".to_string(), "-selection".to_string(), "clipboard".to_string()]));
-        assert_eq!(none, None);
-    }
-    let _ = &fx;
+    let bin = fx.tmp.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("xclip"), "#!/bin/sh\n").unwrap();
+    let want = ["xclip", "-selection", "clipboard"].map(String::from).to_vec();
+    assert_eq!(linux_clipboard_in(bin.to_str()), Some(want));
+    assert_eq!(linux_clipboard_in(fx.tmp.join("nothing-here").to_str()), None);
 }
 
 // --- merge --------------------------------------------------------------------
@@ -1471,8 +1315,8 @@ fn test_clipboard_command_picks_the_tool_for_the_platform() {
 #[test]
 fn test_merge_rules() {
     let got = merge(
-        &json!({"a": 1, "p": {"x": 1}, "permissions": {"allow": ["A"]}, "l": [1]}),
-        &json!({"a": null, "p": {"y": 2}, "permissions": {"allow": ["B", "A"]}, "l": [2], "n": 3}),
+        &json!({"a": 1, "s": 1, "p": {"x": 1}, "permissions": {"allow": ["A"]}, "l": [1]}),
+        &json!({"a": null, "s": 3, "p": {"y": 2}, "permissions": {"allow": ["B", "A"]}, "l": [2], "n": 3}),
     );
-    assert_eq!(got, json!({"p": {"x": 1, "y": 2}, "permissions": {"allow": ["A", "B"]}, "l": [2], "n": 3}));
+    assert_eq!(got, json!({"s": 3, "p": {"x": 1, "y": 2}, "permissions": {"allow": ["A", "B"]}, "l": [2], "n": 3}));
 }

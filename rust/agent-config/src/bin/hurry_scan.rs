@@ -1,5 +1,4 @@
 //! hurry-scan: find out why a Claude Code session is slow, and what to cut.
-//! Port of the old Python tool hurry-scan.py (deleted; its tests are mapped in tests/PORTED.md).
 //! Read-only: it never changes anything.
 
 use agent_config::pycompat::{basename, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_str, truthy};
@@ -963,14 +962,6 @@ mod tests {
     }
 
     #[test]
-    fn format_ties_round_to_even_like_python() {
-        assert_eq!(format!("{:.0}", 0.5), "0");
-        assert_eq!(format!("{:.0}", 1.5), "2");
-        assert_eq!(format!("{:.0}", 2.5), "2");
-        assert_eq!(format!("{:.1}", 0.25), "0.2");
-    }
-
-    #[test]
     fn timestamps_parse() {
         assert_eq!(parse_ts("1970-01-01T00:00:10Z"), Some(10.0));
         assert_eq!(parse_ts("1970-01-01T01:00:10+01:00"), Some(10.0));
@@ -979,18 +970,9 @@ mod tests {
     }
 
     #[test]
-    fn short_input_uses_python_str() {
+    fn short_input_collapses_space() {
         let v: Value = serde_json::from_str(r#"{"command": "ls   -la\n/tmp"}"#).unwrap();
         assert_eq!(short_input(&v), "ls -la /tmp");
-        let v: Value = serde_json::from_str(r#"{"file_path": ["a", 1, null]}"#).unwrap();
-        assert_eq!(short_input(&v), "['a', 1, None]");
-    }
-
-    #[test]
-    fn dirname_like_python() {
-        assert_eq!(dirname("/a/b"), "/a");
-        assert_eq!(dirname("/a"), "/");
-        assert_eq!(dirname("a"), "");
     }
 
     #[test]
@@ -1008,11 +990,4 @@ mod tests {
         assert_eq!(split_none2("1 2"), None);
     }
 
-    #[test]
-    fn indent_dump_matches_python() {
-        let v: Value = serde_json::from_str(r#"{"a": [], "b": [1, {"c": "é"}]}"#).unwrap();
-        let mut s = String::new();
-        dumps_indent(&v, 0, &mut s);
-        assert_eq!(s, "{\n  \"a\": [],\n  \"b\": [\n    1,\n    {\n      \"c\": \"\\u00e9\"\n    }\n  ]\n}");
-    }
 }

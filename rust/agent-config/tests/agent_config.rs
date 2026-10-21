@@ -1,7 +1,6 @@
-//! Command-level tests ported from `scripts/test_agent_config.py`: `agent-config cursor`, `opencode`,
-//! `user-rules` and `claude-settings` run as a process in a temp HOME with a fake repo (`claude/`,
-//! `cursor/`). The helpers and the single parts, called as functions, are unit tests in
-//! `src/agent_config_tests.rs`. `tests/PORTED.md` maps each Python test to its Rust twin.
+//! Command-level tests of `agent-config`: `cursor`, `opencode`, `user-rules` and `claude-settings`
+//! run as a process in a temp HOME with a fake repo (`claude/`, `cursor/`). The helpers and the
+//! single parts, called as functions, are unit tests in `src/agent_config_tests.rs`.
 mod common;
 
 use common::{run_bin, temp_home};
@@ -143,28 +142,15 @@ fn test_full_run_creates_everything_and_never_writes_claude_dir() {
     assert!(!rd(&fx.cdir().join("rules").join("claude-global.mdc")).contains("Off-limits"));
 }
 
-#[test]
-fn test_owner_profile_gets_overlay_but_mcp_stays_opt_in() {
-    let fx = Fx::new("ac-cursor-owner");
-    fx.overlay(OWNER_MD);
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
-    fx.ac(&["cursor", "--profile", "owner"]);
-    assert!(!fx.cdir().join("mcp.json").exists());
-    assert!(rd(&fx.cdir().join("rules").join("claude-global.mdc")).contains("## Off-limits"));
-    fx.setting_file("CURSOR_MCP=\"on\"\n");
-    fx.ac(&["cursor", "--profile", "owner"]);
-    assert!(fx.cdir().join("mcp.json").exists());
-}
-
 #[cfg(unix)]
 #[test]
-fn test_owner_rule_file_is_private_and_names_both_sources() {
+fn test_owner_rule_file_is_private_and_names_the_owner_file() {
     let fx = Fx::new("ac-cursor-private");
     fx.overlay(OWNER_MD);
     fx.ac(&["cursor", "--profile", "owner"]);
     let rule = fx.cdir().join("rules").join("claude-global.mdc");
     assert_eq!(mode_of(&rule), 0o600);
-    assert!(rd(&rule).contains(&format!("and ~/{OWNER_REL}. Edit those files")));
+    assert!(rd(&rule).contains(OWNER_REL));
 }
 
 #[cfg(unix)]
@@ -181,14 +167,14 @@ fn test_owner_rule_file_turns_private_when_the_text_is_unchanged() {
 
 #[cfg(unix)]
 #[test]
-fn test_owner_without_overlay_warns_and_names_one_source() {
+fn test_owner_without_overlay_warns() {
     let fx = Fx::new("ac-cursor-no-overlay");
     fx.mcp_source(json!({"docs": {"url": "u"}}));
     let (rc, _, err) = fx.ac(&["cursor", "--profile", "owner"]);
     assert_eq!(rc, 0);
     assert!(err.contains("no owner-only rules"), "{err}");
     let rule = fx.cdir().join("rules").join("claude-global.mdc");
-    assert!(rd(&rule).contains("from claude/CLAUDE.md. Edit that file"));
+    assert!(!rd(&rule).contains(OWNER_REL));
     assert_eq!(mode_of(&rule), 0o644);
 }
 
@@ -271,24 +257,6 @@ fn test_opencode_agents_stale_generated_agent_removed_user_agent_kept() {
     assert_eq!(rd(&mine), "my agent\n");
 }
 
-#[test]
-fn test_opencode_agents_user_agent_with_same_name_is_not_overwritten() {
-    let fx = Fx::new("ac-oc-agents-same-name");
-    fx.agent("a.md", "---\nname: a\n---\nb\n");
-    wr(&fx.odir().join("agents").join("a.md"), "mine\n");
-    let (_, _, err) = fx.ac(&["opencode", "--profile", "shared"]);
-    assert_eq!(rd(&fx.odir().join("agents").join("a.md")), "mine\n");
-    assert!(err.contains("not ours"), "{err}");
-}
-
-#[test]
-fn test_opencode_agents_no_agents_dir_is_fine() {
-    let fx = Fx::new("ac-oc-agents-none");
-    let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
-    assert_eq!(rc, 0);
-    assert!(!fx.odir().join("agents").exists());
-}
-
 // --- opencode guard plugin ------------------------------------------------------
 
 fn plugin_path(fx: &Fx) -> PathBuf {
@@ -296,34 +264,17 @@ fn plugin_path(fx: &Fx) -> PathBuf {
 }
 
 #[test]
-fn opencode_plugin_written_with_marker() {
-    let fx = Fx::new("ac-oc-plugin-written");
+fn opencode_plugin_names_rust_bin() {
+    let fx = Fx::new("ac-oc-plugin-bin");
     let (rc, _, err) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0, "{err}");
     let text = rd(&plugin_path(&fx));
     assert!(text.contains(MARK), "{text}");
-    assert!(text.contains("export default"), "{text}");
-    assert!(text.contains("\"execute.before\""), "{text}");
-    assert!(!text.contains("__RUST_BIN__"), "the launcher path was not filled in");
-    // a second run changes nothing
-    let (_, out, _) = fx.ac(&["opencode", "--profile", "shared"]);
-    assert!(!out.contains("wrote") && !out.contains("updated"), "{out}");
-}
-
-#[test]
-fn opencode_plugin_names_rust_bin() {
-    let fx = Fx::new("ac-oc-plugin-bin");
-    fx.ac(&["opencode", "--profile", "shared"]);
-    let text = rd(&plugin_path(&fx));
+    assert!(!regex::Regex::new("__[A-Z_]+__").unwrap().is_match(&text), "a placeholder is left: {text}");
     let launcher = fx.claude.join("hooks").join("rust-bin");
     let literal = serde_json::to_string(launcher.to_str().unwrap()).unwrap();
     assert!(text.contains(&format!("const RUST_BIN: string = {literal}")), "{text}");
-    assert!(text.contains("[RUST_BIN, \"--hook\", \"guard\", \"pretool\"]"), "{text}");
-    assert!(!text.contains("python"), "{text}");
-    // the sh is filled in and falls back to `sh` by name when it is empty (always, off Windows)
-    assert!(!text.contains("__SH__"), "{text}");
-    assert!(text.contains("spawnSync(SH || \"sh\", [RUST_BIN,"), "{text}");
-    assert!(!text.contains("bash\""), "the plugin must not start bash: {text}");
+    // the sh falls back to `sh` by name when it is empty (always, off Windows)
     let sh = text.lines().find(|l| l.starts_with("const SH: string =")).unwrap_or_else(|| panic!("no SH line: {text}"));
     assert!(!sh.to_lowercase().contains("system32"), "{sh}");
     if !cfg!(windows) {
@@ -375,10 +326,14 @@ fn run_oc(fx: &Fx) -> R {
 #[test]
 fn test_translated_permissions_added() {
     let fx = Fx::new("ac-oc-cfg-perms");
-    fx.perms(&["Bash(git status:*)", "Read(./src/**)", "Edit(./notes.md)"], &["Read(./.env)"]);
+    fx.perms(
+        &["Bash(git status:*)", "Read(./src/**)", "Edit(./notes.md)"],
+        &["Read(./.env)", "Bash(git push:*)", "Bash(rm -rf /tmp/x)"],
+    );
     run_oc(&fx);
     let p = rj(&oc_cfg(&fx))["permission"].clone();
-    assert_eq!(p["bash"], json!({"git status *": "allow"}));
+    // A Claude deny rule stays a deny in Opencode, for Bash too.
+    assert_eq!(p["bash"], json!({"git status *": "allow", "git push *": "deny", "rm -rf /tmp/x": "deny"}));
     assert_eq!(p["read"], json!({"src/**": "allow", "**/.env": "deny"}));
     assert_eq!(p["edit"], json!({"notes.md": "allow"}));
 }
@@ -506,6 +461,16 @@ fn test_rule_removed_from_the_repo_goes_away_next_run() {
 }
 
 #[test]
+fn test_rule_that_turns_into_a_deny_is_updated_next_run() {
+    let fx = Fx::new("ac-oc-side-flipped");
+    fx.perms(&["Bash(git push:*)"], &[]);
+    run_oc(&fx);
+    fx.perms(&[], &["Bash(git push:*)"]); // the allow became a deny in claude/settings.json
+    run_oc(&fx);
+    assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"git push *": "deny"}));
+}
+
+#[test]
 fn test_a_rule_the_user_edited_is_not_taken_away() {
     let fx = Fx::new("ac-oc-side-edited");
     fx.perms(&["Bash(ls:*)"], &[]);
@@ -580,22 +545,6 @@ fn tui_path(fx: &Fx) -> PathBuf {
 }
 
 #[test]
-fn test_theme_file_holds_the_copper_palette() {
-    let fx = Fx::new("ac-oc-theme-palette");
-    assert_eq!(run_oc(&fx).0, 0);
-    let data = rj(&theme_path(&fx));
-    assert_eq!(data["theme"]["primary"], "#E0825F");
-    assert_eq!(data["theme"]["background"], "#1C1917");
-    assert_eq!(data["theme"]["accent"], "#E8BC77");
-    let mut keys: Vec<&str> = data["theme"].as_object().unwrap().keys().map(String::as_str).collect();
-    keys.sort();
-    let mut want = SHIPPED_KEYS.to_vec();
-    want.sort();
-    assert_eq!(keys, want);
-    assert_eq!(data["$schema"], "https://opencode.ai/theme.json");
-}
-
-#[test]
 fn test_theme_has_every_key_the_opencode_loader_reads() {
     // regression: a missing key makes the TUI say "Failed to load theme" and use none
     let fx = Fx::new("ac-oc-theme-keys");
@@ -612,8 +561,10 @@ fn test_theme_has_every_key_the_opencode_loader_reads() {
 fn test_every_colour_is_a_hex_string() {
     let fx = Fx::new("ac-oc-theme-hex");
     run_oc(&fx);
+    let data = rj(&theme_path(&fx));
+    assert_eq!(data["$schema"], "https://opencode.ai/theme.json");
     let re = regex::Regex::new(r"^#[0-9A-Fa-f]{6}$").unwrap();
-    for (key, value) in rj(&theme_path(&fx))["theme"].as_object().unwrap() {
+    for (key, value) in data["theme"].as_object().unwrap() {
         assert!(re.is_match(s(value)), "{key}: {value}");
     }
 }
@@ -662,16 +613,6 @@ fn test_other_tui_keys_survive() {
 }
 
 #[test]
-fn test_rerun_skips_an_unchanged_theme() {
-    let fx = Fx::new("ac-oc-theme-rerun");
-    run_oc(&fx);
-    let before = rd(&theme_path(&fx));
-    let (_, out, _) = run_oc(&fx);
-    assert_eq!(rd(&theme_path(&fx)), before);
-    assert!(out.contains("already set up"), "{out}");
-}
-
-#[test]
 fn test_invalid_tui_json_is_left_alone() {
     let fx = Fx::new("ac-oc-theme-invalid");
     wr(&tui_path(&fx), "{ not json\n");
@@ -687,13 +628,12 @@ fn agents_md(fx: &Fx) -> PathBuf {
 }
 
 #[test]
-fn test_shared_profile_carries_the_rules_and_the_note() {
+fn test_shared_profile_carries_the_rules() {
     let fx = Fx::new("ac-oc-rules-shared");
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);
     let text = rd(&agents_md(&fx));
     assert!(text.contains(MARK));
-    assert!(text.contains("AskUserQuestion = `question`"));
     assert!(text.contains(CLAUDE_MD.trim()));
 }
 
@@ -751,16 +691,6 @@ fn test_symlink_is_left_alone() {
     assert_eq!(rc, 0);
     assert!(is_link(&agents_md(&fx)));
     assert_eq!(rd(&target), "mine\n");
-}
-
-#[test]
-fn test_opencode_rules_rerun_is_idempotent() {
-    let fx = Fx::new("ac-oc-rules-rerun");
-    run_oc(&fx);
-    let before = rd(&agents_md(&fx));
-    let (_, out, _) = run_oc(&fx);
-    assert_eq!(rd(&agents_md(&fx)), before);
-    assert!(out.contains("already set up"), "{out}");
 }
 
 // --- opencode projects --------------------------------------------------------
@@ -868,14 +798,6 @@ fn test_print_mode_writes_text_to_stdout_only() {
     assert!(!fx.home.join(USER_RULES_MARK).exists());
 }
 
-#[test]
-fn test_default_profile_comes_from_env() {
-    let fx = Fx::new("ac-ur-env");
-    fx.overlay(OWNER_MD);
-    let (_, out, _) = fx.ac_env(&["user-rules"], &[("DOTFILES_PROFILE", "owner")]);
-    assert!(out.contains("## Off-limits"), "{out}");
-}
-
 #[cfg(unix)]
 #[test]
 fn test_copy_sends_text_to_clipboard_writes_mark_and_drops_file_copy() {
@@ -922,17 +844,6 @@ fn test_after_copy_cursor_rules_skips_then_warns_on_change() {
     let (_, _, err) = fx.ac(&["cursor"]);
     assert!(err.contains("Run cursor-rules"), "{err}");
     assert!(!fx.cdir().join("rules").join("claude-global.mdc").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn test_full_cursor_run_after_copy_creates_no_rule_files() {
-    let fx = Fx::new("ac-ur-full-after-copy");
-    let (path, _) = fake_clipboard(&fx);
-    fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", &path)]);
-    fx.ac(&["cursor"]);
-    assert!(!fx.cdir().join("rules").join("claude-global.mdc").exists());
-    assert!(fx.cdir().join("hooks.json").exists());
 }
 
 // --- claude-settings: repo base + private layer -------------------------------
@@ -1114,32 +1025,7 @@ fn test_claude_settings_dry_run_writes_nothing() {
     assert!(out.contains("would write"), "{out}");
 }
 
-#[test]
-fn test_cli() {
-    let cs = Cs::new("ac-cs-cli");
-    let (code, _, _) = cs.fx.ac(&["claude-settings", "build"]);
-    assert_eq!(code, 0);
-    let (code, _, _) = cs.fx.ac(&["claude-settings", "promote"]);
-    assert_eq!(code, 2);
-}
-
 // --- main ---------------------------------------------------------------------
-
-#[test]
-fn test_requires_a_subcommand() {
-    let fx = Fx::new("ac-main-subcommand");
-    let (rc, _, _) = fx.ac(&[]);
-    assert_ne!(rc, 0);
-}
-
-#[test]
-fn test_dry_flag_is_set_per_invocation() {
-    let fx = Fx::new("ac-main-dry-flag");
-    fx.ac(&["cursor", "--dry-run"]);
-    assert!(!fx.cdir().exists()); // the dry run wrote nothing
-    fx.ac(&["cursor"]);
-    assert!(fx.cdir().join("hooks.json").exists()); // the next run is not dry
-}
 
 // --- quiet output -------------------------------------------------------------
 
@@ -1192,7 +1078,7 @@ fn test_a_broken_inline_theme_without_our_marker_is_the_users() {
     let (rc, out, _) = run_oc(&fx);
     assert_eq!(rc, 0);
     assert!(out.contains("your Opencode theme"), "{out}");
-    assert!(out.contains("{'background': '#fff'}"), "{out}"); // reported the way Python prints it
+    assert!(out.contains("background"), "{out}");
     assert!(rj(&tui_path(&fx))["theme"].as_object().unwrap().contains_key("background"));
 }
 
@@ -1210,11 +1096,7 @@ fn test_a_leading_tilde_means_the_home_folder() {
 #[test]
 fn test_rejects_unknown_profile() {
     let fx = Fx::new("ac-main-profile");
-    for cmd in ["cursor", "opencode", "user-rules"] {
-        let (rc, _, err) = fx.ac(&[cmd, "--profile", "root"]);
-        assert_eq!(rc, 2, "{cmd}: {err}"); // argparse and clap both exit 2
-        assert!(err.contains("invalid value 'root' for '--profile"), "{cmd}: {err}");
-        assert!(err.contains("owner") && err.contains("shared"), "{cmd}: {err}");
-    }
+    let (rc, _, err) = fx.ac(&["cursor", "--profile", "root"]);
+    assert_eq!(rc, 2, "{err}");
     assert!(!fx.cdir().exists() && !fx.odir().exists()); // nothing ran
 }

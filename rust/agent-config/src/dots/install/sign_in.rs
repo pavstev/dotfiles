@@ -113,12 +113,8 @@ mod tests {
     }
 
     #[test]
-    fn nothing_installed_nothing_to_do() {
-        assert!(pending(&|_| false, &fake(&[])).is_empty());
-    }
-
-    #[test]
     fn only_tools_that_exist_and_are_signed_out_are_listed() {
+        assert!(pending(&|_| false, &fake(&[])).is_empty()); // nothing installed: nothing to do
         let probes = fake(&[
             ("gh", false, ""),
             ("claude", true, "{\"loggedIn\": true}"),
@@ -134,11 +130,4 @@ mod tests {
         assert_eq!(claude_out[0].1, "claude auth login");
     }
 
-    #[test]
-    fn labels_keep_the_bash_bytes() {
-        let all = pending(&|_| true, &fake(&[("opencode", true, "No authenticated providers")]));
-        assert_eq!(all.len(), 4);
-        assert_eq!(all[1].0.as_bytes(), "\u{2733}\u{FE0F}  Claude Code".as_bytes());
-        assert!(all[3].0.ends_with("  Cursor"));
-    }
 }

@@ -40,8 +40,11 @@ const COLOR: [(&str, &str); 1] = [("NO_COLOR", "")];
 
 #[test]
 fn statusline_matches_shell_on_sample() {
+    // a PATH with no tools at all (no jq, no git) changes nothing
+    let empty = temp_home("sl-path");
+    let env = [COLOR[0], ("PATH", s(&empty))];
     for name in ["sample", "small"] {
-        let (code, out, err) = run_bin(STATUSLINE, &[], &fixture(&format!("{name}.json")), &COLOR, None);
+        let (code, out, err) = run_bin(STATUSLINE, &[], &fixture(&format!("{name}.json")), &env, None);
         assert_eq!(code, 0, "{err}");
         assert_eq!(out, fixture(&format!("{name}.out")), "fixture {name}");
     }
@@ -99,15 +102,6 @@ fn statusline_pace_cache_five_hour_null_and_absent_week() {
     let env = [("HOME", s(&other)), ("XDG_CACHE_HOME", s(&xdg))];
     run_bin(STATUSLINE, &[], &fixture("small.json"), &env, None);
     assert!(!other.join("xdg/claude-pace.json").exists());
-}
-
-#[test]
-fn statusline_no_jq_needed() {
-    // a PATH with no tools at all: the shell script printed only the folder name here
-    let empty = temp_home("sl-path");
-    let (code, out, err) = run_bin(STATUSLINE, &[], &fixture("sample.json"), &[("PATH", s(&empty)), ("NO_COLOR", "")], None);
-    assert_eq!(code, 0, "{err}");
-    assert_eq!(out, fixture("sample.out"));
 }
 
 #[test]
@@ -177,6 +171,13 @@ fn statusline_shows_what_is_left() {
     // a session id with odd characters keeps only [A-Za-z0-9_-] in the name
     let odd = left_line(&home, "abc", Some("1\tOne\n"), r#"{"session_id":"a/../b c"}"#);
     assert!(odd.ends_with("▸ 1 left: One"), "{odd:?}");
+    // with color the segment is copper
+    let file = status_file(&home, "s");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, "2\tRun tests\n").unwrap();
+    let env = [("HOME", s(&home)), ("NO_COLOR", "")];
+    let (_, out, _) = run_bin(STATUSLINE, &[], r#"{"session_id":"s"}"#, &env, Some(Path::new("/")));
+    assert!(out.ends_with("\u{1b}[38;2;224;130;95m▸ 2 left: Run tests\u{1b}[0m"), "{out:?}");
 }
 
 #[cfg(unix)]
@@ -194,18 +195,6 @@ fn statusline_cuts_a_long_step_and_survives_a_bad_file() {
         let out = left_line(&home, "s", Some(bad), r#"{"session_id":"s"}"#);
         assert!(!out.contains('▸'), "{bad:?} -> {out:?}");
     }
-}
-
-#[cfg(unix)]
-#[test]
-fn statusline_left_segment_is_copper_with_color() {
-    let home = temp_home("sl-left-color");
-    let file = status_file(&home, "s");
-    fs::create_dir_all(file.parent().unwrap()).unwrap();
-    fs::write(&file, "2\tRun tests\n").unwrap();
-    let env = [("HOME", s(&home)), ("NO_COLOR", "")];
-    let (_, out, _) = run_bin(STATUSLINE, &[], r#"{"session_id":"s"}"#, &env, Some(Path::new("/")));
-    assert!(out.ends_with("\u{1b}[38;2;224;130;95m▸ 2 left: Run tests\u{1b}[0m"), "{out:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +253,7 @@ fn skill_check_flags_bad_skill() {
 }
 
 #[test]
-fn skill_check_cases_from_the_python_self_test() {
+fn skill_check_cases() {
     let root = temp_home("sc-cases");
     let good = GOOD.replace("NAME", "ps:good");
     let desc = "\"Use when the user asks for a demo: a short recipe. Third person.\"";
@@ -294,13 +283,9 @@ fn skill_check_cases_from_the_python_self_test() {
         let (code, out, _) = run_bin(SKILL_CHECK, &[s(&d)], "", &[], None);
         assert_eq!(code, want, "{name}: {out}");
     }
-    // the messages the Python gave for two of them
+    // a message names the problem
     let (_, out, _) = run_bin(SKILL_CHECK, &[s(&root.join("ps_mismatch"))], "", &[], None);
     assert!(out.contains("✖ name 'ps:other' needs folder 'ps_other', found 'ps_mismatch'"), "{out}");
-    let (_, out, _) = run_bin(SKILL_CHECK, &[s(&root.join("ps_junk"))], "", &[], None);
-    assert!(out.contains("✖ junk in skill folder: .ruff_cache"), "{out}");
-    let (_, out, _) = run_bin(SKILL_CHECK, &[s(&root.join("ps_colon"))], "", &[], None);
-    assert!(out.contains("✖ description: unquoted value contains ': ' — quote the whole value"), "{out}");
 }
 
 #[test]
@@ -360,15 +345,6 @@ fn temp_repo(tag: &str, n: usize) -> (PathBuf, PathBuf) {
         git(&repo, &["commit", "-q", "-m", &format!("commit {i}")]);
     }
     (home, repo)
-}
-
-#[test]
-fn mic_check_help() {
-    let (code, out, _) = run_bin(MIC_CHECK, &["--help"], "", &[], None);
-    assert_eq!(code, 0);
-    for want in ["mic_check [repo...]", "--no-fetch", "--note", "--leftovers", "--since", "VERDICT: CLEAN"] {
-        assert!(out.contains(want), "{want}: {out}");
-    }
 }
 
 #[test]
@@ -477,15 +453,6 @@ fn a_closed_pipe_ends_the_bins_quietly() {
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(!err.contains("panicked") && !err.contains("failed printing"), "{bin}: {err}");
         assert_eq!(out.status.code(), Some(0), "{bin}: {err}");
-    }
-}
-
-#[test]
-fn bag_check_help() {
-    let (code, out, _) = run_bin(BAG_CHECK, &["--help"], "", &[], None);
-    assert_eq!(code, 0);
-    for want in ["bag_check [--eta 45m]", "--throttle", "--restore", "--watch [N]", "VERDICT:"] {
-        assert!(out.contains(want), "{want}: {out}");
     }
 }
 

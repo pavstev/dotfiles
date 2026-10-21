@@ -1,10 +1,10 @@
 //! whatsleft-scan: collect proof of what is still open in a Claude Code session.
-//! Port of the old Python tool whatsleft-scan.py (deleted; its tests are mapped in tests/PORTED.md).
 //!
 //! Reads the session transcript (JSONL) and the git state of every repo the session touched.
 //! Prints tagged evidence lines so the agent can build the "me / you" table.
 //! Read-only, except `git fetch` (skip with --no-fetch).
 
+use agent_config::guard_checks::expanduser;
 use agent_config::pycompat::{
     basename, civil_from_days, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str, truthy,
 };
@@ -259,16 +259,6 @@ fn vshort(v: &Value, n: usize) -> String {
 fn tilde(p: &str) -> String {
     let h = home();
     if p.starts_with(&h) { p.replacen(&h, "~", 1) } else { p.to_string() }
-}
-
-fn expanduser(p: &str) -> String {
-    if p == "~" {
-        home()
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        format!("{}/{}", home().trim_end_matches('/'), rest)
-    } else {
-        p.to_string()
-    }
 }
 
 /// open(path, errors="replace") with universal newlines.
@@ -1596,12 +1586,18 @@ mod tests {
     }
 
     #[test]
-    fn workflow_glob_like_fnmatch() {
-        let ok = |n: &str| {
-            let b = n.as_bytes();
-            n.ends_with("ml") && b.len() >= 4 && (0..=b.len() - 4).any(|i| &b[i..i + 2] == b".y")
-        };
-        assert!(ok("ci.yml") && ok("ci.yaml") && !ok("ci.json"));
+    fn workflow_files_finds_yaml() {
+        let d = tempfile::tempdir().unwrap();
+        let wf = d.path().join(".github").join("workflows");
+        std::fs::create_dir_all(&wf).unwrap();
+        let root = d.path().to_str().unwrap();
+        std::fs::write(wf.join("ci.json"), "").unwrap();
+        assert!(!workflow_files(root));
+        std::fs::write(wf.join("ci.yml"), "").unwrap();
+        assert!(workflow_files(root));
+        std::fs::remove_file(wf.join("ci.yml")).unwrap();
+        std::fs::write(wf.join("ci.yaml"), "").unwrap();
+        assert!(workflow_files(root));
     }
 
     #[test]
@@ -1613,13 +1609,6 @@ mod tests {
         assert_eq!(tail_start(30, 25), 5);
         assert_eq!(tail_start(3, 25), 0);
         assert_eq!(tail_start(3, 0), 0);
-    }
-
-    #[test]
-    fn splitlines_like_python() {
-        assert_eq!(py_splitlines("a\nb\r\nc\n"), vec!["a", "b", "c"]);
-        assert_eq!(py_splitlines("a\n\nb"), vec!["a", "", "b"]);
-        assert_eq!(py_splitlines(""), Vec::<String>::new());
     }
 
     #[test]

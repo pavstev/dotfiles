@@ -25,13 +25,13 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `rust/agent-config/src/dots/install/` | the provisioning steps, one Rust file each, in the order of `STEPS` in `install/mod.rs` (`NN-name`). Skip-aware and fault-tolerant. |
 | `scripts/os-check.sh`, `scripts/win-golden.sh` | the manual check on all three OSes; the one-time builder of the Windows test VM `win11-golden` (UTM, Mac only). |
 | `scripts/linux-prereqs.txt` | the Linux packages per manager (apt-get, dnf, pacman, apk, other), read by the shim and by `dots`. |
-| `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `step`/`info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`, `ensure_rust_bin` (find or install Rust, build one bin; used by `dotfiles` and `scripts/tools`). |
+| `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`, `ensure_rust_bin` (find or install Rust, build one bin; used by `dotfiles` and `scripts/tools`). |
 | `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). The core rules are `claude/CLAUDE.md`; the opt-in habits are `claude/presets/<name>/` (`rules.md`, optional `settings.json`; list and how to add one: `claude/presets/README.md`). |
 | `docs/FRIENDS-SETUP.md` | the runbook for setting the repo up on a friend's machine: Claude runs it step by step, then `dots doctor`. |
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`). The Cursor guard adapter is the Rust bin `guard_cursor`. |
 | `scripts/agent-config` | shim: runs the Rust build (`rust/agent-config`, built on first use, rebuilt when anything under `src/`, `Cargo.toml` or `Cargo.lock` changes). With no binary and no `cargo` it says "Run: dots" and exits 127. `--bins` builds every bin and always exits 0. The CLI: `cursor` writes and merges `~/.cursor`; `opencode` writes `~/.config/opencode/{AGENTS.md,agents/,themes/}` and merges permissions/MCP into `opencode.jsonc` and the theme name into `tui.json`; `user-rules` prints Cursor's User Rules text; `claude-settings` builds `~/.claude/settings.json`. |
-| `claude/hooks/rust-bin` | launcher for hooks and skills: runs the Rust bin (`.exe` on Windows) when it exists, with no freshness check; never builds. With no binary, `--hook` fails open (exit 0, silent) and a skill call says "Run: dots" and exits 127. Notes: `rust/MIGRATION.md`. |
-| `docs/` | the user docs, one page per question (index: `docs/README.md`; `docs/guide.md` maps the old guide sections to them); `cursor-port.md` and `opencode-port.md` are the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
+| `claude/hooks/rust-bin` | launcher for hooks and skills: runs the Rust bin (`.exe` on Windows) when it exists, with no freshness check; never builds. With no binary, `--hook` fails open (exit 0, silent) and a skill call says "Run: dots" and exits 127. |
+| `docs/` | the user docs, one page per question (index: `docs/README.md`); `cursor-port.md` and `opencode-port.md` are the Cursor and Opencode mapping and gap tables. `README.md` is the start page. |
 | `tools.list` | THE list of command-line tools: `name \| commands \| OSes \| sources in order` (mise, apk, winget, scoop, cargo, brew, sh). Add a tool = add a line. Nothing else lists tools. |
 | `scripts/tools`, `scripts/tools-env.sh` | `scripts/tools` is a shim over the Rust bin `tools` (`rust/agent-config/src/tools_core.rs`, `tools_cli.rs`, `bin/tools.rs`). It finds Rust, or installs it with rustup, builds the bin when it is missing or stale (`ensure_rust_bin` in `scripts/setup-lib.sh`, the same code as `./dotfiles`), then runs it. The bin installs mise first when needed, then the tools. `--check`, `--only a,b`, `--list`, `-q`, `-v`. `TOOLS_BIN=<path>` runs a given bin (tests). `tools-env.sh` puts the mise, cargo and WinGet dirs on PATH. |
 | `ctx` (`rust/agent-config/src/bin/ctx.rs`, `src/codeview.rs`) | the code reader for agents: `ctx outline FILE` lists symbols with line ranges, `ctx read FILE SYMBOL` prints one. A line scan, the same on every OS. Run it as `claude/hooks/rust-bin ctx`. The guard hint H1 points agents at it when Bash runs `sed -n` or `cat` on a code file. |
@@ -45,10 +45,8 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 
 - `cargo test` in `rust/agent-config`: every unit and process test (guard, pace, guard_cursor,
   agent-config, the skill bins), the tool resolver (`tools_core.rs`, fake sources) and a parse of the
-  real `tools.list`. The old Python tests are ported; `rust/agent-config/tests/PORTED.md` maps each
-  one to its Rust test, and `ported_map_complete` (in `tests/guard.rs`) checks the map. The pre-commit
-  hook runs `rust-bin skill_check` and `cargo test --test skill_bins` for a staged skill change.
-  No test needs Python.
+  real `tools.list`. The pre-commit hook runs `rust-bin skill_check` and `cargo test --test
+  skill_bins` for a staged skill change. No test needs Python.
 - `dots doctor` (`rust/agent-config/src/dots/doctor.rs`, test `cargo test --test doctor`): one
   `PASS` or `FAIL` line per check, exit 1 on any FAIL, changes nothing. Checks: `links`,
   `settings-built`, `bins-fresh`, `guard-selftest`, `presets`, `generated`, `timezone`, `no-leak`.
@@ -87,6 +85,24 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 - `claude/hooks/` is live in every session. Merge helper branches that touch it in a worktree
   and bring main forward only when the tests pass: a conflict marker breaks every session's
   hooks, and a broken SubagentStop leaves helper slots taken until they time out (90 min).
+- `agent-config claude-settings promote` writes into the repo (`claude/settings.json`). It finds
+  the repo from `DOTFILES_REPO`, else from the binary's folder. To test it, point `DOTFILES_REPO`
+  at a temp copy of `claude/`, `cursor/` and `scripts/`, never at the real checkout.
+
+## Known gaps
+
+Accepted for now:
+
+- `cargo test` runs on the Mac. On Linux and Windows, `scripts/os-check.sh` runs `./dotfiles`,
+  not the tests, so the guard is untested on Windows. `GUARD_PLATFORM` (`darwin|linux|win32`)
+  stands in for the platform in the macOS-only guard checks (a test hook), and G14 and G15
+  assume `/` in paths.
+- `pace` skips a JSON NaN line or a lone surrogate in a transcript and ignores an unwritable
+  cache dir. Local time (the `pace` budget day, the scans) is UTC on Windows.
+- `guard_cursor` reads Cursor's context size with the `sqlite3` command (read-only, 1 s
+  timeout). Without it (a plain Debian or Ubuntu) it reads 0 and never denies on app context;
+  the transcript path still works.
+- `route` names itself `route.py` in its messages, as the old Python tool did.
 
 ## Skills
 
@@ -111,43 +127,19 @@ Cursor is present: it installs the CLI, the Brewfile `vscode` extensions, and ru
 
 ## Opencode
 
-Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source.
-Edit `claude/`, then run `dots`. Step `58-opencode` (`dots/install/opencode.rs`) verifies the
-`opencode` CLI (installed from `tools.list`), and `agent-config opencode` — wired into
-`./dotfiles` itself, so it also runs for `dots settings` — generates what Opencode needs:
+Opencode (the `opencode` CLI and the Opencode app) uses the same `claude/` source: edit it, then
+run `dots`. Step `58-opencode` (`dots/install/opencode.rs`) checks the `opencode` CLI.
+`agent-config opencode` runs in `./dotfiles` itself, so `dots settings` runs it too. It writes
+`AGENTS.md` (the rules with the owner overlay and the output style), `agents/`, the copper theme
+and the guard plugin `plugins/dots-guard.ts` (source `rust/agent-config/src/opencode_plugin.ts.tmpl`)
+under `~/.config/opencode/`, and merges the permissions and MCP servers into `opencode.jsonc`.
+Skills need no step: Opencode reads `~/.claude/skills`.
 
-- **Skills (shared, no extra step):** Opencode reads `~/.claude/skills` natively, and
-  `dots` already links every `claude/skills/<name>` there — all `ps:*`
-  skills work in Opencode, in every project.
-- **Rules:** `~/.config/opencode/AGENTS.md` generated from `claude/CLAUDE.md` with the owner
-  overlay and the active output style. Opencode reads it as its global instructions and only
-  falls back to `~/.claude/CLAUDE.md` when it is missing, and `CLAUDE.md` alone carries
-  neither the owner rules nor the output style.
-- **Agents:** `~/.config/opencode/agents/<name>.md` generated from `claude/agents/*.md`
-  (`mode: subagent`, `permission.skill: allow`; read-only agents also get
-  `permission.edit: deny`). The Claude `model:` pin is dropped because Opencode uses
-  `provider/model-id` — ported agents inherit the session model, so nothing breaks.
-- **Permissions + MCP:** merged into `~/.config/opencode/opencode.jsonc` — translated
-  `claude/settings.json` permissions (your keys win; a rule dropped from the repo is dropped
-  here too, tracked by `~/.config/opencode/.dotfiles-managed.json`) and `cursor/mcp.json`
-  servers, opt-in on every profile (`OPENCODE_MCP="on"` or `DOTFILES_MCP=on`).
-- **Theme:** `~/.config/opencode/themes/copper.json` written from the repo palette, and
-  `"theme": "copper"` set in `tui.json` (its schema takes a theme *name*). A `tui.json`
-  that already names another theme is the user's; it is left alone and reported.
-- **Projects:** `OPENCODE_PROJECTS` paths get `.opencode/opencode.jsonc` symlinked to the
-  global one and `.opencode/agents/*.md` symlinked to the global agents.
-
-- **Guard plugin:** `~/.config/opencode/plugins/dots-guard.ts` (generated, marked; source
-  `rust/agent-config/src/opencode_plugin.ts.tmpl`) runs `rust-bin --hook guard pretool` before every
-  shell, read, grep and MCP call and throws on a deny or an ask (a plugin cannot ask). A file of that
-  name without the marker is the user's and stays.
-
-Opencode does not get output-style switching or connectors, and runs only part of Claude's guard
-checks: G14 to G17 are tested there (table: [`docs/ai-agents.md`](docs/ai-agents.md#where-each-guard-check-runs)).
-Full mapping and gap table:
-[`docs/opencode-port.md`](docs/opencode-port.md). The peer Cursor doc is
-[`docs/cursor-port.md`](docs/cursor-port.md); the user docs start at
-[`docs/README.md`](docs/README.md).
+- A generated file carries the `generated-by: dotfiles` marker. A file without it, and a
+  `tui.json` that names another theme, is the user's and stays.
+- A Claude `model:` pin is dropped from the agents (Opencode names models `provider/model-id`).
+- What each piece holds and which guard checks run there: [`docs/ai-agents.md`](docs/ai-agents.md)
+  "Opencode". Mapping and gaps: [`docs/opencode-port.md`](docs/opencode-port.md).
 
 ## Platforms
 
@@ -155,10 +147,9 @@ Full mapping and gap table:
 first-class: a change must keep each one working. Write docs and messages for all three; name an
 OS only where the behavior really differs.
 
-- Ask the OS with `is_macos`, `is_linux`, `is_windows` and `only_macos <what>` from
-  `scripts/setup-lib.sh`, never inline `uname`. Rust uses `dots::os` (`is_macos`, `is_linux`, `is_windows`). A macOS-only step
-  starts with `only_macos "<what>"`; a Linux-only step with `is_linux || exit 0`; a
-  Windows-only step with `is_windows || exit 0`.
+- Ask the OS with `dots::os` (`is_macos`, `is_linux`, `is_windows`) in Rust and the same names
+  from `scripts/setup-lib.sh` in shell, never inline `uname`. A macOS-only step starts with
+  `if !only_macos("<what>") { return; }`; a Linux-only step with `if !os::is_linux() { return; }`.
 - No GNU-only or BSD-only flags in shared scripts (`sed -i`, `stat`, `date -j`, `readlink -f`).
 - Tests: `scripts/test-dotfiles.sh` on the machine you work on, `scripts/test-linux.sh` for Linux,
   `scripts/os-check.sh windows` for Windows (a UTM VM on a Mac; see "Windows" below).
@@ -290,16 +281,15 @@ email, then shows the menu.
 - **macOS, Linux and Windows:** one code path where possible; OS-only branches behind
   `is_macos`/`is_linux`/`is_windows`.
 - **Idempotent and safe:** steps detect and skip what is installed, back up config before
-  overriding, and warn and continue on failure. Source `scripts/setup-lib.sh`.
+  overriding, and warn and continue on failure.
 - **Short output:** a run with nothing to do prints about 20 lines on every OS, one per step
   (`• Oh My Zsh + plugins: 5 up to date`). `skip` counts instead of printing; a step header waits
   until the step prints something; a written, changed or backed-up file, a warning and an error
-  still print in full. `dots -v` (or `DOTFILES_VERBOSE=1`) prints everything. `skip` lives in two
-  places that must stay in step: `scripts/setup-lib.sh` and
-  `rust/agent-config/src/lib.rs` (the latter prints one `• Opencode config: 12 up to date` line per
-  command). New step: use `skip` for "already there", `uptodate` or `ok_if_changed` for a closing
-  line that only says "fine", `note` for "nothing to do here". The git hooks and
-  `scripts/test-dotfiles.sh` print only failures (`test-dotfiles.sh -v` shows each pass).
+  still print in full. `dots -v` (or `DOTFILES_VERBOSE=1`) prints everything. The helpers live in
+  `rust/agent-config/src/out.rs`. New step: use `skip` for "already there", `uptodate` or
+  `ok_if_changed` for a closing line that only says "fine", `note` for "nothing to do here". The
+  git hooks and `scripts/test-dotfiles.sh` print only failures (`test-dotfiles.sh -v` shows each
+  pass).
 - **Explicit linking:** `./dotfiles` links only the paths in its `LINKS` array. A new managed file
   means a new entry there.
 - **New machine:** `bootstrap.sh` installs Xcode CLT (macOS) or git and curl (Linux), clones

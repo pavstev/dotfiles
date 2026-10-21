@@ -1,7 +1,7 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
-//! Port of the old Python tool harness_stats.py (deleted; its tests are mapped in tests/PORTED.md).
 
-use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name};
+use agent_config::guard_checks::expanduser;
+use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
 use agent_config::pycompat::{civil_from_days, fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
@@ -72,16 +72,6 @@ fn home() -> String {
         return h;
     }
     dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
-}
-
-fn expanduser(p: &str) -> String {
-    if p == "~" {
-        home()
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        format!("{}/{}", home().trim_end_matches('/'), rest)
-    } else {
-        p.to_string()
-    }
 }
 
 fn default_out() -> String {
@@ -338,19 +328,6 @@ fn is_dir(p: &Path) -> bool {
 
 fn lexists(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok()
-}
-
-fn text_of(content: &Value) -> String {
-    match content {
-        Value::String(s) => s.clone(),
-        Value::Array(a) => a
-            .iter()
-            .filter(|x| x.is_object() && get(x, "type").as_str() == Some("text"))
-            .map(|x| get(x, "text").as_str().unwrap_or("").to_string())
-            .collect::<Vec<_>>()
-            .join(" "),
-        _ => String::new(),
-    }
 }
 
 fn norm_error(name: &str, content: &Value) -> String {
@@ -1283,33 +1260,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn float_repr_matches_python() {
-        assert_eq!(py_float(5.0), "5.0");
-        assert_eq!(py_float(12.3), "12.3");
-        assert_eq!(py_float(0.05), "0.05");
-        assert_eq!(py_float(1e16), "1e+16");
-        assert_eq!(py_float(0.00001), "1e-05");
-        assert_eq!(py_float(123456.5), "123456.5");
-    }
-
-    #[test]
-    fn round_is_bankers_on_exact_ties() {
-        assert_eq!(pyround0(2.5), 2);
-        assert_eq!(pyround0(3.5), 4);
-        assert_eq!(pyround(0.25, 1), 0.2);
-        assert_eq!(pyround(2.675, 2), 2.67);
-    }
-
-    #[test]
-    fn dumps_is_python_default() {
-        let v = json!({"a": [1, 2.0, "é\n"], "b": null, "c": "😀"});
-        let b = '\\';
-        let want = format!(r#"{{"a": [1, 2.0, "{b}u00e9{b}n"], "b": null, "c": "{b}ud83d{b}ude00"}}"#);
-        assert_eq!(py_dumps(&v), want);
-    }
 
     #[test]
     fn iso_roundtrip_keeps_offset() {

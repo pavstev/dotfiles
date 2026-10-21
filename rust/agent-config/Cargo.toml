@@ -27,7 +27,7 @@ inquire = { version = "0.9.4", default-features = false, features = ["console", 
 serde = "1" # one test pretty-prints with a custom indent
 
 # Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
-# after a pull about 4 times slower, with the same start-up time (BENCHMARK.md). Keep the default
+# after a pull about 4 times slower, with the same start-up time. Keep the default
 # panic = "unwind": guard and guard_cursor fail open through catch_unwind.
 [profile.release]
 strip = "symbols"
@@ -43,10 +43,6 @@ path = "src/bin/guard_cursor.rs"
 [[bin]]
 name = "guard"
 path = "src/bin/guard.rs"
-
-[[bin]]
-name = "spawn"
-path = "src/bin/spawn.rs"
 
 [[bin]]
 name = "route"
@@ -95,10 +91,6 @@ path = "src/bin/mic_check.rs"
 [[bin]]
 name = "bag_check"
 path = "src/bin/bag_check.rs"
-
-[[bench]]
-name = "hooks"
-harness = false
 
 [[bin]]
 name = "ctx"

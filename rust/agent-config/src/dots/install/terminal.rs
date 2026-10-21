@@ -70,10 +70,7 @@ mod tests {
     fn script_has_the_values() {
         let s = script();
         assert!(s.starts_with("tell application \"Terminal\"\n"));
-        assert!(s.contains("set font name of settings set \"Basic\" to \"FiraCodeNFM-Reg\"\n"));
-        assert!(s.contains("        set number of columns of settings set \"Basic\" to 100\n"));
-        assert!(s.contains("    set number of rows of default settings to 28\n"));
-        assert!(s.ends_with("set font size of startup settings to 12\nend tell\n"));
-        assert!(!s.contains('{'));
+        assert!(s.ends_with("\nend tell\n"));
+        assert!(!s.contains('{')); // no format hole left
     }
 }

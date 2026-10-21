@@ -341,13 +341,8 @@ mod tests {
     }
 
     #[test]
-    fn plain_branch() {
-        let t = repo("ref: refs/heads/main\n");
-        assert_eq!(branch_from_head(t.path()), Some("main".into()));
-    }
-
-    #[test]
     fn branch_with_slash_from_a_subdir() {
+        assert_eq!(branch_from_head(repo("ref: refs/heads/main\n").path()), Some("main".into()));
         let t = repo("ref: refs/heads/feat/x\n");
         let sub = t.path().join("a/b");
         fs::create_dir_all(&sub).unwrap();
@@ -387,35 +382,31 @@ mod tests {
     }
 
     #[test]
-    fn bad_gitdir_file_defers_to_git() {
-        let t = tempfile::tempdir().unwrap();
-        fs::write(t.path().join(".git"), "nonsense\n").unwrap();
-        assert_eq!(branch_from_head(t.path()), None);
-    }
-
-    #[test]
-    fn invalid_branch_defers_to_git() {
-        let t = repo("ref: refs/heads/.invalid\n");
-        assert_eq!(branch_from_head(t.path()), None);
+    fn defers_to_git() {
+        // each case gives None, so the status line asks git itself
+        let gitdir_file = tempfile::tempdir().unwrap();
+        fs::write(gitdir_file.path().join(".git"), "nonsense\n").unwrap();
+        let no_head = tempfile::tempdir().unwrap();
+        fs::create_dir(no_head.path().join(".git")).unwrap();
+        let (invalid, unknown, main) = (repo("ref: refs/heads/.invalid\n"), repo("garbage\n"), repo("ref: refs/heads/main\n"));
+        let plain = tempfile::tempdir().unwrap();
+        let dirs = [
+            gitdir_file.path().to_path_buf(),
+            no_head.path().to_path_buf(),
+            invalid.path().to_path_buf(),
+            unknown.path().to_path_buf(),
+            main.path().join(".git"), // the cwd is inside the git dir
+            plain.path().join("nope"), // a missing cwd
+        ];
+        for dir in dirs {
+            assert_eq!(branch_from_head(&dir), None, "{}", dir.display());
+        }
     }
 
     #[test]
     fn ref_outside_heads_is_empty() {
         let t = repo("ref: refs/remotes/x\n");
         assert_eq!(branch_from_head(t.path()), Some(String::new()));
-    }
-
-    #[test]
-    fn unknown_head_defers_to_git() {
-        let t = repo("garbage\n");
-        assert_eq!(branch_from_head(t.path()), None);
-    }
-
-    #[test]
-    fn git_dir_without_head_defers_to_git() {
-        let t = tempfile::tempdir().unwrap();
-        fs::create_dir(t.path().join(".git")).unwrap();
-        assert_eq!(branch_from_head(t.path()), None);
     }
 
     #[test]
@@ -432,34 +423,21 @@ mod tests {
     }
 
     #[test]
-    fn cwd_inside_git_dir_defers_to_git() {
-        let t = repo("ref: refs/heads/main\n");
-        assert_eq!(branch_from_head(&t.path().join(".git")), None);
-    }
-
-    #[test]
-    fn missing_cwd_defers_to_git() {
-        let t = tempfile::tempdir().unwrap();
-        assert_eq!(branch_from_head(&t.path().join("nope")), None);
-    }
-
-    #[test]
     fn matches_real_git() {
+        let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
         let git = |dir: &Path, args: &[&str]| {
             Command::new("git")
                 .arg("-C")
                 .arg(dir)
                 .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("GIT_CONFIG_GLOBAL", null)
+                .env("GIT_CONFIG_SYSTEM", null)
                 .stdin(Stdio::null())
                 .output()
         };
         let t = tempfile::tempdir().unwrap();
         let ok = |r: std::io::Result<std::process::Output>| r.map(|o| o.status.success()).unwrap_or(false);
-        if !ok(git(t.path(), &["init", "-q", "-b", "main"])) {
-            return; // no git on PATH
-        }
+        assert!(ok(git(t.path(), &["init", "-q", "-b", "main"])), "git is needed for this test");
         let commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"];
         assert!(ok(git(t.path(), &commit)));
         let want = |dir: &Path| {

@@ -100,16 +100,13 @@ pub fn profile() -> String {
 mod tests {
     use super::*;
     #[test]
-    fn replace_first_drop_later() {
+    fn replaced_cases() {
+        // the first line of a name is replaced and later ones dropped
         assert_eq!(replaced("A=\"1\"\nB=\"2\"\nA=\"3\"\n", "A", "x"), "A=\"x\"\nB=\"2\"\n");
-    }
-    #[test]
-    fn append_when_missing() {
+        // a missing name is appended
         assert_eq!(replaced("# note\nB=\"2\"", "A", "x"), "# note\nB=\"2\"\nA=\"x\"\n");
         assert_eq!(replaced("", "A", ""), "A=\"\"\n");
-    }
-    #[test]
-    fn prefix_is_not_a_match() {
+        // a longer name with the same start is no match
         assert_eq!(replaced("AB=\"1\"\n", "A", "x"), "AB=\"1\"\nA=\"x\"\n");
     }
     #[test]

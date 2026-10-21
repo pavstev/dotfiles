@@ -59,7 +59,7 @@ pub fn find(name: &str) -> Option<fn(&Path)> {
     })
 }
 
-/// setup-lib.sh `only_macos`: false on another OS (a line in verbose mode). Call it before `step`.
+/// False on another OS (a line in verbose mode). Call it before `step`.
 pub(crate) fn only_macos(what: &str) -> bool {
     if os::is_macos() { return true; }
     if out::verbose() { out::info(&format!("{}: macOS only, skipping", what)); }

@@ -80,12 +80,8 @@ mod tests {
     }
 
     #[test]
-    fn openai_style_key() {
+    fn openai_and_anthropic_style_keys() {
         gone(&("sk-".to_string() + &rep("a1B2", 10)));
-    }
-
-    #[test]
-    fn anthropic_style_key() {
         gone(&("sk-ant-".to_string() + &rep("aB3_-", 18)));
     }
 

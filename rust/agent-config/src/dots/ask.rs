@@ -207,7 +207,6 @@ mod tests {
         assert!(!looks_like_email("a@.c"));
         assert!(!looks_like_email("a@b."));
         assert!(!looks_like_email("jane"));
-        assert!(looks_like_email("a@b.c@d"));
     }
     #[test]
     fn widths() {

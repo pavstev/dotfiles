@@ -5,7 +5,6 @@
 
 mod common;
 
-use agent_config::codeview::{outline, render};
 use common::{run_bin, temp_home};
 use regex::Regex;
 use std::fs;
@@ -34,13 +33,10 @@ fn temp_file(tag: &str, name: &str, bytes: &[u8]) -> PathBuf {
 }
 
 #[test]
-fn outline_prints_render() {
-    let path = fixture("nested.ts");
-    let text = fs::read_to_string(&path).unwrap();
-    let want = render(&outline(&path, &text).unwrap());
-    let (code, out, _) = ctx(&["outline", &s(&path)]);
+fn outline_prints_the_golden() {
+    let (code, out, _) = ctx(&["outline", &s(&fixture("nested.ts"))]);
     assert_eq!(code, 0);
-    assert_eq!(out, want);
+    assert_eq!(out, fs::read_to_string(fixture("nested.ts.outline")).unwrap());
 }
 
 #[test]
@@ -50,6 +46,10 @@ fn outline_of_unknown_extension_says_no_scanner() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("no scanner"), "{out}");
     assert!(out.contains("3 lines"), "{out}");
+    // read refuses it too
+    let (code, out, _) = ctx(&["read", &s(&path), "x"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("no scanner"), "{out}");
 }
 
 #[test]
@@ -165,13 +165,6 @@ fn big_and_minified_files_refused() {
 }
 
 #[test]
-fn read_refuses_a_file_with_no_scanner() {
-    let (code, out, _) = ctx(&["read", &s(&fixture("unknown.xyz")), "x"]);
-    assert_eq!(code, 1);
-    assert!(out.contains("no scanner"), "{out}");
-}
-
-#[test]
 fn missing_file_is_a_one_line_refusal() {
     let (code, out, err) = ctx(&["outline", "/nonexistent/dir/nope.ts"]);
     assert_eq!(code, 1);
@@ -179,15 +172,26 @@ fn missing_file_is_a_one_line_refusal() {
     assert!(!err.contains("panicked"), "{err}");
 }
 
-#[test]
-fn output_cap() {
+/// `read` of a function `big` that is `body + 2` lines long.
+fn read_big(body: usize) -> (i32, String) {
     let mut src = String::from("function big() {\n");
-    for i in 0..500 {
+    for i in 0..body {
         src.push_str(&format!("  call({i});\n"));
     }
     src.push_str("}\n");
     let path = temp_file("ctx-cap", "big.ts", src.as_bytes());
     let (code, out, _) = ctx(&["read", &s(&path), "big"]);
+    (code, out)
+}
+
+#[test]
+fn output_cap() {
+    // exactly 400 lines are not cut
+    let (code, out) = read_big(398);
+    assert_eq!(code, 0);
+    assert_eq!(out.lines().count(), 1 + 400);
+    assert!(!out.contains("cut at"), "{out}");
+    let (code, out) = read_big(500);
     assert_eq!(code, 0);
     let lines: Vec<&str> = out.lines().collect();
     assert!(lines[0].contains(":1-502  big  "), "{}", lines[0]);
@@ -197,31 +201,10 @@ fn output_cap() {
 }
 
 #[test]
-fn exactly_400_lines_is_not_cut() {
-    let mut src = String::from("function f() {\n");
-    for i in 0..398 {
-        src.push_str(&format!("  call({i});\n"));
-    }
-    src.push_str("}\n");
-    let path = temp_file("ctx-cap400", "f.ts", src.as_bytes());
-    let (code, out, _) = ctx(&["read", &s(&path), "f"]);
-    assert_eq!(code, 0);
-    assert_eq!(out.lines().count(), 1 + 400);
-    assert!(!out.contains("cut at"), "{out}");
-}
-
-#[test]
 fn usage_errors_exit_2() {
     for args in [vec![], vec!["read", "only-a-file.ts"], vec!["frobnicate"], vec!["outline"]] {
         let (code, _, err) = ctx(&args);
         assert_eq!(code, 2, "{args:?}: {err}");
         assert!(!err.is_empty());
     }
-}
-
-#[test]
-fn help_exits_0() {
-    let (code, out, _) = ctx(&["--help"]);
-    assert_eq!(code, 0);
-    assert!(out.contains("outline") && out.contains("read"), "{out}");
 }

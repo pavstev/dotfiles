@@ -1,16 +1,14 @@
+mod common;
+
 use std::fs;
 use std::process::Command;
 
-const NOTE_WORDS: [&str; 9] = [
-    "generalPurpose", "explore", "cursor-guide", "ci-investigator", "bugbot",
-    "security-review", "best-of-n-runner", "~/.claude/agents/<name>.md",
-    "Read ~/.claude/agents/<name>.md first and follow it",
-];
+/// Two marks of the Cursor agents note: the path rule and one Cursor agent name.
+const NOTE_WORDS: [&str; 2] = ["~/.claude/agents/<name>.md", "generalPurpose"];
 
 #[test]
 fn cursor_smoke() {
-    let tmp = std::env::temp_dir().join("rust-ac-cursor");
-    let _ = fs::remove_dir_all(&tmp);
+    let tmp = common::temp_home("cursor");
     let home = tmp.join("home");
     let repo = tmp.join("repo");
     fs::create_dir_all(home.join(".cursor")).unwrap();
@@ -34,8 +32,7 @@ fn cursor_smoke() {
 }
 #[test]
 fn opencode_smoke() {
-    let tmp = std::env::temp_dir().join("rust-ac-opencode");
-    let _ = fs::remove_dir_all(&tmp);
+    let tmp = common::temp_home("opencode");
     let home = tmp.join("home");
     let repo = tmp.join("repo");
     fs::create_dir_all(repo.join("claude")).unwrap();
@@ -52,8 +49,7 @@ fn opencode_smoke() {
 }
 #[test]
 fn user_rules_print() {
-    let tmp = std::env::temp_dir().join("rust-ac-ur");
-    let _ = fs::remove_dir_all(&tmp);
+    let tmp = common::temp_home("rules");
     let home = tmp.join("home");
     let repo = tmp.join("repo");
     fs::create_dir_all(repo.join("claude")).unwrap();

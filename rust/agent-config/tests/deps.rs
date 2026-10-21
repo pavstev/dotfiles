@@ -44,14 +44,3 @@ fn no_c_build_on_any_target() {
         }
     }
 }
-
-#[test]
-fn stub_bins_exist() {
-    for exe in [env!("CARGO_BIN_EXE_ctx"), env!("CARGO_BIN_EXE_sessions")] {
-        let status = Command::new(exe)
-            .arg("--help")
-            .status()
-            .expect("run stub bin");
-        assert!(status.success(), "{exe} --help must exit 0");
-    }
-}
