@@ -203,6 +203,7 @@ win_dlltool() {
   local b h d="${CARGO_HOME:-$HOME/.cargo}/dlltool"
   b="$(RUSTUP_AUTO_INSTALL=0 rustc --print sysroot 2>/dev/null)" || return 0
   h="$(RUSTUP_AUTO_INSTALL=0 rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+  [[ "$h" == *-windows-gnu ]] || return 0   # the MSVC host needs no dlltool
   b="$(cygpath -u "$b")/lib/rustlib/$h/bin"
   [[ -f "$b/llvm-ar.exe" ]] || rustup component add llvm-tools >/dev/null 2>&1 || return 0
   if [[ ! -f "$d/dlltool.exe" || "$b/llvm-ar.exe" -nt "$d/dlltool.exe" ]]; then
