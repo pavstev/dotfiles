@@ -25,6 +25,10 @@ pub fn projects_dir() -> PathBuf {
     paths::home().join(".claude").join("projects")
 }
 
+fn is_jsonl(p: &Path) -> bool {
+    p.extension().is_some_and(|x| x == "jsonl")
+}
+
 /// Transcripts `<projects>/<project>/<prefix>*.jsonl`, or exactly `<prefix>.jsonl`.
 fn session_hits(prefix: &str, exact: bool) -> Vec<PathBuf> {
     let exact_name = format!("{prefix}.jsonl");
@@ -32,7 +36,7 @@ fn session_hits(prefix: &str, exact: bool) -> Vec<PathBuf> {
     for dir in list_dir(&projects_dir()) {
         for f in list_dir(&dir) {
             let name = fname(&f);
-            let ok = if exact { name == exact_name } else { name.starts_with(prefix) && name.ends_with(".jsonl") };
+            let ok = if exact { name == exact_name } else { name.starts_with(prefix) && is_jsonl(&f) };
             if ok {
                 hits.push(f);
             }
@@ -71,7 +75,7 @@ pub fn find_session(arg: Option<&str>, search: Search) -> Option<PathBuf> {
     if search != Search::All {
         let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
         let project = projects_dir().join(NON_ALNUM.replace_all(&cwd, "-").as_ref());
-        let mine: Vec<PathBuf> = list_dir(&project).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
+        let mine: Vec<PathBuf> = list_dir(&project).into_iter().filter(|p| is_jsonl(p)).collect();
         if !mine.is_empty() || search == Search::ThisProject {
             return newest(mine);
         }

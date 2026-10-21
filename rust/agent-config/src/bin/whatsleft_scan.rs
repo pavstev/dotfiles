@@ -14,6 +14,7 @@ use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -267,7 +268,7 @@ fn local_iso(ts: f64) -> String {
     let at = local_datetime((ts * 1e6).round_ties_even() as i64);
     let mut o = at.strftime("%Y-%m-%dT%H:%M:%S").to_string();
     if at.subsec_nanosecond() != 0 {
-        o.push_str(&format!(".{:06}", at.subsec_nanosecond() / 1000));
+        let _ = write!(o, ".{:06}", at.subsec_nanosecond() / 1000);
     }
     o
 }
@@ -472,7 +473,7 @@ fn read_session(path: &Path) -> Session {
         {
             s.cwds.insert(c.to_string());
         }
-        let empty = Value::Object(Default::default());
+        let empty = Value::Object(serde_json::Map::default());
         let m = get(&obj, "message");
         let msg = if truthy(m) && m.is_object() { m } else { &empty };
         let content = get(msg, "content");
@@ -513,7 +514,7 @@ fn read_session(path: &Path) -> Session {
                     s.texts.push(get(b, "text").as_str().unwrap().to_string());
                 } else if bt == "tool_use" {
                     let inp0 = get(b, "input");
-                    let inp = if truthy(inp0) { inp0.clone() } else { Value::Object(Default::default()) };
+                    let inp = if truthy(inp0) { inp0.clone() } else { Value::Object(serde_json::Map::default()) };
                     let id = py_str(get(b, "id"));
                     let name = get(b, "name").as_str().unwrap_or("").to_string();
                     if !s.uses.contains_key(&id) {

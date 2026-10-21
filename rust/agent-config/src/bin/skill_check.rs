@@ -100,7 +100,7 @@ fn parse_frontmatter(text: &str) -> (Fields, String, Vec<String>) {
         };
         let (key, value) = (key.trim().to_string(), value.trim().to_string());
         match fields.iter_mut().find(|(k, _)| *k == key) {
-            Some(slot) => slot.1 = value.clone(),
+            Some(slot) => slot.1.clone_from(&value),
             None => fields.push((key.clone(), value.clone())),
         }
         let Some(q) = value.chars().next() else { continue };
@@ -286,11 +286,11 @@ fn check_skill(path: &Path) -> Report {
         let full = path.join(&target);
         if !full.exists() {
             r.fails.push(format!("link target missing: {target}"));
-        } else if full.to_string_lossy().ends_with(".md") {
+        } else if full.extension().is_some_and(|x| x == "md") {
             let sub = read_text(&full).unwrap_or_default();
             for n in MD_LINK.captures_iter(&sub) {
                 let t = n.get(1).unwrap().as_str();
-                if !NOT_LOCAL.iter().any(|p| t.starts_with(p)) && t.ends_with(".md") {
+                if !NOT_LOCAL.iter().any(|p| t.starts_with(p)) && Path::new(t).extension().is_some_and(|x| x == "md") {
                     r.warns.push(format!("{target} links on to {t} — keep references one level deep"));
                     break;
                 }

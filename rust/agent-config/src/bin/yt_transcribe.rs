@@ -9,6 +9,7 @@ use agent_config::pycompat::{py_is_space, py_repr_str as py_repr, py_strip};
 use clap::{ArgAction, ArgGroup, Parser};
 use regex::Regex;
 use serde_json::{Map, Value};
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -388,7 +389,7 @@ fn render(t: &Transcript, fmt: &str) -> Result<String, String> {
         "markdown" => {
             let mut head = format!("# Transcript: {}\n\nSource: {}", t.video_id, t.source);
             if let Some(l) = t.language.as_deref().filter(|l| !l.is_empty()) {
-                head.push_str(&format!(" ({l})"));
+                let _ = write!(head, " ({l})");
             }
             let lines: Vec<String> =
                 t.segments.iter().map(|s| format!("- **[{}]** {}", stamp(s.start), s.text)).collect();
@@ -597,7 +598,8 @@ fn download_audio(ytdlp: &Path, video_id: &str, dir: &Path) -> Result<PathBuf, S
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            n.starts_with(&format!("{video_id}.")) && !n.ends_with(".part") && !n.ends_with(".ytdl")
+            let partial = matches!(p.extension().and_then(|x| x.to_str()), Some("part" | "ytdl"));
+            n.starts_with(&format!("{video_id}.")) && !partial
         })
         .collect();
     files.sort();
@@ -744,7 +746,7 @@ fn fail(msg: &str) -> i32 {
     1
 }
 
-fn run(cli: Cli) -> i32 {
+fn run(cli: &Cli) -> i32 {
     if cli.print_id {
         return match extract_video_id(&cli.video) {
             Ok(id) => {
@@ -848,7 +850,7 @@ fn main() {
             }
         }
     }
-    std::process::exit(run(Cli::parse()));
+    std::process::exit(run(&Cli::parse()));
 }
 
 #[cfg(test)]

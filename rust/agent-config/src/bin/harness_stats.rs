@@ -2,20 +2,21 @@
 
 use agent_config::guard_checks::expanduser;
 use agent_config::paths;
-use agent_config::pycompat::{civil_from_days, fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
+use agent_config::pycompat::{fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
 use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
 use serde_json::{Map, Number, Value};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::hash::Hash;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 const DOC: &str = "harness_stats: measure Claude Code sessions from local transcripts.
 
@@ -186,20 +187,17 @@ struct Dt {
 impl Dt {
     fn isoformat(&self) -> String {
         let local = self.micros + self.off * 1_000_000;
-        let secs = local.div_euclid(1_000_000);
         let us = local.rem_euclid(1_000_000);
-        let days = secs.div_euclid(86400);
-        let sod = secs.rem_euclid(86400);
-        let (y, m, d) = civil_from_days(days);
-        let mut s = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", y, m, d, sod / 3600, sod % 3600 / 60, sod % 60);
+        let wall = jiff::Timestamp::from_microsecond(local).unwrap_or_default().to_zoned(jiff::tz::TimeZone::UTC);
+        let mut s = wall.datetime().strftime("%Y-%m-%dT%H:%M:%S").to_string();
         if us != 0 {
-            s.push_str(&format!(".{us:06}"));
+            let _ = write!(s, ".{us:06}");
         }
         let sign = if self.off < 0 { '-' } else { '+' };
         let a = self.off.abs();
-        s.push_str(&format!("{}{:02}:{:02}", sign, a / 3600, a % 3600 / 60));
+        let _ = write!(s, "{}{:02}:{:02}", sign, a / 3600, a % 3600 / 60);
         if a % 60 != 0 {
-            s.push_str(&format!(":{:02}", a % 60));
+            let _ = write!(s, ":{:02}", a % 60);
         }
         s
     }
@@ -230,7 +228,7 @@ impl<K: Clone + Eq + Hash> Counter<K> {
     }
     fn add(&mut self, k: K, n: i64) {
         if let Some(&i) = self.idx.get(&k) {
-            self.vals[i] += n
+            self.vals[i] += n;
         } else {
             self.idx.insert(k.clone(), self.keys.len());
             self.keys.push(k);
@@ -542,7 +540,7 @@ fn cmd_collect(a: &CollectArgs) {
     for pdir in list_dir(&projects) {
         for f in list_dir(&pdir) {
             let n = fname(&f);
-            if !n.ends_with(".jsonl") {
+            if f.extension().is_none_or(|x| x != "jsonl") {
                 continue;
             }
             let sid = n[..n.len() - 6].to_string();
@@ -565,8 +563,7 @@ fn cmd_collect(a: &CollectArgs) {
             let mut spawns: Vec<Value> = vec![];
             let mut errors = s.errors.clone();
             for sf in list_dir(&pdir.join(&sid).join("subagents")) {
-                let sfn = fname(&sf);
-                if !sfn.ends_with(".jsonl") {
+                if sf.extension().is_none_or(|x| x != "jsonl") {
                     continue;
                 }
                 let ss = scan(&sf, true);
@@ -1231,9 +1228,9 @@ struct InvArgs {
 }
 
 fn default_since() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let (y, m, d) = civil_from_days(secs.div_euclid(86400) - 14);
-    format!("{y:04}-{m:02}-{d:02}")
+    let two_weeks = jiff::SignedDuration::from_hours(14 * 24);
+    let then = jiff::Timestamp::now().checked_sub(two_weeks).unwrap_or_default();
+    then.to_zoned(jiff::tz::TimeZone::UTC).strftime("%F").to_string()
 }
 
 fn main() {

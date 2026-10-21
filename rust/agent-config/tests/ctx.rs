@@ -7,6 +7,7 @@ mod common;
 
 use common::{run_bin, temp_home};
 use regex::Regex;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -176,7 +177,7 @@ fn missing_file_is_a_one_line_refusal() {
 fn read_big(body: usize) -> (i32, String) {
     let mut src = String::from("function big() {\n");
     for i in 0..body {
-        src.push_str(&format!("  call({i});\n"));
+        let _ = writeln!(src, "  call({i});");
     }
     src.push_str("}\n");
     let path = temp_file("ctx-cap", "big.ts", src.as_bytes());

@@ -284,23 +284,35 @@ struct Run {
     fixes: usize,
 }
 
-impl Run {
-    fn ok(&self, msg: &str) {
-        println!("  OK    {msg}");
+fn ok(msg: &str) {
+    println!("  OK    {msg}");
+}
+
+fn warn(msg: &str) {
+    println!("  WARN  {msg}");
+}
+
+/// The items, each followed by one space.
+fn each_then_space<'a>(items: impl Iterator<Item = &'a str>) -> String {
+    let mut s = String::new();
+    for item in items {
+        s.push_str(item);
+        s.push(' ');
     }
+    s
+}
+
+impl Run {
     fn fix(&mut self, msg: &str) {
         println!("  FIX   {msg}");
         self.fixes += 1;
-    }
-    fn warn(&self, msg: &str) {
-        println!("  WARN  {msg}");
     }
 
     fn report(&mut self, dir: &Path) {
         let top = git_out(dir, &["rev-parse", "--show-toplevel"]);
         if top.is_empty() {
             println!("== {} ==", dir.display());
-            self.warn("not a git repo — skipped");
+            warn("not a git repo — skipped");
             return;
         }
         let root = PathBuf::from(&top);
@@ -309,7 +321,7 @@ impl Run {
         println!("== {}  ({}) ==", base_name(&root), top);
 
         if self.fetch && !git_ok(&root, &["fetch", "--quiet", "--prune"]) {
-            self.warn("git fetch failed — remote state may be old");
+            warn("git fetch failed — remote state may be old");
         }
 
         let branch = g(&["symbolic-ref", "--quiet", "--short", "HEAD"]);
@@ -346,28 +358,25 @@ impl Run {
         let unmerged = g(&["diff", "--name-only", "--diff-filter=U"]);
         let conflicts = count_lines(&unmerged);
         if conflicts > 0 {
-            let names: String = lines_of(&unmerged).iter().take(5).map(|n| format!("{n} ")).collect();
+            let names = each_then_space(lines_of(&unmerged).into_iter().take(5));
             self.fix(&format!("{conflicts} file(s) with merge conflicts: {names}"));
         }
-        let markers: String = lines_of(&g(&["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>) "]))
-            .iter()
-            .take(3)
-            .map(|n| format!("{n} "))
-            .collect();
+        let marked = g(&["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>) "]);
+        let markers = each_then_space(lines_of(&marked).into_iter().take(3));
         if !markers.is_empty() {
             self.fix(&format!("conflict markers in files: {markers}"));
         }
         if state.is_empty() && conflicts == 0 {
-            self.ok("no conflicts, no half-done merge/rebase");
+            ok("no conflicts, no half-done merge/rebase");
         }
 
         // 2. Branch
         if branch.is_empty() {
             self.fix("detached HEAD — not on a branch");
         } else if branch == main {
-            self.ok(&format!("on {main}"));
+            ok(&format!("on {main}"));
         } else {
-            self.warn(&format!("on branch '{branch}', not '{main}' — merge it, or open a PR (ask the user)"));
+            warn(&format!("on branch '{branch}', not '{main}' — merge it, or open a PR (ask the user)"));
         }
 
         // 3. Uncommitted work
@@ -375,7 +384,7 @@ impl Run {
         let unstaged = count_lines(&g(&["diff", "--name-only"]));
         let untracked = count_lines(&g(&["ls-files", "--others", "--exclude-standard"]));
         if staged + unstaged + untracked == 0 {
-            self.ok("working tree clean");
+            ok("working tree clean");
         } else {
             self.fix(&format!("not committed: {staged} staged, {unstaged} changed, {untracked} new file(s)"));
             for l in lines_of(&g(&["status", "--short"])).iter().take(8) {
@@ -399,7 +408,7 @@ impl Run {
                     self.fix(&format!("{behind} commit(s) on {up} not pulled (pull --rebase, then re-check)"));
                 }
                 if ahead == 0 && behind == 0 {
-                    self.ok(&format!("in sync with {up} ({})", g(&["rev-parse", "--short", "HEAD"])));
+                    ok(&format!("in sync with {up} ({})", g(&["rev-parse", "--short", "HEAD"])));
                 }
             }
         }
@@ -407,7 +416,7 @@ impl Run {
         if !branch.is_empty() && branch != main && git_ok(&root, &["show-ref", "--verify", "--quiet", &origin_main]) {
             let notin: usize = g(&["rev-list", "--count", &format!("origin/{main}..HEAD")]).parse().unwrap_or(0);
             if notin > 0 {
-                self.warn(&format!("{notin} commit(s) on '{branch}' are not in origin/{main} yet"));
+                warn(&format!("{notin} commit(s) on '{branch}' are not in origin/{main} yet"));
             }
         }
 
@@ -426,10 +435,10 @@ impl Run {
             }
             if u.is_empty() {
                 if !git_ok(&root, &["merge-base", "--is-ancestor", b, &format!("origin/{main}")]) {
-                    self.warn(&format!("branch '{b}' is local only and not merged"));
+                    warn(&format!("branch '{b}' is local only and not merged"));
                 }
             } else if t.contains("ahead") {
-                self.warn(&format!("branch '{b}' {t} vs {u}"));
+                warn(&format!("branch '{b}' {t} vs {u}"));
             }
         }
 
@@ -437,17 +446,14 @@ impl Run {
         let stashes = g(&["stash", "list"]);
         let s = count_lines(&stashes);
         if s > 0 {
-            self.warn(&format!("{s} stash(es) — forgotten work? ({})", lines_of(&stashes)[0]));
+            warn(&format!("{s} stash(es) — forgotten work? ({})", lines_of(&stashes)[0]));
         }
         let wt = g(&["worktree", "list"]);
         let w = count_lines(&wt);
         if w > 1 {
-            let paths: String = lines_of(&wt)
-                .iter()
-                .skip(1)
-                .map(|l| format!("{} ", l.split_whitespace().next().unwrap_or("")))
-                .collect();
-            self.warn(&format!("{} extra worktree(s): {paths}", w - 1));
+            let first_words = lines_of(&wt).into_iter().skip(1).map(|l| l.split_whitespace().next().unwrap_or(""));
+            let paths = each_then_space(first_words);
+            warn(&format!("{} extra worktree(s): {paths}", w - 1));
         }
 
         // 7. CI for the latest pushed commit
@@ -458,7 +464,7 @@ impl Run {
         // 8. Verification checks this repo offers (the agent runs them)
         let c = checks_for(&root);
         if c.is_empty() {
-            self.warn("no known check command found — ask how this repo is verified, or check README/AGENTS.md");
+            warn("no known check command found — ask how this repo is verified, or check README/AGENTS.md");
         } else {
             println!("  RUN   verification checks for this repo:");
             for l in &c {
@@ -478,7 +484,7 @@ impl Run {
             .unwrap_or_default();
         let procs: Vec<String> = pids.split_whitespace().filter_map(proc_line).take(5).collect();
         if !procs.is_empty() {
-            self.warn("processes still running from this repo:");
+            warn("processes still running from this repo:");
             for p in &procs {
                 println!("          {p}");
             }
@@ -496,7 +502,7 @@ impl Run {
             if git_ok(root, &["merge-base", "--is-ancestor", since, "HEAD"]) {
                 base = g(&["rev-parse", "--verify", "--quiet", &format!("{since}^{{commit}}^")]); // inclusive: the base is the parent
             } else {
-                self.warn(&format!("--since {since} is not an ancestor of HEAD here: no squash range for this repo"));
+                warn(&format!("--since {since} is not an ancestor of HEAD here: no squash range for this repo"));
             }
         } else {
             let revs = g(&["rev-list", &format!("--since={since}"), "HEAD"]);
@@ -507,21 +513,21 @@ impl Run {
         let rng = if base.is_empty() { String::new() } else { format!("{base}..HEAD") };
         let n: usize = if rng.is_empty() { 0 } else { g(&["rev-list", "--count", &rng]).parse().unwrap_or(0) };
         if n == 0 {
-            self.ok(&format!("no session commits since {since} (or the base is not found)"));
+            ok(&format!("no session commits since {since} (or the base is not found)"));
             return;
         }
         let me = g(&["config", "user.email"]);
         let foreign = g(&["log", "--format=%ae", &rng]).lines().filter(|l| *l != me).count();
         let short = g(&["rev-parse", "--short", &base]);
-        self.ok(&format!("{n} session commit(s) on top of base {short} (squash: git reset --soft {short})"));
+        ok(&format!("{n} session commit(s) on top of base {short} (squash: git reset --soft {short})"));
         for l in lines_of(&g(&["log", "--format=          %h %an  %s", &rng])).iter().take(8) {
             println!("{l}");
         }
         if foreign > 0 {
-            self.warn(&format!("{foreign} of those commit(s) have another author — do not squash them"));
+            warn(&format!("{foreign} of those commit(s) have another author — do not squash them"));
         }
         if !g(&["rev-list", "--merges", &rng]).is_empty() {
-            self.warn("merge commit(s) in that range — do not squash");
+            warn("merge commit(s) in that range — do not squash");
         }
     }
 
@@ -537,27 +543,27 @@ impl Run {
         let runs = match out {
             Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim_end_matches('\n').to_string(),
             _ => {
-                self.warn("could not read CI (gh auth?)");
+                warn("could not read CI (gh auth?)");
                 return;
             }
         };
         if runs.is_empty() {
             let short = git_out(root, &["rev-parse", "--short", "HEAD"]);
-            self.warn(&format!("no CI run found for {short} (not pushed yet, or CI not triggered)"));
+            warn(&format!("no CI run found for {short} (not pushed yet, or CI not triggered)"));
             return;
         }
         let bad: BTreeSet<&str> =
             runs.lines().filter(|l| BAD_CI.is_match(l)).filter_map(|l| l.split('|').nth(2)).collect();
         let pending = runs.lines().filter(|l| !l.starts_with("completed")).count();
         if !bad.is_empty() {
-            let names: String = bad.iter().map(|n| format!("{n} ")).collect();
+            let names = each_then_space(bad.iter().copied());
             self.fix(&format!("CI failed on HEAD: {names}"));
         }
         if pending > 0 {
-            self.warn(&format!("{pending} CI run(s) still running on HEAD — wait, then re-check"));
+            warn(&format!("{pending} CI run(s) still running on HEAD — wait, then re-check"));
         }
         if bad.is_empty() && pending == 0 {
-            self.ok("CI green on HEAD");
+            ok("CI green on HEAD");
         }
     }
 }

@@ -209,7 +209,7 @@ struct Counter {
 impl Counter {
     fn add(&mut self, k: &str, n: i64) {
         if let Some(&i) = self.idx.get(k) {
-            self.vals[i] += n
+            self.vals[i] += n;
         } else {
             self.idx.insert(k.to_string(), self.keys.len());
             self.keys.push(k.to_string());
@@ -425,7 +425,7 @@ fn claude_md_files(cwd: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
         }
         d = dirname(&d);
     }
-    let rules = rglob(&claude_dir().join("rules"), |n| n.ends_with(".md"));
+    let rules = rglob(&claude_dir().join("rules"), |n| Path::new(n).extension().is_some_and(|x| x == "md"));
     (found, rules)
 }
 
@@ -448,8 +448,8 @@ impl Weight {
     }
 }
 
-fn static_weight(cwd: &Option<String>) -> Weight {
-    let cwd_s = cwd.clone().unwrap_or_default();
+fn static_weight(cwd: Option<&str>) -> Weight {
+    let cwd_s = cwd.unwrap_or_default().to_string();
     let (files, rules) = claude_md_files(&cwd_s);
     let claude_md: Vec<(PathBuf, usize)> = files.iter().map(|p| (p.clone(), clen(&read_text(p)))).collect();
     let rules_w = (rules.len(), rules.iter().map(|p| clen(&read_text(p))).sum());
@@ -553,7 +553,7 @@ fn machine_load() -> Load {
         for r in text.lines().skip(1) {
             if let Some((a, b, c)) = split_none2(r) {
                 if let (Ok(cpu), Ok(rss)) = (a.parse::<f64>(), b.parse::<i64>()) {
-                    rows.push((cpu, rss.div_euclid(1024), basename(c)))
+                    rows.push((cpu, rss.div_euclid(1024), basename(c)));
                 } else {
                     ok = false;
                     break;
@@ -946,7 +946,7 @@ fn main() {
         Some(w) if w != 0 => w,
         _ => guess_window(&s),
     };
-    let w = static_weight(&s.cwd);
+    let w = static_weight(s.cwd.as_deref());
     let m = machine_load();
     let f = judge(&s, &w, &m, window);
     if a.brief {

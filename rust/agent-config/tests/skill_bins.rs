@@ -4,12 +4,22 @@ mod common;
 
 use common::{run_bin, temp_home};
 use serde_json::{Value, json};
+use std::fmt::{Display, Write as _};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const SCAN: &str = env!("CARGO_BIN_EXE_whatsleft_scan");
 const STATS: &str = env!("CARGO_BIN_EXE_harness_stats");
+
+/// One transcript line per record, each ended by a newline.
+fn lines_text<T: Display>(records: &[T]) -> String {
+    let mut body = String::new();
+    for r in records {
+        let _ = writeln!(body, "{r}");
+    }
+    body
+}
 
 // ---------------------------------------------------------------------------
 // test_route.py
@@ -58,7 +68,7 @@ impl Transcript {
         format!("2026-10-14T10:{:02}:00+00:00", self.n)
     }
 
-    fn tool(&mut self, name: &str, inp: Value, result: &str, error: bool, cwd: Option<&Path>) -> String {
+    fn tool(&mut self, name: &str, inp: &Value, result: &str, error: bool, cwd: Option<&Path>) -> String {
         let tid = format!("toolu_{}", self.n);
         let cwd = cwd.unwrap_or(&self.root).to_string_lossy().into_owned();
         let t = self.ts();
@@ -72,25 +82,25 @@ impl Transcript {
 
     fn edit(&mut self) -> String {
         let p = self.root.join("app.py").to_string_lossy().into_owned();
-        self.tool("Edit", json!({"file_path": p}), "ok", false, None)
+        self.tool("Edit", &json!({"file_path": p}), "ok", false, None)
     }
 
     fn bash(&mut self, cmd: &str) -> String {
-        self.tool("Bash", json!({"command": cmd}), "ok", false, None)
+        self.tool("Bash", &json!({"command": cmd}), "ok", false, None)
     }
 
     fn bash_failing(&mut self, cmd: &str) -> String {
-        self.tool("Bash", json!({"command": cmd}), "ok", true, None)
+        self.tool("Bash", &json!({"command": cmd}), "ok", true, None)
     }
 
     fn bash_in(&mut self, cmd: &str, cwd: &Path) -> String {
-        self.tool("Bash", json!({"command": cmd}), "ok", false, Some(cwd))
+        self.tool("Bash", &json!({"command": cmd}), "ok", false, Some(cwd))
     }
 
     fn bash_bg(&mut self, cmd: &str, bg_id: &str) -> String {
         let res =
             format!("Command running in background with ID: {bg_id}. Output is being written to: /x/{bg_id}.output");
-        self.tool("Bash", json!({"command": cmd, "run_in_background": true}), &res, false, None)
+        self.tool("Bash", &json!({"command": cmd, "run_in_background": true}), &res, false, None)
     }
 
     fn notice(&mut self, tool_id: &str, status: &str, summary: &str, task: &str) {
@@ -106,7 +116,7 @@ impl Transcript {
     /// What `whatsleft_scan` prints for this transcript.
     fn freshness(&self) -> String {
         let path = self.home.join("session.jsonl");
-        let body: String = self.lines.iter().map(|l| format!("{l}\n")).collect();
+        let body = lines_text(&self.lines);
         fs::write(&path, body).unwrap();
         let home = self.home.to_string_lossy().into_owned();
         let (code, out, err) = run_bin(
@@ -325,7 +335,7 @@ fn session(home: &Path, sid: &str, day: &str, spawns: &[(Option<&str>, i64)]) {
         json!({"type": "user", "timestamp": t, "message": {"role": "user", "content": "go"}}),
         usage_rec(&t, 20000, &format!("{sid}m0"), Some(Value::Array(blocks))),
     ];
-    let body: String = recs.iter().map(|r| format!("{r}\n")).collect();
+    let body = lines_text(&recs);
     fs::write(folder.join(format!("{sid}.jsonl")), body).unwrap();
     for (i, (kind, ctx)) in spawns.iter().enumerate() {
         let base = folder.join(sid).join("subagents").join(format!("agent-{sid}{i}"));
