@@ -8,6 +8,7 @@
 //! Sources: the statusline cache (`claude-pace.json`) when fresh, else an estimate from the
 //! transcripts under `$CLAUDE_CONFIG_DIR/projects`. Caches live in `${XDG_CACHE_HOME:-~/.cache}`.
 
+use crate::paths::home;
 use crate::pycompat::{civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float, truthy};
 use regex::Regex;
 use serde_json::Value;
@@ -31,10 +32,78 @@ const CALIBRATE_MIN: f64 = 5.0; // needs this much reported use to calibrate
 const CRITICAL: f64 = 85.0;
 const CHECK_EVERY: u64 = 200; // lines between clock checks
 
+/// Where the week stands against its budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaceState {
+    Ok,
+    Ahead,
+    Critical,
+    Unknown,
+}
+
+impl PaceState {
+    /// The word the CLI and the state files use.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Ahead => "ahead",
+            Self::Critical => "critical",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// True when the week runs ahead or is critical: helpers and plan mode are limited.
+    pub const fn is_tight(self) -> bool {
+        matches!(self, Self::Ahead | Self::Critical)
+    }
+}
+
+impl std::fmt::Display for PaceState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A Claude model family. The order is the cost order: `Haiku < Sonnet < Opus < Fable`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Model {
+    Haiku,
+    Sonnet,
+    Opus,
+    Fable,
+}
+
+impl Model {
+    /// The family named in a model name or id (any case), else None. `opus` is tried first, like
+    /// the price table was.
+    pub fn of(name: &str) -> Option<Self> {
+        let name = name.to_ascii_lowercase();
+        [Self::Opus, Self::Sonnet, Self::Haiku, Self::Fable].into_iter().find(|m| name.contains(m.name()))
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Haiku => "haiku",
+            Self::Sonnet => "sonnet",
+            Self::Opus => "opus",
+            Self::Fable => "fable",
+        }
+    }
+
+    /// (input, output) price per million tokens.
+    const fn price(self) -> (f64, f64) {
+        match self {
+            Self::Opus => (5.0, 25.0),
+            Self::Sonnet => (3.0, 15.0),
+            Self::Haiku => (1.0, 5.0),
+            Self::Fable => (15.0, 75.0),
+        }
+    }
+}
+
 /// The weekly pace: how much is used against how much the week allows so far.
 pub struct Status {
-    /// "ok" | "ahead" | "critical" | "unknown"
-    pub state: String,
+    pub state: PaceState,
     /// Percent of the week used, if known.
     pub used: Option<f64>,
     /// Percent of the week that should be used by today.
@@ -73,11 +142,6 @@ pub struct Paths {
 
 fn env_nonempty(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
-}
-
-fn home() -> PathBuf {
-    let from_env = env_nonempty("HOME").or_else(|| if cfg!(windows) { env_nonempty("USERPROFILE") } else { None });
-    from_env.map(PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("~"))
 }
 
 impl Paths {
@@ -189,50 +253,14 @@ fn py_sum(xs: impl Iterator<Item = f64>) -> f64 {
 // --- time ------------------------------------------------------------------------------------
 
 /// Local (year, month, day) of a unix time.
-#[cfg(all(unix, target_pointer_width = "64"))]
 fn local_ymd(secs: i64) -> (i64, i64, i64) {
-    #[repr(C)]
-    struct Tm {
-        tm_sec: i32,
-        tm_min: i32,
-        tm_hour: i32,
-        tm_mday: i32,
-        tm_mon: i32,
-        tm_year: i32,
-        tm_wday: i32,
-        tm_yday: i32,
-        tm_isdst: i32,
-        tm_gmtoff: i64,
-        tm_zone: *const u8,
+    match jiff::Timestamp::from_second(secs) {
+        Ok(ts) => {
+            let d = ts.to_zoned(jiff::tz::TimeZone::system()).date();
+            (i64::from(d.year()), i64::from(d.month()), i64::from(d.day()))
+        }
+        Err(_) => civil_from_days(secs.div_euclid(86400)),
     }
-    unsafe extern "C" {
-        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
-    }
-    let mut tm = Tm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 0,
-        tm_mday: 0,
-        tm_mon: 0,
-        tm_year: 0,
-        tm_wday: 0,
-        tm_yday: 0,
-        tm_isdst: 0,
-        tm_gmtoff: 0,
-        tm_zone: std::ptr::null(),
-    };
-    // SAFETY: both pointers are valid for the call; localtime_r only writes into `tm`.
-    let r = unsafe { localtime_r(&raw const secs, &raw mut tm) };
-    if r.is_null() {
-        return civil_from_days(secs.div_euclid(86400));
-    }
-    (i64::from(tm.tm_year) + 1900, i64::from(tm.tm_mon) + 1, i64::from(tm.tm_mday))
-}
-
-#[cfg(not(all(unix, target_pointer_width = "64")))]
-fn local_ymd(secs: i64) -> (i64, i64, i64) {
-    // No portable local-time call without a new crate: other platforms count days in UTC.
-    civil_from_days(secs.div_euclid(86400))
 }
 
 fn local_day(t: i64) -> i64 {
@@ -419,14 +447,10 @@ fn fresh_c1(p: &Paths, now: i64) -> Option<(f64, i64)> {
 
 /// (input, output) price per million tokens for a Claude model, else None (free or foreign).
 fn prices(model: &str) -> Option<(f64, f64)> {
-    let m = model.to_lowercase();
-    if m.contains(":free") {
+    if model.to_lowercase().contains(":free") {
         return None;
     }
-    [("opus", (5.0, 25.0)), ("sonnet", (3.0, 15.0)), ("haiku", (1.0, 5.0)), ("fable", (15.0, 75.0))]
-        .iter()
-        .find(|(f, _)| m.contains(f))
-        .map(|(_, p)| *p)
+    Model::of(model).map(Model::price)
 }
 
 /// Cost units of one usage block: cache writes cost 1.25x (5m) or 2x (1h), reads 0.1x.
@@ -445,19 +469,7 @@ fn cost(u: &serde_json::Map<String, Value>, price: (f64, f64)) -> f64 {
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> bool {
-    let Some(&first) = needle.first() else { return true };
-    let mut i = 0;
-    while let Some(off) = hay[i..].iter().position(|&b| b == first) {
-        let s = i + off;
-        if hay.len() - s < needle.len() {
-            return false;
-        }
-        if &hay[s..s + needle.len()] == needle {
-            return true;
-        }
-        i = s + 1;
-    }
-    false
+    memchr::memmem::find(hay, needle).is_some()
 }
 
 /// (message key, timestamp, weight) for a counted assistant record, else None.
@@ -525,7 +537,7 @@ struct Msgs {
 impl Msgs {
     fn set(&mut self, k: String, ts: i64, w: f64) {
         if let Some(&i) = self.idx.get(&k) {
-            self.items[i] = (k, ts, w)
+            self.items[i] = (k, ts, w);
         } else {
             self.idx.insert(k.clone(), self.items.len());
             self.items.push((k, ts, w));
@@ -573,11 +585,12 @@ impl Ent {
     }
 
     fn write(&self, out: &mut String) {
+        use std::fmt::Write as _;
         out.push('{');
         if let Some(s) = self.size {
-            out.push_str(&format!("\"size\":{s},"));
+            let _ = write!(out, "\"size\":{s},");
         }
-        out.push_str(&format!("\"offset\":{},\"mtime\":", self.offset));
+        let _ = write!(out, "\"offset\":{},\"mtime\":", self.offset);
         match self.mtime.as_f64() {
             Some(f) if self.mtime.is_f64() => out.push_str(&py_float(f)),
             _ => out.push_str(&self.mtime.to_string()),
@@ -587,7 +600,7 @@ impl Ent {
             if i > 0 {
                 out.push(',');
             }
-            out.push_str(&format!("{}:[{},{}]", json_str(k), ts, py_float(*w)));
+            let _ = write!(out, "{}:[{},{}]", json_str(k), ts, py_float(*w));
         }
         out.push_str("},\"hits\":[");
         out.push_str(&self.hits.iter().map(ToString::to_string).collect::<Vec<_>>().join(","));
@@ -847,23 +860,17 @@ pub fn seed(used: f64, now: Option<i64>) -> bool {
 
 // --- status ----------------------------------------------------------------------------------
 
-fn state_of(used: Option<f64>, budget: f64) -> &'static str {
+fn state_of(used: Option<f64>, budget: f64) -> PaceState {
     match used {
-        None => "unknown",
-        Some(u) if u >= CRITICAL => "critical",
-        Some(u) if u > budget => "ahead",
-        Some(_) => "ok",
+        None => PaceState::Unknown,
+        Some(u) if u >= CRITICAL => PaceState::Critical,
+        Some(u) if u > budget => PaceState::Ahead,
+        Some(_) => PaceState::Ok,
     }
 }
 
-fn out(state: &str, used: Option<f64>, budget: f64, source: Option<&str>, resets_at: Option<i64>) -> Status {
-    Status {
-        state: state.to_string(),
-        used: used.map(round1),
-        budget: round1(budget),
-        source: source.map(str::to_string),
-        resets_at,
-    }
+fn out(state: PaceState, used: Option<f64>, budget: f64, source: Option<&str>, resets_at: Option<i64>) -> Status {
+    Status { state, used: used.map(round1), budget: round1(budget), source: source.map(str::to_string), resets_at }
 }
 
 fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
@@ -889,7 +896,7 @@ fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
             }
         }
     }
-    Ok(out("unknown", None, budget, None, None))
+    Ok(out(PaceState::Unknown, None, budget, None, None))
 }
 
 /// Weekly pace from the caches only. Never panics; any error gives state "unknown".
@@ -900,14 +907,14 @@ pub fn status_in(p: &Paths, now: Option<i64>) -> Status {
         return s;
     }
     let budget = std::panic::catch_unwind(|| budget_for(now, fallback_week_start(now), p.days)).unwrap_or(0.0);
-    out("unknown", None, budget, None, None)
+    out(PaceState::Unknown, None, budget, None, None)
 }
 
 /// `status_in` over this machine's paths.
 pub fn status(now: Option<i64>) -> Status {
     match std::panic::catch_unwind(Paths::from_env) {
         Ok(p) => status_in(&p, now),
-        Err(_) => out("unknown", None, 0.0, None, None),
+        Err(_) => out(PaceState::Unknown, None, 0.0, None, None),
     }
 }
 
@@ -954,7 +961,7 @@ pub fn status_json(s: &Status) -> String {
     let resets = s.resets_at.map_or("null".to_string(), |r| r.to_string());
     format!(
         "{{\"state\": {}, \"used\": {}, \"budget\": {}, \"source\": {}, \"resets_at\": {}}}",
-        json_str(&s.state),
+        json_str(s.state.as_str()),
         used,
         py_float(s.budget),
         source,
@@ -1242,7 +1249,7 @@ mod tests {
         let st = status_in(&c.p, Some(now));
         assert!(close(st.budget, 16.7, 1), "{}", st.budget);
         assert_eq!(st.used, Some(0.0));
-        assert_eq!(st.state, "ok");
+        assert_eq!(st.state, PaceState::Ok);
     }
 
     #[test]
@@ -1270,7 +1277,7 @@ mod tests {
     fn test_unknown_without_data() {
         let c = pc();
         let st = status_in(&c.p, Some(mon() + 3600));
-        assert_eq!(st.state, "unknown");
+        assert_eq!(st.state, PaceState::Unknown);
         assert_eq!(st.used, None);
         assert_eq!(st.source, None);
         let text = status_json(&st);
@@ -1286,7 +1293,7 @@ mod tests {
         let st = status_in(&c.p, Some(now));
         assert_eq!(st.source.as_deref(), Some("statusline"));
         assert_eq!(st.used, Some(41.2));
-        assert_eq!(st.state, "ok"); // budget 50
+        assert_eq!(st.state, PaceState::Ok); // budget 50
         assert_eq!(st.resets_at, Some(mon() + WEEK_S));
     }
 
@@ -1314,7 +1321,7 @@ mod tests {
     fn test_corrupt_c1_is_ignored() {
         let c = pc();
         write_text(&c.p.file("claude-pace.json"), "{not json");
-        assert_eq!(status_in(&c.p, Some(mon())).state, "unknown");
+        assert_eq!(status_in(&c.p, Some(mon())).state, PaceState::Unknown);
     }
 
     #[test]
@@ -1322,16 +1329,16 @@ mod tests {
         let c = pc();
         let v = json!({"updated": mon(), "five_hour": {"used_percentage": 3, "resets_at": mon() + 100}});
         write_text(&c.p.file("claude-pace.json"), &v.to_string());
-        assert_eq!(status_in(&c.p, Some(mon() + 10)).state, "unknown");
+        assert_eq!(status_in(&c.p, Some(mon() + 10)).state, PaceState::Unknown);
     }
 
     #[test]
     fn test_states() {
         let c = pc();
         let now = mon() + 2 * DAY; // Wednesday, budget 50
-        for (used, want) in
-            [(10.0, "ok"), (50.0, "ok"), (50.5, "ahead"), (84.9, "ahead"), (85.0, "critical"), (100.0, "critical")]
-        {
+        use PaceState::{Ahead, Critical, Ok as Fine};
+        let table = [(10.0, Fine), (50.0, Fine), (50.5, Ahead), (84.9, Ahead), (85.0, Critical), (100.0, Critical)];
+        for (used, want) in table {
             c.c1(now - 10, used, mon() + WEEK_S);
             assert_eq!(status_in(&c.p, Some(now)).state, want, "used {used}");
         }
@@ -1342,7 +1349,7 @@ mod tests {
         let c = pc();
         let now = mon() + 5 * DAY;
         c.c1(now - 10, 90.0, mon() + WEEK_S);
-        assert_eq!(status_in(&c.p, Some(now)).state, "critical");
+        assert_eq!(status_in(&c.p, Some(now)).state, PaceState::Critical);
     }
 
     #[test]
@@ -1482,7 +1489,7 @@ mod tests {
         let old = json!({"at": mon() + DAY, "ws": mon(), "weight": 1e9, "files": 5, "complete": true});
         write_text(&c.p.file("claude-pace-result.json"), &old.to_string());
         write_text(&c.p.file("claude-pace-calib.json"), &json!({"week_weight": 1.3e9, "updated": mon()}).to_string());
-        assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, "unknown"); // old result ignored
+        assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, PaceState::Unknown); // old result ignored
         assert_eq!(week_weight_in(&c.p), Some(DEFAULT_WEEK_WEIGHT)); // old calibration ignored
         c.refresh(5.0, mon() + DAY);
         assert!(close(c.weight(), WEIGHT, 7));
@@ -1576,7 +1583,8 @@ mod tests {
         let path = c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
         c.estimate(mon() + DAY, None);
         let mut text = fs::read_to_string(&path).unwrap();
-        text.push_str(&format!("{}\n", rec(mon() + 90, "m2")));
+        text.push_str(&rec(mon() + 90, "m2").to_string());
+        text.push('\n');
         fs::write(&path, text).unwrap();
         c.refresh(5.0, mon() + DAY);
         assert!(close(c.weight(), 2.0 * WEIGHT, 7));
@@ -1633,14 +1641,14 @@ mod tests {
         let c = pc();
         c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
         c.refresh(5.0, mon() + DAY);
-        assert_eq!(status_in(&c.p, Some(mon() + 8 * DAY)).state, "unknown");
+        assert_eq!(status_in(&c.p, Some(mon() + 8 * DAY)).state, PaceState::Unknown);
     }
 
     #[test]
     fn test_no_transcripts_is_unknown() {
         let c = pc();
         c.refresh(5.0, mon() + DAY);
-        assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, "unknown");
+        assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, PaceState::Unknown);
     }
 
     // TestTimeBudget

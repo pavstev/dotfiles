@@ -11,6 +11,7 @@
 //! dotfiles settings prints the same text without escape codes.
 
 use serde_json::{Map, Value};
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,13 +23,7 @@ const RST: &str = "\x1b[0m";
 /// Context size (in K) from which the segment turns copper.
 const CTX_WARN_K: i64 = 300;
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
+use agent_config::paths::home as home_dir;
 
 /// `jq -r "<path> // empty"`: nothing for null, false or a missing key; strings as they are;
 /// anything else as JSON text.
@@ -194,10 +189,12 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
 
     let mut line = paint(COPPER, &format!(" {dir}"));
     if !branch.is_empty() {
-        line.push_str(&format!("  {}", paint(SAGE, &format!(" {branch}"))));
+        line.push_str("  ");
+        line.push_str(&paint(SAGE, &format!(" {branch}")));
     }
     if !model.is_empty() {
-        line.push_str(&format!("  {}", paint(STONE, &model)));
+        line.push_str("  ");
+        line.push_str(&paint(STONE, &model));
     }
 
     if let Some(tok) = ctx_tokens(input) {
@@ -205,9 +202,10 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
         let code = if k >= CTX_WARN_K { COPPER } else { STONE };
         let mut ctx = format!("ctx {k}K");
         if let Some(p) = int_text(at(input, &["context_window", "used_percentage"])) {
-            ctx.push_str(&format!(" {p}%"));
+            let _ = write!(ctx, " {p}%");
         }
-        line.push_str(&format!("  {}", paint(code, &ctx)));
+        line.push_str("  ");
+        line.push_str(&paint(code, &ctx));
     }
 
     let mut caps = String::new();
@@ -218,10 +216,11 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
         if !caps.is_empty() {
             caps.push_str(" · ");
         }
-        caps.push_str(&format!("7d {p}%"));
+        let _ = write!(caps, "7d {p}%");
     }
     if !caps.is_empty() {
-        line.push_str(&format!("  {}", paint(STONE, &caps)));
+        line.push_str("  ");
+        line.push_str(&paint(STONE, &caps));
     }
     line
 }
@@ -311,7 +310,8 @@ fn main() {
     let color = !(no_color || plain);
     let mut line = render(&input, &pwd, &git_branch, color);
     if let Some(left) = left_segment(&input, color) {
-        line.push_str(&format!("  {left}"));
+        line.push_str("  ");
+        line.push_str(&left);
     }
     let mut out = std::io::stdout();
     let _ = out.write_all(line.as_bytes());

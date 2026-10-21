@@ -14,6 +14,7 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const NUDGE_CONTEXT: i64 = 300_000;
@@ -53,9 +54,8 @@ fn conv_key(data: &Value, mode: &str) -> String {
     } else {
         str_field(data, "conversation_id")
     };
-    let raw_str = raw.unwrap_or("unknown");
-    let re = Regex::new(r"[^A-Za-z0-9_.-]").unwrap();
-    let replaced = re.replace_all(raw_str, "_");
+    static UNSAFE_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^A-Za-z0-9_.-]").unwrap());
+    let replaced = UNSAFE_CHARS.replace_all(raw.unwrap_or("unknown"), "_");
     let key: String = replaced.chars().take(128).collect();
     if key.trim_matches('.').is_empty() { "unknown".to_string() } else { key }
 }
@@ -73,10 +73,7 @@ fn prune_state(dir: &Path) {
         Ok(d) => d.as_secs(),
         Err(_) => return,
     };
-    let read_dir = match fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return,
-    };
+    let Ok(read_dir) = fs::read_dir(dir) else { return };
     let mut files = Vec::new();
     for entry in read_dir.flatten() {
         let path = entry.path();
@@ -170,9 +167,8 @@ fn default_app_db() -> PathBuf {
 }
 
 fn app_context(data: &Value) -> i64 {
-    let conv = match str_field(data, "parent_conversation_id").or_else(|| str_field(data, "conversation_id")) {
-        Some(s) => s,
-        None => return 0,
+    let Some(conv) = str_field(data, "parent_conversation_id").or_else(|| str_field(data, "conversation_id")) else {
+        return 0;
     };
     let path = match env::var("CURSOR_GUARD_APP_DB") {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
@@ -195,14 +191,8 @@ fn app_context(data: &Value) -> i64 {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let mut stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => return 0,
-    };
+    let Ok(mut child) = child else { return 0 };
+    let Some(mut stdout) = child.stdout.take() else { return 0 };
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stdout.read_to_end(&mut buf);
@@ -412,15 +402,14 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
 
 /// Run check `id` when its gate is open (preset on, not in `GUARD_OFF`), the same gate the Claude
 /// guard uses. A check in shadow mode (`GUARD_SHADOW`) logs what it would do and allows.
-fn gated(id: &str, f: impl FnOnce() -> gc::Verdict) -> gc::Verdict {
-    if !gc::check_enabled(id) {
+fn gated(check: gc::Check, f: impl FnOnce() -> gc::Verdict) -> gc::Verdict {
+    if !gc::check_enabled(check) {
         return gc::Verdict::Allow;
     }
     let v = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(gc::Verdict::Allow);
     match &v {
-        gc::Verdict::Allow => v,
-        gc::Verdict::Ask(m) | gc::Verdict::Deny(m) if gc::shadow(id) => {
-            gc::shadow_log(id, &v, m);
+        gc::Verdict::Ask(m) | gc::Verdict::Deny(m) if gc::shadow(check) => {
+            gc::shadow_log(check, &v, m);
             gc::Verdict::Allow
         }
         _ => v,
@@ -431,25 +420,25 @@ fn tool_verdict(call: &ToolCall) -> gc::Verdict {
     let (tool, input, cwd) = (call.tool.as_str(), &call.input, call.cwd.as_path());
     if call.can_ask {
         // G16 runs here: Cursor enforces `ask` on these events only.
-        return gated("G16", || {
+        return gated(gc::Check::G16, || {
             if !gc::g16_applies(tool, input) {
                 return gc::Verdict::Allow;
             }
-            let words = gc::home_dir().map(|h| gc::private_words_at(&h, Some(cwd))).unwrap_or_default();
+            let words = gc::private_words_at(&agent_config::paths::home(), Some(cwd));
             gc::g16_outbound(tool, input, cwd, &words)
         });
     }
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let bash = tool == "Bash";
-    let v = gated("G14", || if bash { gc::g14_sed(command, gc::is_macos()) } else { gc::Verdict::Allow });
+    let v = gated(gc::Check::G14, || if bash { gc::g14_sed(command, gc::is_macos()) } else { gc::Verdict::Allow });
     if v != gc::Verdict::Allow {
         return v;
     }
-    let v = gated("G15", || gc::g15_secrets_at(tool, input, &cwd.to_string_lossy()));
+    let v = gated(gc::Check::G15, || gc::g15_secrets_at(tool, input, &cwd.to_string_lossy()));
     if v != gc::Verdict::Allow {
         return v;
     }
-    gated("G17", || if bash { gc::g17_attribution(command, cwd) } else { gc::Verdict::Allow })
+    gated(gc::Check::G17, || if bash { gc::g17_attribution(command, cwd) } else { gc::Verdict::Allow })
 }
 
 /// Answer one tool event. Always prints a permission answer; any failure allows.
@@ -493,10 +482,7 @@ fn main() {
 }
 
 fn run() -> i32 {
-    let cli = match Cli::try_parse() {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
+    let Ok(cli) = Cli::try_parse() else { return 0 };
     let mode = match cli.mode.as_deref() {
         Some(m) if ["prompt", "subagent", "compact", "response", "tool"].contains(&m) => m,
         _ => return 0,

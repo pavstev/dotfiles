@@ -9,6 +9,7 @@
 
 use agent_config::pycompat::{Item, classify_arg, py_strip, repr_str};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 
 const KINDS: &[&str] =
@@ -140,7 +141,9 @@ fn json_escape(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\u{8}' => out.push_str("\\b"),
             '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
             c => out.push(c),
         }
     }
@@ -338,9 +341,8 @@ impl Reader {
             if u + 5 >= n {
                 return Err(JErr { msg: "Invalid \\uXXXX escape", pos: u });
             }
-            let mut code = match self.hex4(u + 1) {
-                Some(v) => v,
-                None => return Err(JErr { msg: "Invalid \\uXXXX escape", pos: u }),
+            let Some(mut code) = self.hex4(u + 1) else {
+                return Err(JErr { msg: "Invalid \\uXXXX escape", pos: u });
             };
             i = u + 5;
             if (0xD800..=0xDBFF).contains(&code) && i + 6 < n && self.s[i] == '\\' && self.s[i + 1] == 'u' {
@@ -504,16 +506,10 @@ fn bad(msg: String) -> Result<(Vec<Row>, Vec<String>), String> {
 /// Python's `validate`: rows with a default id where one is missing, without the rows that have no
 /// text, plus one note per dropped row. The caller's rows are not changed.
 fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
-    let list = match rows {
-        Py::List(l) => l,
-        _ => return bad("rows must be a JSON list".into()),
-    };
+    let Py::List(list) = rows else { return bad("rows must be a JSON list".into()) };
     let mut dicts: Vec<&[(String, Py)]> = Vec::new();
     for (i, r) in list.iter().enumerate() {
-        let d = match r {
-            Py::Dict(d) => d,
-            _ => return bad(format!("row {}: not an object", i + 1)),
-        };
+        let Py::Dict(d) = r else { return bad(format!("row {}: not an object", i + 1)) };
         match dget(d, "id") {
             None | Some(Py::Null | Py::Str(_)) => {}
             Some(_) => return bad(format!("row {}: id must be a string", i + 1)),
