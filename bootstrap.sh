@@ -84,11 +84,18 @@ else
         if [[ "$t" != "$after" ]] && ! git -C "$REPO_DIR" merge-base --is-ancestor "$t" "$after" 2>/dev/null &&
           git -C "$REPO_DIR" merge-base --is-ancestor HEAD "$t" 2>/dev/null; then old_tip="$t"; break; fi
       done
-      if [[ -n "$after" && -n "$old_tip" ]] &&
-        [[ -z "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]] &&
-        git -C "$REPO_DIR" branch "before-rewrite-$(date +%Y%m%d-%H%M%S)" HEAD &&
+      # Edited files (an editor writes through its linked settings file) are saved as a patch first.
+      stamp="$(date +%Y%m%d-%H%M%S)"
+      patch=""
+      if [[ -n "$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)" ]]; then
+        patch="$HOME/.config/dotfiles/before-rewrite-$stamp.patch"
+        mkdir -p "$HOME/.config/dotfiles" && git -C "$REPO_DIR" diff HEAD --binary >"$patch" || patch="?"
+      fi
+      if [[ -n "$after" && -n "$old_tip" && "$patch" != "?" ]] &&
+        git -C "$REPO_DIR" branch "before-rewrite-$stamp" HEAD &&
         git -C "$REPO_DIR" -c core.autocrlf=false reset --hard --quiet '@{u}'; then
         info "The history was rewritten upstream. This clone had no work of its own, so it moved to the new one."
+        [[ -z "$patch" ]] || info "Your edits to tracked files are saved in $patch (git apply it to bring them back)."
       else
         info "(couldn't fast-forward — local changes? continuing with what's here)"
       fi

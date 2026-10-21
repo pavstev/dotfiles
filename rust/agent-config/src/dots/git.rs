@@ -27,7 +27,10 @@ pub fn head(repo: &Path) -> String {
 /// change a file edited here stops, instead of leaving conflict markers in a live config.
 /// When the origin history was rewritten and this clone has no work of its own, it moves
 /// to the new history (`heal_rewrite`).
-pub fn pull(repo: &Path) -> bool {
+pub fn pull(repo: &Path) -> bool { pull_saving_to(repo, &os::home().join(".config").join("dotfiles")) }
+
+/// `pull`, with the folder that gets the patch of saved edits.
+fn pull_saving_to(repo: &Path, saved_dir: &Path) -> bool {
     let r = repo.to_string_lossy();
     let before = out(&["-C", &r, "rev-parse", "--verify", "-q", "@{u}"]).unwrap_or_default();
     let pulled = Command::new("git")
@@ -37,15 +40,15 @@ pub fn pull(repo: &Path) -> bool {
         .stdin(Stdio::null())
         .stderr(Stdio::null()) // git's hint block; the caller warns in one line
         .status().map(|s| s.success()).unwrap_or(false);
-    pulled || heal_rewrite(repo, &before)
+    pulled || heal_rewrite(repo, &before, saved_dir)
 }
 
 /// The pull failed. Safe to reset to the new upstream only when all of these hold: an old
 /// upstream tip (the one before this pull, or one in the upstream reflog, for a clone that
 /// fetched earlier) is missing from the new upstream (a force push), HEAD was inside that old
-/// tip (no commit of our own), and no tracked file is changed. The old HEAD stays reachable
-/// as the branch `before-rewrite-<time>`.
-fn heal_rewrite(repo: &Path, before: &str) -> bool {
+/// tip (no commit of our own). Edits to tracked files are saved as a patch. The old HEAD stays
+/// reachable as the branch `before-rewrite-<time>`.
+fn heal_rewrite(repo: &Path, before: &str, saved_dir: &Path) -> bool {
     let r = repo.to_string_lossy();
     let Some(after) = out(&["-C", &r, "rev-parse", "--verify", "-q", "@{u}"]) else { return false };
     let anc = |a: &str, b: &str| ok_run(&["-C", &r, "merge-base", "--is-ancestor", a, b]);
@@ -58,12 +61,30 @@ fn heal_rewrite(repo: &Path, before: &str) -> bool {
     let tips: Vec<&str> = log.lines().flat_map(|l| l.split(' ').take(2)).collect();
     let old_tip = std::iter::once(before).chain(tips.into_iter().rev())
         .find(|t| !t.is_empty() && *t != after && !anc(t, &after) && anc("HEAD", t));
-    if old_tip.is_none() || !changed(repo).is_empty() { return false; }
+    if old_tip.is_none() { return false; }
     let keep = format!("before-rewrite-{}", os::timestamp());
+    // Edited files (an editor writes through its linked settings file) go to a patch first.
+    let saved = if changed(repo).is_empty() { None } else {
+        let Some(p) = save_edits(repo, saved_dir, &keep) else { return false };
+        Some(p)
+    };
     if !ok_run(&["-C", &r, "branch", &keep, "HEAD"]) { return false; }
     if !ok_run(&["-C", &r, "-c", "core.autocrlf=false", "reset", "--hard", "--quiet", "@{u}"]) { return false; }
     info(&format!("the dotfiles history was rewritten upstream; this clone had no work of its own, so it moved to the new one (old state: branch {})", keep));
+    if let Some(p) = saved { info(&format!("your edits to tracked files are saved in {} (git apply it to bring them back)", p.display())); }
     true
+}
+
+/// Write the edits to tracked files as a patch next to the private settings. None when
+/// the diff is empty, git fails or the file can't be written.
+fn save_edits(repo: &Path, dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    let o = Command::new("git").args(["-C", &repo.to_string_lossy(), "diff", "HEAD", "--binary"])
+        .stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    if !o.status.success() || o.stdout.is_empty() { return None; }
+    fs::create_dir_all(dir).ok()?;
+    let p = dir.join(format!("{}.patch", name));
+    fs::write(&p, &o.stdout).ok()?;
+    Some(p)
 }
 
 /// The tracked files changed here, each followed by a space (as `tr '\n' ' '` gives).
@@ -155,15 +176,22 @@ mod tests {
     }
 
     #[test]
-    fn keeps_own_commits_and_edits() {
+    fn keeps_own_commits() {
         let (_t, o, c) = rewritten();
         commit(&c, "b", "mine");
         assert!(!pull(&c));
         assert_ne!(head(&c), head(&o));
-        let (_t2, o2, c2) = rewritten();
-        fs::write(c2.join("a"), "edited").unwrap();
-        assert!(!pull(&c2));
-        assert_ne!(head(&c2), head(&o2));
-        assert_eq!(fs::read_to_string(c2.join("a")).unwrap(), "edited");
+    }
+
+    #[test]
+    fn heals_an_edited_clone_and_saves_the_edit() {
+        let (_t, o, c) = rewritten();
+        fs::write(c.join("a"), "edited").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        assert!(pull_saving_to(&c, home.path()));
+        assert_eq!(head(&c), head(&o));
+        let saved: Vec<_> = fs::read_dir(home.path()).unwrap().flatten().collect();
+        assert_eq!(saved.len(), 1);
+        assert!(fs::read_to_string(saved[0].path()).unwrap().contains("+edited"));
     }
 }

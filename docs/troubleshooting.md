@@ -35,6 +35,7 @@ to see every command.
 
 **`couldn't pull` after the history was rewritten.** When the upstream history is rewritten (a
 force push), `dots` and the bootstrap one-liner move a clone to it by themselves, but only when the
-clone has no commits and no changed tracked files of its own. The old state stays as a branch
-`before-rewrite-<time>`. A clone with its own work keeps it and warns. Save your work, then run
+clone has no commits of its own. Edits to tracked files (an editor writes through its linked
+settings file) are saved as `~/.config/dotfiles/before-rewrite-<time>.patch` first. The old state
+stays as a branch `before-rewrite-<time>`. A clone with its own commits keeps them and warns. Save your work, then run
 `git -C ~/dotfiles fetch && git -C ~/dotfiles reset --hard origin/main`.
