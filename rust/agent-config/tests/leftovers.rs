@@ -173,6 +173,17 @@ fn outside_git_is_exit_two() {
 }
 
 #[test]
+fn mic_check_note_outside_git_is_exit_two() {
+    let home = temp_home("lo-mic-nogit");
+    let plain = home.join("plain");
+    fs::create_dir_all(&plain).unwrap();
+    let env = [("HOME", s(&home)), ("GIT_CEILING_DIRECTORIES", s(&home))];
+    let (code, _, err) = run_bin(env!("CARGO_BIN_EXE_mic_check"), &["--note", "x"], "", &env, Some(&plain));
+    assert_eq!(code, 2);
+    assert!(err.contains("not inside a git repository"), "{err}");
+}
+
+#[test]
 fn compact_keeps_open_and_recent_closed_items() {
     let (home, repo) = temp_repo("lo-compact");
     let (_, out, _) = run(&home, &repo, &["add", "stays open"]);
@@ -248,6 +259,30 @@ fn import_splits_the_old_file_and_keeps_it_until_all_resolve() {
     assert!(!old.exists());
     assert_eq!(run(&home, &repo, &["count"]).1, "2\n");
     assert_eq!(run(&home, &other, &["count"]).1, "1\n");
+}
+
+#[test]
+fn whatsleft_scan_shows_the_open_leftovers_of_a_touched_repo() {
+    let (home, repo) = temp_repo("lo-scan");
+    let (_, out, _) = run(&home, &repo, &["add", "parked idea"]);
+    let done = added_id(&out);
+    run(&home, &repo, &["add", "also parked"]);
+    run(&home, &repo, &["done", &done]);
+    // a one-call transcript that ran in the repo
+    let cwd = repo.canonicalize().unwrap().to_string_lossy().into_owned();
+    let call = serde_json::json!({"type": "assistant", "timestamp": "2026-10-14T10:01:00+00:00", "cwd": cwd,
+        "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}});
+    let reply = serde_json::json!({"type": "user", "timestamp": "2026-10-14T10:02:00+00:00",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok", "is_error": false}]}});
+    let session = home.join("session.jsonl");
+    fs::write(&session, format!("{call}\n{reply}\n")).unwrap();
+    let env = [("HOME", s(&home)), ("GIT_CEILING_DIRECTORIES", s(&home))];
+    let args = ["--session", s(&session), "--no-fetch", "--no-ci"];
+    let (code, out, err) = run_bin(env!("CARGO_BIN_EXE_whatsleft_scan"), &args, "", &env, Some(&repo));
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("== LEFTOVERS (") && out.contains("leftovers.jsonl) =="), "{out}");
+    assert!(out.contains("LATER") && out.contains(" · **proj** · also parked"), "{out}");
+    assert!(!out.contains("parked idea"), "{out}");
 }
 
 #[test]

@@ -5,7 +5,7 @@
 //! mic_check [repo...]            report for each repo (default: current repo)
 //! mic_check --no-fetch           skip `git fetch` (offline / fast)
 //! mic_check --note "text" [repo] append an optional leftover (tagged with that repo, default: current)
-//! mic_check --leftovers          print the leftovers file
+//! mic_check --leftovers [repo]   print the open leftovers of the repo (default: current)
 //! mic_check --since <sha|time> [repo]  also list this session's commits since that sha or time (for squash)
 //! ```
 //!
@@ -19,14 +19,13 @@
 //!
 //! Last line: VERDICT: CLEAN (exit 0) | NOT CLEAN (n mandatory) (exit 1)
 
-use agent_config::paths;
+use agent_config::leftovers::{self, Store};
 use agent_config::pycompat::is_executable;
 use agent_config::{quiet_print as print, quiet_println as println};
 use clap::Parser;
 use clap::error::{ContextKind, ErrorKind};
 use regex::Regex;
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::LazyLock;
@@ -36,7 +35,7 @@ mic_check: is this repo really done? Read-only (except `git fetch`).
   mic_check [repo...]            report for each repo (default: current repo)
   mic_check --no-fetch           skip `git fetch` (offline / fast)
   mic_check --note \"text\" [repo] append an optional leftover (tagged with that repo, default: current)
-  mic_check --leftovers          print the leftovers file
+  mic_check --leftovers [repo]   print the open leftovers of the repo (default: current)
   mic_check --since <sha|time> [repo]  also list this session's commits since that sha or time (for squash)
 Every line is tagged:
   OK    nothing to do
@@ -44,13 +43,6 @@ Every line is tagged:
   WARN  look at it; fix or note it as a leftover
 Last line: VERDICT: CLEAN (exit 0) | NOT CLEAN (n mandatory) (exit 1)
 ";
-
-fn leftovers_path() -> PathBuf {
-    std::env::var_os("MIC_LEFTOVERS")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| paths::home().join(".claude").join("leftovers.md"))
-}
 
 /// Run `git -C dir args`: (success, stdout with trailing newlines cut).
 fn git(dir: &Path, args: &[&str]) -> (bool, String) {
@@ -82,38 +74,32 @@ fn on_path(name: &str) -> bool {
     std::env::split_paths(&paths).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
 }
 
-/// Today's local date, `YYYY-MM-DD`.
-fn today() -> String {
-    jiff::Zoned::now().strftime("%F").to_string()
-}
-
 fn base_name(p: &Path) -> String {
     p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// Append a leftover under today's date and the repo name of `dir`.
-fn note(text: &str, dir: &Path) -> i32 {
-    let left = leftovers_path();
-    let top = git_out(dir, &["rev-parse", "--show-toplevel"]);
-    let name = if top.is_empty() { base_name(dir) } else { base_name(Path::new(&top)) };
-    if let Some(parent) = left.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// Add a leftover to the project of `dir` (see `agent_config::leftovers`).
+fn note(text: &str, dir: &Path) -> Result<(), leftovers::Error> {
+    let store = Store::at(dir)?;
+    let added = store.add(text, &[])?;
+    println!("saved to {}", store.path().display());
+    if added.ignore_added {
+        println!("added .agents/ to {} (commit it)", store.root().join(".gitignore").display());
     }
-    if !left.is_file() {
-        let _ = std::fs::write(&left, "# Leftovers\n\nOptional fixes saved by ps:mic-drop. Delete a line when done.\n");
+    Ok(())
+}
+
+/// Print the open leftovers of the project of `dir`.
+fn show_leftovers(dir: &Path) -> Result<(), leftovers::Error> {
+    let store = Store::at(dir)?;
+    if !store.path().is_file() {
+        println!("no leftovers here ({})", store.path().display());
+        return Ok(());
     }
-    let line = format!("- [ ] {} · **{}** · {}\n", today(), name, text);
-    let res = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(&left)
-        .and_then(|mut f| f.write_all(line.as_bytes()));
-    if let Err(e) = res {
-        eprintln!("mic_check: cannot write {}: {e}", left.display());
-        return 1;
+    for line in leftovers::list_lines(&store.items(), false) {
+        println!("{line}");
     }
-    println!("saved to {}", left.display());
-    0
+    Ok(())
 }
 
 fn regex(pattern: &str) -> Regex {
@@ -584,7 +570,7 @@ struct Cli {
     /// Append a leftover. Free text, so it may start with a dash.
     #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
     note: Option<String>,
-    /// Print the leftovers file.
+    /// Print the open leftovers of the repo.
     #[arg(long)]
     leftovers: bool,
     /// Repos to report on (default: the current repo).
@@ -615,20 +601,22 @@ fn main() -> ExitCode {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if cli.leftovers {
-        let left = leftovers_path();
-        match std::fs::read_to_string(&left) {
-            Ok(t) => print!("{t}"),
-            Err(_) => println!("no leftovers file yet ({})", left.display()),
-        }
-        return ExitCode::SUCCESS;
-    }
     let mut run = Run { fetch: !cli.no_fetch, since: cli.since.unwrap_or_default(), fixes: 0 };
     let mut repos = cli.repos;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if let Some(text) = cli.note {
+    if cli.leftovers || cli.note.is_some() {
         let dir = repos.first().cloned().unwrap_or(cwd);
-        return ExitCode::from(note(&text, &dir) as u8);
+        let done = match cli.note {
+            Some(text) => note(&text, &dir),
+            None => show_leftovers(&dir),
+        };
+        return done.map_or_else(
+            |e| {
+                eprintln!("mic_check: {e}");
+                ExitCode::from(e.code())
+            },
+            |()| ExitCode::SUCCESS,
+        );
     }
     if repos.is_empty() {
         repos.push(cwd);
@@ -636,10 +624,11 @@ fn main() -> ExitCode {
     for r in &repos {
         run.report(r);
     }
-    let left = leftovers_path();
-    if let Ok(text) = std::fs::read_to_string(&left) {
-        let open = text.lines().filter(|l| l.starts_with("- [ ]")).count();
-        println!("leftovers file: {} ({open} open)", left.display());
+    let mut seen = BTreeSet::new();
+    for store in repos.iter().filter_map(|r| Store::at(r).ok()).filter(|s| seen.insert(s.path().to_path_buf())) {
+        if store.path().is_file() {
+            println!("leftovers file: {} ({} open)", store.path().display(), store.open_items().len());
+        }
     }
     if run.fixes == 0 {
         println!("VERDICT: CLEAN");

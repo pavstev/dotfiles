@@ -408,8 +408,8 @@ fn mic_check_since_note_and_leftovers() {
     let (home, repo) = temp_repo("mic-since", 3);
     let second = git(&repo, &["rev-parse", "--short", "HEAD~1"]);
     let first = git(&repo, &["rev-parse", "--short", "HEAD~2"]);
-    let left = home.join("left.md");
-    let env = [("HOME", s(&home)), ("MIC_LEFTOVERS", s(&left))];
+    let left = repo.canonicalize().unwrap().join(".agents").join("leftovers.jsonl");
+    let env = [("HOME", s(&home))];
     let (_, out, _) = run_bin(MIC_CHECK, &["--no-fetch", "--since", &second], "", &env, Some(&repo));
     assert!(
         out.contains(&format!(
@@ -427,18 +427,19 @@ fn mic_check_since_note_and_leftovers() {
         out.contains("  WARN  --since deadbeef is not an ancestor of HEAD here: no squash range for this repo\n"),
         "{out}"
     );
-    // --leftovers before and after a note
-    let (code, out, _) = run_bin(MIC_CHECK, &["--leftovers"], "", &env, None);
+    // --leftovers before and after a note: the store is in the repo, git-ignored
+    let (code, out, _) = run_bin(MIC_CHECK, &["--leftovers"], "", &env, Some(&repo));
     assert_eq!(code, 0);
-    assert_eq!(out, format!("no leftovers file yet ({})\n", left.display()));
+    assert_eq!(out, format!("no leftovers here ({})\n", left.display()));
     let (code, out, _) = run_bin(MIC_CHECK, &["--note", "tidy later"], "", &env, Some(&repo));
-    assert_eq!((code, out), (0, format!("saved to {}\n", left.display())));
+    let ignore = repo.canonicalize().unwrap().join(".gitignore");
+    let want = format!("saved to {}\nadded .agents/ to {} (commit it)\n", left.display(), ignore.display());
+    assert_eq!((code, out), (0, want));
     let text = fs::read_to_string(&left).unwrap();
-    assert!(
-        text.starts_with("# Leftovers\n\nOptional fixes saved by ps:mic-drop. Delete a line when done.\n- [ ] "),
-        "{text}"
-    );
-    assert!(text.ends_with(" · **demo-repo** · tidy later\n"), "{text}");
+    assert!(text.starts_with("{\"v\":1,\"op\":\"add\",\"id\":\""), "{text}");
+    assert!(text.ends_with("\"text\":\"tidy later\",\"tags\":[],\"from\":\"demo-repo\"}\n"), "{text}");
+    let (_, out, _) = run_bin(MIC_CHECK, &["--leftovers"], "", &env, Some(&repo));
+    assert!(out.ends_with("  tidy later\n") && out.lines().count() == 1, "{out}");
     let (_, out, _) = run_bin(MIC_CHECK, &["--no-fetch"], "", &env, Some(&repo));
     assert!(out.contains(&format!("leftovers file: {} (1 open)\n", left.display())), "{out}");
     // --since needs a value
