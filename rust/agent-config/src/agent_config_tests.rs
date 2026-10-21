@@ -101,8 +101,8 @@ impl Fx {
         fs::create_dir_all(&home).unwrap();
         set_env("HOME", &home);
         set_env("DOTFILES_REPO", &repo);
-        set_env("DOTFILES_VERBOSE", "1"); // the tests read each line; the Quiet tests are in tests/agent_config.rs
-        set_env("NO_COLOR", "1");
+        out::set_verbose(true); // the tests read each line; the Quiet tests are in tests/agent_config.rs
+        out::set_color(false);
         for k in ["DOTFILES_PROFILE", "DOTFILES_MCP", "DOTFILES_PROJECTS", "DOTFILES_WARN_FILE"] {
             unset_env(k);
         }
@@ -112,7 +112,7 @@ impl Fx {
         let g = claude.join("hooks").join("rust-bin");
         wr(&claude.join("CLAUDE.md"), CLAUDE_MD_TEXT);
         wr(&g, "# fake guard\n");
-        assert_eq!(home_dir(), home); // never the real HOME
+        assert_eq!(paths::home(), home); // never the real HOME
         Self { _guard: guard, _dir: dir, tmp, home, repo, claude, cursor_src, guard: g }
     }
 

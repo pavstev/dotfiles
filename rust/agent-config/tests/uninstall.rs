@@ -141,6 +141,6 @@ fn asks_first_and_rejects_bad_arguments() {
     assert!(home.join(".claude/agents").symlink_metadata().is_ok());
     let (code, _, err) = dots(&home, &repo, &["uninstall", "--now"]);
     assert_eq!(code, 2);
-    assert!(err.contains("usage: dots uninstall"), "stderr: {err}");
+    assert!(err.contains("Usage: dots uninstall"), "stderr: {err}"); // clap's wording
     let _ = fs::remove_dir_all(tmp);
 }

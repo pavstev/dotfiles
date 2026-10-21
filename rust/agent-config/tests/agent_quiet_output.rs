@@ -4,32 +4,18 @@
 //!
 //! The skip and written counters and the verbose switch are process-wide. They live in a test file of
 //! their own, with a lock, so no other test spends the counts.
-use agent_config::out::{self, capture, header, ok, skip};
+use agent_config::out::{self, capture, header, ok, set_verbose, skip, wrote};
 use std::sync::{Mutex, MutexGuard};
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// A quiet run (no DOTFILES_VERBOSE, no colour) with the counters spent.
+/// A quiet run (verbose off, no colour) with the counters spent.
 fn quiet() -> MutexGuard<'static, ()> {
     let g = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: every test of this file holds LOCK, and no other thread reads these variables.
-    unsafe {
-        std::env::remove_var("DOTFILES_VERBOSE");
-        std::env::set_var("NO_COLOR", "1");
-    }
+    set_verbose(false);
+    out::set_color(false);
     call(|| out::summary("drain"));
     g
-}
-
-fn set_verbose(on: bool) {
-    // SAFETY: as in `quiet`.
-    unsafe {
-        if on {
-            std::env::set_var("DOTFILES_VERBOSE", "1");
-        } else {
-            std::env::remove_var("DOTFILES_VERBOSE");
-        }
-    }
 }
 
 /// What `f` printed to stdout.
@@ -56,7 +42,7 @@ fn test_written_files_keep_their_line_and_join_the_count() {
     let _g = quiet();
     let o = call(|| {
         skip("a");
-        ok("wrote ~/x");
+        wrote("wrote ~/x");
         ok("removed ~/y (gone)");
     });
     assert!(o.contains("✓ wrote ~/x"), "{o}");

@@ -4,12 +4,9 @@ use super::{install, os, settings};
 use crate::out::{info, step_end};
 use std::path::Path;
 
-/// The only steps a Windows run executes.
-const WINDOWS: [&str; 2] = ["12-tools", "57-claude-code"];
-
 /// The step names, in run order.
 pub fn names() -> Vec<String> {
-    install::STEPS.iter().map(ToString::to_string).collect()
+    install::STEPS.iter().map(|s| s.name.to_string()).collect()
 }
 
 /// Whether a step runs. `only`: DOTFILES_STEPS (runs just those, also ones in
@@ -19,7 +16,7 @@ pub fn wanted(name: &str, only: &str, skip: &str, windows: bool) -> Result<(), O
     if only_set && !only.split_whitespace().any(|s| s == name) {
         return Err(None);
     }
-    if windows && !only_set && !WINDOWS.contains(&name) {
+    if windows && !only_set && !install::find(name).is_some_and(|s| s.windows) {
         return Err(None);
     }
     if skip.split_whitespace().any(|s| s == name) {
@@ -29,10 +26,11 @@ pub fn wanted(name: &str, only: &str, skip: &str, windows: bool) -> Result<(), O
 }
 
 /// Run the steps. `own_steps`: DOTFILES_STEPS was set by `dots settings`, not by the user.
-pub fn run_all(_repo: &Path, own_steps: bool) {
+pub fn run_all(repo: &Path, own_steps: bool) {
     let only = std::env::var("DOTFILES_STEPS").unwrap_or_default();
     let skip = if only.is_empty() || own_steps { settings::get("SKIP_STEPS") } else { String::new() };
-    for name in install::STEPS {
+    for step in install::STEPS {
+        let name = step.name;
         match wanted(name, &only, &skip, os::is_windows()) {
             Err(None) => continue,
             Err(Some(why)) => {
@@ -42,13 +40,11 @@ pub fn run_all(_repo: &Path, own_steps: bool) {
             Ok(()) => {}
         }
         step_end();
-        if let Some(f) = install::find(name) {
-            // The sign-in step asks questions: no "still working" lines over them.
-            let ticker = if name == "90-sign-in" { None } else { Some(still_working(name)) };
-            f(_repo);
-            drop(ticker);
-            step_end();
-        }
+        // The sign-in step asks questions: no "still working" lines over them.
+        let ticker = if name == "90-sign-in" { None } else { Some(still_working(name)) };
+        (step.run)(repo);
+        drop(ticker);
+        step_end();
     }
 }
 

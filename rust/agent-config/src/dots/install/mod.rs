@@ -28,49 +28,44 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// The step names, in run order. `dots settings` offers them for "Steps to skip".
-pub const STEPS: [&str; 17] = [
-    "05-linux-prereqs",
-    "10-homebrew",
-    "12-tools",
-    "20-brew-bundle",
-    "30-omz-plugins",
-    "40-rust-toolchain",
-    "50-node-pnpm",
-    "55-gh-extensions",
-    "57-claude-code",
-    "58-opencode",
-    "60-cursor",
-    "70-macos-defaults",
-    "72-touch-id-sudo",
-    "75-terminal-appearance",
-    "77-dotfiles-git-hooks",
-    "78-linux-extras",
-    "90-sign-in",
+/// One install step. The runner (steps.rs) calls `run`, then closes the step (out::step_end).
+pub struct Step {
+    /// `NN-name`; the number sets the run order and the name is what `dots settings` offers.
+    pub name: &'static str,
+    /// Runs on Windows too (the other steps are skipped there).
+    pub windows: bool,
+    /// The step itself.
+    pub run: fn(&Path),
+}
+
+const fn step(name: &'static str, run: fn(&Path)) -> Step {
+    Step { name, windows: false, run }
+}
+
+/// The steps, in run order.
+pub const STEPS: &[Step] = &[
+    step("05-linux-prereqs", prereqs::step),
+    step("10-homebrew", homebrew::step),
+    Step { windows: true, ..step("12-tools", tools::step) },
+    step("20-brew-bundle", brew_bundle::step),
+    step("30-omz-plugins", omz::step),
+    step("40-rust-toolchain", rust_toolchain::step),
+    step("50-node-pnpm", node_pnpm::step),
+    step("55-gh-extensions", gh_extensions::step),
+    Step { windows: true, ..step("57-claude-code", claude_code::step) },
+    step("58-opencode", opencode::step),
+    step("60-cursor", cursor::step),
+    step("70-macos-defaults", macos_defaults::step),
+    step("72-touch-id-sudo", touch_id::step),
+    step("75-terminal-appearance", terminal::step),
+    step("77-dotfiles-git-hooks", git_hooks::step),
+    step("78-linux-extras", linux_extras::step),
+    step("90-sign-in", sign_in::step),
 ];
 
-/// A step by name. The runner (steps.rs) calls it, then closes the step (out::step_end).
-pub fn find(name: &str) -> Option<fn(&Path)> {
-    Some(match name {
-        "05-linux-prereqs" => prereqs::step,
-        "10-homebrew" => homebrew::step,
-        "12-tools" => tools::step,
-        "20-brew-bundle" => brew_bundle::step,
-        "30-omz-plugins" => omz::step,
-        "40-rust-toolchain" => rust_toolchain::step,
-        "50-node-pnpm" => node_pnpm::step,
-        "55-gh-extensions" => gh_extensions::step,
-        "57-claude-code" => claude_code::step,
-        "58-opencode" => opencode::step,
-        "60-cursor" => cursor::step,
-        "70-macos-defaults" => macos_defaults::step,
-        "72-touch-id-sudo" => touch_id::step,
-        "75-terminal-appearance" => terminal::step,
-        "77-dotfiles-git-hooks" => git_hooks::step,
-        "78-linux-extras" => linux_extras::step,
-        "90-sign-in" => sign_in::step,
-        _ => return None,
-    })
+/// A step by name.
+pub fn find(name: &str) -> Option<&'static Step> {
+    STEPS.iter().find(|s| s.name == name)
 }
 
 /// False on another OS (a line in verbose mode). Call it before `step`.
@@ -198,11 +193,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_listed_step_has_a_function_and_the_list_is_sorted() {
-        for n in STEPS {
-            assert!(find(n).is_some(), "{}", n);
+    fn every_listed_step_is_found_and_the_list_is_sorted() {
+        for s in STEPS {
+            assert!(find(s.name).is_some(), "{}", s.name);
         }
-        assert!(STEPS.windows(2).all(|w| w[0] < w[1]), "STEPS is not sorted");
+        assert!(STEPS.windows(2).all(|w| w[0].name < w[1].name), "STEPS is not sorted");
+        let on_windows: Vec<&str> = STEPS.iter().filter(|s| s.windows).map(|s| s.name).collect();
+        assert_eq!(on_windows, ["12-tools", "57-claude-code"]);
         for n in ["15-winget", "", "99-none"] {
             assert!(find(n).is_none(), "{}", n);
         }
