@@ -124,6 +124,10 @@ name = "bag_check"
 path = "src/bin/bag_check.rs"
 
 [[bin]]
+name = "leftovers"
+path = "src/bin/leftovers.rs"
+
+[[bin]]
 name = "ctx"
 path = "src/bin/ctx.rs"
 

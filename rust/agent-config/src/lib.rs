@@ -64,6 +64,7 @@ static ITEM_LINE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*-\s+(.*
 pub mod codeview;
 pub mod dots;
 pub mod guard_checks;
+pub mod leftovers;
 pub mod out;
 pub mod pace_core;
 pub mod paths;
