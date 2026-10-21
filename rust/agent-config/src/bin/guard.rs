@@ -16,7 +16,7 @@
 
 use agent_config::guard_checks::{self as gc, expanduser, is_macos, realpath};
 use agent_config::proj;
-use agent_config::pycompat::{days_from_civil, truthy};
+use agent_config::pycompat::{days_from_civil, json_string as py_json_str, truthy};
 use agent_config::transcript;
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -178,31 +178,6 @@ fn has(hay: &[u8], needle: &[u8]) -> bool {
 
 fn loads(line: &[u8]) -> Option<Value> {
     serde_json::from_slice::<Value>(line).ok().filter(|v| v.is_object())
-}
-
-/// `json.dumps(str)` with ensure_ascii.
-fn py_json_str(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 || (c as u32) > 0x7f => {
-                let mut buf = [0u16; 2];
-                for u in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{:04x}", u));
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 /// The `{"hookSpecificOutput": {...}}` line exactly as Python's json.dumps prints it.
@@ -769,6 +744,7 @@ fn g4_ask(data: &Value, ctx: &Ctx) -> Res {
     Ok(if n >= 1 { Some(MSG_ASK.to_string()) } else { None })
 }
 
+// Differs from the other `text_of` copies on purpose (newline join, None when empty); see stores/claude.rs.
 fn text_of(content: &Value) -> Option<String> {
     match content {
         Value::String(s) => Some(s.clone()),
@@ -2255,6 +2231,14 @@ fn main() {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn hook_output_escapes_del() {
+        assert_eq!(
+            hook_output("PostToolUse", "a\u{7f}b"),
+            r#"{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "a\u007fb"}}"#
+        );
+    }
 
     #[test]
     fn prompt_cap_phrasings() {

@@ -23,6 +23,11 @@ pub fn is_musl() -> bool {
 }
 
 /// The home folder: $HOME, else the OS answer.
+///
+/// The bins keep a few other `home()` copies (USERPROFILE first, last or only on Windows). They
+/// differ from Python's `expanduser` (USERPROFILE first on Windows) only when HOME and USERPROFILE
+/// name different folders. In Git Bash, the Windows shell this repo supports, they name the same one,
+/// and `dirs::home_dir` is the USERPROFILE folder when HOME is unset. So no path changes.
 pub fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("."))
 }

@@ -450,6 +450,7 @@ fn find_session(arg: Option<&str>) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+// Differs from the other `text_of` copies on purpose (newline join, empty string); see stores/claude.rs.
 fn text_of(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),

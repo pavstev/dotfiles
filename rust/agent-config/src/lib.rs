@@ -510,6 +510,10 @@ pub fn cursor_agents(home: &Path) {
     }
 }
 
+// Not Python's `shlex.quote` byte for byte: the empty string stays empty (Python gives `''`) and a
+// `'` becomes `'\''` (Python: `'"'"'`). Both forms are the same shell word, the one input is always
+// the non-empty guard path, and the result only lands in hooks.json, which is rebuilt every run.
+// The Python tool is gone, so nothing compares against it.
 fn shlex_quote(s: &str) -> String {
     if s.bytes().all(|b| b.is_ascii_alphanumeric() || b".,/:=_-@%+".contains(&b)) { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
 }
