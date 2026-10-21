@@ -19,12 +19,9 @@
 //!
 //! Last line: VERDICT: CLEAN (exit 0) | NOT CLEAN (n mandatory) (exit 1)
 
-#[macro_use]
-#[path = "../quiet_out.rs"]
-mod quiet_out;
-
 use agent_config::paths;
 use agent_config::pycompat::is_executable;
+use agent_config::{quiet_print as print, quiet_println as println};
 use clap::Parser;
 use clap::error::{ContextKind, ErrorKind};
 use regex::Regex;

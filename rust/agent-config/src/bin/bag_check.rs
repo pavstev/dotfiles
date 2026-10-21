@@ -10,10 +10,7 @@
 //!
 //! ETA formats: 45  45m  2h  1h30m. Always ends with one "VERDICT:" line.
 
-#[macro_use]
-#[path = "../quiet_out.rs"]
-mod quiet_out;
-
+use agent_config::{quiet_print as print, quiet_println as println};
 use clap::Parser;
 use regex::Regex;
 use std::process::{Command, ExitCode, Stdio};
@@ -44,8 +41,8 @@ struct Cli {
     #[arg(long, overrides_with_all = ["throttle", "watch"])]
     restore: bool,
     /// Repeat the card every N seconds (default 60).
-    #[arg(long, num_args = 0..=1, value_name = "N", overrides_with_all = ["throttle", "restore"])]
-    watch: Option<Option<String>>,
+    #[arg(long, num_args = 0..=1, default_missing_value = "60", value_name = "N", overrides_with_all = ["throttle", "restore"])]
+    watch: Option<String>,
 }
 
 const MAXROWS: usize = 5; // heavy rows shown before "+N more"
@@ -301,7 +298,7 @@ fn main() -> ExitCode {
     let heavy = std::env::var("BAG_HEAVY_CPU").ok().filter(|v| !v.is_empty()).map_or(15.0, |v| num(&v)); // % of ONE core that counts as "heavy"
     let cli = Cli::parse();
     let eta_min = cli.eta.as_deref().map_or(0, parse_min);
-    let interval = cli.watch.as_ref().and_then(Option::as_deref).filter(|n| !n.is_empty()).unwrap_or("60");
+    let interval = cli.watch.as_deref().filter(|n| !n.is_empty()).unwrap_or("60");
     let card = Card { ncpu, heavy, eta_min, start: Instant::now() };
     let taskpolicy = |flag: &str, pid: &str| {
         Command::new("taskpolicy")

@@ -5,10 +5,11 @@
 //! Read-only, except `git fetch` (skip with --no-fetch).
 
 use agent_config::guard_checks::expanduser;
+use agent_config::paths;
 use agent_config::pycompat::{
-    basename, civil_from_days, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str,
-    truthy,
+    basename, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str, truthy,
 };
+use agent_config::scan::{Search, find_session};
 use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
@@ -89,7 +90,6 @@ rx!(
 rx!(BIG_AGENT, r"(?i)research|refactor|thorough|migrate|audit");
 rx!(ARTIFACT_URL, r"https://claude\.ai/(?:code/)?artifact/[\w-]+");
 rx!(WS, r"\s+");
-rx!(NON_ALNUM, r"[^A-Za-z0-9]");
 rx!(SYS_REMINDER, r"(?s)<system-reminder>.*?</system-reminder>");
 rx!(PASTED, r"(?s)<pasted_content[^>]*>.*?</pasted_content>");
 rx!(CMD_NAME, r"<command-name>([^<]*)</command-name>");
@@ -156,17 +156,6 @@ fn line(tag: &str, text: &str) {
 // ---------------------------------------------------------------------------
 // Python-compat helpers
 // ---------------------------------------------------------------------------
-
-fn home() -> String {
-    for k in ["HOME", "USERPROFILE"] {
-        if let Ok(h) = std::env::var(k)
-            && !h.is_empty()
-        {
-            return h;
-        }
-    }
-    dirs::home_dir().map_or_else(|| "~".into(), |p| p.to_string_lossy().into_owned())
-}
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
@@ -252,7 +241,7 @@ fn vshort(v: &Value, n: usize) -> String {
 }
 
 fn tilde(p: &str) -> String {
-    let h = home();
+    let h = paths::home().to_string_lossy().into_owned();
     if p.starts_with(&h) { p.replacen(&h, "~", 1) } else { p.to_string() }
 }
 
@@ -265,94 +254,27 @@ fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// Local calendar fields for a unix time: (year, month, day, hour, minute, second).
-#[cfg(all(unix, target_pointer_width = "64"))]
-fn local_fields(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
-    #[repr(C)]
-    struct Tm {
-        tm_sec: i32,
-        tm_min: i32,
-        tm_hour: i32,
-        tm_mday: i32,
-        tm_mon: i32,
-        tm_year: i32,
-        tm_wday: i32,
-        tm_yday: i32,
-        tm_isdst: i32,
-        tm_gmtoff: i64,
-        tm_zone: *const u8,
-    }
-    unsafe extern "C" {
-        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
-    }
-    let mut tm = Tm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 0,
-        tm_mday: 0,
-        tm_mon: 0,
-        tm_year: 0,
-        tm_wday: 0,
-        tm_yday: 0,
-        tm_isdst: 0,
-        tm_gmtoff: 0,
-        tm_zone: std::ptr::null(),
-    };
-    // SAFETY: both pointers are valid for the call; localtime_r only writes into `tm`.
-    let r = unsafe { localtime_r(&raw const secs, &raw mut tm) };
-    if r.is_null() {
-        return utc_fields(secs);
-    }
-    (
-        i64::from(tm.tm_year) + 1900,
-        i64::from(tm.tm_mon) + 1,
-        i64::from(tm.tm_mday),
-        i64::from(tm.tm_hour),
-        i64::from(tm.tm_min),
-        i64::from(tm.tm_sec),
-    )
+/// The local wall-clock time of a unix time in microseconds.
+fn local_datetime(micros: i64) -> jiff::civil::DateTime {
+    jiff::Timestamp::from_microsecond(micros)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system())
+        .datetime()
 }
 
-#[cfg(not(all(unix, target_pointer_width = "64")))]
-fn local_fields(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
-    // No portable local-time call without a new crate: other platforms show UTC.
-    utc_fields(secs)
-}
-
-fn utc_fields(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
-    let days = secs.div_euclid(86400);
-    let sod = secs.rem_euclid(86400);
-    let (y, m, d) = civil_from_days(days);
-    (y, m, d, sod / 3600, sod % 3600 / 60, sod % 60)
-}
-
-/// datetime.fromtimestamp(ts).isoformat()
+/// datetime.fromtimestamp(ts).isoformat(): microseconds only when not zero.
 fn local_iso(ts: f64) -> String {
-    let t = ts.trunc();
-    let mut us = ((ts - t) * 1e6).round_ties_even() as i64;
-    let mut secs = t as i64;
-    if us >= 1_000_000 {
-        secs += 1;
-        us -= 1_000_000;
-    } else if us < 0 {
-        secs -= 1;
-        us += 1_000_000;
+    let at = local_datetime((ts * 1e6).round_ties_even() as i64);
+    let mut o = at.strftime("%Y-%m-%dT%H:%M:%S").to_string();
+    if at.subsec_nanosecond() != 0 {
+        o.push_str(&format!(".{:06}", at.subsec_nanosecond() / 1000));
     }
-    let (y, mo, d, h, mi, s) = local_fields(secs);
-    let mut o = format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}");
-    if us != 0 {
-        o.push_str(&format!(".{us:06}"));
-    }
-    // The UTC fallback must say so: git reads a zone-less --since time as local time.
-    #[cfg(not(all(unix, target_pointer_width = "64")))]
-    o.push('Z');
     o
 }
 
 /// datetime.fromtimestamp(ts).strftime("%H:%M")
 fn local_hm(ts: f64) -> String {
-    let (_, _, _, h, mi, _) = local_fields(ts.floor() as i64);
-    format!("{h:02}:{mi:02}")
+    local_datetime((ts.floor() * 1e6) as i64).strftime("%H:%M").to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -409,53 +331,8 @@ fn git(root: &str, args: &[&str], t: u64) -> (i32, String) {
 // 1. Find and read the session
 // ---------------------------------------------------------------------------
 
-fn projects_dir() -> PathBuf {
-    Path::new(&home()).join(".claude").join("projects")
-}
-
-fn session_hits(prefix: &str, exact: bool) -> Vec<PathBuf> {
-    let mut hits = vec![];
-    for d in list_dir(&projects_dir()) {
-        for f in list_dir(&d) {
-            let n = fname(&f);
-            let ok =
-                if exact { n == format!("{prefix}.jsonl") } else { n.starts_with(prefix) && n.ends_with(".jsonl") };
-            if ok {
-                hits.push(f);
-            }
-        }
-    }
-    hits
-}
-
 fn cwd_string() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-fn find_session(arg: Option<&str>) -> Option<PathBuf> {
-    if let Some(a) = arg.filter(|a| !a.is_empty()) {
-        if Path::new(a).is_file() {
-            return Some(PathBuf::from(a));
-        }
-        return session_hits(a, false).into_iter().next();
-    }
-    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID")
-        && !sid.is_empty()
-        && let Some(h) = session_hits(&sid, true).into_iter().next()
-    {
-        return Some(h);
-    }
-    let enc = NON_ALNUM.replace_all(&cwd_string(), "-").into_owned();
-    let mine: Vec<PathBuf> =
-        list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
-    let mut best: Option<(f64, PathBuf)> = None;
-    for p in mine {
-        let m = mtime(&p).unwrap_or(0.0);
-        if best.as_ref().is_none_or(|(bm, _)| m > *bm) {
-            best = Some((m, p));
-        }
-    }
-    best.map(|(_, p)| p)
 }
 
 // Differs from the other `text_of` copies on purpose (newline join, empty string); see stores/claude.rs.
@@ -1505,7 +1382,7 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
 
 fn leftovers_path() -> String {
     std::env::var("MIC_LEFTOVERS")
-        .unwrap_or_else(|_| Path::new(&home()).join(".claude").join("leftovers.md").to_string_lossy().into_owned())
+        .unwrap_or_else(|_| paths::home().join(".claude").join("leftovers.md").to_string_lossy().into_owned())
 }
 
 fn section_leftovers(roots: &[String]) {
@@ -1549,7 +1426,7 @@ struct Cli {
 
 fn main() {
     let a = Cli::parse();
-    let Some(path) = find_session(a.session.as_deref()) else {
+    let Some(path) = find_session(a.session.as_deref(), Search::ThisProject) else {
         pl!("No session transcript found. Pass --session <id|path>.");
         pl!("VERDICT: NO SESSION — build the table from this conversation only");
         return;

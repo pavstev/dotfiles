@@ -11,11 +11,8 @@
 //! skill_check -q           failures only, nothing when all pass
 //! ```
 
-#[macro_use]
-#[path = "../quiet_out.rs"]
-mod quiet_out;
-
 use agent_config::pycompat::py_repr_str;
+use agent_config::quiet_println as println;
 use clap::Parser;
 use regex::Regex;
 use std::path::{Path, PathBuf};

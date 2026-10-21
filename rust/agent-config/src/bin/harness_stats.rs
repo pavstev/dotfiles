@@ -1,6 +1,7 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
 
 use agent_config::guard_checks::expanduser;
+use agent_config::paths;
 use agent_config::pycompat::{civil_from_days, fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
 use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
 use clap::{Args, Parser, Subcommand};
@@ -57,20 +58,6 @@ macro_rules! out {
 // ---------------------------------------------------------------------------
 // Python-compat helpers
 // ---------------------------------------------------------------------------
-
-fn home() -> String {
-    if let Ok(h) = std::env::var("HOME")
-        && !h.is_empty()
-    {
-        return h;
-    }
-    if let Ok(h) = std::env::var("USERPROFILE")
-        && !h.is_empty()
-    {
-        return h;
-    }
-    dirs::home_dir().map_or_else(|| "~".into(), |p| p.to_string_lossy().into_owned())
-}
 
 fn default_out() -> String {
     let tmp = std::env::var("TMPDIR").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
@@ -548,8 +535,8 @@ fn cmd_collect(a: &CollectArgs) {
     let since =
         if a.since.contains('T') { parse_ts(&a.since) } else { parse_ts(&format!("{}T00:00:00+00:00", a.since)) }
             .unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{}'", a.since)));
-    let h = home();
-    let projects = Path::new(&h).join(".claude").join("projects");
+    let h = paths::home();
+    let projects = h.join(".claude").join("projects");
     let meta = desktop_meta(&desktop_dir(Path::new(&h)));
     let mut rows: Vec<Value> = vec![];
     for pdir in list_dir(&projects) {
@@ -622,7 +609,7 @@ fn cmd_collect(a: &CollectArgs) {
             let last = *s.times.last().unwrap();
             let mut row = Map::new();
             row.insert("sid".into(), Value::from(sid.clone()));
-            row.insert("project".into(), Value::from(project_name(&home(), &folder)));
+            row.insert("project".into(), Value::from(project_name(&paths::home().to_string_lossy(), &folder)));
             row.insert("folder".into(), Value::from(folder.clone()));
             row.insert("start".into(), Value::from(first.isoformat()));
             row.insert("end".into(), Value::from(last.isoformat()));
@@ -1028,7 +1015,7 @@ fn cmd_errors(a: &ErrorsArgs) {
 }
 
 fn installed_skills() -> HashSet<String> {
-    let h = PathBuf::from(home());
+    let h = paths::home();
     let mut roots = vec![h.join(".claude").join("skills")];
     for d in list_dir(&h) {
         let p = d.join(".claude").join("skills");
@@ -1091,7 +1078,7 @@ fn cmd_inventory(a: &InvArgs) {
     }
     out!("| project | sessions | CLAUDE.md lines | rules (paths/all) | agents | skills | project hooks |");
     out!("|---|---|---|---|---|---|---|");
-    let h = PathBuf::from(home());
+    let h = paths::home();
     let n = count.most_common(None);
     let n = &n[..slice_end(n.len(), a.top)];
     for (p, c) in n {

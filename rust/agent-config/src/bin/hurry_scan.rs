@@ -1,7 +1,9 @@
 //! hurry-scan: find out why a Claude Code session is slow, and what to cut.
 //! Read-only: it never changes anything.
 
-use agent_config::pycompat::{basename, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_str, truthy};
+use agent_config::paths;
+use agent_config::pycompat::{basename, dirname, json_str, parse_ts, py_float, py_str, truthy};
+use agent_config::scan::{Search, find_session};
 use clap::Parser;
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -30,24 +32,12 @@ macro_rules! out {
 }
 
 static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-static NON_ALNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^A-Za-z0-9]").unwrap());
 static MODEL5: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"claude-(opus|sonnet|fable)-5").unwrap());
 static MCP_SERVER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^mcp__(.+?)__").unwrap());
 
 // ---------------------------------------------------------------------------
 // Python-compat helpers
 // ---------------------------------------------------------------------------
-
-fn home() -> String {
-    for k in ["HOME", "USERPROFILE"] {
-        if let Ok(h) = std::env::var(k)
-            && !h.is_empty()
-        {
-            return h;
-        }
-    }
-    dirs::home_dir().map_or_else(|| "~".into(), |p| p.to_string_lossy().into_owned())
-}
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
@@ -176,64 +166,8 @@ fn rglob(root: &Path, pick: impl Fn(&str) -> bool) -> Vec<PathBuf> {
 // 1. Find the session transcript
 // ---------------------------------------------------------------------------
 
-fn projects_dir() -> PathBuf {
-    Path::new(&home()).join(".claude").join("projects")
-}
-
-fn session_hits(prefix: &str) -> Vec<PathBuf> {
-    let mut hits = vec![];
-    for d in list_dir(&projects_dir()) {
-        for f in list_dir(&d) {
-            let n = fname(&f);
-            if n.starts_with(prefix) && n.ends_with(".jsonl") {
-                hits.push(f);
-            }
-        }
-    }
-    hits
-}
-
-fn newest(v: Vec<PathBuf>) -> Option<PathBuf> {
-    let mut best: Option<(f64, PathBuf)> = None;
-    for p in v {
-        let m = mtime(&p).unwrap_or(0.0);
-        if best.as_ref().is_none_or(|(bm, _)| m > *bm) {
-            best = Some((m, p));
-        }
-    }
-    best.map(|(_, p)| p)
-}
-
 fn cwd_string() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-fn find_session(arg: Option<&str>, use_all: bool) -> Option<PathBuf> {
-    if let Some(a) = arg.filter(|a| !a.is_empty()) {
-        if Path::new(a).is_file() {
-            return Some(PathBuf::from(a));
-        }
-        return session_hits(a).into_iter().next();
-    }
-    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID")
-        && !sid.is_empty()
-    {
-        let want = format!("{sid}.jsonl");
-        let hit = session_hits(&sid).into_iter().find(|p| fname(p) == want);
-        if hit.is_some() {
-            return hit;
-        }
-    }
-    if !use_all {
-        let enc = NON_ALNUM.replace_all(&cwd_string(), "-").into_owned();
-        let mine: Vec<PathBuf> =
-            list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
-        if !mine.is_empty() {
-            return newest(mine);
-        }
-    }
-    let all = session_hits("");
-    newest(all)
 }
 
 // ---------------------------------------------------------------------------
@@ -459,7 +393,7 @@ fn scan_transcript(path: &Path) -> Transcript {
 // ---------------------------------------------------------------------------
 
 fn claude_dir() -> PathBuf {
-    Path::new(&home()).join(".claude")
+    paths::home().join(".claude")
 }
 
 fn realpath(p: &Path) -> PathBuf {
@@ -474,7 +408,7 @@ fn claude_md_files(cwd: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     }
     let mut d = if cwd.is_empty() { cwd_string() } else { cwd.to_string() };
     let mut seen: HashSet<String> = HashSet::new();
-    let h = home();
+    let h = paths::home().to_string_lossy().into_owned();
     while !d.is_empty() && d != "/" && !seen.contains(&d) {
         seen.insert(d.clone());
         for name in ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md"] {
@@ -551,7 +485,7 @@ fn static_weight(cwd: &Option<String>) -> Weight {
     }
     let mut plugins_on: Vec<String> = plugins.iter().filter(|(_, v)| truthy(v)).map(|(k, _)| k.clone()).collect();
     plugins_on.sort();
-    let cj = load_json(&Path::new(&home()).join(".claude.json"));
+    let cj = load_json(&paths::home().join(".claude.json"));
     let mut mcp: Vec<String> = vec![];
     let mut add_keys = |v: &Value| {
         if let Some(o) = v.as_object() {
@@ -1002,7 +936,8 @@ struct Cli {
 
 fn main() {
     let a = Cli::parse();
-    let Some(path) = find_session(a.session.as_deref(), a.all) else {
+    let Some(path) = find_session(a.session.as_deref(), if a.all { Search::All } else { Search::ThisProjectThenAll })
+    else {
         eprintln!("No session transcript found under ~/.claude/projects.");
         std::process::exit(1);
     };
