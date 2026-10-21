@@ -9,12 +9,17 @@
 //! transcripts under `$CLAUDE_CONFIG_DIR/projects`. Caches live in `${XDG_CACHE_HOME:-~/.cache}`.
 
 use crate::paths::home;
-use crate::pycompat::{civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float, truthy};
+use crate::pycompat::{civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float};
+use crate::transcript::{Arr, Bool, Content, Line, Message, Num, Obj, Stamp, Truthy, Usage};
 use regex::Regex;
+use serde::Deserialize;
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -31,6 +36,7 @@ const RESULT_TTL_S: i64 = 120; // cached estimate is current for 2 minutes
 const CALIBRATE_MIN: f64 = 5.0; // needs this much reported use to calibrate
 const CRITICAL: f64 = 85.0;
 const CHECK_EVERY: u64 = 200; // lines between clock checks
+const HIT_PHRASE: &[u8] = b"hit your weekly limit";
 
 /// Where the week stands against its budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,8 +64,8 @@ impl PaceState {
     }
 }
 
-impl std::fmt::Display for PaceState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for PaceState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
@@ -164,8 +170,13 @@ impl Paths {
     }
 }
 
-fn read_json(path: &PathBuf) -> Option<Value> {
-    serde_json::from_slice(&fs::read(path).ok()?).ok()
+/// A cache file read into an owned `$ty`, or `?` out of the function. The cache types are
+/// lenient, so only a missing file or text that is not JSON fails.
+macro_rules! read_cache {
+    ($path:expr, $ty:ty) => {{
+        let bytes = fs::read($path).ok()?;
+        serde_json::from_slice::<$ty>(&bytes).ok()?
+    }};
 }
 
 /// Atomic write; errors are swallowed like the Python `_write_json`.
@@ -212,27 +223,9 @@ fn py_parse_float(s: &str) -> Option<f64> {
     t.parse::<f64>().ok()
 }
 
-/// isinstance(v, (int, float)): bools count as numbers in Python.
-fn pynum(v: &Value) -> Option<f64> {
-    match v {
-        Value::Number(n) => n.as_f64(),
-        Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-        _ => None,
-    }
-}
-
-/// isinstance(v, int)
-fn pyint(v: &Value) -> Option<i64> {
-    match v {
-        Value::Number(n) => n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)),
-        Value::Bool(b) => Some(i64::from(*b)),
-        _ => None,
-    }
-}
-
-/// `v == n` for a JSON number (a bool never equals the format numbers 2 and 3).
-fn num_eq(v: Option<&Value>, n: f64) -> bool {
-    matches!(v, Some(Value::Number(x)) if x.as_f64() == Some(n))
+/// A whole number from a lenient number field, else None.
+fn whole(n: Num) -> Option<i64> {
+    n.value.filter(|f| f.fract() == 0.0).map(|f| f as i64)
 }
 
 /// Python's sum() of floats (3.12+ compensated summation).
@@ -297,57 +290,67 @@ fn epoch_f(v: f64) -> Option<i64> {
 }
 
 /// Seconds since the epoch from a number, a numeric string or an ISO UTC string; else None.
-fn epoch(v: Option<&Value>) -> Option<i64> {
-    match v? {
-        Value::Number(n) => match n.as_i64() {
-            Some(i) => Some(if i > 100_000_000_000 { (i as f64 / 1000.0) as i64 } else { i }),
-            None => epoch_f(n.as_f64()?),
-        },
-        Value::String(s) => match py_parse_float(s) {
+fn epoch(v: &Stamp) -> Option<i64> {
+    match v {
+        Stamp::Int(i) => Some(if *i > 100_000_000_000 { (*i as f64 / 1000.0) as i64 } else { *i }),
+        Stamp::Float(f) => epoch_f(*f),
+        Stamp::Text(s) => match py_parse_float(s) {
             Some(f) => epoch_f(f),
             None => strptime_utc(&s.chars().take(19).collect::<String>()),
         },
-        _ => None,
-    }
-}
-
-/// `_num`: a finite JSON number, else 0.
-fn num(v: Option<&Value>) -> f64 {
-    match v {
-        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite()).unwrap_or(0.0),
-        _ => 0.0,
+        Stamp::None => None,
     }
 }
 
 /// `_pct`: a finite number clamped to 0..100.
-fn pct(v: Option<&Value>) -> Option<f64> {
-    match v? {
-        Value::Number(n) => {
-            let f = n.as_f64().filter(|f| f.is_finite())?;
-            let lo = if f > 0.0 { f } else { 0.0 };
-            Some(if lo < 100.0 { lo } else { 100.0 })
-        }
-        _ => None,
-    }
+fn pct(v: Num) -> Option<f64> {
+    let f = v.value.filter(|f| f.is_finite())?;
+    let lo = if f > 0.0 { f } else { 0.0 };
+    Some(if lo < 100.0 { lo } else { 100.0 })
 }
 
 // --- week and budget -------------------------------------------------------------------------
 
-fn get<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
-    v.as_object()?.get(k)
+/// `claude-pace.json`, the cache of the status line: when it was written and the seven-day limit.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct StatuslineCache<'a> {
+    #[serde(borrow)]
+    updated: Stamp<'a>,
+    #[serde(borrow)]
+    seven_day: Obj<SevenDay<'a>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SevenDay<'a> {
+    #[serde(borrow)]
+    resets_at: Stamp<'a>,
+    used_percentage: Num,
+}
+
+/// What the status line cache says about the seven-day limit. The times are epoch seconds.
+struct SevenDayLimit {
+    updated: Option<i64>,
+    resets_at: Option<i64>,
+    used_percentage: Num,
 }
 
 /// The seven_day object of the statusline cache, if it has one.
-fn c1_seven_day(p: &Paths) -> Option<(Value, Value)> {
-    let c1 = read_json(&p.file("claude-pace.json"))?;
-    let sd = get(&c1, "seven_day").filter(|v| v.is_object())?.clone();
-    Some((c1, sd))
+fn c1_seven_day(p: &Paths) -> Option<SevenDayLimit> {
+    let bytes = fs::read(p.file("claude-pace.json")).ok()?;
+    let c1: StatuslineCache = serde_json::from_slice(&bytes).ok()?;
+    let sd = c1.seven_day.0?;
+    Some(SevenDayLimit {
+        updated: epoch(&c1.updated),
+        resets_at: epoch(&sd.resets_at),
+        used_percentage: sd.used_percentage,
+    })
 }
 
 /// The known weekly reset in the future (rolled forward by whole weeks), or None.
 fn c1_reset(p: &Paths, now: i64) -> Option<i64> {
-    let (_, sd) = c1_seven_day(p)?;
-    let mut e = epoch(get(&sd, "resets_at"))?;
+    let mut e = c1_seven_day(p)?.resets_at?;
     if e <= now {
         e += ((now - e).div_euclid(WEEK) + 1) * WEEK;
     }
@@ -394,25 +397,30 @@ pub fn plan_weight(plan: &str) -> Option<f64> {
 
 // --- calibration -----------------------------------------------------------------------------
 
-fn calib(p: &Paths) -> Option<Value> {
-    read_json(&p.file("claude-pace-calib.json"))
+/// `claude-pace-calib.json`: the weekly weight, with the format and the time it was made.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct Calibration {
+    v: Num,
+    week_weight: Num,
+    updated: Num,
+}
+
+/// The stored calibration when it has the current format.
+fn calib(p: &Paths) -> Option<Calibration> {
+    let c = read_cache!(p.file("claude-pace-calib.json"), Calibration);
+    (c.v.value == Some(FORMAT)).then_some(c)
 }
 
 /// The weekly weight: a valid calibration, else the plan's default, else None (no way to tell).
 fn week_weight_in(p: &Paths) -> Option<f64> {
-    let c = calib(p);
-    let w = c.as_ref().filter(|c| num_eq(get(c, "v"), FORMAT)).and_then(|c| get(c, "week_weight"));
-    let calibrated = match w {
-        Some(Value::Number(n)) => n.as_f64().filter(|f| f.is_finite() && *f > 0.0),
-        _ => None,
-    };
+    let calibrated = calib(p).and_then(|c| c.week_weight.value).filter(|f| f.is_finite() && *f > 0.0);
     calibrated.or_else(|| plan_weight(&p.plan))
 }
 
 /// When the stored calibration was made (epoch), or 0 when there is none.
 fn calib_updated(p: &Paths) -> f64 {
-    let c = calib(p);
-    c.as_ref().filter(|c| num_eq(get(c, "v"), FORMAT)).and_then(|c| get(c, "updated")).and_then(pynum).unwrap_or(0.0)
+    calib(p).map_or(0.0, |c| c.updated.get())
 }
 
 /// Store the calibration. `updated` orders them: the newest calibration wins.
@@ -433,10 +441,9 @@ pub fn seed_weight(p: &Paths, week_weight: f64, now: Option<i64>, source: &str, 
 
 /// (seven_day used %, resets_at) when the statusline cache is fresh, else None.
 fn fresh_c1(p: &Paths, now: i64) -> Option<(f64, i64)> {
-    let (c1, sd) = c1_seven_day(p)?;
-    let updated = epoch(get(&c1, "updated"))?;
-    let resets = epoch(get(&sd, "resets_at"))?;
-    let used = pct(get(&sd, "used_percentage"))?;
+    let sd = c1_seven_day(p)?;
+    let (updated, resets) = (sd.updated?, sd.resets_at?);
+    let used = pct(sd.used_percentage)?;
     if !(-3600..=FRESH_S).contains(&(now - updated)) || resets <= now {
         return None;
     }
@@ -454,18 +461,16 @@ fn prices(model: &str) -> Option<(f64, f64)> {
 }
 
 /// Cost units of one usage block: cache writes cost 1.25x (5m) or 2x (1h), reads 0.1x.
-fn cost(u: &serde_json::Map<String, Value>, price: (f64, f64)) -> f64 {
-    let cc = num(u.get("cache_creation_input_tokens"));
-    let (w5, w1) = match u.get("cache_creation") {
-        Some(Value::Object(d))
-            if d.contains_key("ephemeral_5m_input_tokens") || d.contains_key("ephemeral_1h_input_tokens") =>
-        {
-            (num(d.get("ephemeral_5m_input_tokens")), num(d.get("ephemeral_1h_input_tokens")))
+fn cost(u: &Usage, price: (f64, f64)) -> f64 {
+    let cc = u.cache_creation_input_tokens.get();
+    let (w5, w1) = match &u.cache_creation.0 {
+        Some(d) if d.ephemeral_5m_input_tokens.present || d.ephemeral_1h_input_tokens.present => {
+            (d.ephemeral_5m_input_tokens.get(), d.ephemeral_1h_input_tokens.get())
         }
         _ => (0.0, cc),
     };
-    let cin = num(u.get("input_tokens")) + 1.25 * w5 + 2.0 * w1 + 0.1 * num(u.get("cache_read_input_tokens"));
-    (price.0 * cin + price.1 * num(u.get("output_tokens"))) / 1e6
+    let cin = u.input_tokens.get() + 1.25 * w5 + 2.0 * w1 + 0.1 * u.cache_read_input_tokens.get();
+    (price.0 * cin + price.1 * u.output_tokens.get()) / 1e6
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> bool {
@@ -477,17 +482,17 @@ fn parse_line(line: &[u8], pos: i64, ws: i64) -> Option<(String, i64, f64)> {
     if !find(line, b"\"usage\"") {
         return None;
     }
-    let d: Value = serde_json::from_slice(line).ok()?;
-    let msg = get(&d, "message")?.as_object()?;
-    let usage = msg.get("usage")?.as_object()?;
-    let price = prices(msg.get("model")?.as_str()?)?;
-    let ts = epoch(get(&d, "timestamp"))?;
+    let d = Line::parse(line)?;
+    let msg = d.message.0.as_ref()?;
+    let usage = msg.usage.0.as_ref()?;
+    let price = prices(msg.model.as_str()?)?;
+    let ts = epoch(&d.timestamp)?;
     if ts < ws {
         return None;
     }
     let weight = cost(usage, price);
-    let key = match msg.get("id") {
-        Some(Value::String(s)) if !s.is_empty() => s.clone(),
+    let key = match msg.id.as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
         _ => format!("L{pos}"),
     };
     Some((key, ts, weight))
@@ -496,35 +501,33 @@ fn parse_line(line: &[u8], pos: i64, ws: i64) -> Option<(String, i64, f64)> {
 /// Timestamp of the app's "You've hit your weekly limit" record, else None. The record is an API
 /// error message (synthetic assistant) or a system record; a real reply that quotes it does not count.
 fn hit_ts(line: &[u8]) -> Option<i64> {
-    let d: Value = serde_json::from_slice(line).ok()?;
-    let o = d.as_object()?;
-    let msg = o.get("message").and_then(Value::as_object);
+    let d = Line::parse(line)?;
+    let msg = d.message.0.as_ref();
     let mut texts: Vec<&str> = Vec::new();
-    match o.get("type").and_then(Value::as_str) {
+    match d.kind.as_str() {
         Some("assistant") if msg.is_some() => {
             let m = msg?;
-            let api_err = o.get("isApiErrorMessage").is_some_and(truthy);
-            if !(api_err || m.get("model").and_then(Value::as_str) == Some("<synthetic>")) {
+            if !(d.is_api_error.0 || m.model.as_str() == Some("<synthetic>")) {
                 return None;
             }
-            match m.get("content") {
-                Some(Value::String(s)) => texts.push(s),
-                Some(Value::Array(a)) => {
-                    texts.extend(a.iter().filter_map(|b| b.as_object()?.get("text")?.as_str()));
-                }
-                _ => {}
+            match &m.content {
+                Content::Text(s) => texts.push(s),
+                Content::Blocks(a) => texts.extend(a.iter().filter_map(|b| b.text.as_str())),
+                Content::None => {}
             }
         }
         Some("system") => {
-            texts.extend(o.get("content").and_then(Value::as_str));
-            texts.extend(msg.and_then(|m| m.get("content")).and_then(Value::as_str));
+            texts.extend(d.content.as_str());
+            if let Some(Message { content: Content::Text(s), .. }) = msg {
+                texts.push(s);
+            }
         }
         _ => {}
     }
     if !texts.iter().any(|t| t.to_lowercase().contains("hit your weekly limit")) {
         return None;
     }
-    epoch(o.get("timestamp"))
+    epoch(&d.timestamp)
 }
 
 /// Insertion-ordered message map, like a Python dict: a repeated key keeps its place.
@@ -563,25 +566,16 @@ impl Ent {
         Self { size: Some(0), offset: 0, mtime: Value::from(0), msgs: Msgs::default(), hits: Vec::new() }
     }
 
-    fn from_json(e: &Value) -> Option<Self> {
-        let o = e.as_object()?;
-        let offset = match o.get("offset")? {
-            Value::Number(n) => n.as_i64()?,
-            _ => return None,
-        };
+    /// The entry of a cache file, or None when it is malformed (then it is scanned again).
+    fn from_raw(raw: EntRaw) -> Option<Self> {
+        let offset = whole(raw.offset)?;
         let mut msgs = Msgs::default();
-        for (k, v) in o.get("msgs")?.as_object()? {
-            let a = v.as_array()?;
-            msgs.set(k.clone(), epoch_int(a.first()?)?, a.get(1).and_then(pynum)?);
+        for (k, pair) in raw.msgs.0?.0 {
+            let pair = pair.0?;
+            msgs.set(k, pair.first()?.value? as i64, pair.get(1)?.value?);
         }
-        let hits = o
-            .get("hits")
-            .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(epoch_int).collect())
-            .unwrap_or_default();
-        let size = o.get("size").and_then(Value::as_f64).filter(|f| f.fract() == 0.0).map(|f| f as i64);
-        let mtime = o.get("mtime").cloned().unwrap_or(Value::from(0));
-        Some(Self { size, offset, mtime, msgs, hits })
+        let hits = raw.hits.0.map(|a| a.iter().filter_map(|n| n.value.map(|f| f as i64)).collect()).unwrap_or_default();
+        Some(Self { size: whole(raw.size), offset, mtime: raw.mtime, msgs, hits })
     }
 
     fn write(&self, out: &mut String) {
@@ -608,11 +602,76 @@ impl Ent {
     }
 }
 
-fn epoch_int(v: &Value) -> Option<i64> {
-    match v {
-        Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
-        _ => None,
+fn zero() -> Value {
+    Value::from(0)
+}
+
+/// An entry of `claude-pace-scan.json` as the file has it: `size`, `offset` and `mtime` of the
+/// file, the weight of each message as `[time, weight]`, and the weekly-limit hits.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct EntRaw {
+    size: Num,
+    offset: Num,
+    #[serde(default = "zero")]
+    mtime: Value,
+    msgs: Obj<Pairs<Arr<Num>>>,
+    hits: Arr<Num>,
+}
+
+/// `claude-pace-scan.json`: the entries by file path, the oldest time they cover and whether the
+/// previous week was looked at.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ScanRaw {
+    v: Num,
+    lo: Num,
+    backfilled: Truthy,
+    files: Obj<Pairs<Obj<EntRaw>>>,
+}
+
+/// A JSON object read in key order. Read it through `Obj`, so a value of another type is absent.
+struct Pairs<T>(Vec<(String, T)>);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Pairs<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V<T>(PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for V<T> {
+            type Value = Pairs<T>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an object")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<Pairs<T>, A::Error> {
+                let mut pairs = Vec::new();
+                while let Some(kv) = m.next_entry::<String, T>()? {
+                    pairs.push(kv);
+                }
+                Ok(Pairs(pairs))
+            }
+        }
+        d.deserialize_map(V(PhantomData))
     }
+}
+
+/// What the scan cache holds. Empty when the file is missing, malformed or of another format.
+#[derive(Default)]
+struct ScanCache {
+    files: HashMap<String, Ent>,
+    lo: Option<i64>,
+    backfilled: bool,
+}
+
+fn read_scan(p: &Paths) -> ScanCache {
+    let Some(raw) =
+        fs::read(p.file("claude-pace-scan.json")).ok().and_then(|b| serde_json::from_slice::<ScanRaw>(&b).ok())
+    else {
+        return ScanCache::default();
+    };
+    if raw.v.value != Some(SCAN_FORMAT) {
+        return ScanCache::default();
+    }
+    let files = raw.files.0.into_iter().flat_map(|f| f.0).filter_map(|(path, e)| Some((path, Ent::from_raw(e.0?)?)));
+    ScanCache { files: files.collect(), lo: whole(raw.lo), backfilled: raw.backfilled.0 }
 }
 
 /// (cost up to the first weekly-limit hit of week wk, hit time) or None. Needs a complete scan.
@@ -658,6 +717,17 @@ fn find_files(root: &PathBuf, min_mtime: f64) -> (Vec<(f64, i64, String)>, usize
     (found, total)
 }
 
+/// True when the line holds "hit your weekly limit" in any case. A fast pre-filter for `hit_ts`:
+/// it jumps from one `w` to the next and compares only there.
+fn has_hit_phrase(line: &[u8]) -> bool {
+    const BEFORE: usize = b"hit your ".len();
+    memchr::memchr2_iter(b'w', b'W', line).any(|i| {
+        i >= BEFORE
+            && line[i - BEFORE..].len() >= HIT_PHRASE.len()
+            && line[i - BEFORE..][..HIT_PHRASE.len()].eq_ignore_ascii_case(HIT_PHRASE)
+    })
+}
+
 /// Read the new complete lines of one file into ent. False when the time budget ended.
 fn scan_file(path: &str, ent: &mut Ent, ws: i64, deadline: Instant) -> bool {
     let mut pos = ent.offset;
@@ -673,7 +743,7 @@ fn scan_file(path: &str, ent: &mut Ent, ws: i64, deadline: Instant) -> bool {
                 }
                 let got = parse_line(&line, pos, ws);
                 if line.len() < 8000
-                    && find(&line.to_ascii_lowercase(), b"hit your weekly limit")
+                    && has_hit_phrase(&line)
                     && let Some(t) = hit_ts(&line).filter(|t| *t >= ws)
                 {
                     ent.hits.push(t);
@@ -706,29 +776,41 @@ fn sum_week(files: &[(String, Ent)], ws: i64) -> f64 {
     total
 }
 
-fn valid_files(scan: Option<&Value>) -> HashMap<String, Ent> {
-    let mut ok = HashMap::new();
-    let Some(s) = scan.filter(|s| num_eq(get(s, "v"), SCAN_FORMAT)) else { return ok };
-    if let Some(Value::Object(files)) = get(s, "files") {
-        for (p, e) in files {
-            if let Some(ent) = Ent::from_json(e) {
-                ok.insert(p.clone(), ent);
-            }
-        }
-    }
-    ok
+/// `claude-pace-result.json` as the file has it.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ResultRaw {
+    v: Num,
+    at: Num,
+    ws: Num,
+    weight: Num,
+    files: Num,
+    complete: Bool,
+}
+
+/// The cached estimate of the last scan.
+struct CachedResult {
+    at: f64,
+    ws: i64,
+    weight: f64,
+    /// How many transcripts were counted; `present` without a value means the file holds junk there.
+    files: Num,
+    complete: bool,
 }
 
 /// The cached estimate when it is a well-formed result record.
-fn load_result(p: &Paths) -> Option<Value> {
-    let r = read_json(&p.file("claude-pace-result.json"))?;
-    if !num_eq(get(&r, "v"), FORMAT) || get(&r, "weight").and_then(pynum).is_none() {
+fn load_result(p: &Paths) -> Option<CachedResult> {
+    let r = read_cache!(p.file("claude-pace-result.json"), ResultRaw);
+    if r.v.value != Some(FORMAT) {
         return None;
     }
-    if get(&r, "at").and_then(pynum).is_none() || get(&r, "ws").is_none_or(|v| pyint(v).is_none()) {
-        return None;
-    }
-    Some(r)
+    Some(CachedResult {
+        at: r.at.value?,
+        ws: whole(r.ws)?,
+        weight: r.weight.value?,
+        files: r.files,
+        complete: r.complete.0 == Some(true),
+    })
 }
 
 /// Scan new transcript bytes for at most budget_s seconds (one chunk minimum per call).
@@ -737,15 +819,11 @@ pub fn refresh_in(p: &Paths, budget_s: f64, now: Option<i64>) -> RefreshResult {
     let wait = if budget_s.is_finite() { budget_s.clamp(0.0, 1e7) } else { 0.0 };
     let deadline = Instant::now() + Duration::from_secs_f64(wait);
     let ws = week_start(p, now);
-    let scan = read_json(&p.file("claude-pace-scan.json"));
-    let mut old = valid_files(scan.as_ref());
+    let ScanCache { files: mut old, lo: meta_lo, mut backfilled } = read_scan(p);
     let had_valid = !old.is_empty();
-    let meta = scan.as_ref().filter(|s| num_eq(get(s, "v"), SCAN_FORMAT));
-    let mut backfilled = meta.and_then(|m| get(m, "backfilled")).is_some_and(truthy);
     // A cold calibration looks at the previous week too, once, to find its limit hit.
     let back = calib_updated(p) == 0.0 && !backfilled;
     let lo = if back { ws - WEEK } else { ws };
-    let meta_lo = meta.and_then(|m| get(m, "lo")).and_then(Value::as_i64);
     let mut dirty = false;
     if meta_lo.is_none_or(|l| l > lo) {
         old.clear(); // the cache covers less than this scan needs: rebuild
@@ -880,17 +958,13 @@ fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
         return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("statusline"), Some(resets)));
     }
     if let Some(r) = load_result(p)
-        && get(&r, "ws").and_then(pyint) == Some(ws)
+        && r.ws == ws
     {
-        let positive = match get(&r, "files") {
-            None => false,
-            Some(v) => pynum(v).ok_or(())? > 0.0,
-        };
+        let positive = if r.files.present { r.files.value.ok_or(())? > 0.0 } else { false };
         if positive {
-            let weight = get(&r, "weight").and_then(pynum).ok_or(())?;
             // no calibration and no plan weight (api, unknown): nothing to divide by, so no estimate
             if let Some(total) = week_weight_in(p) {
-                let raw = weight / total * 100.0;
+                let raw = r.weight / total * 100.0;
                 let used = if raw < 100.0 { raw } else { 100.0 };
                 return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("estimate"), c1_reset(p, now)));
             }
@@ -924,9 +998,8 @@ pub fn week_weight() -> Option<f64> {
 }
 
 /// True if a scan result is older than RESULT_TTL_S or from another week.
-fn result_stale(p: &Paths, r: &Value, now: i64) -> bool {
-    let at = get(r, "at").and_then(pynum).unwrap_or(0.0);
-    (now as f64 - at).abs() >= RESULT_TTL_S as f64 || get(r, "ws").and_then(pyint) != Some(week_start(p, now))
+fn result_stale(p: &Paths, r: &CachedResult, now: i64) -> bool {
+    (now as f64 - r.at).abs() >= RESULT_TTL_S as f64 || r.ws != week_start(p, now)
 }
 
 /// True if the cached estimate is stale and a scan should run.
@@ -943,8 +1016,7 @@ pub fn needs_refresh(now: i64) -> bool {
 /// `needs_refresh_in` it ignores a fresh status line, because the scan also saves the
 /// status line calibration and the limit-hit one.
 pub fn prompt_needs_refresh_in(p: &Paths, now: i64) -> bool {
-    load_result(p)
-        .is_none_or(|r| get(&r, "complete").and_then(Value::as_bool) != Some(true) || result_stale(p, &r, now))
+    load_result(p).is_none_or(|r| !r.complete || result_stale(p, &r, now))
 }
 
 /// `prompt_needs_refresh_in` over this machine's paths.
@@ -988,6 +1060,11 @@ pub fn parse_percent(arg: &str) -> Option<f64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A cache file as plain JSON, to check what was written.
+    fn read_json(path: &PathBuf) -> Option<Value> {
+        serde_json::from_slice(&fs::read(path).ok()?).ok()
+    }
 
     const DAY: i64 = 86400;
     fn mon() -> i64 {
@@ -1054,15 +1131,16 @@ mod tests {
 
     #[test]
     fn epoch_forms() {
-        assert_eq!(epoch(Some(&json!(1760860800))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!(1760860800000i64))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!("1760860800"))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!("2025-10-19T08:00:00Z"))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!("2025-10-19T08:00:00.123Z"))), Some(1760860800));
-        assert_eq!(epoch(Some(&json!("2025-02-30T08:00:00Z"))), None);
-        assert_eq!(epoch(Some(&json!(null))), None);
-        assert_eq!(epoch(Some(&json!("junk"))), None);
-        assert_eq!(epoch(Some(&json!(true))), None);
+        let ep = |v: Value| epoch(&serde_json::from_str::<Stamp>(&v.to_string()).unwrap());
+        assert_eq!(ep(json!(1760860800)), Some(1760860800));
+        assert_eq!(ep(json!(1760860800000i64)), Some(1760860800));
+        assert_eq!(ep(json!("1760860800")), Some(1760860800));
+        assert_eq!(ep(json!("2025-10-19T08:00:00Z")), Some(1760860800));
+        assert_eq!(ep(json!("2025-10-19T08:00:00.123Z")), Some(1760860800));
+        assert_eq!(ep(json!("2025-02-30T08:00:00Z")), None);
+        assert_eq!(ep(json!(null)), None);
+        assert_eq!(ep(json!("junk")), None);
+        assert_eq!(ep(json!(true)), None);
     }
 
     #[test]
@@ -1193,7 +1271,7 @@ mod tests {
         }
 
         fn weight(&self) -> f64 {
-            get(&load_result(&self.p).expect("a result"), "weight").and_then(pynum).unwrap()
+            load_result(&self.p).expect("a result").weight
         }
 
         fn refresh(&self, budget: f64, now: i64) -> RefreshResult {

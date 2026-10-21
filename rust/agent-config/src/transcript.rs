@@ -158,6 +158,31 @@ impl<'de> Deserialize<'de> for Truthy {
     }
 }
 
+/// A field that counts only when it is a JSON `true` or `false`. Anything else reads as absent.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Bool(pub Option<bool>);
+
+impl<'de> Deserialize<'de> for Bool {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = Bool;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("any value")
+            }
+            fn visit_bool<E: de::Error>(self, b: bool) -> Result<Bool, E> {
+                Ok(Bool(Some(b)))
+            }
+            skip!(num);
+            skip!(str);
+            skip!(null);
+            skip!(seq);
+            skip!(map);
+        }
+        d.deserialize_any(V)
+    }
+}
+
 /// A number field. `present` tells a key that was there from one that was not, even when its
 /// value is not a number (then `value` is None).
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
