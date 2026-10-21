@@ -27,18 +27,10 @@ pub fn is_musl() -> bool {
             .is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-")))
 }
 
-/// The home folder: $HOME, else the OS answer.
-///
-/// The bins keep a few other `home()` copies (USERPROFILE first, last or only on Windows). They
-/// differ from Python's `expanduser` (USERPROFILE first on Windows) only when HOME and USERPROFILE
-/// name different folders. In Git Bash, the Windows shell this repo supports, they name the same one,
-/// and `dirs::home_dir` is the USERPROFILE folder when HOME is unset. So no path changes.
+/// The home folder (`paths::home`): $HOME, then %USERPROFILE% on Windows, then the OS answer. In Git
+/// Bash, the Windows shell this repo supports, HOME and USERPROFILE name the same folder.
 pub fn home() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
+    crate::paths::home()
 }
 
 /// A person can answer: stdin and stderr are the terminal (prompts draw on stderr).
@@ -49,14 +41,18 @@ pub fn at_terminal() -> bool {
 /// The full path of a command on PATH. On Windows the PATHEXT names come first, the bare name
 /// last: `cursor` finds cursor.cmd, not the shell script next to it.
 pub fn which(cmd: &str) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
+    which_in(cmd, &env::var_os("PATH")?)
+}
+
+/// `which` over the given search path (a test or a tool that adds folders passes its own).
+pub fn which_in(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let exts: Vec<String> = if is_windows() {
         let pe = env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into());
         pe.split(';').filter(|s| !s.is_empty()).map(str::to_lowercase).chain(std::iter::once(String::new())).collect()
     } else {
         vec![String::new()]
     };
-    for dir in env::split_paths(&path) {
+    for dir in env::split_paths(path) {
         for e in &exts {
             let p = dir.join(format!("{cmd}{e}"));
             if is_executable(&p) {
@@ -97,9 +93,10 @@ pub fn path_prepend(dir: &Path) {
 /// Set an environment variable of this process.
 pub fn set_env<V: Into<OsString>>(k: &str, v: V) {
     let v: OsString = v.into();
-    // SAFETY: only the main thread writes the environment. The one other thread, the
-    // "still working" ticker (dots/steps.rs), reads it only through std (env::var), which
-    // takes the same lock as set_var. No thread of dots reads it through C getenv.
+    // SAFETY: only the main thread writes the environment. The one other thread, the "still
+    // working" ticker (dots/steps.rs), prints through `out`, which read verbose, color and the warn
+    // file once in `out::init` before the ticker starts, so it reads no variable. No thread of dots
+    // reads the environment through C getenv.
     unsafe { env::set_var(k, v) }
 }
 /// Remove an environment variable of this process.

@@ -5,13 +5,12 @@
 use super::super::{ask, os};
 use super::run;
 use crate::out::{self, info, skip, verbose, warn};
-use regex::Regex;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Runs a command and gives (it exited 0, what it printed on stdout).
-type Probe<'a> = &'a dyn Fn(&str, &[&str]) -> (bool, String);
+type Probe<'a> = &'a (dyn Fn(&str, &[&str]) -> (bool, String) + Sync);
 
 /// PATH as it was; puts it back when the step ends (the bash step had its own process).
 struct PathGuard(Option<OsString>);
@@ -24,27 +23,68 @@ impl Drop for PathGuard {
     }
 }
 
-/// `claude auth status` says `"loggedIn": true`.
+/// `claude auth status` prints JSON with `"loggedIn": true`.
 fn claude_logged_in(status: &str) -> bool {
-    Regex::new(r#""loggedIn": *true"#).is_ok_and(|r| r.is_match(status))
+    serde_json::from_str::<serde_json::Value>(status).is_ok_and(|v| v["loggedIn"] == true)
 }
 
+/// A tool that needs a sign-in: how to ask it, and how to read the answer.
+struct Login {
+    /// The program to probe and its arguments.
+    prog: &'static str,
+    args: &'static [&'static str],
+    /// The menu label and the command that signs in.
+    label: &'static str,
+    cmd: &'static str,
+    /// True when the probe (exit 0, stdout) says the user is signed out.
+    signed_out: fn(bool, &str) -> bool,
+}
+
+const LOGINS: [Login; 4] = [
+    Login {
+        prog: "gh",
+        args: &["auth", "status"],
+        label: "\u{1F419} GitHub",
+        cmd: "gh auth login",
+        signed_out: |ok, _| !ok,
+    },
+    Login {
+        prog: "claude",
+        args: &["auth", "status"],
+        label: "\u{2733}\u{FE0F}  Claude Code",
+        cmd: "claude auth login",
+        signed_out: |_, out| !claude_logged_in(out),
+    },
+    Login {
+        prog: "opencode",
+        args: &["auth", "list"],
+        label: "\u{1F33F} Opencode",
+        cmd: "opencode auth login",
+        signed_out: |_, out| out.to_lowercase().contains("no authenticated"),
+    },
+    Login {
+        prog: "agent",
+        args: &["status"],
+        label: "\u{1F5B1}\u{FE0F}  Cursor",
+        cmd: "agent login",
+        signed_out: |_, out| !out.to_lowercase().contains("logged in as"),
+    },
+];
+
 /// The logins still to do: (menu label, command), for the tools that exist and are not signed in.
+/// The probes of the tools that exist run at the same time.
 fn pending(have: &dyn Fn(&str) -> bool, probe: Probe) -> Vec<(&'static str, &'static str)> {
-    let mut list = Vec::new();
-    if have("gh") && !probe("gh", &["auth", "status"]).0 {
-        list.push(("\u{1F419} GitHub", "gh auth login"));
-    }
-    if have("claude") && !claude_logged_in(&probe("claude", &["auth", "status"]).1) {
-        list.push(("\u{2733}\u{FE0F}  Claude Code", "claude auth login"));
-    }
-    if have("opencode") && probe("opencode", &["auth", "list"]).1.to_lowercase().contains("no authenticated") {
-        list.push(("\u{1F33F} Opencode", "opencode auth login"));
-    }
-    if have("agent") && !probe("agent", &["status"]).1.to_lowercase().contains("logged in as") {
-        list.push(("\u{1F5B1}\u{FE0F}  Cursor", "agent login"));
-    }
-    list
+    std::thread::scope(|s| {
+        let probes: Vec<_> =
+            LOGINS.iter().filter(|l| have(l.prog)).map(|l| (l, s.spawn(|| probe(l.prog, l.args)))).collect();
+        probes
+            .into_iter()
+            .filter_map(|(l, h)| {
+                let (ok, out) = h.join().ok()?;
+                (l.signed_out)(ok, &out).then_some((l.label, l.cmd))
+            })
+            .collect()
+    })
 }
 
 /// Run a probe for real: stderr dropped, stdin closed.
@@ -126,7 +166,7 @@ mod tests {
 
     #[test]
     fn claude_status_text() {
-        assert!(claude_logged_in("{\n  \"loggedIn\": true,\n}"));
+        assert!(claude_logged_in("{\n  \"loggedIn\": true\n}"));
         assert!(claude_logged_in("{\"loggedIn\":true}"));
         assert!(!claude_logged_in("{\"loggedIn\": false}"));
         assert!(!claude_logged_in(""));

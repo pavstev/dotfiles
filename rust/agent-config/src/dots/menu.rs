@@ -485,7 +485,7 @@ pub fn run(repo: &Path) {
         ];
         // The cursor goes back to the row just changed (its value may be new).
         if let Some(l) = last {
-            start = rows[l].clone();
+            start.clone_from(&rows[l]);
         }
         let mut all = rows.clone();
         all.push(done.clone());

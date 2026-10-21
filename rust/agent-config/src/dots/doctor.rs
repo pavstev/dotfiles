@@ -235,20 +235,25 @@ fn bins_fresh(repo: &Path) -> Result<(), String> {
 // --- guard-selftest --------------------------------------------------------------
 
 /// `got` must be the kind `want` names; otherwise the failure text says what the guard did.
-fn expect(what: &str, got: Option<Verdict>, want: &str) -> Option<String> {
-    let kind = match &got {
-        Some(Verdict::Allow) => "allow",
-        Some(Verdict::Ask(_)) => "ask",
-        Some(Verdict::Deny(_)) => "deny",
-        None => "crash",
-    };
+fn expect(what: &str, got: Option<&str>, want: &str) -> Option<String> {
+    let kind = got.unwrap_or("crash");
     if kind == want { None } else { Some(format!("{what} gave {kind}, wanted {want}")) }
+}
+
+/// The kind of a verdict, as the self-test names it.
+fn kind_of(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Allow => "allow",
+        Verdict::Ask(_) => "ask",
+        Verdict::Deny(_) => "deny",
+    }
 }
 
 /// Canned calls through the guard checks. The private word is made up, so the check needs no setting.
 fn guard_selftest(repo: &Path) -> Result<(), String> {
     const WORD: &str = "doctorprivateword";
-    let run = |f: &dyn Fn() -> Verdict| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok();
+    let run =
+        |f: &dyn Fn() -> Verdict| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok().as_ref().map(kind_of);
     let words = vec![WORD.to_string()];
     let send = json!({"command": format!("gh pr comment 1 --body \"{WORD}\"")});
     let ls = json!({"command": "ls"});

@@ -303,10 +303,7 @@ pub fn sha(text: &str) -> String {
 /// One value from `~/.config/dotfiles/settings` (the last line of that name wins), or an empty string.
 pub fn setting(home: &Path, name: &str) -> String {
     let p = home.join(SETTINGS);
-    let data = match fs::read(&p) {
-        Ok(d) => d,
-        Err(_) => return String::new(),
-    };
+    let Ok(data) = fs::read(&p) else { return String::new() };
     let text = String::from_utf8_lossy(&data);
     let mut value = String::new();
     for line in text.split('\n') {
@@ -1346,16 +1343,12 @@ pub fn cmd_user_rules(profile: &str, copy: bool) -> i32 {
         print!("{text}");
         return 0;
     }
-    let copycmd = clipboard_command();
-    if copycmd.is_none() {
+    let Some(c) = clipboard_command() else {
         warn("no clipboard tool found (install wl-clipboard or xclip). Printing the rules instead.");
         print!("{text}");
         return 1;
-    }
-    let c = copycmd.unwrap();
-    let mut child = if let Ok(ch) = process::Command::new(&c[0]).args(&c[1..]).stdin(process::Stdio::piped()).spawn() {
-        ch
-    } else {
+    };
+    let Ok(mut child) = process::Command::new(&c[0]).args(&c[1..]).stdin(process::Stdio::piped()).spawn() else {
         warn("no clipboard tool found. Printing the rules instead.");
         print!("{text}");
         return 1;
@@ -1660,9 +1653,7 @@ pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
     }
     let base = base.unwrap();
     let mut layer = layer.unwrap();
-    let value = if let Some(v) = get_path(&layer, &path) {
-        v
-    } else {
+    let Some(value) = get_path(&layer, &path) else {
         warn(&format!("{} is not in {}", dotted, tilde(&layer_f)));
         return 1;
     };

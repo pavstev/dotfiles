@@ -777,7 +777,7 @@ pub fn tree_fingerprint(cwd: &Path) -> Option<String> {
             h.update(t.to_le_bytes());
         }
     }
-    Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    Some(format!("{:x}", h.finalize()))
 }
 
 #[cfg(test)]

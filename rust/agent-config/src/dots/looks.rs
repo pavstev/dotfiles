@@ -54,7 +54,7 @@ pub fn edit() {
     let offered = offered();
     let now = parse(&settings::get("LOOKS"));
     let labels: Vec<String> =
-        offered.iter().map(|n| ALL.iter().find(|p| p.0 == *n).map(|p| p.1).unwrap_or(n).to_string()).collect();
+        offered.iter().map(|n| ALL.iter().find(|p| p.0 == *n).map_or(*n, |p| p.1).to_string()).collect();
     let picked: Vec<&str> = if ask::fancy() {
         let marked: Vec<usize> =
             offered.iter().enumerate().filter(|(_, n)| now.iter().any(|x| x == *n)).map(|(i, _)| i).collect();

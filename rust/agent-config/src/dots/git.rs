@@ -129,7 +129,11 @@ fn save_edits(repo: &Path, dir: &Path, name: &str) -> Option<std::path::PathBuf>
 /// The tracked files changed here, each followed by a space (as `tr '\n' ' '` gives).
 pub fn changed(repo: &Path) -> String {
     let s = out(&["-C", &repo.to_string_lossy(), "status", "--porcelain", "--untracked-files=no"]).unwrap_or_default();
-    s.lines().filter(|l| l.len() > 3).map(|l| format!("{} ", &l[3..])).collect()
+    s.lines().filter(|l| l.len() > 3).fold(String::new(), |mut acc, l| {
+        acc.push_str(&l[3..]);
+        acc.push(' ');
+        acc
+    })
 }
 
 /// Write the name and email to ~/.gitconfig.local when they differ.

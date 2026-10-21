@@ -34,8 +34,8 @@ fn wr(p: &Path, text: &str) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(p, text).unwrap();
 }
-fn wj(p: &Path, v: Value) {
-    wr(p, &v.to_string());
+fn wj(p: &Path, v: impl Into<Value>) {
+    wr(p, &v.into().to_string());
 }
 fn rd(p: &Path) -> String {
     fs::read_to_string(p).unwrap()
@@ -76,7 +76,13 @@ fn m(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 /// Run `f`, return (result, stdout, stderr) of what the module printed.
 fn call<T>(f: impl FnOnce() -> T) -> (T, String, String) {
     let (r, lines) = out::capture(f);
-    let join = |err: bool| lines.iter().filter(|(_, e)| *e == err).map(|(l, _)| format!("{l}\n")).collect::<String>();
+    let join = |err: bool| {
+        lines.iter().filter(|(_, e)| *e == err).fold(String::new(), |mut s, (l, _)| {
+            s.push_str(l);
+            s.push('\n');
+            s
+        })
+    };
     (r, join(false), join(true))
 }
 
@@ -1012,8 +1018,8 @@ fn mcp_fx() -> Fx {
 fn mcp_path(fx: &Fx) -> PathBuf {
     fx.cdir().join("mcp.json")
 }
-fn ours(fx: &Fx, servers: Value) {
-    wj(&fx.cursor_src.join("mcp.json"), json!({"mcpServers": servers}));
+fn ours(fx: &Fx, servers: impl Into<Value>) {
+    wj(&fx.cursor_src.join("mcp.json"), json!({"mcpServers": servers.into()}));
 }
 
 #[test]
