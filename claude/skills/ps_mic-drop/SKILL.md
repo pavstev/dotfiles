@@ -2,7 +2,7 @@
 name: ps:mic-drop
 description: Use when the user wants to wrap up, close out, or finish a session — "do everything yourself", "is it all pushed?", "did checks pass?", "clean up background tasks", "archive this session", "are we done?", or before leaving a repo for the day.
 argument-hint: "[--squash] [extra repo paths to check — empty = this session's repos]"
-allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check *) Bash(tmux -L claude-run kill-session *)"
+allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check *) Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin leftovers *) Bash(tmux -L claude-run kill-session *)"
 ---
 
 # Mic Drop
@@ -116,4 +116,4 @@ Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side s
 
 ## Options
 
-`--no-fetch` skip the network. `--since <sha|time>` list this session's commits. `--note "text" [repo]` save a leftover for that repo. `--leftovers` show the list. `leftovers list` shows the open ones, `leftovers done <id>` closes one.
+`--no-fetch` skip the network. `--since <sha|time>` list this session's commits. `--note "text" [repo]` save a leftover for that repo. `--leftovers` show the list. `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin leftovers list` shows the open ones, `... leftovers done <id>` closes one.
