@@ -175,6 +175,26 @@ win_quit_utm() {
   sleep 1
 }
 
+# win_restart_utm <vm>: quit and reopen UTM, then wait until `utmctl list` shows the clone again.
+# The fix for utmctl exit 142 (OSStatus -609, UTM's Apple Events are stuck). It never restarts a
+# UTM with a running VM, and a UTM that does not answer only when this run opened it.
+win_restart_utm() {
+  local out
+  if out="$(win_ctl 20 list 2>/dev/null)"; then
+    if grep -Eiq '^[0-9A-F-]{36} +(started|starting|resuming|paused|pausing)' <<<"$out"; then
+      echo "   not restarting UTM: a VM is running"
+      return 1
+    fi
+  elif ((!WIN_UTM_OURS)); then
+    return 1
+  fi
+  echo "   restarting UTM"
+  WIN_UTM_OURS=1 # the exit trap closes the UTM opened here
+  win_quit_utm
+  open -a UTM || return 1
+  win_listed "$1" 90
+}
+
 # win_cleanup: stop and delete the check clone. Never touches win11-golden.
 win_cleanup() {
   local vm="$WIN_CLONE" i out
@@ -256,10 +276,11 @@ run_windows() {
     # "started", or "starting": the IP wait below proves the boot.
     if grep -qi '^start' <<<"$st"; then ok=1; break; fi
     echo "   start try $try failed: utmctl exit $rc, status: ${st:-none}"
+    # utmctl exit 142 (OSStatus -609): UTM's Apple Events are stuck. A restart of UTM fixes it.
+    if ((try < 3)); then win_restart_utm "$vm" || true; fi
     sleep 5
   done
-  # utmctl exit 142 (OSStatus -609): UTM's Apple Events are stuck. A restart of UTM fixes it.
-  ((ok)) || { echo "FAIL  couldn't start $vm. With no VM running, quit and reopen UTM, then run this again."; return 1; }
+  ((ok)) || { echo "FAIL  couldn't start $vm, also after restarting UTM. With no VM running, quit and reopen UTM by hand, then run this again."; return 1; }
   echo "== wait for the guest IP and SSH (5 minutes at most)"
   end=$((SECONDS + 300))
   while ((SECONDS < end)); do

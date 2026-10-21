@@ -201,8 +201,9 @@ see: [`docs/platforms.md`](docs/platforms.md#windows).
   `pwsh -Command exit`, then deletes the clone, also after a failure. It never starts
   the golden VM. Build the golden VM once with `bash scripts/win-golden.sh` (needs UTM and the
   Windows ISO in `~/VMs/iso`; the script reads your SSH key at run time). The VM, its answer
-  file and its login stay in `~/VMs`, outside the repo. A start failure (`utmctl` exit 142) means:
-  quit and reopen UTM, delete the leftover `win11-check-*` clone, run it again.
+  file and its login stay in `~/VMs`, outside the repo. A start failure (`utmctl` exit 142, UTM's
+  stuck Apple Events) makes the script quit and reopen UTM and try again, unless a VM is running. If it
+  still fails: quit and reopen UTM by hand, delete the leftover `win11-check-*` clone, run it again.
 
 ## Profiles
 
