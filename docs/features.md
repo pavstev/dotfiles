@@ -6,23 +6,20 @@ Why this repo exists, what is inside, and the daily commands and shortcuts.
 
 ## Why
 
-Most dotfiles rot the moment you touch a second machine. This one doesn't. Plain
-git is the single source of truth; every managed file in `$HOME` is a **symlink** back into
-this repo, so there's no templating engine and no separate "apply" step for content
-changes. The old tools get eaten by faster, prettier ones. The terminal goes **brrr**.
+Plain git is the single source of truth. Every managed file in `$HOME` is a symlink back into
+this repo. There is no templating engine and no apply step for content changes.
 
-- ⚡️ **Fast**: lazy, well-ordered zsh loading; cold start ≈ 0.3 s.
-- 🦴 **Modern**: `eza`, `bat`, `rg`, `fd`, `zoxide`, `fzf`, `atuin`, `delta` replace the fossils.
-- ♻️ **Reproducible**: `./dotfiles` is idempotent; every step *looks before it leaps*:
-  already-installed tools are detected and **skipped**, never reinstalled. Steps are
-  **fault-tolerant**: one that fails (offline, missing permission) warns and steps aside
-  instead of derailing the whole run.
-- 🛟 **Override-safe**: a pre-existing config file is **moved aside** to
-  `<file>.bak-<timestamp>` before its link goes in, so adopting these defaults on a
-  machine that's already set up never costs you your old setup.
-- 🧳 **Portable**: macOS (Apple Silicon and Intel), Linux (Debian, Ubuntu, Fedora, Arch, Alpine), and Windows (Git Bash); machine-specific bits live in gitignored local files.
-- 🤖 **AI-ready**: Claude Code skills, agents, hooks, and settings live here and follow you everywhere. Cursor and Opencode read the same source.
-- 🎨 **Coherent**: one warm copper-on-stone palette across Ghostty, Starship, fzf, delta, atuin, and the prompt.
+- **Fast:** lazy zsh loading, cold start about 0.3 s. `eza`, `bat`, `rg`, `fd`, `zoxide`, `fzf`,
+  `atuin` and `delta` replace the old tools.
+- **Reproducible:** `./dotfiles` is idempotent. A step skips what is installed. A step that fails
+  (offline, no permission) warns and steps aside; the run goes on.
+- **Override-safe:** a config file that was there before moves to `<file>.bak-<timestamp>`
+  before its link goes in.
+- **Portable:** macOS, Linux and Windows (Git Bash). Machine-specific parts live in git-ignored
+  local files ([Platforms](platforms.md)).
+- **AI-ready:** Claude Code skills, agents, hooks and settings live here. Cursor and Opencode read
+  the same source ([AI agents](ai-agents.md)).
+- **One palette:** warm copper on stone, in Ghostty, Starship, fzf, delta and atuin.
 
 ## What's inside
 
@@ -42,17 +39,17 @@ changes. The old tools get eaten by faster, prettier ones. The terminal goes **b
 | **Rust** | [rustup](https://rustup.rs) · [cargo-nextest](https://nexte.st) |
 | **Apps** | [Ghostty](https://ghostty.org) · VS Code · [Cursor](https://cursor.com) · [Raycast](https://raycast.com) · [AeroSpace](https://nikitabobko.github.io/AeroSpace) · FiraCode Nerd Font |
 
-> Modern aliases are **interactive-only**: they never leak into scripts. Need the real
-> thing for a one-off? `\grep` or `command grep`.
+The modern aliases work in interactive shells only, never in scripts. For the real command in
+one call, use `\grep` or `command grep`.
 
 ## Daily workflow
 
-The repo (`~/dotfiles/home`) **is** `$HOME`: most files are symlinked, so editing
-either side edits the same file:
+The repo (`~/dotfiles/home`) is `$HOME`: most files are symlinks, so an edit on either side
+changes the same file.
 
 ```sh
-$EDITOR ~/dotfiles/home/.config/zsh/init.zsh   # edit: it's live immediately, no apply step
-dotd                                            # preview source changes  (git diff)
+$EDITOR ~/dotfiles/home/.config/zsh/init.zsh   # edit: it is live at once, no apply step
+dotd                                            # preview source changes (git diff)
 dots                                            # pull + relink + reprovision: for new files, packages, machines
 dots settings                                   # the settings menu: git name, Java, private rules and more
 dots -v                                         # the same run, with every line (the default is one line per step)
@@ -61,8 +58,8 @@ dots uninstall                                  # take it all back (asks first; 
 dot                                             # cd into the repo
 ```
 
-`dots doctor` prints one line per check and exits 1 when one fails. Each FAIL line says what is wrong
-and the fix, usually `Run: dots`. The checks:
+`dots doctor` prints one line per check and exits 1 when one fails. A FAIL line names the fix,
+usually `Run: dots`. The checks:
 
 | Check | What it looks at |
 |-------|------------------|
@@ -75,10 +72,10 @@ and the fix, usually `Run: dots`. The checks:
 | `timezone` | `TIMEZONE` is empty or a real zone name (macOS and Linux) |
 | `no-leak` | no private word in a tracked file |
 
-Want a new command-line tool? Add one line to [`tools.list`](../tools.list) and run `dots`. Each
-line names the tool, its commands, the OSes it is for and its sources in order (mise first, then
-`apk`, `winget`, `scoop`, `cargo`, `brew`). `scripts/tools --check` lists what is missing. Mac apps
-and fonts go in the `Brewfile`.
+To add a command-line tool, add one line to [`tools.list`](../tools.list) and run `dots`. A line
+names the tool, its commands, the OSes it is for and its sources in order (mise first, then `apk`,
+`winget`, `scoop`, `cargo`, `brew`). `scripts/tools --check` lists what is missing. Mac apps and
+fonts go in the `Brewfile`.
 
 ## Cheat sheet
 
@@ -92,21 +89,19 @@ and fonts go in the `Brewfile`.
 | `ll` · `la` · `lt` | Long · all · tree listing (eza) |
 | `lg` · `lzd` · `ghd` | lazygit · oxker (Docker) · gh-dash |
 | `git dft` | Structural diff (difftastic) |
-| `dots` · `dotd` | pull + relink + reprovision · preview source changes |
-| `dot` | `cd` into this repo |
 
 ## Window management
 
-[AeroSpace](https://nikitabobko.github.io/AeroSpace) tiling, configured in
-[`home/.config/aerospace/aerospace.toml`](../home/.config/aerospace/aerospace.toml).
-All `⌥`-driven: `⌥ h/j/k/l` focus · `⌥⇧ h/j/k/l` move · `⌥ 1–9` workspaces · `⌥ f`
-fullscreen · `⌥⇧ ;` service mode (reload / reset).
+[AeroSpace](https://nikitabobko.github.io/AeroSpace) tiles windows (macOS). Config:
+[`home/.config/aerospace/aerospace.toml`](../home/.config/aerospace/aerospace.toml). All keys use `⌥`:
+`⌥ h/j/k/l` focus · `⌥⇧ h/j/k/l` move · `⌥ 1–9` workspaces · `⌥ f` fullscreen · `⌥⇧ ;` service
+mode (reload, reset).
 
 ## Secrets
 
-This repo is **public**, so plaintext secrets never enter it:
+This repo is public, so no plaintext secret goes in it:
 
-- *Quick + local* → exports in `~/.config/zsh/local.zsh` (gitignored).
-- *Identity* → `~/.gitconfig.local` (gitignored), seeded once by `./dotfiles`.
-- *Portable, if you ever need it* → [rage](https://github.com/str4d/rage) (age) is installed for
-  manual encrypt/decrypt of a file (`rage -p`); there's no automatic wiring into the link step.
+- **Quick and local:** exports in `~/.config/zsh/local.zsh` (git-ignored).
+- **Identity:** `~/.gitconfig.local` (git-ignored), seeded once by `./dotfiles`.
+- **Portable:** [rage](https://github.com/str4d/rage) (age) is installed to encrypt and decrypt a
+  file by hand (`rage -p`). Nothing wires it into the link step.
