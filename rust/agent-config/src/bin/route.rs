@@ -1,15 +1,17 @@
 //! route: decide who does each what's-left row, and what comes next.
 //!
 //! Port of claude/skills/ps_whatsleft/scripts/route.py. It matches the Python
-//! script byte for byte on stdout, stderr and exit code: the JSON reader, the
-//! argparse errors and the OSError texts are rebuilt to say what Python says.
-//! Known gaps: lone surrogates in JSON strings become U+FFFD, the Unicode
-//! printable table behind `repr()` is approximate, and the argparse help text is
-//! the Python 3.9 one.
+//! script on stdout, stderr and exit code: the argparse errors, the OSError
+//! texts, the `repr()` and `json.dumps` output are rebuilt to say what Python says.
+//! The JSON is read by serde_json, and a parse error is worded like Python's.
+//! Known gaps: `NaN` and `Infinity` literals are not accepted, a lone surrogate in
+//! a JSON string is an error, an integer past 64 bits reads as a float, `-0` reads
+//! as `-0.0`, nesting is capped at 128 levels, the Unicode printable table behind
+//! `repr()` is approximate, and the argparse help text is the Python 3.9 one.
 
-use agent_config::pycompat::{Item, classify_arg, py_strip, repr_str};
+use agent_config::pycompat::{Item, classify_arg, py_float, py_str as scalar_str, py_strip, repr_str, truthy};
+use serde_json::{Map, Value, json};
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::io::{Read, Write};
 
 const KINDS: &[&str] =
@@ -35,93 +37,25 @@ optional arguments:
 ";
 
 // ---------------------------------------------------------------------------
-// A JSON value with Python semantics (truthiness, repr, str, json.dumps).
+// Python's repr(), str() and json.dumps() of a JSON value.
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, PartialEq)]
-enum Py {
-    Null,
-    Bool(bool),
-    Int(String),
-    Float(f64),
-    Str(String),
-    List(Vec<Self>),
-    Dict(Vec<(String, Self)>),
-}
-
-impl Py {
-    fn truthy(&self) -> bool {
-        match self {
-            Self::Null => false,
-            Self::Bool(b) => *b,
-            Self::Int(s) => s != "0",
-            Self::Float(f) => *f != 0.0,
-            Self::Str(s) => !s.is_empty(),
-            Self::List(l) => !l.is_empty(),
-            Self::Dict(d) => !d.is_empty(),
-        }
-    }
-
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            Self::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-}
-
-fn dget<'a>(d: &'a [(String, Py)], key: &str) -> Option<&'a Py> {
-    d.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-}
-
-/// Python's repr(float).
-fn float_repr(f: f64) -> String {
-    if f.is_nan() {
-        return "nan".into();
-    }
-    if f.is_infinite() {
-        return if f < 0.0 { "-inf".into() } else { "inf".into() };
-    }
-    let sign = if f.is_sign_negative() { "-" } else { "" };
-    let e = format!("{:e}", f.abs());
-    let (mant, exp) = e.split_once('e').unwrap();
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let exp: i32 = exp.parse().unwrap();
-    let decpt = exp + 1;
-    let n = digits.len() as i32;
-    let body = if !(-3..=16).contains(&decpt) {
-        let m = if n > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
-        let x = decpt - 1;
-        format!("{}e{}{:02}", m, if x < 0 { '-' } else { '+' }, x.abs())
-    } else if decpt <= 0 {
-        format!("0.{}{}", "0".repeat((-decpt) as usize), digits)
-    } else if decpt >= n {
-        format!("{}{}.0", digits, "0".repeat((decpt - n) as usize))
-    } else {
-        format!("{}.{}", &digits[..decpt as usize], &digits[decpt as usize..])
-    };
-    format!("{sign}{body}")
-}
-
-fn py_repr(v: &Py) -> String {
+/// Python's repr(): strings through the printable table, the rest as `str`.
+fn py_repr(v: &Value) -> String {
     match v {
-        Py::Null => "None".into(),
-        Py::Bool(true) => "True".into(),
-        Py::Bool(false) => "False".into(),
-        Py::Int(s) => s.clone(),
-        Py::Float(f) => float_repr(*f),
-        Py::Str(s) => repr_str(s),
-        Py::List(l) => format!("[{}]", l.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
-        Py::Dict(d) => format!(
+        Value::String(s) => repr_str(s),
+        Value::Array(l) => format!("[{}]", l.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
+        Value::Object(d) => format!(
             "{{{}}}",
             d.iter().map(|(k, v)| format!("{}: {}", repr_str(k), py_repr(v))).collect::<Vec<_>>().join(", ")
         ),
+        other => scalar_str(other),
     }
 }
 
-fn py_str(v: &Py) -> String {
+fn py_str(v: &Value) -> String {
     match v {
-        Py::Str(s) => s.clone(),
+        Value::String(s) => s.clone(),
         other => py_repr(other),
     }
 }
@@ -130,57 +64,28 @@ fn str_list_repr(items: &[&str]) -> String {
     format!("[{}]", items.iter().map(|s| repr_str(s)).collect::<Vec<_>>().join(", "))
 }
 
-fn json_escape(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 /// json.dumps(v, indent=2, ensure_ascii=False), nested at `level`.
-fn dumps(v: &Py, level: usize) -> String {
+fn dumps(v: &Value, level: usize) -> String {
     let pad = "  ".repeat(level + 1);
     let end = "  ".repeat(level);
+    let quoted = |s: &str| serde_json::to_string(s).unwrap_or_default();
     match v {
-        Py::Null => "null".into(),
-        Py::Bool(true) => "true".into(),
-        Py::Bool(false) => "false".into(),
-        Py::Int(s) => s.clone(),
-        Py::Float(f) => {
-            if f.is_nan() {
-                "NaN".into()
-            } else if f.is_infinite() {
-                if *f < 0.0 { "-Infinity".into() } else { "Infinity".into() }
-            } else {
-                float_repr(*f)
-            }
-        }
-        Py::Str(s) => json_escape(s),
-        Py::List(l) if l.is_empty() => "[]".into(),
-        Py::List(l) => format!(
+        Value::Null => "null".into(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) if n.is_f64() => py_float(n.as_f64().unwrap_or_default()),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => quoted(s),
+        Value::Array(l) if l.is_empty() => "[]".into(),
+        Value::Array(l) => format!(
             "[\n{}\n{}]",
             l.iter().map(|x| format!("{}{}", pad, dumps(x, level + 1))).collect::<Vec<_>>().join(",\n"),
             end
         ),
-        Py::Dict(d) if d.is_empty() => "{}".into(),
-        Py::Dict(d) => format!(
+        Value::Object(d) if d.is_empty() => "{}".into(),
+        Value::Object(d) => format!(
             "{{\n{}\n{}}}",
             d.iter()
-                .map(|(k, x)| format!("{}{}: {}", pad, json_escape(k), dumps(x, level + 1)))
+                .map(|(k, x)| format!("{}{}: {}", pad, quoted(k), dumps(x, level + 1)))
                 .collect::<Vec<_>>()
                 .join(",\n"),
             end
@@ -189,253 +94,25 @@ fn dumps(v: &Py, level: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// json.loads with Python's error messages.
+// json.loads, with Python's error shape: `<message>: line L column C (char N)`.
 // ---------------------------------------------------------------------------
 
-struct JErr {
-    msg: &'static str,
-    pos: usize,
+/// The Python-style text of a serde_json error at `text`.
+fn json_error(text: &str, e: &serde_json::Error) -> String {
+    let full = e.to_string();
+    let msg = full.rsplit_once(" at line ").map_or(full.as_str(), |(m, _)| m);
+    let (line, col) = (e.line().max(1), e.column().max(1));
+    let line_start: usize = text.split_inclusive('\n').take(line - 1).map(str::len).sum();
+    let at = (line_start + col - 1).min(text.len());
+    let pos = text.char_indices().take_while(|(i, _)| *i < at).count();
+    format!("{msg}: line {line} column {col} (char {pos})")
 }
 
-type JR<T> = Result<T, JErr>;
-
-struct Reader {
-    s: Vec<char>,
-}
-
-impl Reader {
-    fn ws(&self, mut i: usize) -> usize {
-        while i < self.s.len() && matches!(self.s[i], ' ' | '\t' | '\n' | '\r') {
-            i += 1;
-        }
-        i
+fn json_loads(text: &str) -> Result<Value, String> {
+    if text.starts_with('\u{feff}') {
+        return Err("Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)".into());
     }
-
-    fn lit(&self, i: usize, word: &str) -> bool {
-        let w: Vec<char> = word.chars().collect();
-        self.s.len() >= i + w.len() && self.s[i..i + w.len()] == w[..]
-    }
-
-    fn value(&self, i: usize) -> JR<(Py, usize)> {
-        let c = match self.s.get(i) {
-            Some(c) => *c,
-            None => return Err(JErr { msg: "Expecting value", pos: i }),
-        };
-        match c {
-            '"' => self.string(i + 1).map(|(s, e)| (Py::Str(s), e)),
-            '{' => self.object(i + 1),
-            '[' => self.array(i + 1),
-            'n' if self.lit(i, "null") => Ok((Py::Null, i + 4)),
-            't' if self.lit(i, "true") => Ok((Py::Bool(true), i + 4)),
-            'f' if self.lit(i, "false") => Ok((Py::Bool(false), i + 5)),
-            'N' if self.lit(i, "NaN") => Ok((Py::Float(f64::NAN), i + 3)),
-            'I' if self.lit(i, "Infinity") => Ok((Py::Float(f64::INFINITY), i + 8)),
-            '-' if self.lit(i, "-Infinity") => Ok((Py::Float(f64::NEG_INFINITY), i + 9)),
-            _ => self.number(i),
-        }
-    }
-
-    fn number(&self, start: usize) -> JR<(Py, usize)> {
-        let s = &self.s;
-        let digit = |i: usize| s.get(i).is_some_and(char::is_ascii_digit);
-        let mut i = start;
-        if s.get(i) == Some(&'-') {
-            i += 1;
-        }
-        match s.get(i) {
-            Some('1'..='9') => {
-                while digit(i) {
-                    i += 1;
-                }
-            }
-            Some('0') => i += 1,
-            _ => return Err(JErr { msg: "Expecting value", pos: start }),
-        }
-        let mut is_float = false;
-        if s.get(i) == Some(&'.') && digit(i + 1) {
-            i += 1;
-            while digit(i) {
-                i += 1;
-            }
-            is_float = true;
-        }
-        if matches!(s.get(i), Some('e' | 'E')) {
-            let mut j = i + 1;
-            if matches!(s.get(j), Some('+' | '-')) {
-                j += 1;
-            }
-            if digit(j) {
-                while digit(j) {
-                    j += 1;
-                }
-                i = j;
-                is_float = true;
-            }
-        }
-        let text: String = s[start..i].iter().collect();
-        if is_float {
-            let f: f64 = text.parse().unwrap_or(f64::NAN);
-            Ok((Py::Float(f), i))
-        } else if text == "-0" {
-            Ok((Py::Int("0".into()), i))
-        } else {
-            Ok((Py::Int(text), i))
-        }
-    }
-
-    fn hex4(&self, at: usize) -> Option<u32> {
-        if at + 4 > self.s.len() {
-            return None;
-        }
-        let mut v = 0;
-        for k in 0..4 {
-            v = v * 16 + self.s[at + k].to_digit(16)?;
-        }
-        Some(v)
-    }
-
-    /// `i` is the index just after the opening quote.
-    fn string(&self, mut i: usize) -> JR<(String, usize)> {
-        let begin = i - 1;
-        let n = self.s.len();
-        let mut out = String::new();
-        loop {
-            if i >= n {
-                return Err(JErr { msg: "Unterminated string starting at", pos: begin });
-            }
-            let c = self.s[i];
-            if c == '"' {
-                return Ok((out, i + 1));
-            }
-            if c != '\\' {
-                if (c as u32) < 0x20 {
-                    return Err(JErr { msg: "Invalid control character at", pos: i });
-                }
-                out.push(c);
-                i += 1;
-                continue;
-            }
-            // escape
-            if i + 1 >= n {
-                return Err(JErr { msg: "Unterminated string starting at", pos: begin });
-            }
-            let e = self.s[i + 1];
-            if e != 'u' {
-                let r = match e {
-                    '"' => '"',
-                    '\\' => '\\',
-                    '/' => '/',
-                    'b' => '\u{8}',
-                    'f' => '\u{c}',
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    _ => return Err(JErr { msg: "Invalid \\escape", pos: i }),
-                };
-                out.push(r);
-                i += 2;
-                continue;
-            }
-            // \uXXXX; the C scanner reports a short or bad escape at the 'u'
-            let u = i + 1;
-            if u + 5 >= n {
-                return Err(JErr { msg: "Invalid \\uXXXX escape", pos: u });
-            }
-            let Some(mut code) = self.hex4(u + 1) else {
-                return Err(JErr { msg: "Invalid \\uXXXX escape", pos: u });
-            };
-            i = u + 5;
-            if (0xD800..=0xDBFF).contains(&code) && i + 6 < n && self.s[i] == '\\' && self.s[i + 1] == 'u' {
-                match self.hex4(i + 2) {
-                    None => return Err(JErr { msg: "Invalid \\uXXXX escape", pos: i + 1 }),
-                    Some(lo) if (0xDC00..=0xDFFF).contains(&lo) => {
-                        code = 0x10000 + (((code - 0xD800) << 10) | (lo - 0xDC00));
-                        i += 6;
-                    }
-                    Some(_) => {}
-                }
-            }
-            out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
-        }
-    }
-
-    fn object(&self, mut i: usize) -> JR<(Py, usize)> {
-        let n = self.s.len();
-        let mut items: Vec<(String, Py)> = Vec::new();
-        i = self.ws(i);
-        if i >= n || self.s[i] != '}' {
-            loop {
-                if i >= n || self.s[i] != '"' {
-                    return Err(JErr { msg: "Expecting property name enclosed in double quotes", pos: i });
-                }
-                let (key, e) = self.string(i + 1)?;
-                i = self.ws(e);
-                if i >= n || self.s[i] != ':' {
-                    return Err(JErr { msg: "Expecting ':' delimiter", pos: i });
-                }
-                i = self.ws(i + 1);
-                let (val, e) = self.value(i)?;
-                match items.iter_mut().find(|(k, _)| *k == key) {
-                    Some(slot) => slot.1 = val,
-                    None => items.push((key, val)),
-                }
-                i = self.ws(e);
-                if i < n && self.s[i] == '}' {
-                    break;
-                }
-                if i >= n || self.s[i] != ',' {
-                    return Err(JErr { msg: "Expecting ',' delimiter", pos: i });
-                }
-                i = self.ws(i + 1);
-            }
-        }
-        Ok((Py::Dict(items), i + 1))
-    }
-
-    fn array(&self, mut i: usize) -> JR<(Py, usize)> {
-        let n = self.s.len();
-        let mut items = Vec::new();
-        i = self.ws(i);
-        if i >= n || self.s[i] != ']' {
-            loop {
-                let (val, e) = self.value(i)?;
-                items.push(val);
-                i = self.ws(e);
-                if i < n && self.s[i] == ']' {
-                    break;
-                }
-                if i >= n || self.s[i] != ',' {
-                    return Err(JErr { msg: "Expecting ',' delimiter", pos: i });
-                }
-                i = self.ws(i + 1);
-            }
-        }
-        Ok((Py::List(items), i + 1))
-    }
-}
-
-/// json.loads(text): the error text is Python's.
-fn json_loads(text: &str) -> Result<Py, String> {
-    let r = Reader { s: text.chars().collect() };
-    let fail = |msg: &str, pos: usize| -> String {
-        let before = &r.s[..pos.min(r.s.len())];
-        let line = before.iter().filter(|c| **c == '\n').count() + 1;
-        let col = match before.iter().rposition(|c| *c == '\n') {
-            Some(nl) => pos - nl,
-            None => pos + 1,
-        };
-        format!("{msg}: line {line} column {col} (char {pos})")
-    };
-    if r.s.first() == Some(&'\u{feff}') {
-        return Err(fail("Unexpected UTF-8 BOM (decode using utf-8-sig)", 0));
-    }
-    let start = r.ws(0);
-    let (v, e) = r.value(start).map_err(|e| fail(e.msg, e.pos))?;
-    let end = r.ws(e);
-    if end != r.s.len() {
-        return Err(fail("Extra data", end));
-    }
-    Ok(v)
+    serde_json::from_str(text).map_err(|e| json_error(text, &e))
 }
 
 /// Strict UTF-8 decode that fails with Python's UnicodeDecodeError text. A file
@@ -488,7 +165,7 @@ fn os_error_text(e: &std::io::Error, path: &str) -> String {
 #[derive(Debug, Clone)]
 struct Row {
     id: String,
-    text: Py,
+    text: Value,
     kind: String,
     who_you: bool,
     risk: bool,
@@ -499,52 +176,46 @@ struct Row {
     after: Vec<String>,
 }
 
-fn bad(msg: String) -> Result<(Vec<Row>, Vec<String>), String> {
-    Err(msg)
+/// A row id that is a non-empty string.
+fn row_id(d: &Map<String, Value>) -> Option<&str> {
+    d.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
 /// Python's `validate`: rows with a default id where one is missing, without the rows that have no
 /// text, plus one note per dropped row. The caller's rows are not changed.
-fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
-    let Py::List(list) = rows else { return bad("rows must be a JSON list".into()) };
-    let mut dicts: Vec<&[(String, Py)]> = Vec::new();
+fn validate(rows: &Value) -> Result<(Vec<Row>, Vec<String>), String> {
+    let Value::Array(list) = rows else { return Err("rows must be a JSON list".into()) };
+    let mut dicts: Vec<&Map<String, Value>> = Vec::new();
     for (i, r) in list.iter().enumerate() {
-        let Py::Dict(d) = r else { return bad(format!("row {}: not an object", i + 1)) };
-        match dget(d, "id") {
-            None | Some(Py::Null | Py::Str(_)) => {}
-            Some(_) => return bad(format!("row {}: id must be a string", i + 1)),
+        let Value::Object(d) = r else { return Err(format!("row {}: not an object", i + 1)) };
+        match d.get("id") {
+            None | Some(Value::Null | Value::String(_)) => {}
+            Some(_) => return Err(format!("row {}: id must be a string", i + 1)),
         }
         dicts.push(d);
     }
-    let mut taken: HashSet<String> = dicts
-        .iter()
-        .filter_map(|d| match dget(d, "id") {
-            Some(Py::Str(s)) if !s.is_empty() => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
+    let mut taken: HashSet<String> = dicts.iter().filter_map(|d| row_id(d)).map(str::to_string).collect();
     let mut seen: HashSet<String> = HashSet::new();
     let mut dropped: Vec<String> = Vec::new();
-    type Kept<'a> = (String, &'a [(String, Py)], Py); // id, the row, its text
+    type Kept<'a> = (String, &'a Map<String, Value>, Value); // id, the row, its text
     let mut kept: Vec<Kept> = Vec::new();
     for (i, d) in dicts.iter().enumerate() {
-        let rid = match dget(d, "id") {
-            Some(Py::Str(s)) if !s.is_empty() => s.clone(),
-            _ => {
-                let mut n = i + 1;
-                while taken.contains(&format!("r{n}")) {
-                    n += 1;
-                }
-                let rid = format!("r{n}");
-                taken.insert(rid.clone());
-                rid
+        let rid = if let Some(id) = row_id(d) {
+            id.to_string()
+        } else {
+            let mut n = i + 1;
+            while taken.contains(&format!("r{n}")) {
+                n += 1;
             }
+            let rid = format!("r{n}");
+            taken.insert(rid.clone());
+            rid
         };
         if !seen.insert(rid.clone()) {
-            return bad(format!("row {}: duplicate id {}", i + 1, rid));
+            return Err(format!("row {}: duplicate id {}", i + 1, rid));
         }
-        let text = dget(d, "text").cloned().unwrap_or(Py::Null);
-        let blank = !text.truthy() || matches!(&text, Py::Str(s) if py_strip(s).is_empty());
+        let text = d.get("text").cloned().unwrap_or(Value::Null);
+        let blank = !truthy(&text) || matches!(&text, Value::String(s) if py_strip(s).is_empty());
         if blank {
             dropped.push(rid);
             continue;
@@ -554,61 +225,53 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
     let gone: HashSet<&str> = dropped.iter().map(String::as_str).collect();
     let mut out: Vec<Row> = Vec::new();
     for (rid, d, text) in kept {
-        let d: &[(String, Py)] = d;
-        let kind_v = dget(d, "kind").cloned().unwrap_or(Py::Null);
+        let kind_v = d.get("kind").cloned().unwrap_or(Value::Null);
         let kind = match kind_v.as_str() {
             Some(k) if KINDS.contains(&k) => k.to_string(),
             _ => {
-                return bad(format!("{}: kind {} not in {}", rid, py_repr(&kind_v), str_list_repr(KINDS)));
+                return Err(format!("{}: kind {} not in {}", rid, py_repr(&kind_v), str_list_repr(KINDS)));
             }
         };
         let mut has_risk = false;
-        if let Some(rv) = dget(d, "risk")
-            && *rv != Py::Null
+        if let Some(rv) = d.get("risk")
+            && !rv.is_null()
         {
             match rv.as_str() {
                 Some(s) if RISKS.contains(&s) => has_risk = true,
                 _ => {
-                    return bad(format!("{}: risk {} not in {}", rid, py_repr(rv), str_list_repr(RISKS)));
+                    return Err(format!("{}: risk {} not in {}", rid, py_repr(rv), str_list_repr(RISKS)));
                 }
             }
         }
         if has_risk && kind != "work" {
-            return bad(format!("{rid}: risk only goes on kind work"));
+            return Err(format!("{rid}: risk only goes on kind work"));
         }
-        let who = dget(d, "who").cloned().unwrap_or_else(|| Py::Str("me".into()));
+        let who = d.get("who").cloned().unwrap_or_else(|| json!("me"));
         let who_s = who.as_str();
         if who_s != Some("me") && who_s != Some("you") {
-            return bad(format!("{rid}: who must be me or you"));
+            return Err(format!("{rid}: who must be me or you"));
         }
         if kind == "no-tool" {
-            let tried = match dget(d, "tried") {
-                Some(v) => py_str(v),
-                None => String::new(),
-            };
+            let tried = d.get("tried").map(py_str).unwrap_or_default();
             if py_strip(&tried).is_empty() {
-                return bad(format!("{rid}: no-tool needs 'tried': name the tool you tried first"));
+                return Err(format!("{rid}: no-tool needs 'tried': name the tool you tried first"));
             }
         }
         let mut after: Vec<String> = Vec::new();
-        match dget(d, "after") {
+        match d.get("after") {
             None => {}
-            Some(Py::List(items)) => {
+            Some(Value::Array(items)) => {
                 for it in items {
-                    match it {
-                        // nothing waits on a dropped row
-                        Py::Str(s) => {
-                            if !gone.contains(s.as_str()) {
-                                after.push(s.clone());
-                            }
-                        }
-                        _ => return bad(format!("{rid}: after must be a list of ids")),
+                    let Value::String(s) = it else { return Err(format!("{rid}: after must be a list of ids")) };
+                    // nothing waits on a dropped row
+                    if !gone.contains(s.as_str()) {
+                        after.push(s.clone());
                     }
                 }
             }
-            Some(_) => return bad(format!("{rid}: after must be a list of ids")),
+            Some(_) => return Err(format!("{rid}: after must be a list of ids")),
         }
-        let flag = |k: &str| dget(d, k).is_some_and(Py::truthy);
+        let flag = |k: &str| d.get(k).is_some_and(truthy);
         out.push(Row {
             id: rid,
             text,
@@ -626,10 +289,10 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
     for r in &out {
         for dep in &r.after {
             if !ids.contains(dep.as_str()) {
-                return bad(format!("{}: after names unknown id {}", r.id, dep));
+                return Err(format!("{}: after names unknown id {}", r.id, dep));
             }
             if *dep == r.id {
-                return bad(format!("{}: waits on itself", r.id));
+                return Err(format!("{}: waits on itself", r.id));
             }
         }
     }
@@ -705,7 +368,7 @@ fn priority(r: &Row) -> u8 {
 }
 
 struct Res {
-    routes: Vec<(String, String, Py)>, // id, route, text
+    routes: Vec<(String, String, Value)>, // id, route, text
     do_ids: Vec<String>,
     ask: Vec<String>,
     default: Vec<String>,
@@ -714,8 +377,8 @@ struct Res {
     dropped: Vec<String>,
 }
 
-fn route(rows_py: &Py, kill: bool, cap: usize) -> Result<Res, String> {
-    let (rows, dropped) = validate(rows_py)?;
+fn route(rows_json: &Value, kill: bool, cap: usize) -> Result<Res, String> {
+    let (rows, dropped) = validate(rows_json)?;
     let mut out: HashMap<String, &'static str> = HashMap::new();
     for r in &rows {
         out.insert(r.id.clone(), first_route(r, kill));
@@ -795,28 +458,17 @@ fn render(res: &Res) -> String {
 }
 
 fn res_json(res: &Res) -> String {
-    let strs = |v: &[String]| Py::List(v.iter().map(|s| Py::Str(s.clone())).collect());
-    let routes = Py::List(
-        res.routes
-            .iter()
-            .map(|(id, rt, text)| {
-                Py::Dict(vec![
-                    ("id".into(), Py::Str(id.clone())),
-                    ("route".into(), Py::Str(rt.clone())),
-                    ("text".into(), text.clone()),
-                ])
-            })
-            .collect(),
-    );
-    let doc = Py::Dict(vec![
-        ("routes".into(), routes),
-        ("do".into(), strs(&res.do_ids)),
-        ("ask".into(), strs(&res.ask)),
-        ("default".into(), strs(&res.default)),
-        ("you".into(), strs(&res.you)),
-        ("then".into(), Py::Str(res.then.to_string())),
-        ("dropped".into(), strs(&res.dropped)),
-    ]);
+    let routes: Vec<Value> =
+        res.routes.iter().map(|(id, rt, text)| json!({"id": id, "route": rt, "text": text})).collect();
+    let doc = json!({
+        "routes": routes,
+        "do": res.do_ids,
+        "ask": res.ask,
+        "default": res.default,
+        "you": res.you,
+        "then": res.then,
+        "dropped": res.dropped,
+    });
     dumps(&doc, 0)
 }
 
@@ -1036,7 +688,7 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn p(s: &str) -> Py {
+    fn p(s: &str) -> Value {
         json_loads(s).unwrap()
     }
 
@@ -1119,13 +771,12 @@ mod tests {
     #[test]
     fn test_answers_unlock() {
         // second round: the user said yes to m3, m1 and m2 are done
-        let Py::List(mut rows) = p(SCENARIO) else { panic!() };
+        let Value::Array(mut rows) = p(SCENARIO) else { panic!() };
         for row in &mut rows {
-            let Py::Dict(d) = row else { panic!() };
-            let id = dget(d, "id").unwrap().as_str().unwrap().to_string();
+            let Value::Object(d) = row else { panic!() };
+            let id = d["id"].as_str().unwrap().to_string();
             let mut set = |k: &str| {
-                d.retain(|(key, _)| key != k);
-                d.push((k.to_string(), Py::Bool(true)));
+                d.insert(k.to_string(), Value::Bool(true));
             };
             if id == "m1" || id == "m2" {
                 set("done");
@@ -1137,7 +788,7 @@ mod tests {
                 set("done");
             }
         }
-        let res = route(&Py::List(rows), false, CAP).unwrap();
+        let res = route(&Value::Array(rows), false, CAP).unwrap();
         assert_eq!(r(&res, "m3"), "DO");
         assert_eq!(r(&res, "m4"), "WAIT");
         assert_eq!(res.then, "rerun");
@@ -1151,10 +802,10 @@ mod tests {
         let res = route(&rows, false, CAP).unwrap();
         assert_eq!(res.ask, ids(&["v1"]));
         assert_eq!(r(&res, "e1"), "WAIT");
-        if let Py::List(l) = &mut rows
-            && let Py::Dict(d) = &mut l[0]
+        if let Value::Array(l) = &mut rows
+            && let Value::Object(d) = &mut l[0]
         {
-            d.push(("done".into(), Py::Bool(true)));
+            d.insert("done".into(), Value::Bool(true));
         }
         assert_eq!(route(&rows, false, CAP).unwrap().ask, ids(&["e1"]));
     }
@@ -1239,7 +890,7 @@ mod tests {
         }
         // a row with no text is dropped, never an error, and a later row cannot name it
         let res = route(&p(r#"[{"id": "x", "kind": "work", "text": ""}]"#), false, CAP).unwrap();
-        assert_eq!(res.routes, [] as [(String, String, Py); 0]);
+        assert_eq!(res.routes, [] as [(String, String, Value); 0]);
         assert_eq!(res.dropped, ["dropped row x: no text"]);
         let res = route(&p(r#"[{"id": "a", "kind": "work", "text": "t", "after": ["b"]}, {"id": "b"}]"#), false, CAP)
             .unwrap();
@@ -1266,7 +917,25 @@ mod tests {
         ] {
             assert!(json_loads(src).is_err(), "{src:?}");
         }
-        assert_eq!(p("\"\\ud83d\\ude00\""), Py::Str("\u{1F600}".into()));
+        assert_eq!(p("\"\\ud83d\\ude00\""), json!("\u{1F600}"));
+    }
+
+    #[test]
+    fn test_json_error_position_is_python_shaped() {
+        // the line, the column and the character offset (not the byte offset) of the fault
+        let err = json_loads("[\"é\",\n  x]").unwrap_err();
+        assert!(err.ends_with(": line 2 column 3 (char 8)"), "{err}");
+        let err = json_loads("").unwrap_err();
+        assert!(err.ends_with(": line 1 column 1 (char 0)"), "{err}");
+    }
+
+    #[test]
+    fn test_dumps_matches_python() {
+        let v = p(r#"{"a": [1, 2.5, 1e22, "é\u0001\n"], "b": {}, "c": [], "d": null, "e": true}"#);
+        assert_eq!(
+            dumps(&v, 0),
+            "{\n  \"a\": [\n    1,\n    2.5,\n    1e+22,\n    \"é\\u0001\\n\"\n  ],\n  \"b\": {},\n  \"c\": [],\n  \"d\": null,\n  \"e\": true\n}"
+        );
     }
 
     fn cli(args: &[&str], stdin: &str) -> Outcome {
@@ -1291,9 +960,7 @@ mod tests {
         let got: Vec<&str> = res.routes.iter().map(|(i, _, _)| i.as_str()).collect();
         assert_eq!(got, ["r2", "r3", "r4", "r5"]);
         // the caller's rows are not changed
-        let Py::List(l) = &rows else { panic!() };
-        let Py::Dict(d) = &l[1] else { panic!() };
-        assert!(dget(d, "id").is_none());
+        assert!(rows[1].get("id").is_none());
     }
 
     #[test]
@@ -1355,9 +1022,9 @@ mod tests {
     fn test_cli_stdin_json_and_flags() {
         let o = cli(&["--json"], r#"[{"id":"a","kind":"work","text":"x"}]"#);
         assert_eq!(o.code, 0);
-        let v: serde_json::Value = serde_json::from_str(&o.stdout).unwrap();
-        assert_eq!(v["routes"], serde_json::json!([{"id": "a", "route": "DO", "text": "x"}]));
-        assert_eq!(v["do"], serde_json::json!(["a"]));
+        let v: Value = serde_json::from_str(&o.stdout).unwrap();
+        assert_eq!(v["routes"], json!([{"id": "a", "route": "DO", "text": "x"}]));
+        assert_eq!(v["do"], json!(["a"]));
         assert_eq!(v["then"], "mic-drop");
         let o = cli(&["--kill", "--cap=1"], r#"[{"id":"t","kind":"task","stop":true,"text":"x"}]"#);
         assert!(o.stdout.starts_with("DO      t    x\n"));
