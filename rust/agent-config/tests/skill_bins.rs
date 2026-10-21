@@ -36,7 +36,7 @@ struct Transcript {
 
 impl Transcript {
     /// A temp HOME with a fresh git repo in it (its real path, as git reports it).
-    fn new() -> Transcript {
+    fn new() -> Self {
         let home = temp_home("scan");
         let root = home.join("repo");
         fs::create_dir_all(&root).unwrap();
@@ -50,7 +50,7 @@ impl Transcript {
             .expect("git init");
         assert!(ok.success());
         let root = fs::canonicalize(&root).unwrap();
-        Transcript { home, root, lines: vec![], n: 0 }
+        Self { home, root, lines: vec![], n: 0 }
     }
 
     fn ts(&mut self) -> String {
@@ -356,7 +356,7 @@ fn test_spawns_and_agents_table() {
     stats(&home, &["collect", "--since", "2026-10-01", "--out", &rows_arg]);
     let rows: Vec<Value> = serde_json::from_str(&fs::read_to_string(&rows_path).unwrap()).unwrap();
     let s1 = rows.iter().find(|r| r["sid"] == "s1").expect("row s1");
-    let mut spawns: Vec<String> = s1["sub"]["spawns"].as_array().unwrap().iter().map(|v| v.to_string()).collect();
+    let mut spawns: Vec<String> = s1["sub"]["spawns"].as_array().unwrap().iter().map(ToString::to_string).collect();
     spawns.sort();
     assert_eq!(spawns, [r#"["general-purpose",60000]"#, r#"["general-purpose",64000]"#, r#"["researcher",15000]"#]);
     let types: Vec<&str> = s1["agent_calls"].as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();

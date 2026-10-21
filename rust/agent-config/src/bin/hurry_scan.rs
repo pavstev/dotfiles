@@ -46,7 +46,7 @@ fn home() -> String {
             return h;
         }
     }
-    dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
+    dirs::home_dir().map_or_else(|| "~".into(), |p| p.to_string_lossy().into_owned())
 }
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
@@ -61,7 +61,7 @@ fn num(v: &Value) -> f64 {
 }
 
 fn pyround1(x: f64) -> f64 {
-    format!("{:.1}", x).parse().unwrap_or(x)
+    format!("{x:.1}").parse().unwrap_or(x)
 }
 
 /// json.dumps(v, indent=2) with ensure_ascii.
@@ -144,7 +144,7 @@ fn human(n: f64) -> String {
     let mut n = n;
     for unit in ["B", "KB", "MB", "GB"] {
         if n < 1024.0 || unit == "GB" {
-            return if unit == "B" { format!("{:.0}{}", n, unit) } else { format!("{:.1}{}", n, unit) };
+            return if unit == "B" { format!("{n:.0}{unit}") } else { format!("{n:.1}{unit}") };
         }
         n /= 1024.0;
     }
@@ -163,7 +163,7 @@ fn rglob(root: &Path, pick: impl Fn(&str) -> bool) -> Vec<PathBuf> {
         .min_depth(1)
         .into_iter()
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
     {
         if pick(&e.file_name().to_string_lossy()) {
             v.push(e.path().to_path_buf());
@@ -197,7 +197,7 @@ fn newest(v: Vec<PathBuf>) -> Option<PathBuf> {
     let mut best: Option<(f64, PathBuf)> = None;
     for p in v {
         let m = mtime(&p).unwrap_or(0.0);
-        if best.as_ref().map(|(bm, _)| m > *bm).unwrap_or(true) {
+        if best.as_ref().is_none_or(|(bm, _)| m > *bm) {
             best = Some((m, p));
         }
     }
@@ -218,7 +218,7 @@ fn find_session(arg: Option<&str>, use_all: bool) -> Option<PathBuf> {
     if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID")
         && !sid.is_empty()
     {
-        let want = format!("{}.jsonl", sid);
+        let want = format!("{sid}.jsonl");
         let hit = session_hits(&sid).into_iter().find(|p| fname(p) == want);
         if hit.is_some() {
             return hit;
@@ -274,20 +274,19 @@ struct Counter {
 
 impl Counter {
     fn add(&mut self, k: &str, n: i64) {
-        match self.idx.get(k) {
-            Some(&i) => self.vals[i] += n,
-            None => {
-                self.idx.insert(k.to_string(), self.keys.len());
-                self.keys.push(k.to_string());
-                self.vals.push(n);
-            }
+        if let Some(&i) = self.idx.get(k) {
+            self.vals[i] += n
+        } else {
+            self.idx.insert(k.to_string(), self.keys.len());
+            self.keys.push(k.to_string());
+            self.vals.push(n);
         }
     }
     fn get(&self, k: &str) -> i64 {
-        self.idx.get(k).map(|&i| self.vals[i]).unwrap_or(0)
+        self.idx.get(k).map_or(0, |&i| self.vals[i])
     }
     fn most_common(&self, n: usize) -> Vec<(String, i64)> {
-        let mut it: Vec<(String, i64)> = self.keys.iter().cloned().zip(self.vals.iter().cloned()).collect();
+        let mut it: Vec<(String, i64)> = self.keys.iter().cloned().zip(self.vals.iter().copied()).collect();
         it.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
         it.truncate(n);
         it
@@ -326,7 +325,7 @@ struct Transcript {
 fn scan_transcript(path: &Path) -> Transcript {
     let mut s = Transcript {
         path: path.to_string_lossy().into_owned(),
-        bytes: fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        bytes: fs::metadata(path).map_or(0, |m| m.len()),
         turns_assistant: 0,
         sidechain: 0,
         model: None,
@@ -356,12 +355,12 @@ fn scan_transcript(path: &Path) -> Transcript {
         let t = get(&o, "type").as_str().unwrap_or("");
         let ts = if truthy(get(&o, "timestamp")) { get(&o, "timestamp").as_str().and_then(parse_ts) } else { None };
         if let Some(ts) = ts {
-            if !s.first_ts.map(|f| f != 0.0).unwrap_or(false) {
+            if !s.first_ts.is_some_and(|f| f != 0.0) {
                 s.first_ts = Some(ts);
             }
             s.last_ts = Some(ts);
         }
-        if s.cwd.as_deref().map(|c| c.is_empty()).unwrap_or(true)
+        if s.cwd.as_deref().is_none_or(str::is_empty)
             && let Some(c) = get(&o, "cwd").as_str()
         {
             s.cwd = Some(c.to_string());
@@ -508,7 +507,7 @@ struct Weight {
 
 impl Weight {
     fn hook(&self, ev: &str) -> i64 {
-        self.hooks.iter().find(|(k, _)| k == ev).map(|(_, v)| *v).unwrap_or(0)
+        self.hooks.iter().find(|(k, _)| k == ev).map_or(0, |(_, v)| *v)
     }
     fn hook_total(&self) -> i64 {
         self.hooks.iter().map(|(_, v)| *v).sum()
@@ -520,7 +519,7 @@ fn static_weight(cwd: &Option<String>) -> Weight {
     let (files, rules) = claude_md_files(&cwd_s);
     let claude_md: Vec<(PathBuf, usize)> = files.iter().map(|p| (p.clone(), clen(&read_text(p)))).collect();
     let rules_w = (rules.len(), rules.iter().map(|p| clen(&read_text(p))).sum());
-    let base = if cwd_s.is_empty() { cwd_string() } else { cwd_s.clone() };
+    let base = if cwd_s.is_empty() { cwd_string() } else { cwd_s };
     let settings = load_json(&claude_dir().join("settings.json"));
     let local = load_json(&Path::new(&base).join(".claude").join("settings.json"));
     let mut hooks: Vec<(String, i64)> = vec![];
@@ -531,7 +530,7 @@ fn static_weight(cwd: &Option<String>) -> Weight {
                 if let Some(arr) = groups.as_array() {
                     for g in arr {
                         if g.is_object() {
-                            n += get(g, "hooks").as_array().map(|a| a.len() as i64).unwrap_or(0);
+                            n += get(g, "hooks").as_array().map_or(0, |a| a.len() as i64);
                         }
                     }
                 }
@@ -603,7 +602,7 @@ unsafe extern "C" {
 
 fn machine_load() -> Load {
     let mut out =
-        Load { load: None, cpus: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), top: vec![] };
+        Load { load: None, cpus: std::thread::available_parallelism().map_or(1, std::num::NonZero::get), top: vec![] };
     #[cfg(unix)]
     {
         let mut l = [0f64; 3];
@@ -619,12 +618,11 @@ fn machine_load() -> Load {
         let mut ok = true;
         for r in text.lines().skip(1) {
             if let Some((a, b, c)) = split_none2(r) {
-                match (a.parse::<f64>(), b.parse::<i64>()) {
-                    (Ok(cpu), Ok(rss)) => rows.push((cpu, rss.div_euclid(1024), basename(c))),
-                    _ => {
-                        ok = false;
-                        break;
-                    }
+                if let (Ok(cpu), Ok(rss)) = (a.parse::<f64>(), b.parse::<i64>()) {
+                    rows.push((cpu, rss.div_euclid(1024), basename(c)))
+                } else {
+                    ok = false;
+                    break;
                 }
             }
         }
@@ -664,7 +662,7 @@ fn guess_window(s: &Transcript) -> i64 {
 }
 
 fn plural(n: usize) -> &'static str {
-    if n != 1 { "s" } else { "" }
+    if n == 1 { "" } else { "s" }
 }
 
 fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
@@ -677,7 +675,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             100,
             "you",
-            format!("Context is {:.0}% full", pct),
+            format!("Context is {pct:.0}% full"),
             "Every turn re-reads the whole history. Replies get slow and fuzzy.".into(),
             "Run /compact now. Or /clear and paste a short handoff.",
         );
@@ -685,7 +683,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             70,
             "you",
-            format!("Context is {:.0}% full", pct),
+            format!("Context is {pct:.0}% full"),
             "Each turn costs more as the history grows.".into(),
             "Run /compact at the next calm moment.",
         );
@@ -726,7 +724,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
             if *d > 120.0 { 65 } else { 45 },
             "me",
             format!("{} slow tool call{} (over 20s)", s.slow.len(), plural(s.slow.len())),
-            format!("Slowest: {} {:.0}s ({}).", name, d, summ),
+            format!("Slowest: {name} {d:.0}s ({summ})."),
             "I will run slow work in the background and add timeouts.",
         );
     }
@@ -816,7 +814,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             50,
             "you",
-            format!("{} tool hooks run on every tool call", pre),
+            format!("{pre} tool hooks run on every tool call"),
             "Each hook adds a process spawn before and after each tool.".into(),
             "Check they are fast. Drop the ones you do not need.",
         );
@@ -828,7 +826,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             35,
             "you",
-            format!("Effort is {}", e),
+            format!("Effort is {e}"),
             "High effort means long thinking before each step.".into(),
             "Use /effort medium for simple work. Try /fast for quick tasks.",
         );
@@ -854,12 +852,12 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
     if let Some(load) = m.load.filter(|l| *l != 0.0)
         && load > m.cpus as f64 * 0.8
     {
-        let top = m.top.iter().map(|(c, _, n)| format!("{} {:.0}%", n, c)).collect::<Vec<_>>().join(", ");
+        let top = m.top.iter().map(|(c, _, n)| format!("{n} {c:.0}%")).collect::<Vec<_>>().join(", ");
         add(
             50,
             "you",
             format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus),
-            format!("Top: {}.", top),
+            format!("Top: {top}."),
             "Quit the heavy app. Run ps:bag-mode to see more.",
         );
     }
@@ -868,7 +866,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
 }
 
 fn verdict(f: &[Finding]) -> &'static str {
-    let top = f.first().map(|x| x.score).unwrap_or(0);
+    let top = f.first().map_or(0, |x| x.score);
     if top >= 80 {
         "HIGH"
     } else if top >= 50 {
@@ -891,10 +889,7 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
         o.insert("verdict".into(), Value::from(verdict(f)));
         o.insert("context_tokens".into(), Value::from(s.ctx_now));
         o.insert("window".into(), Value::from(window));
-        o.insert(
-            "context_pct".into(),
-            serde_json::Number::from_f64(pyround1(pct)).map(Value::Number).unwrap_or(Value::Null),
-        );
+        o.insert("context_pct".into(), serde_json::Number::from_f64(pyround1(pct)).map_or(Value::Null, Value::Number));
         let fs_: Vec<Value> = f
             .iter()
             .map(|x| {

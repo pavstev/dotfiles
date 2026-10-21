@@ -34,7 +34,7 @@ pub struct Host {
 
 impl Host {
     /// The machine this process runs on.
-    pub fn detect() -> Host {
+    pub fn detect() -> Self {
         let os = if cfg!(target_os = "macos") {
             Os::Macos
         } else if cfg!(windows) {
@@ -46,16 +46,16 @@ impl Host {
             && (Path::new("/etc/alpine-release").exists()
                 || Path::new("/lib/ld-musl-x86_64.so.1").exists()
                 || Path::new("/lib/ld-musl-aarch64.so.1").exists());
-        Host { os, musl }
+        Self { os, musl }
     }
 
     /// `macos`, `linux`, `linux-musl` or `windows`: the names `--host` takes.
-    pub fn parse(s: &str) -> Option<Host> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "macos" => Some(Host { os: Os::Macos, musl: false }),
-            "linux" => Some(Host { os: Os::Linux, musl: false }),
-            "linux-musl" | "alpine" => Some(Host { os: Os::Linux, musl: true }),
-            "windows" => Some(Host { os: Os::Windows, musl: false }),
+            "macos" => Some(Self { os: Os::Macos, musl: false }),
+            "linux" => Some(Self { os: Os::Linux, musl: false }),
+            "linux-musl" | "alpine" => Some(Self { os: Os::Linux, musl: true }),
+            "windows" => Some(Self { os: Os::Windows, musl: false }),
             _ => None,
         }
     }
@@ -86,27 +86,27 @@ impl Source {
     /// The source name as `tools.list` spells it (`mise`, `apk`, ...).
     pub fn kind(&self) -> &'static str {
         match self {
-            Source::Mise(_) => "mise",
-            Source::Apk(_) => "apk",
-            Source::Winget(_) => "winget",
-            Source::Scoop(_) => "scoop",
-            Source::Cargo(_) => "cargo",
-            Source::Brew(_) => "brew",
-            Source::Sh(_) => "sh",
-            Source::Boot(_) => "boot",
+            Self::Mise(_) => "mise",
+            Self::Apk(_) => "apk",
+            Self::Winget(_) => "winget",
+            Self::Scoop(_) => "scoop",
+            Self::Cargo(_) => "cargo",
+            Self::Brew(_) => "brew",
+            Self::Sh(_) => "sh",
+            Self::Boot(_) => "boot",
         }
     }
     /// The package or command the source holds.
     pub fn arg(&self) -> &str {
         match self {
-            Source::Mise(a)
-            | Source::Apk(a)
-            | Source::Winget(a)
-            | Source::Scoop(a)
-            | Source::Cargo(a)
-            | Source::Brew(a)
-            | Source::Sh(a)
-            | Source::Boot(a) => a,
+            Self::Mise(a)
+            | Self::Apk(a)
+            | Self::Winget(a)
+            | Self::Scoop(a)
+            | Self::Cargo(a)
+            | Self::Brew(a)
+            | Self::Sh(a)
+            | Self::Boot(a) => a,
         }
     }
 }
@@ -281,16 +281,15 @@ pub fn resolve(tools: &[Tool], host: Host, env: &mut dyn Env, only: &[String]) -
                 }
                 continue;
             }
-            match env.install(host, src) {
-                Err(why) => tried.push(format!("{src}: {why}")),
-                Ok(()) => {
-                    if t.cmds.iter().any(|c| env.has(c) && env.runs(c)) {
-                        done = Some(src.to_string());
-                        break;
-                    }
-                    env.undo(src);
-                    tried.push(format!("{src}: installed, but the command does not start here"));
+            if let Err(why) = env.install(host, src) {
+                tried.push(format!("{src}: {why}"))
+            } else {
+                if t.cmds.iter().any(|c| env.has(c) && env.runs(c)) {
+                    done = Some(src.to_string());
+                    break;
                 }
+                env.undo(src);
+                tried.push(format!("{src}: installed, but the command does not start here"));
             }
         }
         match done {
@@ -337,9 +336,7 @@ pub fn missing(tools: &[Tool], host: Host, env: &dyn Env, only: &[String]) -> Ve
 
 /// The home folder (USERPROFILE on Windows).
 pub fn home() -> PathBuf {
-    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
 /// Where mise puts its shims.
@@ -385,7 +382,7 @@ pub fn full_path() -> std::ffi::OsString {
 pub fn find_in_path(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let exts: Vec<String> = if cfg!(windows) {
         let pe = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        std::iter::once(String::new()).chain(pe.split(';').map(|s| s.to_ascii_lowercase())).collect()
+        std::iter::once(String::new()).chain(pe.split(';').map(str::to_ascii_lowercase)).collect()
     } else {
         vec![String::new()]
     };
@@ -408,8 +405,8 @@ pub struct RealEnv {
 
 impl RealEnv {
     /// An env over the full PATH (the extra tool folders included).
-    pub fn new() -> RealEnv {
-        RealEnv { path: full_path() }
+    pub fn new() -> Self {
+        Self { path: full_path() }
     }
 
     fn command(&self, prog: &str) -> Command {
@@ -429,7 +426,7 @@ impl RealEnv {
     }
 
     fn is_root(&self) -> bool {
-        Command::new("id").arg("-u").output().map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0").unwrap_or(false)
+        Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
     }
 }
 
@@ -462,7 +459,7 @@ impl Env for RealEnv {
         let t0 = Instant::now();
         loop {
             match child.try_wait() {
-                Ok(Some(st)) => return !matches!(st.code(), Some(126) | Some(127)),
+                Ok(Some(st)) => return !matches!(st.code(), Some(126 | 127)),
                 Ok(None) if t0.elapsed() > Duration::from_secs(10) => {
                     let _ = child.kill();
                     return true;
@@ -638,15 +635,15 @@ mod tests {
         links: Vec<(String, String)>,
     }
     impl Fake {
-        fn with(cmds: &[&str], tools: &[&str]) -> Fake {
-            Fake {
-                cmds: cmds.iter().map(|s| s.to_string()).collect(),
-                tools: tools.iter().map(|s| s.to_string()).collect(),
+        fn with(cmds: &[&str], tools: &[&str]) -> Self {
+            Self {
+                cmds: cmds.iter().map(ToString::to_string).collect(),
+                tools: tools.iter().map(ToString::to_string).collect(),
                 ..Default::default()
             }
         }
-        fn provide(mut self, src: &str, cmds: &[&str]) -> Fake {
-            self.provides.insert(src.into(), cmds.iter().map(|s| s.to_string()).collect());
+        fn provide(mut self, src: &str, cmds: &[&str]) -> Self {
+            self.provides.insert(src.into(), cmds.iter().map(ToString::to_string).collect());
             self
         }
     }
@@ -749,7 +746,7 @@ mod tests {
         let t = list("rg | rg | all | mise:x\n");
         let mut f = Fake::with(&["rg"], &["mise"]);
         assert_eq!(resolve(&t, MAC, &mut f, &[]), vec![Outcome::Present("rg".into())]);
-        assert!(f.log.is_empty());
+        assert_eq!(f.log, [] as [String; 0]);
     }
 
     #[test]
@@ -850,7 +847,7 @@ mod tests {
         assert_eq!(f.links, vec![("jaq".to_string(), "jq".to_string())]);
         let mut g = Fake::with(&["jaq", "jq"], &["mise"]);
         resolve(&t, MAC, &mut g, &[]);
-        assert!(g.links.is_empty());
+        assert_eq!(g.links, [] as [(String, String); 0]);
         let mut h = Fake::with(&[], &["mise"]).provide("mise:j", &["jaq"]);
         resolve(&t, MAC, &mut h, &[]);
         assert_eq!(h.links.len(), 1);
@@ -873,7 +870,7 @@ mod tests {
 
     #[test]
     fn path_search_finds_a_file_and_skips_a_missing_one() {
-        let d = std::env::temp_dir().join(format!("tools-core-{}", std::process::id()));
+        let d = env::temp_dir().join(format!("tools-core-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let name = if cfg!(windows) { "faketool.exe" } else { "faketool" };
         let p = d.join(name);

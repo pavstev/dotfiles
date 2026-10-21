@@ -184,7 +184,7 @@ fn line_docs(o: &Value, time: i64, c: &FileCtx, names: &mut HashMap<String, Stri
                     if !truthy(val(x, "is_error")) {
                         continue;
                     }
-                    let name = names.get(&key_str(val(x, "tool_use_id"))).map(String::as_str).unwrap_or("?");
+                    let name = names.get(&key_str(val(x, "tool_use_id"))).map_or("?", String::as_str);
                     // Redact before the cut: a cut can split a token below the size the redactor needs.
                     let body = clip(&redact(&text_of(val(x, "content"))), MAX_ERROR);
                     if let Some(d) = doc(c, time, "tool_error", &format!("{name}: {body}")) {

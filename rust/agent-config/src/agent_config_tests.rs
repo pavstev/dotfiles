@@ -92,8 +92,8 @@ struct Fx {
 }
 
 impl Fx {
-    fn new() -> Fx {
-        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn new() -> Self {
+        let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::Builder::new().prefix("agent-config-test-").tempdir().unwrap();
         let tmp = dir.path().to_path_buf();
         let home = tmp.join("home");
@@ -113,7 +113,7 @@ impl Fx {
         wr(&claude.join("CLAUDE.md"), CLAUDE_MD_TEXT);
         wr(&g, "# fake guard\n");
         assert_eq!(home_dir(), home); // never the real HOME
-        Fx { _guard: guard, _dir: dir, tmp, home, repo, claude, cursor_src, guard: g }
+        Self { _guard: guard, _dir: dir, tmp, home, repo, claude, cursor_src, guard: g }
     }
 
     fn cdir(&self) -> PathBuf {
@@ -1174,7 +1174,7 @@ fn test_cli_config_rerun_is_idempotent() {
     let (cfg, sidecar) = (rd(&cfg_path(&fx)), rd(&side_path(&fx)));
     let n = baks(&fx.cdir(), "cli-config.json");
     assert_eq!(n, 1);
-    let (_, out, _) = run_cfg(&fx);
+    let ((), out, _) = run_cfg(&fx);
     assert_eq!(rd(&cfg_path(&fx)), cfg);
     assert_eq!(rd(&side_path(&fx)), sidecar);
     assert_eq!(baks(&fx.cdir(), "cli-config.json"), n);
@@ -1245,7 +1245,7 @@ fn test_corrupt_sidecar_is_survivable() {
     fx.perms(&["Bash(git status:*)"], &[]);
     wr(&side_path(&fx), "{not json");
     wj(&cfg_path(&fx), json!({"permissions": {"allow": ["Shell(mine)"]}}));
-    let (_, _, err) = run_cfg(&fx);
+    let ((), _, err) = run_cfg(&fx);
     assert_eq!(err, "");
     assert_eq!(rj(&cfg_path(&fx))["permissions"]["allow"], json!(["Shell(mine)", "Shell(git status)"]));
     assert_eq!(rj(&side_path(&fx))["allow"], json!(["Shell(git status)"]));
@@ -1259,7 +1259,7 @@ fn test_sidecar_not_written_when_config_is_a_symlink() {
     let target = fx.tmp.join("real.json");
     wj(&target, json!({"permissions": {"allow": []}}));
     link(&target, &cfg_path(&fx));
-    let (_, _, err) = run_cfg(&fx);
+    let ((), _, err) = run_cfg(&fx);
     assert!(err.contains("symlink"), "{err}");
     assert!(!side_path(&fx).exists());
     assert_eq!(rj(&target), json!({"permissions": {"allow": []}}));
@@ -1270,7 +1270,7 @@ fn test_invalid_config_json_left_untouched_and_no_sidecar() {
     let fx = Fx::new();
     fx.perms(&["Bash(git status:*)"], &[]);
     wr(&cfg_path(&fx), "nope");
-    let (_, _, err) = run_cfg(&fx);
+    let ((), _, err) = run_cfg(&fx);
     assert_eq!(rd(&cfg_path(&fx)), "nope");
     assert!(err.contains("not valid JSON"), "{err}");
     assert!(!side_path(&fx).exists());

@@ -24,8 +24,7 @@ pub fn is_windows() -> bool {
 pub fn is_musl() -> bool {
     is_linux()
         && fs::read_dir("/lib")
-            .map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-")))
-            .unwrap_or(false)
+            .is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-")))
 }
 
 /// The home folder: $HOME, else the OS answer.
@@ -53,17 +52,13 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
     let exts: Vec<String> = if is_windows() {
         let pe = env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into());
-        pe.split(';')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_lowercase())
-            .chain(std::iter::once(String::new()))
-            .collect()
+        pe.split(';').filter(|s| !s.is_empty()).map(str::to_lowercase).chain(std::iter::once(String::new())).collect()
     } else {
         vec![String::new()]
     };
     for dir in env::split_paths(&path) {
         for e in &exts {
-            let p = dir.join(format!("{}{}", cmd, e));
+            let p = dir.join(format!("{cmd}{e}"));
             if is_executable(&p) {
                 return Some(p);
             }
@@ -181,7 +176,7 @@ pub fn readlink(p: &Path) -> Option<PathBuf> {
 
 /// True if the path itself is a link (a broken one counts).
 pub fn is_symlink(p: &Path) -> bool {
-    p.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+    p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// The path exists, or is a link (even a broken one).
@@ -251,15 +246,15 @@ fn local_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
             zone: std::ptr::null(),
         };
         // SAFETY: both pointers are valid for the call; localtime_r only writes into `tm`.
-        let r = unsafe { localtime_r(&secs, &mut tm) };
+        let r = unsafe { localtime_r(&raw const secs, &raw mut tm) };
         if !r.is_null() {
             return (
-                tm.year as i64 + 1900,
-                tm.mon as i64 + 1,
-                tm.mday as i64,
-                tm.hour as i64,
-                tm.min as i64,
-                tm.sec as i64,
+                i64::from(tm.year) + 1900,
+                i64::from(tm.mon) + 1,
+                i64::from(tm.mday),
+                i64::from(tm.hour),
+                i64::from(tm.min),
+                i64::from(tm.sec),
             );
         }
     }
@@ -276,9 +271,9 @@ pub fn utc_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
 
 /// The time now as YYYYmmdd-HHMMSS, for backup names.
 pub fn timestamp() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let (y, mo, d, h, mi, s) = local_parts(secs);
-    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", y, mo, d, h, mi, s)
+    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}")
 }
 
 #[cfg(test)]

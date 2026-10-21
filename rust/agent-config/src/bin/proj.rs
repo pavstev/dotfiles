@@ -34,18 +34,15 @@ enum Cmd {
 }
 
 fn detect(path: Option<String>) -> i32 {
-    let p = path.map(PathBuf::from).unwrap_or_else(|| env::current_dir().unwrap_or_default());
+    let p = path.map_or_else(|| env::current_dir().unwrap_or_default(), PathBuf::from);
     let p = if p.is_relative() { env::current_dir().unwrap_or_default().join(p) } else { p };
-    match proj::detect(&p) {
-        Some(project) => {
-            let file = p.is_file().then_some(p.as_path());
-            println!("{}", serde_json::to_string_pretty(&project.to_json(file)).unwrap_or_default());
-            0
-        }
-        None => {
-            println!("{{\"root\": null}}");
-            1
-        }
+    if let Some(project) = proj::detect(&p) {
+        let file = p.is_file().then_some(p.as_path());
+        println!("{}", serde_json::to_string_pretty(&project.to_json(file)).unwrap_or_default());
+        0
+    } else {
+        println!("{{\"root\": null}}");
+        1
     }
 }
 

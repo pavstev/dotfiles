@@ -61,7 +61,7 @@ fn conv_key(data: &Value, mode: &str) -> String {
 }
 
 fn read_state(key: &str) -> BTreeMap<String, Value> {
-    let path = state_dir().join(format!("{}.json", key));
+    let path = state_dir().join(format!("{key}.json"));
     match fs::read_to_string(&path) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => BTreeMap::new(),
@@ -88,8 +88,7 @@ fn prune_state(dir: &Path) {
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         if now.saturating_sub(mt) > MAX_STATE_AGE {
             let _ = fs::remove_file(&path);
         } else {
@@ -107,10 +106,10 @@ fn prune_state(dir: &Path) {
 fn write_state(key: &str, mut st: BTreeMap<String, Value>) {
     let d = state_dir();
     let _ = fs::create_dir_all(&d);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     st.insert("updated".to_string(), Value::from(now));
     let tmp = d.join(format!(".{}.{}.tmp", key, std::process::id()));
-    let target = d.join(format!("{}.json", key));
+    let target = d.join(format!("{key}.json"));
     if let Ok(bytes) = serde_json::to_vec(&st)
         && fs::write(&tmp, bytes).is_ok()
     {
@@ -185,7 +184,7 @@ fn app_context(data: &Value) -> i64 {
     // A path starting with "-" must not be read as an option.
     let path = if path.is_relative() { PathBuf::from(".").join(&path) } else { path };
     let escaped_conv = conv.replace('\'', "''").replace('\0', "");
-    let query = format!("SELECT value FROM cursorDiskKV WHERE key = 'composerData:{}' LIMIT 1;", escaped_conv);
+    let query = format!("SELECT value FROM cursorDiskKV WHERE key = 'composerData:{escaped_conv}' LIMIT 1;");
     // Read-only, no rc file (-init /dev/null), fixed output mode, 1 s busy timeout.
     let child = Command::new("sqlite3")
         .args(["-readonly", "-batch", "-noheader", "-list", "-nullvalue", ""])
@@ -271,15 +270,14 @@ fn mode_prompt(data: &Value, key: &str) {
     if count >= 1 && (count - 1) % NUDGE_EVERY == 0 {
         let msg = format!("Context is about {}K. Run /ps:handoff and continue in a fresh session.", size / 1000);
         out["user_message"] = Value::String(msg.clone());
-        out["additional_context"] =
-            Value::String(format!("Start your reply by telling the user, in one line: {}", msg));
+        out["additional_context"] = Value::String(format!("Start your reply by telling the user, in one line: {msg}"));
     }
     emit_out(&serde_json::to_string(&out).unwrap_or_default());
 }
 
 fn emit_out(s: &str) {
     let mut o = std::io::stdout();
-    let _ = writeln!(o, "{}", s);
+    let _ = writeln!(o, "{s}");
     let _ = o.flush();
 }
 
@@ -303,7 +301,7 @@ fn mode_subagent(data: &Value, key: &str) -> i32 {
             "agent_message": msg
         });
         emit_out(&serde_json::to_string(&out).unwrap_or_default());
-        let _ = writeln!(std::io::stderr(), "{}", msg);
+        let _ = writeln!(std::io::stderr(), "{msg}");
         return 2;
     }
     0
@@ -401,7 +399,7 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
         "Grep" => "Grep",
         _ => return None,
     };
-    let mut input = data.get("tool_input").cloned().filter(|v| v.is_object())?;
+    let mut input = data.get("tool_input").cloned().filter(Value::is_object)?;
     // Claude names the key `file_path` for Read; Cursor may name it `path`.
     if tool == "Read"
         && input.get("file_path").is_none()
@@ -481,7 +479,7 @@ fn mode_tool(stdin: &str) -> i32 {
                 serde_json::json!({"permission": "deny", "user_message": msg, "agent_message": msg})
             };
             emit_out(&serde_json::to_string(&out).unwrap_or_else(|_| ALLOW.into()));
-            let _ = writeln!(std::io::stderr(), "{}", msg);
+            let _ = writeln!(std::io::stderr(), "{msg}");
             2
         }
     }

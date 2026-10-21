@@ -38,9 +38,9 @@ pub enum Skip {
 impl std::fmt::Display for Skip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Skip::Missing => f.write_str("not found"),
-            Skip::Locked => f.write_str("locked"),
-            Skip::Error(e) => f.write_str(e),
+            Self::Missing => f.write_str("not found"),
+            Self::Locked => f.write_str("locked"),
+            Self::Error(e) => f.write_str(e),
         }
     }
 }

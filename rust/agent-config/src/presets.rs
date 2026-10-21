@@ -36,7 +36,7 @@ fn parse(home: &Path, profile: &str) -> (Vec<String>, Vec<String>) {
     let raw = crate::setting(home, "PRESETS");
     let words: Vec<&str> = raw.split([' ', ',']).filter(|w| !w.is_empty()).collect();
     let default = |p: &str| -> Vec<String> {
-        ALL.iter().filter(|n| p == "owner" || **n != OFF_FOR_SHARED).map(|n| n.to_string()).collect()
+        ALL.iter().filter(|n| p == "owner" || **n != OFF_FOR_SHARED).map(ToString::to_string).collect()
     };
     if words.is_empty() {
         return (default(profile), Vec::new());
@@ -45,11 +45,11 @@ fn parse(home: &Path, profile: &str) -> (Vec<String>, Vec<String>) {
         return (Vec::new(), Vec::new());
     }
     if words.contains(&"all") {
-        return (ALL.iter().map(|n| n.to_string()).collect(), Vec::new());
+        return (ALL.iter().map(ToString::to_string).collect(), Vec::new());
     }
     let want: BTreeSet<&str> = words.iter().copied().collect();
-    let on = ALL.iter().filter(|n| want.contains(**n)).map(|n| n.to_string()).collect();
-    let unknown = words.iter().filter(|w| !ALL.contains(w)).map(|w| w.to_string()).collect();
+    let on = ALL.iter().filter(|n| want.contains(**n)).map(ToString::to_string).collect();
+    let unknown = words.iter().filter(|w| !ALL.contains(w)).map(ToString::to_string).collect();
     (on, unknown)
 }
 
@@ -136,14 +136,14 @@ pub fn link_all(repo: &Path, home: &Path, names: &[String]) {
         crate::dots::link::link_item(&src, &dst, true);
     }
     let Ok(entries) = fs::read_dir(&rules) else { return };
-    for e in entries.filter_map(|e| e.ok()) {
+    for e in entries.filter_map(Result::ok) {
         let file = e.file_name().to_string_lossy().into_owned();
         let Some(name) = file.strip_prefix("preset-").and_then(|r| r.strip_suffix(".md")) else { continue };
         if names.iter().any(|n| n == name) || !ours(&e.path(), &presets) {
             continue;
         }
         if fs::remove_file(e.path()).is_ok() {
-            ok(&format!("removed the {} preset link", name));
+            ok(&format!("removed the {name} preset link"));
         }
     }
 }

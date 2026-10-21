@@ -20,17 +20,17 @@ pub fn step(_repo: &Path) {
         return;
     }
     out::step("Touch ID for sudo");
-    if std::fs::read_to_string(SUDO_LOCAL).map(|t| has_pam_tid(&t)).unwrap_or(false) {
+    if std::fs::read_to_string(SUDO_LOCAL).is_ok_and(|t| has_pam_tid(&t)) {
         skip("Touch ID for sudo");
         return;
     }
     if !quiet("sudo", &["-n", "true"]) {
-        info(&format!("Need sudo to write {} — you may be prompted for your password once.", SUDO_LOCAL));
+        info(&format!("Need sudo to write {SUDO_LOCAL} — you may be prompted for your password once."));
     }
     if feed("sudo", &["tee", SUDO_LOCAL], BODY, true) {
-        ok(&format!("Touch ID for sudo enabled ({} created).", SUDO_LOCAL));
+        ok(&format!("Touch ID for sudo enabled ({SUDO_LOCAL} created)."));
     } else {
-        warn(&format!("Couldn't write {} (no sudo/no TTY for a password prompt) — re-run: ./dotfiles", SUDO_LOCAL));
+        warn(&format!("Couldn't write {SUDO_LOCAL} (no sudo/no TTY for a password prompt) — re-run: ./dotfiles"));
     }
 }
 

@@ -42,7 +42,7 @@ fn glob(dir: &Path, prefix: &str) -> Vec<PathBuf> {
 }
 
 fn env_or(name: &str, fallback: PathBuf) -> PathBuf {
-    std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or(fallback)
+    std::env::var_os(name).filter(|v| !v.is_empty()).map_or(fallback, PathBuf::from)
 }
 
 /// The folders where a Java may live, in the order they are tried.
@@ -109,8 +109,7 @@ pub fn homes() -> Vec<PathBuf> {
 pub fn info(home: &Path) -> (u32, String, String) {
     let rel = fs::read_to_string(home.join("release")).unwrap_or_default();
     let field = |k: &str| {
-        rel.lines()
-            .find_map(|l| l.strip_prefix(&format!("{}=\"", k)).and_then(|r| r.strip_suffix('"')).map(String::from))
+        rel.lines().find_map(|l| l.strip_prefix(&format!("{k}=\"")).and_then(|r| r.strip_suffix('"')).map(String::from))
     };
     let mut v = field("JAVA_VERSION").unwrap_or_default();
     let vendor = field("IMPLEMENTOR").unwrap_or_default();
@@ -144,7 +143,7 @@ pub fn where_from(home: &Path) -> String {
     let has = |p: &str| s.contains(p);
     if has("/Cellar/openjdk") || has("/opt/openjdk") {
         "Homebrew".into()
-    } else if s.starts_with(&format!("{}/Library/Java/", h)) {
+    } else if s.starts_with(&format!("{h}/Library/Java/")) {
         "~/Library/Java".into()
     } else if s.starts_with("/Library/Java/") {
         "/Library/Java".into()
@@ -171,7 +170,7 @@ pub fn where_from(home: &Path) -> String {
 pub fn label(home: &Path) -> String {
     let (_, v, vendor) = info(home);
     let w = where_from(home);
-    if vendor.is_empty() || vendor == w { format!("{} · {}", v, w) } else { format!("{} · {} · {}", v, vendor, w) }
+    if vendor.is_empty() || vendor == w { format!("{v} · {w}") } else { format!("{v} · {vendor} · {w}") }
 }
 
 /// Long-term-support versions: 8, 11, 17, 21, 25, ...
@@ -185,7 +184,7 @@ pub fn rank_key(v: &str) -> (bool, u64) {
     let rest = v.strip_prefix("1.").unwrap_or(v);
     let parts: Vec<&str> = rest.split(SEPS).collect();
     let num = |i: usize| parts.get(i).and_then(|p| p.parse::<u64>().ok()).unwrap_or(0);
-    (is_lts(major), major as u64 * 1_000_000 + num(1) * 1000 + num(2))
+    (is_lts(major), u64::from(major) * 1_000_000 + num(1) * 1000 + num(2))
 }
 
 /// The Java homes, best first. Equal keys keep their order.

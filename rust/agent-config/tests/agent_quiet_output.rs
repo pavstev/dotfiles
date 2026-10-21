@@ -11,7 +11,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 
 /// A quiet run (no DOTFILES_VERBOSE, no colour) with the counters spent.
 fn quiet() -> MutexGuard<'static, ()> {
-    let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let g = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: every test of this file holds LOCK, and no other thread reads these variables.
     unsafe {
         std::env::remove_var("DOTFILES_VERBOSE");

@@ -67,10 +67,10 @@ pub fn unlink_item(src: &Path, dst: &Path) {
         .flatten()
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with(&name))
-        .max_by_key(|e| e.file_name());
+        .max_by_key(fs::DirEntry::file_name);
     match newest {
         Some(b) if fs::rename(b.path(), dst).is_ok() => {
-            ok(&format!("removed the link {}, your old file is back", dst.display()))
+            ok(&format!("removed the link {}, your old file is back", dst.display()));
         }
         _ => ok(&format!("removed the link {}", dst.display())),
     }

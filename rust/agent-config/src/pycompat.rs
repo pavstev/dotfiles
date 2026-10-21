@@ -96,7 +96,7 @@ pub fn parse_ts_micros(s: &str) -> Option<(i64, i64)> {
             if f.is_empty() || f.len() > 9 || !f.chars().all(|c| c.is_ascii_digit()) || parts.len() < 3 {
                 return None;
             }
-            let mut p6 = f.clone();
+            let mut p6 = f;
             p6.truncate(6);
             while p6.len() < 6 {
                 p6.push('0');
@@ -163,10 +163,10 @@ pub fn py_float(f: f64) -> String {
             format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
         }
     } else {
-        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
+        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
         format!("{}e{}{:02}", m, if exp < 0 { "-" } else { "+" }, exp.abs())
     };
-    format!("{}{}", sign, body)
+    format!("{sign}{body}")
 }
 
 /// Python truthiness of a JSON value.
@@ -198,7 +198,7 @@ pub fn json_str(out: &mut String, s: &str) {
             c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
                 let mut buf = [0u16; 2];
                 for u in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{:04x}", u));
+                    out.push_str(&format!("\\u{u:04x}"));
                 }
             }
             c => out.push(c),
@@ -319,11 +319,11 @@ pub fn repr_str(s: &str) -> String {
             c => {
                 let u = c as u32;
                 if u < 0x100 {
-                    out.push_str(&format!("\\x{:02x}", u));
+                    out.push_str(&format!("\\x{u:02x}"));
                 } else if u < 0x10000 {
-                    out.push_str(&format!("\\u{:04x}", u));
+                    out.push_str(&format!("\\u{u:04x}"));
                 } else {
-                    out.push_str(&format!("\\U{:08x}", u));
+                    out.push_str(&format!("\\U{u:08x}"));
                 }
             }
         }
@@ -477,7 +477,7 @@ pub fn fname(p: &Path) -> String {
 pub fn list_dir(dir: &Path) -> Vec<PathBuf> {
     match fs::read_dir(dir) {
         Ok(rd) => rd
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
             .map(|e| e.path())
             .collect(),
@@ -498,7 +498,7 @@ pub fn mtime(p: &Path) -> Option<f64> {
 #[cfg(unix)]
 pub fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// A regular file that can be run. On non-unix any regular file counts.
@@ -697,7 +697,7 @@ mod tests {
         let mut names: Vec<String> = list_dir(d.path()).iter().map(|p| fname(p)).collect();
         names.sort();
         assert_eq!(names, ["a.txt", "sub"]);
-        assert!(list_dir(&d.path().join("missing")).is_empty());
+        assert_eq!(list_dir(&d.path().join("missing")), [] as [PathBuf; 0]);
         assert!(mtime(&d.path().join("a.txt")).is_some_and(|t| t > 0.0));
         assert_eq!(mtime(&d.path().join("missing")), None);
     }

@@ -54,7 +54,7 @@ fn link(target: &Path, at: &Path) {
     std::os::unix::fs::symlink(target, at).unwrap();
 }
 fn is_link(p: &Path) -> bool {
-    p.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+    p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// A temp HOME and a fake repo with `claude/CLAUDE.md` and a fake Cursor guard.
@@ -67,12 +67,12 @@ struct Fx {
 }
 
 impl Fx {
-    fn new(tag: &str) -> Fx {
+    fn new(tag: &str) -> Self {
         let tmp = temp_home(tag);
         let home = tmp.join("home");
         let repo = tmp.join("repo");
         fs::create_dir_all(&home).unwrap();
-        let fx = Fx { claude: repo.join("claude"), cursor_src: repo.join("cursor"), tmp, home, repo };
+        let fx = Self { claude: repo.join("claude"), cursor_src: repo.join("cursor"), tmp, home, repo };
         wr(&fx.claude.join("CLAUDE.md"), CLAUDE_MD);
         wr(&fx.claude.join("hooks").join("rust-bin"), "# fake launcher\n");
         fx
@@ -624,7 +624,7 @@ fn test_tui_names_the_theme_because_the_schema_takes_a_string() {
     assert_eq!(data["$schema"], "https://opencode.ai/tui.json");
     // tui.json has additionalProperties: false, so no marker key can live there
     let mut keys: Vec<&str> = data.as_object().unwrap().keys().map(String::as_str).collect();
-    keys.sort();
+    keys.sort_unstable();
     assert_eq!(keys, ["$schema", "theme"]);
 }
 
@@ -907,7 +907,7 @@ struct Cs {
 }
 
 impl Cs {
-    fn new(tag: &str) -> Cs {
+    fn new(tag: &str) -> Self {
         let fx = Fx::new(tag);
         fx.settings(base());
         let (live, layer, last) = (
@@ -915,7 +915,7 @@ impl Cs {
             fx.home.join(".config/dotfiles/claude-settings.json"),
             fx.home.join(".config/dotfiles/claude-settings.last.json"),
         );
-        Cs { fx, live, layer, last }
+        Self { fx, live, layer, last }
     }
     fn build(&self) -> R {
         self.fx.ac(&["claude-settings", "build"])

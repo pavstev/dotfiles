@@ -21,9 +21,8 @@ fn toolchain_set() -> bool {
     }
     let home = std::env::var_os("RUSTUP_HOME")
         .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| os::home().join(".rustup"));
-    std::fs::read_to_string(home.join("settings.toml")).map(|t| has_default_toolchain(&t)).unwrap_or(false)
+        .map_or_else(|| os::home().join(".rustup"), std::path::PathBuf::from);
+    std::fs::read_to_string(home.join("settings.toml")).is_ok_and(|t| has_default_toolchain(&t))
 }
 
 pub fn step(_repo: &Path) {

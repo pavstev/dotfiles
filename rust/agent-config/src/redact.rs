@@ -47,7 +47,7 @@ pub fn redact(text: &str) -> Cow<'_, str> {
         return Cow::Borrowed(text);
     }
     let mut out = text.to_string();
-    for i in hits.iter() {
+    for i in &hits {
         let (re, rep) = &rules.list[i];
         if let Cow::Owned(next) = re.replace_all(&out, *rep) {
             out = next;

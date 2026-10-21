@@ -61,7 +61,7 @@ pub fn z() -> &'static str {
 
 /// True when `DOTFILES_VERBOSE` is set (`dots -v`): print every line, count nothing.
 pub fn verbose() -> bool {
-    env::var("DOTFILES_VERBOSE").map(|v| !v.is_empty() && v != "0").unwrap_or(false)
+    env::var("DOTFILES_VERBOSE").is_ok_and(|v| !v.is_empty() && v != "0")
 }
 
 struct Step {
@@ -79,7 +79,7 @@ thread_local! {
 }
 
 fn step_state() -> std::sync::MutexGuard<'static, Step> {
-    STEP.lock().unwrap_or_else(|e| e.into_inner())
+    STEP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Print one line, on stderr when `err`. Captured lines are kept, in order.
@@ -96,9 +96,9 @@ fn emit(line: &str, err: bool) {
     }
     if err {
         let _ = io::stdout().flush();
-        eprintln!("{}", line);
+        eprintln!("{line}");
     } else {
-        println!("{}", line);
+        println!("{line}");
     }
 }
 
@@ -138,7 +138,7 @@ pub fn step(title: &str) {
     }
     let mut s = step_state();
     s.title = title.to_string();
-    s.shown = if v { 1 } else { 0 };
+    s.shown = u8::from(v);
 }
 
 /// Close the step in progress with its count line.
@@ -193,7 +193,7 @@ pub fn warn(msg: &str) {
         && !f.is_empty()
         && let Ok(mut fh) = OpenOptions::new().append(true).create(true).open(&f)
     {
-        let _ = writeln!(fh, "{}", msg);
+        let _ = writeln!(fh, "{msg}");
     }
 }
 
@@ -267,7 +267,7 @@ pub fn summary(label: &str) {
     let skipped = SKIPPED.swap(0, Ordering::Relaxed);
     let written = WRITTEN.swap(0, Ordering::Relaxed);
     if !verbose() && skipped > 0 {
-        let more = if written > 0 { format!(", {} written", written) } else { String::new() };
+        let more = if written > 0 { format!(", {written} written") } else { String::new() };
         emit(&format!("{}•{} {}: {} up to date{}", d(), z(), label, skipped, more), false);
     }
 }
@@ -275,7 +275,7 @@ pub fn summary(label: &str) {
 /// Seconds as a short time: "42s", "6m12s", "1h03m".
 pub fn duration(secs: u64) -> String {
     if secs < 60 {
-        format!("{}s", secs)
+        format!("{secs}s")
     } else if secs < 3600 {
         format!("{}m{:02}s", secs / 60, secs % 60)
     } else {

@@ -79,7 +79,7 @@ pub(crate) fn only_macos(what: &str) -> bool {
         return true;
     }
     if out::verbose() {
-        out::info(&format!("{}: macOS only, skipping", what));
+        out::info(&format!("{what}: macOS only, skipping"));
     }
     false
 }
@@ -94,13 +94,12 @@ pub(crate) fn quiet(prog: &str, args: &[&str]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Run a command with the terminal's stdin, stdout and stderr. True when it exits 0.
 pub(crate) fn run(prog: &str, args: &[&str]) -> bool {
-    Command::new(prog).args(args).status().map(|s| s.success()).unwrap_or(false)
+    Command::new(prog).args(args).status().is_ok_and(|s| s.success())
 }
 
 /// stdout of a command (`2>/dev/null`), whatever its exit code. "" when it can't start.
@@ -140,7 +139,7 @@ pub(crate) fn curl_pipe_bash(args: &[&str]) -> bool {
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(script.as_bytes());
     }
-    child.wait().map(|s| s.success()).unwrap_or(false)
+    child.wait().is_ok_and(|s| s.success())
 }
 
 /// Run a command with `text` on its stdin and its stdout dropped. Its stderr shows when
@@ -154,7 +153,7 @@ pub(crate) fn feed(prog: &str, args: &[&str], text: &str, show_err: bool) -> boo
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
     }
-    child.wait().map(|s| s.success()).unwrap_or(false)
+    child.wait().is_ok_and(|s| s.success())
 }
 
 /// The `vscode "<id>"` lines of a Brewfile: the ids, lowercased.
@@ -174,7 +173,7 @@ pub(crate) fn vscode_extensions(brewfile: &str) -> Vec<String> {
 pub(crate) fn brew_extensions(bin: &Path, repo: &Path, label: &str, leave: &[&str]) {
     let bin_s = bin.to_string_lossy();
     let installed: Vec<String> =
-        stdout_of(&bin_s, &["--list-extensions"]).lines().map(|l| l.to_ascii_lowercase()).collect();
+        stdout_of(&bin_s, &["--list-extensions"]).lines().map(str::to_ascii_lowercase).collect();
     let brewfile = std::fs::read_to_string(repo.join("Brewfile")).unwrap_or_default();
     let (mut added, mut failed) = (0, 0);
     for ext in vscode_extensions(&brewfile) {
@@ -182,15 +181,15 @@ pub(crate) fn brew_extensions(bin: &Path, repo: &Path, label: &str, leave: &[&st
             continue;
         }
         if quiet(&bin_s, &["--install-extension", &ext]) {
-            out::ok(&format!("extension {}", ext));
+            out::ok(&format!("extension {ext}"));
             added += 1;
         } else {
-            out::warn(&format!("couldn't install extension {} into {}", ext, label));
+            out::warn(&format!("couldn't install extension {ext} into {label}"));
             failed += 1;
         }
     }
     if added == 0 && failed == 0 {
-        out::skip(&format!("{} extensions", label));
+        out::skip(&format!("{label} extensions"));
     }
 }
 

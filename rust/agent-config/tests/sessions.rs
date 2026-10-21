@@ -107,7 +107,7 @@ fn find_returns_hit_block() {
     assert!(lines[i].ends_with("Fix flaky vitest"), "{}", lines[i]);
     assert!(lines[i].starts_with("2026-10-20"), "{}", lines[i]);
     let snippet = lines.get(i + 1).expect("snippet line").trim();
-    assert!(!snippet.is_empty());
+    assert_ne!(snippet, "");
     assert!(snippet.chars().count() <= 200, "{} chars", snippet.chars().count());
     assert!(snippet.to_lowercase().contains("vitest"), "{snippet}");
 }
@@ -319,16 +319,13 @@ fn big_transcript_streams() {
     eprintln!("generated {} bytes in {:?}", fs::metadata(&file).unwrap().len(), t0.elapsed());
 
     let t1 = Instant::now();
-    match peak_rss(&home) {
-        Some(bytes) => {
-            eprintln!("indexed in {:?}, peak RSS {} MB", t1.elapsed(), bytes / 1_000_000);
-            assert!(bytes < 140_000_000, "peak RSS {bytes} bytes");
-        }
-        None => {
-            eprintln!("note: no peak RSS on this platform, memory check skipped");
-            let (code, _, err) = sessions(&home, &["index"]);
-            assert_eq!(code, 0, "{err}");
-        }
+    if let Some(bytes) = peak_rss(&home) {
+        eprintln!("indexed in {:?}, peak RSS {} MB", t1.elapsed(), bytes / 1_000_000);
+        assert!(bytes < 140_000_000, "peak RSS {bytes} bytes");
+    } else {
+        eprintln!("note: no peak RSS on this platform, memory check skipped");
+        let (code, _, err) = sessions(&home, &["index"]);
+        assert_eq!(code, 0, "{err}");
     }
     let (_, out, _) = sessions(&home, &["index"]);
     assert_eq!(out.trim(), "• sessions: 0 new");

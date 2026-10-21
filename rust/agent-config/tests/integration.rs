@@ -66,7 +66,7 @@ fn user_rules_print() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert!(!out.stdout.is_empty());
+    assert_ne!(out.stdout, [] as [u8; 0]);
     let text = String::from_utf8_lossy(&out.stdout);
     for w in NOTE_WORDS {
         assert!(text.contains(w), "user rules lack {w}");

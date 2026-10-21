@@ -145,7 +145,7 @@ pub fn opencode_undo(home: &Path) {
             }
             perm.retain(|_, c| c.as_object().is_none_or(|o| !o.is_empty()));
         }
-        if v.get("permission").and_then(|p| p.as_object()).is_some_and(|p| p.is_empty()) {
+        if v.get("permission").and_then(|p| p.as_object()).is_some_and(serde_json::Map::is_empty) {
             drop_key(v, "permission");
         }
         if let Some(mcp) = v.get_mut("mcp").and_then(|m| m.as_object_mut()) {
@@ -159,7 +159,7 @@ pub fn opencode_undo(home: &Path) {
                 }
             }
         }
-        if v.get("mcp").and_then(|m| m.as_object()).is_some_and(|m| m.is_empty()) {
+        if v.get("mcp").and_then(|m| m.as_object()).is_some_and(serde_json::Map::is_empty) {
             drop_key(v, "mcp");
         }
     });

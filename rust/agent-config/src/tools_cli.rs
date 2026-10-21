@@ -23,7 +23,7 @@ static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// True the first time `name` fails in this process.
 fn first_failure(name: &str) -> bool {
-    let mut w = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut w = WARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if w.iter().any(|n| n == name) {
         return false;
     }

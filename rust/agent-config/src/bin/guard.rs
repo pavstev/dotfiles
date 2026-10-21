@@ -156,7 +156,7 @@ fn py_str_or_empty(v: &Value) -> String {
 /// Python `int(v)` for the shapes JSON can hold; None where Python raises.
 fn py_int(v: &Value) -> Option<i64> {
     match v {
-        Value::Bool(b) => Some(*b as i64),
+        Value::Bool(b) => Some(i64::from(*b)),
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Value::String(s) => s.trim().parse::<i64>().ok(),
         _ => None,
@@ -176,7 +176,7 @@ fn has(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn loads(line: &[u8]) -> Option<Value> {
-    serde_json::from_slice::<Value>(line).ok().filter(|v| v.is_object())
+    serde_json::from_slice::<Value>(line).ok().filter(Value::is_object)
 }
 
 /// The `{"hookSpecificOutput": {...}}` line exactly as Python's json.dumps prints it.
@@ -215,7 +215,7 @@ fn state_dir() -> PathBuf {
 }
 
 fn now_secs() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
 // The check list (`gc::REGISTRY`) and the gate (`gc::Gate`) live in `guard_checks`: one copy for the
@@ -269,11 +269,11 @@ fn with_state<T>(data: &Value, f: impl FnOnce(&mut Map<String, Value>) -> T) -> 
     let sid = sanitize_key(&if truthy(sid_v) { py_str(sid_v) } else { "unknown".to_string() });
     let dir = state_dir();
     fs::create_dir_all(&dir).map_err(|_| Fail)?;
-    let path = dir.join(format!("{}.json", sid));
+    let path = dir.join(format!("{sid}.json"));
     let lock = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(dir.join(format!("{}.json.lock", sid)))
+        .open(dir.join(format!("{sid}.json.lock")))
         .map_err(|_| Fail)?;
     let _ = lock.lock(); // closing the file releases the lock; no lock support is not fatal
     let mut state = match fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
@@ -317,7 +317,7 @@ fn slots_value(slots: &[Slot]) -> Value {
             .map(|s| {
                 let mut m = Map::new();
                 m.insert("id".into(), s.id.clone());
-                m.insert("t".into(), serde_json::Number::from_f64(s.t).map(Value::Number).unwrap_or(Value::Null));
+                m.insert("t".into(), serde_json::Number::from_f64(s.t).map_or(Value::Null, Value::Number));
                 Value::Object(m)
             })
             .collect(),
@@ -445,8 +445,8 @@ fn minute_set(field: &str) -> Option<Vec<i64>> {
     for part in field.split(',') {
         let m = MINUTE_PART.captures(part)?;
         let lo = big(&m[1]);
-        let hi = m.get(2).map(|x| big(x.as_str())).unwrap_or(lo);
-        let step = m.get(3).map(|x| big(x.as_str())).unwrap_or(1);
+        let hi = m.get(2).map_or(lo, |x| big(x.as_str()));
+        let step = m.get(3).map_or(1, |x| big(x.as_str()));
         if step < 1 || lo > hi || hi > 59 {
             return None;
         }
@@ -476,7 +476,7 @@ fn cron_interval_minutes(cron: &str) -> Option<i64> {
         if n < 1 {
             return None;
         }
-        minute = format!("0-59/{}", n); // */45 fires at :00 and :45, so the gap is 15
+        minute = format!("0-59/{n}"); // */45 fires at :00 and :45, so the gap is 15
     }
     if hour == "*" || !DIGITS.is_match(&minute) {
         let ordered = minute_set(&minute)?;
@@ -551,7 +551,7 @@ fn loop_interval_seconds(args: &str) -> Option<i64> {
     let mut from = 0;
     while let Some(rel) = s[from..].find("every ") {
         let idx = from + rel;
-        let boundary = s[..idx].chars().next_back().map(|c| !(c.is_alphanumeric() || c == '_')).unwrap_or(true);
+        let boundary = s[..idx].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
         if boundary && let Some(v) = loop_chain(s, idx + 6) {
             return Some(v);
         }
@@ -594,7 +594,7 @@ fn cap_for(state: &str) -> usize {
 /// `"%.0f%%" % v`, or "?".
 fn pct(v: Option<f64>) -> String {
     match v {
-        Some(x) => format!("{:.0}%", x),
+        Some(x) => format!("{x:.0}%"),
         None => "?".to_string(),
     }
 }
@@ -694,7 +694,7 @@ fn g7_heavy(data: &Value, _ctx: &Ctx) -> Res {
     }
     let kind = if truthy(kind_v) { py_str(kind_v) } else { "general-purpose".to_string() };
     if HEAVY_AGENTS.contains(&kind.as_str()) {
-        return Ok(Some(format!("guard: a {} {}", kind, MSG_HEAVY_TAIL)));
+        return Ok(Some(format!("guard: a {kind} {MSG_HEAVY_TAIL}")));
     }
     Ok(None)
 }
@@ -715,15 +715,15 @@ fn g2_polling(data: &Value, ctx: &Ctx) -> Res {
         return Ok(None);
     }
     let bad = if tool == "CronCreate" {
-        cron_interval_minutes(&py_str(get(ti, "cron"))).map(|iv| iv < MIN_INTERVAL_MIN).unwrap_or(false)
+        cron_interval_minutes(&py_str(get(ti, "cron"))).is_some_and(|iv| iv < MIN_INTERVAL_MIN)
     } else if tool == "ScheduleWakeup" {
         match get(ti, "delaySeconds") {
-            Value::Bool(b) => ((*b) as i64) < MIN_INTERVAL_MIN * 60,
-            Value::Number(n) => n.as_f64().map(|d| d < (MIN_INTERVAL_MIN * 60) as f64).unwrap_or(false),
+            Value::Bool(b) => i64::from(*b) < MIN_INTERVAL_MIN * 60,
+            Value::Number(n) => n.as_f64().is_some_and(|d| d < (MIN_INTERVAL_MIN * 60) as f64),
             _ => false,
         }
     } else {
-        loop_interval_seconds(&py_str_or_empty(get(ti, "args"))).map(|s| s < MIN_INTERVAL_MIN * 60).unwrap_or(false)
+        loop_interval_seconds(&py_str_or_empty(get(ti, "args"))).is_some_and(|s| s < MIN_INTERVAL_MIN * 60)
     };
     Ok(if bad { Some(MSG_POLL.to_string()) } else { None })
 }
@@ -835,7 +835,7 @@ fn prompt_cap(text: &str) -> Option<i64> {
         let before = last_sentence(&before_full);
         let after_raw: String = chars[end..(end + 40).min(chars.len())].iter().collect();
         let after = first_sentence(&after_raw);
-        let window = format!("{} {}", before, after);
+        let window = format!("{before} {after}");
         if CAP_HANDBACK.is_match(&window) {
             handback.push(n);
         } else if CAP_STRONG.is_match(&window) {
@@ -883,8 +883,7 @@ fn check_handback(data: &Value, text: &Value) -> Option<String> {
     let ident = [get(data, "agent_id"), get(data, "session_id")]
         .into_iter()
         .find(|v| truthy(v))
-        .map(py_str)
-        .unwrap_or_else(|| "unknown".to_string());
+        .map_or_else(|| "unknown".to_string(), py_str);
     let dir = state_dir();
     let state_file = dir.join(format!("handback-{}.json", sanitize_key(&ident)));
     let denies = read_counter(&state_file, "denies");
@@ -895,8 +894,7 @@ fn check_handback(data: &Value, text: &Value) -> Option<String> {
         return None; // no counter, no deny: a deny without one could repeat forever
     }
     Some(format!(
-        "guard: hand-back is {} chars; the cap is {}. Write the full text to a file (the path the caller named, or the scratchpad), then hand back at most {} chars: status on line 1, key results, the file path. No Write tool: cut to the top findings.",
-        n, cap, cap
+        "guard: hand-back is {n} chars; the cap is {cap}. Write the full text to a file (the path the caller named, or the scratchpad), then hand back at most {cap} chars: status on line 1, key results, the file path. No Write tool: cut to the top findings."
     ))
 }
 
@@ -952,7 +950,7 @@ fn handoff_this_turn(path: &Path) -> Result<(Option<String>, String), Fail> {
 /// The reply holds the paste line and a markdown link to the file.
 fn handoff_given(fp: &str, text: &str) -> bool {
     let name = basename(fp);
-    if !text.contains(&format!("Read {} and do it.", fp)) {
+    if !text.contains(&format!("Read {fp} and do it.")) {
         return false;
     }
     LINK_TARGET.captures_iter(text).any(|c| c[1].ends_with(name))
@@ -1179,16 +1177,13 @@ fn git(args: &[&str], cwd: &str, deadline: Instant) -> Result<Option<String>, Fa
         let _ = out.read_to_end(&mut buf);
         let _ = tx.send(buf);
     });
-    match rx.recv_timeout(left) {
-        Ok(buf) => {
-            let ok = child.wait().map(|s| s.success()).unwrap_or(false);
-            Ok(if ok { Some(String::from_utf8_lossy(&buf).into_owned()) } else { None })
-        }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(Fail)
-        }
+    if let Ok(buf) = rx.recv_timeout(left) {
+        let ok = child.wait().is_ok_and(|s| s.success());
+        Ok(if ok { Some(String::from_utf8_lossy(&buf).into_owned()) } else { None })
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+        Err(Fail)
     }
 }
 
@@ -1213,9 +1208,9 @@ fn path_join(a: &str, b: &str) -> String {
     if b.starts_with('/') {
         b.to_string()
     } else if a.ends_with('/') {
-        format!("{}{}", a, b)
+        format!("{a}{b}")
     } else {
-        format!("{}/{}", a, b)
+        format!("{a}/{b}")
     }
 }
 
@@ -1297,8 +1292,7 @@ fn g11_clock(data: &Value, t: &Turn) -> Res {
     if minutes >= CLOCK_TURN_MIN && !CLOCK.is_match(&final_reply(data, t)) {
         let zone = cfg().zone.as_ref().map(|z| format!(" in {z}")).unwrap_or_default();
         return Ok(Some(format!(
-            "G11: this turn ran {} min. The clock preset asks: give the clock as a local time (HH:MM){} and one estimate with a range.",
-            minutes, zone
+            "G11: this turn ran {minutes} min. The clock preset asks: give the clock as a local time (HH:MM){zone} and one estimate with a range."
         )));
     }
     Ok(None)
@@ -1329,7 +1323,7 @@ fn g6_stop(data: &Value) -> Res {
     if let Some(last) = get(data, "last_assistant_message").as_str()
         && !text.contains(last)
     {
-        text = format!("{}\n{}", text, last);
+        text = format!("{text}\n{last}");
     }
     if let Some(fp) = fp
         && Path::new(&fp).exists()
@@ -1366,7 +1360,7 @@ fn write_status(data: &Value, t: &Turn) {
         return;
     }
     let tmp = dir.join(format!(".status.{}.tmp", std::process::id()));
-    if fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, &path)).is_err() {
+    if fs::write(&tmp, &body).and_then(|()| fs::rename(&tmp, &path)).is_err() {
         let _ = fs::remove_file(&tmp);
     }
 }
@@ -1453,10 +1447,10 @@ fn scratch(data: &Value) -> Option<String> {
     if !path.starts_with('/')
         && let Some(cwd) = get(data, "cwd").as_str().filter(|s| !s.is_empty())
     {
-        path = if cwd.ends_with('/') { format!("{}{}", cwd, path) } else { format!("{}/{}", cwd, path) };
+        path = if cwd.ends_with('/') { format!("{cwd}{path}") } else { format!("{cwd}/{path}") };
     }
     let real = realpath(&path);
-    let mut roots: Vec<String> = SCRATCH_ROOTS.iter().map(|s| s.to_string()).collect();
+    let mut roots: Vec<String> = SCRATCH_ROOTS.iter().map(ToString::to_string).collect();
     if let Ok(t) = env::var("TMPDIR")
         && !t.is_empty()
     {
@@ -1574,7 +1568,7 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
                 } else if truthy(get(att, "delivery_id")) {
                     let d = get(att, "delivery_id");
                     match d.as_str() {
-                        Some(s) => format!("s{}", s),
+                        Some(s) => format!("s{s}"),
                         None => format!("n{}", py_str(d)),
                     }
                 } else {
@@ -1591,8 +1585,8 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
 
 /// The current call is already in the transcript (written before the hook runs).
 fn has_tool_use(path: &Path, tool_use_id: &str) -> Result<bool, Fail> {
-    let n1 = format!("\"id\":\"{}\"", tool_use_id);
-    let n2 = format!("\"id\": \"{}\"", tool_use_id);
+    let n1 = format!("\"id\":\"{tool_use_id}\"");
+    let n2 = format!("\"id\": \"{tool_use_id}\"");
     for (i, line) in rev_lines(path)?.enumerate() {
         if has(&line, n1.as_bytes()) || has(&line, n2.as_bytes()) {
             return Ok(true);
@@ -2067,7 +2061,7 @@ fn outbound_ask(data: &Value) -> Option<String> {
 fn h1_hint(data: &Value) -> Option<String> {
     let file = gc::h1_read_target(&bash_command(data)?)?;
     let show = with_state(data, |state| {
-        let n = state.get("ctx_hints").map(|v| py_int(v).unwrap_or(0)).unwrap_or(0);
+        let n = state.get("ctx_hints").map_or(0, |v| py_int(v).unwrap_or(0));
         if n < H1_MAX {
             state.insert("ctx_hints".into(), Value::from(n + 1));
         }
@@ -2122,12 +2116,10 @@ fn pace_note(st: &PaceSt, last: &Value) -> Option<String> {
     let (used, budget) = (pct(st.used), pct(st.budget));
     match st.state.as_str() {
         "critical" => Some(format!(
-            "guard: the week is critical ({} used, budget {} today). Sonnet only, no helpers. Tell the user once.",
-            used, budget
+            "guard: the week is critical ({used} used, budget {budget} today). Sonnet only, no helpers. Tell the user once."
         )),
         "ahead" if last.as_str() != Some("ahead") => Some(format!(
-            "guard: the week is ahead of pace ({} used, budget {} today). Helpers run on Sonnet, max 1 at once, and plans go without plan mode. If the main model is Opus, tell the user once to pick Sonnet.",
-            used, budget
+            "guard: the week is ahead of pace ({used} used, budget {budget} today). Helpers run on Sonnet, max 1 at once, and plans go without plan mode. If the main model is Opus, tell the user once to pick Sonnet."
         )),
         _ => None,
     }
@@ -2150,7 +2142,7 @@ fn prompt(data: &Value, ctx: &Ctx) -> Option<String> {
     let over = ctx.size() >= NUDGE_CONTEXT;
     let mut note: Option<String> = None;
     let count = match with_state(data, |state| {
-        let prev = state.get("count").map(|v| py_int(v).unwrap_or(0)).unwrap_or(0);
+        let prev = state.get("count").map_or(0, |v| py_int(v).unwrap_or(0));
         let count = if over { prev + 1 } else { 0 };
         state.insert("count".into(), Value::from(count));
         if st.state != "unknown" && check_enabled("PACE") {
@@ -2226,11 +2218,11 @@ fn run() -> i32 {
         }
     };
     if let Some(m) = msg {
-        let _ = writeln!(io::stderr(), "{}", m);
+        let _ = writeln!(io::stderr(), "{m}");
         return 2;
     }
     if let Some(o) = out {
-        let _ = writeln!(io::stdout(), "{}", o);
+        let _ = writeln!(io::stdout(), "{o}");
         let _ = io::stdout().flush();
     }
     0
@@ -2275,7 +2267,7 @@ mod tests {
             ("Write a description of at most 160 characters for the page.", None),
         ];
         for (p, want) in cases {
-            assert_eq!(prompt_cap(p), *want, "{}", p);
+            assert_eq!(prompt_cap(p), *want, "{p}");
         }
     }
 

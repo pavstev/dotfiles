@@ -41,7 +41,7 @@ pub fn ensure_brew(repo: &Path) -> bool {
     // was still missing below. Same result here.
     let Some(script) = curl_text(&["-fsSL", INSTALLER]) else { return false };
     let done = Command::new("/bin/bash").args(["-c", &script]).env("NONINTERACTIVE", "1").status();
-    if !done.map(|s| s.success()).unwrap_or(false) {
+    if !done.is_ok_and(|s| s.success()) {
         return false;
     }
     os::brew_env();

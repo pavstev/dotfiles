@@ -37,7 +37,7 @@ pub fn repo() -> PathBuf {
     // `rust-bin` starts the exe as `~/.claude/hooks/../../rust/...`: resolve it, or the root is `~/.claude/hooks/../..`
     env::current_exe()
         .ok()
-        .map(|e| if os::is_windows() { e } else { std::fs::canonicalize(&e).unwrap_or(e) })
+        .map(|e| if os::is_windows() { e } else { fs::canonicalize(&e).unwrap_or(e) })
         .and_then(|e| e.ancestors().nth(5).map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -100,7 +100,7 @@ pub fn main() -> i32 {
 
     // Every warning also goes to this file (bash steps are child processes), so the last
     // line can count them. The run after a pull keeps the same file.
-    let pulled = env::var("DOTFILES_PULLED").map(|v| !v.is_empty()).unwrap_or(false);
+    let pulled = env::var("DOTFILES_PULLED").is_ok_and(|v| !v.is_empty());
     let mut warn_file = env::var("DOTFILES_WARN_FILE").unwrap_or_default();
     if !pulled || warn_file.is_empty() {
         warn_file = tempfile::Builder::new()
@@ -128,9 +128,9 @@ pub fn main() -> i32 {
             warn("couldn't pull (no network, local commits, or a changed file), so this run uses what is here");
             let changed = git::changed(&repo);
             if !changed.is_empty() {
-                info(&format!("changed here: {}", changed));
+                info(&format!("changed here: {changed}"));
             }
-            if format!(" {} ", changed).contains(" claude/CLAUDE.md ") {
+            if format!(" {changed} ").contains(" claude/CLAUDE.md ") {
                 info("keep your own rules in your private rules (dots settings), not in claude/CLAUDE.md");
             }
         }
@@ -158,7 +158,7 @@ pub fn main() -> i32 {
             ask::banner(
                 "🦴 dotfiles",
                 &[
-                    &format!("This sets up your {} for Claude Code and Opencode.", machine),
+                    &format!("This sets up your {machine} for Claude Code and Opencode."),
                     "It asks for your name and email, then takes about 5 minutes.",
                 ],
             );
@@ -166,7 +166,7 @@ pub fn main() -> i32 {
             ask::banner(
                 "🦴 dotfiles",
                 &[
-                    &format!("This sets up your {} for Claude Code, Cursor and Opencode.", machine),
+                    &format!("This sets up your {machine} for Claude Code, Cursor and Opencode."),
                     "A few questions first, then about 20 to 40 minutes of installs.",
                     "Use ↑ ↓ to move and Enter to pick.",
                 ],
@@ -259,7 +259,7 @@ pub fn main() -> i32 {
         let (good, lines) = out::capture(|| agent_config(&oc));
         let n = lines.iter().filter(|(l, _)| l.starts_with('✓') || l.contains("✓\x1b[0m")).count();
         if good && n > 0 && !verbose() {
-            ok(&format!("Opencode config written ({} files)", n));
+            ok(&format!("Opencode config written ({n} files)"));
         } else {
             out::replay(&lines);
         }
@@ -314,7 +314,7 @@ pub fn main() -> i32 {
     let nwarn = if warn_file.is_empty() {
         out::warn_count()
     } else {
-        let n = fs::read_to_string(&warn_file).map(|t| t.lines().count()).unwrap_or(0);
+        let n = fs::read_to_string(&warn_file).map_or(0, |t| t.lines().count());
         let _ = fs::remove_file(&warn_file);
         n
     };
@@ -322,12 +322,9 @@ pub fn main() -> i32 {
     let took = out::duration(started.elapsed().as_secs());
     if nwarn > 0 {
         let w = if nwarn == 1 { "warning" } else { "warnings" };
-        warn(&format!(
-            "dotfiles: done in {} with {} {} (profile: {}). Read the ! lines above.",
-            took, nwarn, w, profile
-        ));
+        warn(&format!("dotfiles: done in {took} with {nwarn} {w} (profile: {profile}). Read the ! lines above."));
     } else {
-        ok(&format!("dotfiles: done in {} (profile: {})", took, profile));
+        ok(&format!("dotfiles: done in {took} (profile: {profile})"));
     }
     0
 }
@@ -338,8 +335,7 @@ fn quiet(cmd: &mut Command) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// New commits came in: run the new `./dotfiles` for the rest, with the same warn file.
@@ -352,7 +348,7 @@ fn restart(repo: &Path) -> i32 {
     {
         use std::os::unix::process::CommandExt;
         let e = cmd.exec();
-        eprintln!("dots: couldn't restart: {}", e);
+        eprintln!("dots: couldn't restart: {e}");
         1
     }
     #[cfg(not(unix))]
@@ -442,14 +438,14 @@ fn link_files(repo: &Path) {
     // process. Step 05 installs the Linux prerequisites.
     let n = link::take_count();
     if n > 0 {
-        ok(&format!("linked {} files", n));
+        ok(&format!("linked {n} files"));
     }
 }
 
 fn claude_config(repo: &Path, profile: &str) {
     step("Claude config");
     if verbose() {
-        info(&format!("profile: {} (AGENTS.md \"Profiles\")", profile));
+        info(&format!("profile: {profile} (AGENTS.md \"Profiles\")"));
     }
     let src = repo.join("claude");
     let dst = os::home().join(".claude");
@@ -480,7 +476,7 @@ fn claude_config(repo: &Path, profile: &str) {
     }
     let n = link::take_count();
     if n > 0 {
-        ok(&format!("linked {} Claude files", n));
+        ok(&format!("linked {n} Claude files"));
     }
     step_end(); // the agent-config lines below print their own count
     // settings.json is built, not linked: the repo base plus the private layer. Claude writes

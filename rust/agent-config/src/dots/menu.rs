@@ -48,7 +48,7 @@ fn edit_git_email() {
 /// A menu of labels, each saving one value. `now` picks the start label.
 fn pick_value(header: &str, name: &str, now: &str, opts: &[(&str, &str, &str)]) {
     let labels: Vec<String> = opts.iter().map(|o| s(o.0)).collect();
-    let start = opts.iter().find(|o| o.1 == now).map(|o| o.0).unwrap_or(opts[opts.len() - 1].0);
+    let start = opts.iter().find(|o| o.1 == now).map_or(opts[opts.len() - 1].0, |o| o.0);
     let Some(v) = ask::menu(header, start, &labels) else { return };
     if let Some(o) = opts.iter().find(|o| o.0 == v)
         && settings::set(name, o.1)
@@ -71,22 +71,21 @@ fn edit_profile() {
 
 /// The presets that are on: a toggle list (Space marks one). Saved as `all`, `none` or the names.
 fn edit_presets() {
-    let all: Vec<String> = crate::presets::ALL.iter().map(|n| n.to_string()).collect();
+    let all: Vec<String> = crate::presets::ALL.iter().map(ToString::to_string).collect();
     let profile = settings::profile();
     let home = super::os::home();
     let on = crate::presets::enabled_quiet(&home, &profile);
     let picked: Vec<String> = if ask::fancy() {
         let marked: Vec<usize> = all.iter().enumerate().filter(|(_, n)| on.contains(n)).map(|(i, _)| i).collect();
-        match ask::many(
+        if let Some(v) = ask::many(
             "🧰 Presets (working habits) that are on: Space marks one · Enter saves · Esc keeps",
             &all,
             &marked,
         ) {
-            Some(v) => v,
-            None => {
-                info("presets: not changed");
-                return;
-            }
+            v
+        } else {
+            info("presets: not changed");
+            return;
         }
     } else {
         info(&format!("presets: {} (or all, or none)", all.join(" ")));
@@ -109,7 +108,7 @@ fn edit_presets() {
         if all.contains(&n) {
             out.push(n);
         } else {
-            warn(&format!("no preset named {}, so it is left out", n));
+            warn(&format!("no preset named {n}, so it is left out"));
         }
     }
     let v = if out.len() == all.len() {
@@ -120,7 +119,7 @@ fn edit_presets() {
         out.join(" ")
     };
     if settings::set("PRESETS", &v) {
-        ok(&format!("presets: {}", v));
+        ok(&format!("presets: {v}"));
     }
 }
 
@@ -241,7 +240,7 @@ fn edit_java(repo: &Path) {
     let mut gone = String::new();
     let mut used: Option<PathBuf> = None;
     if !now.is_empty() && java::home_of(Path::new(&now)).is_none() {
-        info(&format!("JAVA_HOME points to a folder that is gone: {}", now));
+        info(&format!("JAVA_HOME points to a folder that is gone: {now}"));
         gone = std::mem::take(&mut now);
     }
     if now.is_empty() {
@@ -289,8 +288,7 @@ fn edit_java(repo: &Path) {
     }
     let local = repo.join("home/.config/zsh/local.zsh");
     if fs::read_to_string(&local)
-        .map(|t| t.lines().any(|l| l.split('#').next().unwrap_or("").contains("JAVA_HOME=")))
-        .unwrap_or(false)
+        .is_ok_and(|t| t.lines().any(|l| l.split('#').next().unwrap_or("").contains("JAVA_HOME=")))
     {
         info("Your own lines in local.zsh also set JAVA_HOME. The setting from here runs after them, so it wins.");
     }
@@ -317,7 +315,7 @@ fn edit_java(repo: &Path) {
         } else if let Some(h) = java::home_of(Path::new(&p)) {
             save_java(&h);
         } else {
-            warn(&format!("no bin/java in {}, so the Java setting is not changed", p));
+            warn(&format!("no bin/java in {p}, so the Java setting is not changed"));
         }
     } else if pick == none && had {
         if settings::set("JAVA_HOME", "") {
@@ -341,12 +339,11 @@ fn edit_steps() {
             .filter(|(_, n)| now.split_whitespace().any(|w| w == n.as_str()))
             .map(|(i, _)| i)
             .collect();
-        match ask::many("⏩ Steps to skip: Space marks one · Enter saves · Esc keeps", &all, &marked) {
-            Some(v) => v,
-            None => {
-                info("steps to skip: not changed");
-                return;
-            }
+        if let Some(v) = ask::many("⏩ Steps to skip: Space marks one · Enter saves · Esc keeps", &all, &marked) {
+            v
+        } else {
+            info("steps to skip: not changed");
+            return;
         }
     } else {
         info(&format!("steps: {}", all.join(" ")));
@@ -358,7 +355,7 @@ fn edit_steps() {
         if all.contains(&w) {
             out.push(w);
         } else {
-            warn(&format!("no step named {}, so it is left out", w));
+            warn(&format!("no step named {w}, so it is left out"));
         }
     }
     let v = out.join(" ");
@@ -382,8 +379,8 @@ fn edit_words(name: &str, header: &str, example: &str, what: &str) {
 
 /// "1 line" or "N lines" (new lines counted, as wc -l does).
 fn lines_of(p: &Path) -> String {
-    let n = fs::read_to_string(p).map(|t| t.matches('\n').count()).unwrap_or(0);
-    if n == 1 { s("1 line") } else { format!("{} lines", n) }
+    let n = fs::read_to_string(p).map_or(0, |t| t.matches('\n').count());
+    if n == 1 { s("1 line") } else { format!("{n} lines") }
 }
 
 /// The private rules, free text for Claude, Cursor and Opencode. Empty removes them.
@@ -433,7 +430,7 @@ fn write_private(p: &Path, text: &str) -> bool {
 pub fn row(emoji: &str, name: &str, value: &str) -> String {
     let v = value.replace(", ", " ").replace(',', " ");
     let v = if v.chars().count() > 48 { format!("{}…", v.chars().take(47).collect::<String>()) } else { v };
-    format!("{}{:<18} {}", emoji, name, v)
+    format!("{emoji}{name:<18} {v}")
 }
 
 fn or(v: String, text: &str) -> String {
@@ -445,7 +442,7 @@ fn java_value() -> String {
     if j.is_empty() {
         s("not set")
     } else if java::home_of(Path::new(&j)).is_none() {
-        format!("gone: {}", j)
+        format!("gone: {j}")
     } else {
         format!("Java {}", java::label(Path::new(&j)))
     }
@@ -453,7 +450,7 @@ fn java_value() -> String {
 
 fn rules_value() -> String {
     let md = settings::owner_md();
-    if fs::metadata(&md).map(|m| m.len() > 0).unwrap_or(false) { lines_of(&md) } else { s("none") }
+    if fs::metadata(&md).is_ok_and(|m| m.len() > 0) { lines_of(&md) } else { s("none") }
 }
 
 /// The `dots settings` menu: shows each setting, asks for changes and saves each one at once.
@@ -462,7 +459,7 @@ pub fn run(repo: &Path) {
     step("Settings (they stay on this machine, never in git)");
     info("File: ~/.config/dotfiles/settings. Each change saves at once.");
     let done = s("✅ Done");
-    let first = std::env::var("DOTFILES_FIRST_RUN").map(|v| !v.is_empty()).unwrap_or(false);
+    let first = std::env::var("DOTFILES_FIRST_RUN").is_ok_and(|v| !v.is_empty());
     let mut start = if first { done.clone() } else { String::new() };
     let mut last: Option<usize> = None;
     loop {

@@ -218,7 +218,7 @@ fn checks_for(r: &Path) -> Vec<String> {
 /// True when `.github/workflows/*.y*ml` matches something.
 fn workflows(root: &Path) -> bool {
     let Ok(rd) = std::fs::read_dir(root.join(".github").join("workflows")) else { return false };
-    rd.filter_map(|e| e.ok()).any(|e| {
+    rd.filter_map(Result::ok).any(|e| {
         let n = e.file_name().to_string_lossy().into_owned();
         n.ends_with("ml") && n[..n.len() - 2].contains(".y")
     })
@@ -452,13 +452,13 @@ impl Run {
 
         // 8. Verification checks this repo offers (the agent runs them)
         let c = checks_for(&root);
-        if !c.is_empty() {
+        if c.is_empty() {
+            self.warn("no known check command found — ask how this repo is verified, or check README/AGENTS.md");
+        } else {
             println!("  RUN   verification checks for this repo:");
             for l in &c {
                 println!("          {l}");
             }
-        } else {
-            self.warn("no known check command found — ask how this repo is verified, or check README/AGENTS.md");
         }
 
         // 9. Stray processes started from this repo (dev servers, watchers): one short, masked

@@ -50,7 +50,7 @@ pub enum Verdict {
 }
 
 fn deny_or_allow(msg: Option<&str>) -> Verdict {
-    msg.map(|m| Verdict::Deny(m.to_string())).unwrap_or(Verdict::Allow)
+    msg.map_or(Verdict::Allow, |m| Verdict::Deny(m.to_string()))
 }
 
 // --- small path helpers (shared with the guard binary) ----------------------------
@@ -72,9 +72,9 @@ fn path_join(a: &str, b: &str) -> String {
     if b.starts_with('/') {
         b.to_string()
     } else if a.ends_with('/') {
-        format!("{}{}", a, b)
+        format!("{a}{b}")
     } else {
-        format!("{}/{}", a, b)
+        format!("{a}/{b}")
     }
 }
 
@@ -99,8 +99,8 @@ pub fn realpath(p: &str) -> String {
     let abs = if p.starts_with('/') {
         p.to_string()
     } else {
-        let cwd = env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".to_string());
-        format!("{}/{}", cwd, p)
+        let cwd = env::current_dir().map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned());
+        format!("{cwd}/{p}")
     };
     let mut resolved = String::from("/");
     let mut todo: VecDeque<String> = abs.split('/').map(String::from).collect();
@@ -115,8 +115,8 @@ pub fn realpath(p: &str) -> String {
             }
             continue;
         }
-        let cand = if resolved == "/" { format!("/{}", c) } else { format!("{}/{}", resolved, c) };
-        let is_link = fs::symlink_metadata(&cand).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+        let cand = if resolved == "/" { format!("/{c}") } else { format!("{resolved}/{c}") };
+        let is_link = fs::symlink_metadata(&cand).is_ok_and(|m| m.file_type().is_symlink());
         if is_link && links < 40 {
             links += 1;
             match fs::read_link(&cand) {
@@ -145,13 +145,7 @@ fn normpath(p: &str) -> String {
     if p.is_empty() {
         return ".".to_string();
     }
-    let initial = if p.starts_with("//") && !p.starts_with("///") {
-        2
-    } else if p.starts_with('/') {
-        1
-    } else {
-        0
-    };
+    let initial = if p.starts_with("//") && !p.starts_with("///") { 2 } else { usize::from(p.starts_with('/')) };
     let mut out: Vec<&str> = Vec::new();
     for c in p.split('/') {
         if c.is_empty() || c == "." {
@@ -170,7 +164,7 @@ fn normpath(p: &str) -> String {
 
 /// `os.path.split`.
 fn path_split(p: &str) -> (String, String) {
-    let i = p.rfind('/').map(|x| x + 1).unwrap_or(0);
+    let i = p.rfind('/').map_or(0, |x| x + 1);
     let (mut head, tail) = (p[..i].to_string(), p[i..].to_string());
     if !head.is_empty() && head.chars().any(|c| c != '/') {
         head = head.trim_end_matches('/').to_string();
@@ -1093,7 +1087,7 @@ fn search_long(fam: &str, key: &str, val: &str, o: &mut SearchOpts) {
         }
     } else if fam == "ag" {
         if key == "--ignore" {
-            o.globs.push(format!("!{}", val));
+            o.globs.push(format!("!{val}"));
         } else if key == "--ignore-dir" {
             o.xdir.push(val.to_string());
         } else if key == "--unrestricted" || key == "--skip-vcs-ignores" || key == "--hidden" {
@@ -1159,14 +1153,14 @@ fn glob_hits(g: &str, dirs: &[String], fname: &str, path: &str) -> bool {
     if g.is_empty() {
         return false;
     }
-    let mut names: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
+    let mut names: Vec<&str> = dirs.iter().map(String::as_str).collect();
     if !only_dir {
         names.push(fname);
     }
     if names.iter().any(|c| fnmatch(c, g)) {
         return true;
     }
-    [g.to_string(), format!("*/{}", g), format!("*/{}/*", g)].iter().any(|p| fnmatch(path, p))
+    [g.to_string(), format!("*/{g}"), format!("*/{g}/*")].iter().any(|p| fnmatch(path, p))
 }
 
 /// True when the search options leave `path` out (--exclude, --exclude-dir, --include, rg/ag globs).
@@ -1188,7 +1182,7 @@ fn search_excluded(o: &SearchOpts, path: &str, dirs: &[String], fname: &str) -> 
     if !keep.is_empty() {
         return !keep.iter().any(|g| {
             let g = case_fold(g);
-            fnmatch(fname, &g) || fnmatch(&path, &g) || fnmatch(&path, &format!("*/{}", g))
+            fnmatch(fname, &g) || fnmatch(&path, &g) || fnmatch(&path, &format!("*/{g}"))
         });
     }
     false
@@ -1241,9 +1235,10 @@ fn search_leaks(name: &str, args: &[String], cwd: Option<&str>, target: &Target)
     }
     let operands: Vec<&String> = if o.pat { o.pos.iter().collect() } else { o.pos.iter().skip(1).collect() };
     let mut paths: Vec<String> = operands.into_iter().filter(|p| p.as_str() != "-").cloned().collect();
-    let cwd_s = cwd.map(String::from).unwrap_or_else(|| {
-        env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".to_string())
-    });
+    let cwd_s = cwd.map_or_else(
+        || env::current_dir().map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned()),
+        String::from,
+    );
     if paths.is_empty() {
         paths.push(cwd_s.clone());
     }
@@ -1755,7 +1750,7 @@ fn gh_api_payload(args: &[String]) -> Option<Payload> {
                 sends = true;
                 match v.split_once('=').and_then(|(_, rhs)| rhs.strip_prefix('@')) {
                     Some(f) => {
-                        p.texts.push(v.split_once('=').map(|(name, _)| name).unwrap_or("").to_string());
+                        p.texts.push(v.split_once('=').map_or("", |(name, _)| name).to_string());
                         p.file(f);
                     }
                     None => p.texts.push(v.clone()),
@@ -2250,7 +2245,7 @@ pub fn shadow_log(id: &str, v: &Verdict, summary: &str) {
         Verdict::Deny(_) => "deny",
     };
     let one_line: String = summary.chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect();
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("dots-guard-shadow.log")) {
         let _ = writeln!(f, "{ts} {id} {what} {one_line}");
     }
@@ -2293,13 +2288,13 @@ pub struct Gate {
 
 impl Gate {
     /// Every preset on, nothing off: the answer when the settings cannot be read.
-    pub fn all_on() -> Gate {
-        Gate { off: Vec::new(), presets: crate::presets::ALL.iter().map(|p| p.to_string()).collect() }
+    pub fn all_on() -> Self {
+        Self { off: Vec::new(), presets: crate::presets::ALL.iter().map(ToString::to_string).collect() }
     }
 
     /// Read `GUARD_OFF` (env, even an empty one, else the setting; a comma or space list) and the
     /// enabled presets of the profile from `home`.
-    pub fn load(home: &Path) -> Gate {
+    pub fn load(home: &Path) -> Self {
         std::panic::catch_unwind(|| {
             let raw = env::var("GUARD_OFF").unwrap_or_else(|_| crate::setting(home, "GUARD_OFF"));
             let off = raw
@@ -2309,9 +2304,9 @@ impl Gate {
                 .map(String::from)
                 .collect();
             let profile = crate::presets::profile(home);
-            Gate { off, presets: crate::presets::enabled_quiet(home, &profile) }
+            Self { off, presets: crate::presets::enabled_quiet(home, &profile) }
         })
-        .unwrap_or_else(|_| Gate::all_on())
+        .unwrap_or_else(|_| Self::all_on())
     }
 
     /// True when check `id` runs: it is not in `GUARD_OFF` and its preset is on. `core` checks
@@ -2331,7 +2326,7 @@ impl Gate {
 /// [`Gate::enabled`] for this process, with the gate read once from the user's home.
 pub fn check_enabled(id: &str) -> bool {
     static GATE: std::sync::OnceLock<Gate> = std::sync::OnceLock::new();
-    GATE.get_or_init(|| home_dir().map(|h| Gate::load(&h)).unwrap_or_else(Gate::all_on)).enabled(id)
+    GATE.get_or_init(|| home_dir().map_or_else(Gate::all_on, |h| Gate::load(&h))).enabled(id)
 }
 
 #[cfg(test)]
@@ -2343,7 +2338,7 @@ mod tests {
         let split = |s: &str| shlex_split(s);
         assert_eq!(split("a 'b c' \"d e\" f\\ g"), Some(vec!["a".into(), "b c".into(), "d e".into(), "f g".into()]));
         assert_eq!(split("echo \"a\\\"b\" 'c\\d'"), Some(vec!["echo".into(), "a\"b".into(), "c\\d".into()]));
-        assert_eq!(split("x '' y"), Some(vec!["x".into(), "".into(), "y".into()]));
+        assert_eq!(split("x '' y"), Some(vec!["x".into(), String::new(), "y".into()]));
         assert_eq!(split("unbalanced 'quote"), None);
         assert_eq!(split("trailing \\"), None);
         assert_eq!(split("   "), Some(vec![]));
@@ -2370,7 +2365,7 @@ mod tests {
     fn heredoc_delims_match_python() {
         assert_eq!(heredoc_delims("cat <<EOF"), vec!["EOF"]);
         assert_eq!(heredoc_delims("cat <<-'EOF' > x"), vec!["EOF"]);
-        assert!(heredoc_delims("cat <<< word").is_empty());
+        assert_eq!(heredoc_delims("cat <<< word"), [] as [String; 0]);
         assert_eq!(strip_heredocs("cat <<E\nsed -i x\nE\nls"), "cat <<E\nls");
     }
 
@@ -2379,7 +2374,7 @@ mod tests {
         assert_eq!(heredoc_bodies("cat <<E\nsed -i x\nE\nls"), vec!["sed -i x\n"]);
         assert_eq!(heredoc_bodies("a <<A; b <<B\none\nA\ntwo\nB"), vec!["one\n", "two\n"]);
         assert_eq!(heredoc_bodies("cat <<E\nopen"), vec!["open\n"]);
-        assert!(heredoc_bodies("echo hi").is_empty());
+        assert_eq!(heredoc_bodies("echo hi"), [] as [String; 0]);
     }
 
     #[test]

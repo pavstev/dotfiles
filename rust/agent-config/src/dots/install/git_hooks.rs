@@ -18,11 +18,11 @@ pub fn step(repo: &Path) {
     let r = repo.to_string_lossy();
     let current = git::out(&["-C", &r, "config", "core.hooksPath"]).unwrap_or_default();
     if current == HOOKS_DIR {
-        skip(&format!("core.hooksPath (already {})", HOOKS_DIR));
+        skip(&format!("core.hooksPath (already {HOOKS_DIR})"));
         return;
     }
     if run("git", &["-C", &r, "config", "core.hooksPath", HOOKS_DIR]) {
-        ok(&format!("core.hooksPath = {} (the git hooks are now active)", HOOKS_DIR));
+        ok(&format!("core.hooksPath = {HOOKS_DIR} (the git hooks are now active)"));
     } else {
         warn("Failed to set core.hooksPath — run manually:");
         warn("  git -C ~/dotfiles config core.hooksPath scripts/git-hooks");
@@ -54,7 +54,7 @@ mod tests {
     #[test]
     fn warns_when_the_hooks_folder_is_missing() {
         let d = tempfile::tempdir().unwrap();
-        let (_, got) = out::capture(|| step(d.path()));
-        assert!(got.iter().any(|(l, err)| *err && l.contains("scripts/git-hooks/ not found")), "{:?}", got);
+        let ((), got) = out::capture(|| step(d.path()));
+        assert!(got.iter().any(|(l, err)| *err && l.contains("scripts/git-hooks/ not found")), "{got:?}");
     }
 }

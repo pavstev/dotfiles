@@ -38,7 +38,7 @@ fn theme() {
 /// shows only when stdin is a terminal, as with bash `read -p`.
 fn read_line(prompt: &str) -> Option<String> {
     if io::stdin().is_terminal() {
-        eprint!("{}", prompt);
+        eprint!("{prompt}");
         let _ = io::stderr().flush();
     }
     let mut s = String::new();
@@ -55,13 +55,13 @@ pub fn text(label: &str, hint: &str, empty_ok: bool) -> Option<String> {
             theme();
             match inquire::Text::new(label).with_placeholder(hint).prompt() {
                 Ok(v) => v,
-                Err(inquire::InquireError::OperationCanceled) | Err(inquire::InquireError::OperationInterrupted) => {
+                Err(inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted) => {
                     return None;
                 }
-                Err(_) => read_line(&format!("{}: ", label))?,
+                Err(_) => read_line(&format!("{label}: "))?,
             }
         } else {
-            read_line(&format!("{}: ", label))?
+            read_line(&format!("{label}: "))?
         };
         let v = v.trim().to_string();
         if !v.is_empty() || empty_ok {
@@ -99,7 +99,7 @@ pub fn value(label: &str, now: &str, hint: &str) -> Option<String> {
         theme();
         inquire::Text::new(label).with_initial_value(now).with_placeholder(hint).prompt().ok()?
     } else {
-        let v = read_line(&format!("{} [{}]: ", label, now))?;
+        let v = read_line(&format!("{label} [{now}]: "))?;
         if v.is_empty() {
             now.to_string()
         } else if v == "-" {
@@ -122,13 +122,13 @@ pub fn menu(header: &str, start: &str, labels: &[String]) -> Option<String> {
             .prompt()
         {
             Ok(v) => return Some(v),
-            Err(inquire::InquireError::OperationCanceled) | Err(inquire::InquireError::OperationInterrupted) => {
+            Err(inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted) => {
                 return None;
             }
             Err(_) => {}
         }
     }
-    eprintln!("{}", header);
+    eprintln!("{header}");
     for (i, l) in labels.iter().enumerate() {
         eprintln!("  {}) {}", i + 1, l);
     }
@@ -174,14 +174,14 @@ pub fn long(header: &str, now: &str) -> Option<String> {
             .prompt()
         {
             Ok(t) => Some(t),
-            Err(inquire::InquireError::OperationCanceled) | Err(inquire::InquireError::OperationInterrupted) => None,
+            Err(inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted) => None,
             Err(e) => {
-                crate::out::warn(&format!("the editor did not run ({}): {}", prog, e));
+                crate::out::warn(&format!("the editor did not run ({prog}): {e}"));
                 None
             }
         };
     }
-    eprintln!("{}\nPaste or type. End with a line that holds only a dot.", header);
+    eprintln!("{header}\nPaste or type. End with a line that holds only a dot.");
     let mut out = String::new();
     while let Some(l) = read_line("") {
         if l == "." {
@@ -212,9 +212,9 @@ fn editor_command() -> String {
 /// A rounded copper box at a terminal, plain lines otherwise.
 pub fn banner(title: &str, lines: &[&str]) {
     if !fancy() {
-        println!("\n{}", title);
+        println!("\n{title}");
         for l in lines {
-            println!("  {}", l);
+            println!("  {l}");
         }
         return;
     }

@@ -85,9 +85,9 @@ fn home() -> PathBuf {
 
 impl Paths {
     /// The paths and settings of this machine.
-    pub fn from_env() -> Paths {
-        let cache = env_nonempty("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache"));
-        let base = env_nonempty("CLAUDE_CONFIG_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".claude"));
+    pub fn from_env() -> Self {
+        let cache = env_nonempty("XDG_CACHE_HOME").map_or_else(|| home().join(".cache"), PathBuf::from);
+        let base = env_nonempty("CLAUDE_CONFIG_DIR").map_or_else(|| home().join(".claude"), PathBuf::from);
         // the settings file is read once per process
         static SETTINGS: OnceLock<(String, i64)> = OnceLock::new();
         let (plan, days) = SETTINGS.get_or_init(|| {
@@ -98,7 +98,7 @@ impl Paths {
                 work_days(&agent_config::setting(&h, "WORK_DAYS")),
             )
         });
-        Paths { cache, projects: base.join("projects"), plan: plan.clone(), days: *days }
+        Self { cache, projects: base.join("projects"), plan: plan.clone(), days: *days }
     }
 
     fn file(&self, name: &str) -> PathBuf {
@@ -116,20 +116,20 @@ fn write_text(path: &PathBuf, text: &str) {
         let _ = fs::create_dir_all(dir);
     }
     let tmp = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
-    if fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, path)).is_err() {
+    if fs::write(&tmp, text).and_then(|()| fs::rename(&tmp, path)).is_err() {
         let _ = fs::remove_file(&tmp);
     }
 }
 
 fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 // --- Python-compatible number and JSON text --------------------------------------------------
 
 /// round(x, 1) of Python: the exact decimal value, rounded half to even.
 fn round1(x: f64) -> f64 {
-    format!("{:.1}", x).parse().unwrap_or(x)
+    format!("{x:.1}").parse().unwrap_or(x)
 }
 
 /// float(s) of Python for the forms that matter here.
@@ -142,7 +142,7 @@ fn py_parse_float(s: &str) -> Option<f64> {
     let t = if t.contains('_') {
         let b: Vec<char> = t.chars().collect();
         for (i, c) in b.iter().enumerate() {
-            if *c == '_' && !(i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(|n| n.is_ascii_digit())) {
+            if *c == '_' && !(i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(char::is_ascii_digit)) {
                 return None;
             }
         }
@@ -167,7 +167,7 @@ fn pynum(v: &Value) -> Option<f64> {
 fn pyint(v: &Value) -> Option<i64> {
     match v {
         Value::Number(n) => n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)),
-        Value::Bool(b) => Some(*b as i64),
+        Value::Bool(b) => Some(i64::from(*b)),
         _ => None,
     }
 }
@@ -228,11 +228,11 @@ fn local_ymd(secs: i64) -> (i64, i64, i64) {
         tm_zone: std::ptr::null(),
     };
     // SAFETY: both pointers are valid for the call; localtime_r only writes into `tm`.
-    let r = unsafe { localtime_r(&secs, &mut tm) };
+    let r = unsafe { localtime_r(&raw const secs, &raw mut tm) };
     if r.is_null() {
         return civil_from_days(secs.div_euclid(86400));
     }
-    (tm.tm_year as i64 + 1900, tm.tm_mon as i64 + 1, tm.tm_mday as i64)
+    (i64::from(tm.tm_year) + 1900, i64::from(tm.tm_mon) + 1, i64::from(tm.tm_mday))
 }
 
 #[cfg(not(all(unix, target_pointer_width = "64")))]
@@ -482,7 +482,7 @@ fn parse_line(line: &[u8], pos: i64, ws: i64) -> Option<(String, i64, f64)> {
     let weight = cost(usage, price);
     let key = match msg.get("id") {
         Some(Value::String(s)) if !s.is_empty() => s.clone(),
-        _ => format!("L{}", pos),
+        _ => format!("L{pos}"),
     };
     Some((key, ts, weight))
 }
@@ -530,12 +530,11 @@ struct Msgs {
 
 impl Msgs {
     fn set(&mut self, k: String, ts: i64, w: f64) {
-        match self.idx.get(&k) {
-            Some(&i) => self.items[i] = (k, ts, w),
-            None => {
-                self.idx.insert(k.clone(), self.items.len());
-                self.items.push((k, ts, w));
-            }
+        if let Some(&i) = self.idx.get(&k) {
+            self.items[i] = (k, ts, w)
+        } else {
+            self.idx.insert(k.clone(), self.items.len());
+            self.items.push((k, ts, w));
         }
     }
 
@@ -554,11 +553,11 @@ struct Ent {
 }
 
 impl Ent {
-    fn new() -> Ent {
-        Ent { size: Some(0), offset: 0, mtime: Value::from(0), msgs: Msgs::default(), hits: Vec::new() }
+    fn new() -> Self {
+        Self { size: Some(0), offset: 0, mtime: Value::from(0), msgs: Msgs::default(), hits: Vec::new() }
     }
 
-    fn from_json(e: &Value) -> Option<Ent> {
+    fn from_json(e: &Value) -> Option<Self> {
         let o = e.as_object()?;
         let offset = match o.get("offset")? {
             Value::Number(n) => n.as_i64()?,
@@ -574,15 +573,15 @@ impl Ent {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(epoch_int).collect())
             .unwrap_or_default();
-        let size = o.get("size").and_then(|v| v.as_f64()).filter(|f| f.fract() == 0.0).map(|f| f as i64);
+        let size = o.get("size").and_then(Value::as_f64).filter(|f| f.fract() == 0.0).map(|f| f as i64);
         let mtime = o.get("mtime").cloned().unwrap_or(Value::from(0));
-        Some(Ent { size, offset, mtime, msgs, hits })
+        Some(Self { size, offset, mtime, msgs, hits })
     }
 
     fn write(&self, out: &mut String) {
         out.push('{');
         if let Some(s) = self.size {
-            out.push_str(&format!("\"size\":{},", s));
+            out.push_str(&format!("\"size\":{s},"));
         }
         out.push_str(&format!("\"offset\":{},\"mtime\":", self.offset));
         match self.mtime.as_f64() {
@@ -597,7 +596,7 @@ impl Ent {
             out.push_str(&format!("{}:[{},{}]", json_str(k), ts, py_float(*w)));
         }
         out.push_str("},\"hits\":[");
-        out.push_str(&self.hits.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(","));
+        out.push_str(&self.hits.iter().map(ToString::to_string).collect::<Vec<_>>().join(","));
         out.push_str("]}");
     }
 }
@@ -643,7 +642,7 @@ fn find_files(root: &PathBuf, min_mtime: f64) -> (Vec<(f64, i64, String)>, usize
             .modified()
             .ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map_or(0.0, |d| d.as_secs() as f64 + d.subsec_nanos() as f64 * 1e-9);
+            .map_or(0.0, |d| d.as_secs() as f64 + f64::from(d.subsec_nanos()) * 1e-9);
         if mtime >= min_mtime {
             found.push((mtime, md.len() as i64, ent.path().to_string_lossy().into_owned()));
         }
@@ -719,7 +718,7 @@ fn load_result(p: &Paths) -> Option<Value> {
     if !num_eq(get(&r, "v"), FORMAT) || get(&r, "weight").and_then(pynum).is_none() {
         return None;
     }
-    if get(&r, "at").and_then(pynum).is_none() || !get(&r, "ws").is_some_and(|v| pyint(v).is_some()) {
+    if get(&r, "at").and_then(pynum).is_none() || get(&r, "ws").is_none_or(|v| pyint(v).is_none()) {
         return None;
     }
     Some(r)
@@ -739,7 +738,7 @@ pub fn refresh_in(p: &Paths, budget_s: f64, now: Option<i64>) -> RefreshResult {
     // A cold calibration looks at the previous week too, once, to find its limit hit.
     let back = calib_updated(p) == 0.0 && !backfilled;
     let lo = if back { ws - WEEK } else { ws };
-    let meta_lo = meta.and_then(|m| get(m, "lo")).and_then(|v| v.as_i64());
+    let meta_lo = meta.and_then(|m| get(m, "lo")).and_then(Value::as_i64);
     let mut dirty = false;
     if meta_lo.is_none_or(|l| l > lo) {
         old.clear(); // the cache covers less than this scan needs: rebuild
@@ -795,7 +794,7 @@ pub fn refresh_in(p: &Paths, budget_s: f64, now: Option<i64>) -> RefreshResult {
         }
     }
     if dirty || meta_lo != Some(lo) {
-        let mut out = format!("{{\"v\":3,\"lo\":{},\"backfilled\":{},\"files\":{{", lo, backfilled);
+        let mut out = format!("{{\"v\":3,\"lo\":{lo},\"backfilled\":{backfilled},\"files\":{{");
         for (i, (path, ent)) in files.iter_mut().enumerate() {
             ent.msgs.keep_from(lo);
             ent.hits.retain(|t| *t >= lo);
@@ -1413,7 +1412,7 @@ mod tests {
             assert_eq!(plan_weight(none), None, "{none}");
         }
         let e = env();
-        let p = Paths { plan: "max5".into(), ..e.p.clone() };
+        let p = Paths { plan: "max5".into(), ..e.p };
         assert_eq!(week_weight_in(&p), Some(5.0 * pro));
     }
 
@@ -1423,7 +1422,7 @@ mod tests {
         let p = Paths { plan: "max5".into(), ..e.p.clone() };
         seed_weight(&p, 2000.0, Some(mon()), "seed", None);
         assert_eq!(week_weight_in(&p), Some(2000.0));
-        let api = Paths { plan: "api".into(), ..e.p.clone() };
+        let api = Paths { plan: "api".into(), ..e.p };
         assert_eq!(week_weight_in(&api), Some(2000.0)); // a calibration also rescues an unknown plan
     }
 

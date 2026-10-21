@@ -51,7 +51,7 @@ pub fn run() -> i32 {
             }
         }
     }
-    if failed > 0 { 1 } else { 0 }
+    i32::from(failed > 0)
 }
 
 fn join(items: &[String]) -> String {
@@ -189,7 +189,7 @@ fn newest_source(crate_dir: &Path) -> Option<SystemTime> {
     for sub in ["src", "themes"] {
         for e in walkdir::WalkDir::new(crate_dir.join(sub))
             .into_iter()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
         {
             see(e.path());
@@ -285,7 +285,7 @@ fn presets(repo: &Path, home: &Path) -> Result<(), String> {
     let want: BTreeSet<String> = on.into_iter().filter(|n| src.join(n).join("rules.md").is_file()).collect();
     let mut have = BTreeSet::new();
     if let Ok(entries) = fs::read_dir(home.join(".claude").join("rules")) {
-        for e in entries.filter_map(|e| e.ok()) {
+        for e in entries.filter_map(Result::ok) {
             let file = e.file_name().to_string_lossy().into_owned();
             let Some(name) = file.strip_prefix("preset-").and_then(|r| r.strip_suffix(".md")) else { continue };
             if os::is_symlink(&e.path())
@@ -417,7 +417,7 @@ fn no_leak(repo: &Path, home: &Path) -> Result<(), String> {
             hits.push(format!("{shown_name} (file name)"));
         }
         let path = repo.join(name);
-        if fs::metadata(&path).map(|m| !m.is_file() || m.len() > 4 << 20).unwrap_or(true) {
+        if fs::metadata(&path).map_or(true, |m| !m.is_file() || m.len() > 4 << 20) {
             continue;
         }
         let Ok(text) = fs::read(&path).map(|b| String::from_utf8_lossy(&b).to_lowercase()) else { continue };

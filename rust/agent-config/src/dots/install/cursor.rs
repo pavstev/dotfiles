@@ -42,7 +42,7 @@ pub fn step(repo: &Path) {
     let bin = os::which("cursor").or_else(|| app.as_deref().map(app_cursor));
     match bin {
         Some(b) if os::is_executable(&b) && repo.join("Brewfile").is_file() => {
-            brew_extensions(&b, repo, "Cursor", &LEAVE)
+            brew_extensions(&b, repo, "Cursor", &LEAVE);
         }
         _ => warn("no cursor command found, extensions not installed"),
     }

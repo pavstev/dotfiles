@@ -33,8 +33,8 @@ pub fn valid_value(v: &str) -> bool {
 /// The new file text: the first NAME line replaced, later ones dropped, or the line
 /// added at the end. Other lines stay.
 pub fn replaced(old: &str, name: &str, value: &str) -> String {
-    let key = format!("{}=", name);
-    let line = format!("{}=\"{}\"", name, value);
+    let key = format!("{name}=");
+    let line = format!("{name}=\"{value}\"");
     let mut out = String::new();
     let mut done = false;
     let mut lines: Vec<&str> = old.split('\n').collect();
@@ -64,7 +64,7 @@ pub fn replaced(old: &str, name: &str, value: &str) -> String {
 /// When the file is a link, the file it points to changes and the link stays.
 pub fn set(name: &str, value: &str) -> bool {
     if !valid_value(value) {
-        warn(&format!("{} not saved: a value can't hold \" \\ $ ` or a new line", name));
+        warn(&format!("{name} not saved: a value can't hold \" \\ $ ` or a new line"));
         return false;
     }
     let conf = conf_dir();

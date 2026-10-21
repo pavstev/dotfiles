@@ -69,7 +69,7 @@ fn home() -> String {
     {
         return h;
     }
-    dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
+    dirs::home_dir().map_or_else(|| "~".into(), |p| p.to_string_lossy().into_owned())
 }
 
 fn default_out() -> String {
@@ -113,7 +113,7 @@ fn slice_end(len: usize, n: i64) -> usize {
 
 /// Python round(x, nd) for nd >= 0 (correctly rounded, ties to even on the exact value).
 fn pyround(x: f64, nd: usize) -> f64 {
-    format!("{:.*}", nd, x).parse().unwrap_or(x)
+    format!("{x:.nd$}").parse().unwrap_or(x)
 }
 
 /// Python round(x) -> int.
@@ -206,7 +206,7 @@ impl Dt {
         let (y, m, d) = civil_from_days(days);
         let mut s = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", y, m, d, sod / 3600, sod % 3600 / 60, sod % 60);
         if us != 0 {
-            s.push_str(&format!(".{:06}", us));
+            s.push_str(&format!(".{us:06}"));
         }
         let sign = if self.off < 0 { '-' } else { '+' };
         let a = self.off.abs();
@@ -239,25 +239,24 @@ struct Counter<K: Clone + Eq + Hash> {
 
 impl<K: Clone + Eq + Hash> Counter<K> {
     fn new() -> Self {
-        Counter { keys: vec![], idx: HashMap::new(), vals: vec![] }
+        Self { keys: vec![], idx: HashMap::new(), vals: vec![] }
     }
     fn add(&mut self, k: K, n: i64) {
-        match self.idx.get(&k) {
-            Some(&i) => self.vals[i] += n,
-            None => {
-                self.idx.insert(k.clone(), self.keys.len());
-                self.keys.push(k);
-                self.vals.push(n);
-            }
+        if let Some(&i) = self.idx.get(&k) {
+            self.vals[i] += n
+        } else {
+            self.idx.insert(k.clone(), self.keys.len());
+            self.keys.push(k);
+            self.vals.push(n);
         }
     }
     fn get(&self, k: &K) -> i64 {
-        self.idx.get(k).map(|&i| self.vals[i]).unwrap_or(0)
+        self.idx.get(k).map_or(0, |&i| self.vals[i])
     }
     fn items(&self) -> Vec<(K, i64)> {
-        self.keys.iter().cloned().zip(self.vals.iter().cloned()).collect()
+        self.keys.iter().cloned().zip(self.vals.iter().copied()).collect()
     }
-    fn update(&mut self, other: &Counter<K>) {
+    fn update(&mut self, other: &Self) {
         for (k, v) in other.items() {
             self.add(k, v);
         }
@@ -298,7 +297,7 @@ impl Counter<String> {
         Value::Object(m)
     }
     fn from_json(v: &Value) -> Self {
-        let mut c = Counter::new();
+        let mut c = Self::new();
         if let Some(o) = v.as_object() {
             for (k, x) in o {
                 c.add(k.clone(), as_i(x));
@@ -309,7 +308,7 @@ impl Counter<String> {
 }
 
 fn fnum(x: f64) -> Value {
-    Number::from_f64(x).map(Value::Number).unwrap_or(Value::Null)
+    Number::from_f64(x).map_or(Value::Null, Value::Number)
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +424,7 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                             ];
                             if !cmd.is_empty() {
                                 let k = if TWO.contains(&cmd[0]) {
-                                    cmd.iter().take(2).cloned().collect::<Vec<_>>().join(" ")
+                                    cmd.iter().take(2).copied().collect::<Vec<_>>().join(" ")
                                 } else {
                                     pychars(cmd[0], 24)
                                 };
@@ -541,13 +540,13 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
 // ---------------------------------------------------------------------------
 
 fn fail(msg: &str) -> ! {
-    eprintln!("{}", msg);
+    eprintln!("{msg}");
     std::process::exit(1);
 }
 
 fn cmd_collect(a: &CollectArgs) {
     let since =
-        if !a.since.contains('T') { parse_ts(&format!("{}T00:00:00+00:00", a.since)) } else { parse_ts(&a.since) }
+        if a.since.contains('T') { parse_ts(&a.since) } else { parse_ts(&format!("{}T00:00:00+00:00", a.since)) }
             .unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{}'", a.since)));
     let h = home();
     let projects = Path::new(&h).join(".claude").join("projects");
@@ -627,18 +626,13 @@ fn cmd_collect(a: &CollectArgs) {
             row.insert("folder".into(), Value::from(folder.clone()));
             row.insert("start".into(), Value::from(first.isoformat()));
             row.insert("end".into(), Value::from(last.isoformat()));
-            row.insert("title".into(), m.map(|m| m.title.clone()).unwrap_or(Value::Null));
-            row.insert("archived".into(), m.map(|m| Value::Bool(m.archived)).unwrap_or(Value::Null));
-            row.insert("effort".into(), m.map(|m| m.effort.clone()).unwrap_or(Value::Null));
+            row.insert("title".into(), m.map_or(Value::Null, |m| m.title.clone()));
+            row.insert("archived".into(), m.map_or(Value::Null, |m| Value::Bool(m.archived)));
+            row.insert("effort".into(), m.map_or(Value::Null, |m| m.effort.clone()));
             row.insert("cli".into(), s.version.clone());
             row.insert(
                 "model".into(),
-                s.models
-                    .most_common(Some(1))
-                    .first()
-                    .and_then(|(k, _)| k.clone())
-                    .map(Value::from)
-                    .unwrap_or(Value::Null),
+                s.models.most_common(Some(1)).first().and_then(|(k, _)| k.clone()).map_or(Value::Null, Value::from),
             );
             row.insert("first_ctx".into(), Value::from(s.first_ctx));
             row.insert("peak_ctx".into(), Value::from(s.peak));
@@ -669,7 +663,7 @@ fn run_lines(cmd: &str, args: &[String]) -> String {
 }
 
 fn sv(a: &[&str]) -> Vec<String> {
-    a.iter().map(|s| s.to_string()).collect()
+    a.iter().map(ToString::to_string).collect()
 }
 
 fn cmd_cuts(a: &CutsArgs) {
@@ -690,7 +684,7 @@ fn cmd_cuts(a: &CutsArgs) {
         let root0 = run_lines("git", &sv(&["-C", &repo, "log", "--reverse", "--format=%cI", "--max-count=1"]));
         let first_s = run_lines("git", &sv(&["-C", &repo, "rev-list", "--max-parents=0", "--format=%cI", "HEAD"]));
         let first: Vec<&str> = first_s.lines().collect();
-        let root = first.last().map(|s| s.to_string()).unwrap_or(root0);
+        let root = first.last().map_or(root0, ToString::to_string);
         out!("Repo history starts {}. If that is inside your window, the older pushes are in another repo:", root);
         out!("  gh repo list --limit 50   then   harness_stats cuts --gh OWNER/REPO --since {}\n", a.since);
     }
@@ -703,7 +697,7 @@ fn cmd_cuts(a: &CutsArgs) {
         let first = sp.next().unwrap_or("");
         let rest = sp.next().unwrap_or("").trim_start();
         let Some(t) = parse_ts(first) else {
-            fail(&format!("ValueError: Invalid isoformat string: '{}'", first));
+            fail(&format!("ValueError: Invalid isoformat string: '{first}'"));
         };
         commits.push((t, rest.to_string()));
     }
@@ -725,11 +719,11 @@ fn cmd_cuts(a: &CutsArgs) {
 }
 
 fn load(inp: &str) -> Vec<Value> {
-    let b = fs::read(inp).unwrap_or_else(|e| fail(&format!("FileNotFoundError: {}: {}", inp, e)));
+    let b = fs::read(inp).unwrap_or_else(|e| fail(&format!("FileNotFoundError: {inp}: {e}")));
     match serde_json::from_slice::<Value>(&b) {
         Ok(Value::Array(a)) => a,
         Ok(_) => fail("TypeError: harness_stats file is not a list of rows"),
-        Err(e) => fail(&format!("json.decoder.JSONDecodeError: {}", e)),
+        Err(e) => fail(&format!("json.decoder.JSONDecodeError: {e}")),
     }
 }
 
@@ -742,14 +736,14 @@ enum Num {
 impl Num {
     fn f(&self) -> f64 {
         match self {
-            Num::I(i) => *i as f64,
-            Num::F(f) => *f,
+            Self::I(i) => *i as f64,
+            Self::F(f) => *f,
         }
     }
     fn show(&self) -> String {
         match self {
-            Num::I(i) => i.to_string(),
-            Num::F(f) => py_float(*f),
+            Self::I(i) => i.to_string(),
+            Self::F(f) => py_float(*f),
         }
     }
 }
@@ -769,7 +763,7 @@ fn med(xs: &[Num]) -> Num {
     let mut v = xs.to_vec();
     v.sort_by(|a, b| a.f().partial_cmp(&b.f()).unwrap_or(std::cmp::Ordering::Equal));
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { Num::F((v[n / 2 - 1].f() + v[n / 2].f()) / 2.0) }
+    if n % 2 == 1 { v[n / 2] } else { Num::F(f64::midpoint(v[n / 2 - 1].f(), v[n / 2].f())) }
 }
 
 fn nums<'a, F: Fn(&'a Value) -> &'a Value>(rows: &[&'a Value], f: F) -> Vec<Num> {
@@ -781,7 +775,7 @@ fn stat_i(r: &Value, k: &str) -> i64 {
 }
 
 fn obj_sum(v: &Value) -> i64 {
-    v.as_object().map(|o| o.values().map(as_i).sum()).unwrap_or(0)
+    v.as_object().map_or(0, |o| o.values().map(as_i).sum())
 }
 
 fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
@@ -810,7 +804,7 @@ fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
     let typed = agents.iter().filter(|c| truthy(get(c, "type"))).count();
     let gp = agents.iter().filter(|c| get(c, "type").as_str() == Some("general-purpose")).count();
     let vs: Vec<String> =
-        rows.iter().filter_map(|r| get(r, "cli").as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())).collect();
+        rows.iter().filter_map(|r| get(r, "cli").as_str().filter(|s| !s.is_empty()).map(ToString::to_string)).collect();
     let versions = if vs.is_empty() {
         "?".to_string()
     } else {
@@ -871,10 +865,10 @@ fn table(groups: &Groups) {
 fn periods<'a>(rows: &'a [Value], cut: &[String]) -> (Vec<Dt>, Groups<'a>) {
     let mut cuts: Vec<Dt> = cut
         .iter()
-        .map(|c| parse_ts(c).unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{}'", c))))
+        .map(|c| parse_ts(c).unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{c}'"))))
         .collect();
     cuts.sort_by_key(|d| d.micros);
-    let mut groups: Groups = (0..=cuts.len()).map(|i| (format!("P{}", i), vec![])).collect();
+    let mut groups: Groups = (0..=cuts.len()).map(|i| (format!("P{i}"), vec![])).collect();
     for r in rows {
         let st = parse_ts(get(r, "start").as_str().unwrap_or(""))
             .unwrap_or_else(|| fail("ValueError: Invalid isoformat string in row start"));
@@ -962,7 +956,7 @@ fn cmd_agents(a: &AgentsArgs) {
     out!("{}", periods_line(&cuts));
     out!(
         "| agent type | {} |",
-        data.iter().map(|(k, _)| format!("{} spawns (share) | {} start K", k, k)).collect::<Vec<_>>().join(" | ")
+        data.iter().map(|(k, _)| format!("{k} spawns (share) | {k} start K")).collect::<Vec<_>>().join(" | ")
     );
     out!("|---|{}", "---|---|".repeat(data.len()));
     let n = slice_end(types.len(), a.top);
@@ -990,7 +984,7 @@ fn cmd_agents(a: &AgentsArgs) {
 fn cmd_errors(a: &ErrorsArgs) {
     let rows: Vec<Value> = load(&a.inp)
         .into_iter()
-        .filter(|r| a.project.as_deref().map(|p| get(r, "project").as_str() == Some(p)).unwrap_or(true))
+        .filter(|r| a.project.as_deref().is_none_or(|p| get(r, "project").as_str() == Some(p)))
         .collect();
     if a.daily {
         let mut days: Vec<(String, Counter<String>)> = vec![];
@@ -1104,14 +1098,14 @@ fn cmd_inventory(a: &InvArgs) {
         if p == "tmp" || p == "scratch" {
             continue;
         }
-        let cands: Vec<PathBuf> = if p != "~" { vec![h.join("work").join(p), h.join(p)] } else { vec![h.clone()] };
+        let cands: Vec<PathBuf> = if p == "~" { vec![h.clone()] } else { vec![h.join("work").join(p), h.join(p)] };
         let Some(root) = cands.into_iter().find(|c| is_dir(c)) else {
             out!("| {} | {} | (folder gone) | | | | |", p, c);
             continue;
         };
-        let md = if p != "~" { root.join("CLAUDE.md") } else { h.join(".claude").join("CLAUDE.md") };
+        let md = if p == "~" { h.join(".claude").join("CLAUDE.md") } else { root.join("CLAUDE.md") };
         let lines = if md.is_file() { count_lines(&md) } else { 0 };
-        let rules = if p != "~" { glob_ext(&root.join(".claude").join("rules"), ".md") } else { vec![] };
+        let rules = if p == "~" { vec![] } else { glob_ext(&root.join(".claude").join("rules"), ".md") };
         let scoped = rules
             .iter()
             .filter(|f| {
@@ -1119,11 +1113,11 @@ fn cmd_inventory(a: &InvArgs) {
                 PATHS_KEY.is_match(&t)
             })
             .count();
-        let agents = if p != "~" { glob_ext(&root.join(".claude").join("agents"), ".md").len() } else { 0 };
-        let skills = if p != "~" {
-            list_dir(&root.join(".claude").join("skills")).iter().filter(|d| lexists(&d.join("SKILL.md"))).count()
-        } else {
+        let agents = if p == "~" { 0 } else { glob_ext(&root.join(".claude").join("agents"), ".md").len() };
+        let skills = if p == "~" {
             0
+        } else {
+            list_dir(&root.join(".claude").join("skills")).iter().filter(|d| lexists(&d.join("SKILL.md"))).count()
         };
         let mut hooks = String::new();
         let sj = root.join(".claude").join("settings.json");
@@ -1250,9 +1244,9 @@ struct InvArgs {
 }
 
 fn default_since() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let (y, m, d) = civil_from_days(secs.div_euclid(86400) - 14);
-    format!("{:04}-{:02}-{:02}", y, m, d)
+    format!("{y:04}-{m:02}-{d:02}")
 }
 
 fn main() {

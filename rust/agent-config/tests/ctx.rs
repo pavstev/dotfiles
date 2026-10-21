@@ -205,6 +205,6 @@ fn usage_errors_exit_2() {
     for args in [vec![], vec!["read", "only-a-file.ts"], vec!["frobnicate"], vec!["outline"]] {
         let (code, _, err) = ctx(&args);
         assert_eq!(code, 2, "{args:?}: {err}");
-        assert!(!err.is_empty());
+        assert_ne!(err, "");
     }
 }

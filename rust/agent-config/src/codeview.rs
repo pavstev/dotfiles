@@ -173,9 +173,9 @@ struct Doc {
 }
 
 impl Doc {
-    fn new(orig: Vec<char>, masked: Vec<char>) -> Doc {
+    fn new(orig: Vec<char>, masked: Vec<char>) -> Self {
         let lines = line_ranges(&orig);
-        Doc { orig, masked, lines }
+        Self { orig, masked, lines }
     }
     fn len(&self) -> usize {
         self.lines.len()
@@ -758,12 +758,11 @@ fn ts_const(s: &[char], k: usize) -> Option<Cand> {
         return cand("const", name);
     }
     let r2 = if w == "async" { skip_ws(s, we) } else { r };
-    let arrow = match s.get(r2) {
-        Some('(' | '<') => true,
-        _ => {
-            let (w2, e2) = word(s, r2);
-            !w2.is_empty() && s[skip_ws(s, e2)..].starts_with(&['=', '>'])
-        }
+    let arrow = if let Some('(' | '<') = s.get(r2) {
+        true
+    } else {
+        let (w2, e2) = word(s, r2);
+        !w2.is_empty() && s[skip_ws(s, e2)..].starts_with(&['=', '>'])
     };
     arrow.then_some(Cand { kind: "const", name, arrow: true })
 }

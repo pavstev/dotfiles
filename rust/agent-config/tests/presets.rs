@@ -59,7 +59,7 @@ fn preset_names() -> Vec<String> {
     let dir = claude_dir().join("presets");
     let mut names: Vec<String> = fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
@@ -82,7 +82,7 @@ fn core_is_short() {
 /// Every text file under `claude/` (skips binaries and build output).
 fn claude_text_files() -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
-    for e in walkdir::WalkDir::new(claude_dir()).into_iter().filter_map(|e| e.ok()) {
+    for e in walkdir::WalkDir::new(claude_dir()).into_iter().filter_map(Result::ok) {
         if !e.file_type().is_file() {
             continue;
         }
@@ -153,11 +153,11 @@ struct Fx {
 }
 
 impl Fx {
-    fn new(tag: &str, base: &Value) -> Fx {
+    fn new(tag: &str, base: &Value) -> Self {
         let tmp = temp_home(tag);
         let (home, repo) = (tmp.join("home"), tmp.join("repo"));
         fs::create_dir_all(&home).unwrap();
-        let fx = Fx { tmp, home, repo };
+        let fx = Self { tmp, home, repo };
         fx.set_base(base);
         fx
     }
@@ -274,7 +274,7 @@ fn real_repo() -> PathBuf {
 fn preset_links(home: &Path) -> Vec<String> {
     let mut v: Vec<String> = match fs::read_dir(home.join(".claude/rules")) {
         Ok(d) => d
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with("preset-"))
             .collect(),
@@ -312,7 +312,7 @@ fn presets_list_unlinks_rest() {
     // "all" and "none" are words too
     wr(&home.join(".config/dotfiles/settings"), "PRESETS=\"none\"\n");
     link_enabled(&home, "owner");
-    assert!(preset_links(&home).is_empty());
+    assert_eq!(preset_links(&home), [] as [String; 0]);
     let _ = fs::remove_dir_all(&home);
 }
 

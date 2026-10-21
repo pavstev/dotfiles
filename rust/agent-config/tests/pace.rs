@@ -17,11 +17,11 @@ struct Case {
 }
 
 impl Case {
-    fn new() -> Case {
+    fn new() -> Self {
         let home = temp_home("pace");
         fs::create_dir_all(home.join("cache")).unwrap();
         fs::create_dir_all(home.join(".claude/projects/proj")).unwrap();
-        let c = Case { home };
+        let c = Self { home };
         c.settings("PLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\n"); // the old fixed numbers
         c
     }
@@ -68,7 +68,7 @@ fn test_status_prints_json() {
     assert_eq!(rc, 0, "{err}");
     let d: Value = serde_json::from_str(&out).unwrap();
     let mut keys: Vec<&str> = d.as_object().unwrap().keys().map(String::as_str).collect();
-    keys.sort();
+    keys.sort_unstable();
     assert_eq!(keys, vec!["budget", "resets_at", "source", "state", "used"]);
 }
 

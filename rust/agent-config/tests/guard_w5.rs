@@ -30,7 +30,7 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 impl W {
-    fn new() -> W {
+    fn new() -> Self {
         let base = temp_home("w5");
         let repo = base.join("repo");
         fs::create_dir_all(&repo).unwrap();
@@ -39,7 +39,7 @@ impl W {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-qm", "init"]);
         let n = SID.fetch_add(1, Ordering::SeqCst);
-        W { repo, tmp: base.join("tmp"), sid: format!("w5-{}-{n}", std::process::id()) }
+        Self { repo, tmp: base.join("tmp"), sid: format!("w5-{}-{n}", std::process::id()) }
     }
 
     fn run(&self, mode: &str, event: Value, env: &[(&str, &str)]) -> (i32, String, String) {

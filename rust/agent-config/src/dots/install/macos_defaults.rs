@@ -48,10 +48,10 @@ const AFTER_SCREENSHOTS: [Pref; 4] = [
 /// Every `defaults write` argument list, in the order they run.
 fn writes(home: &Path) -> Vec<Vec<String>> {
     let shots = home.join("Screenshots").to_string_lossy().into_owned();
-    let line = |(d, k, t, v): Pref| -> Vec<String> { ["write", d, k, t, v].iter().map(|s| s.to_string()).collect() };
+    let line = |(d, k, t, v): Pref| -> Vec<String> { ["write", d, k, t, v].iter().map(ToString::to_string).collect() };
     let mut all: Vec<Vec<String>> = BEFORE_SCREENSHOTS.iter().copied().map(line).collect();
     all.push(
-        ["write", "com.apple.screencapture", "location", "-string", &shots].iter().map(|s| s.to_string()).collect(),
+        ["write", "com.apple.screencapture", "location", "-string", &shots].iter().map(ToString::to_string).collect(),
     );
     all.extend(SCREENSHOTS.iter().copied().map(line));
     all.extend(AFTER_SCREENSHOTS.iter().copied().map(line));

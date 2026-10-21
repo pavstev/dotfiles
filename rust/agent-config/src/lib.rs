@@ -70,7 +70,7 @@ pub fn tilde(p: &Path) -> String {
     if s == h {
         return "~".to_string();
     }
-    if s.starts_with(&format!("{}/", h)) {
+    if s.starts_with(&format!("{h}/")) {
         return format!("~{}", &s[h.len()..]);
     }
     s
@@ -133,7 +133,7 @@ pub fn read_text(p: &Path) -> Option<String> {
 
 /// True when the path itself is a symlink (a link to a missing target counts).
 pub fn is_symlink(p: &Path) -> bool {
-    p.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+    p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// The value without one pair of matching quotes, with JSON escapes read for double quotes.
@@ -204,8 +204,8 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
             key = Some(km.get(1).unwrap().as_str().to_string());
             items = Vec::new();
             block = Vec::new();
-            let value = km.get(2).map(|m| m.as_str()).unwrap_or("").trim().to_string();
-            if value.chars().next().map(|c| c == '|' || c == '>').unwrap_or(false) {
+            let value = km.get(2).map_or("", |m| m.as_str()).trim().to_string();
+            if value.chars().next().is_some_and(|c| c == '|' || c == '>') {
                 style = value.chars().next();
             } else {
                 style = None;
@@ -270,7 +270,7 @@ pub fn yaml_str(v: &str) -> String {
         || v.contains(": ")
         || v.contains(" #")
         || (!v.is_empty() && v.trim() != v)
-        || v.chars().next().map(|c| "!&*?|>%@`'\"[]{},#-".contains(c)).unwrap_or(false)
+        || v.chars().next().is_some_and(|c| "!&*?|>%@`'\"[]{},#-".contains(c))
     {
         serde_json::to_string(v).unwrap_or_default()
     } else {
@@ -280,7 +280,7 @@ pub fn yaml_str(v: &str) -> String {
 
 /// A Cursor `.mdc` rule file that always applies, with the given description and body.
 pub fn mdc(description: &str, body: &str) -> String {
-    format!("---\ndescription: {}\nalwaysApply: true\n---\n{}", description, body)
+    format!("---\ndescription: {description}\nalwaysApply: true\n---\n{body}")
 }
 
 /// The `generated-by` comment that opens a generated file and names its sources.
@@ -306,7 +306,7 @@ pub fn setting(home: &Path, name: &str) -> String {
     let text = String::from_utf8_lossy(&data);
     let mut value = String::new();
     for line in text.split('\n') {
-        if line.starts_with(&format!("{}=", name)) {
+        if line.starts_with(&format!("{name}=")) {
             let v = &line[name.len() + 1..];
             value = v.trim_end().to_string();
             if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
@@ -347,7 +347,7 @@ pub fn with_presets(home: &Path, base: &Value) -> Value {
 
 /// The active output style as (name, file, body), or `None` when the style is `default` or not found.
 pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
-    let style_name = built_settings(home).get("outputStyle").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let style_name = built_settings(home).get("outputStyle").and_then(|v| v.as_str()).map(ToString::to_string);
     let name = match style_name {
         Some(s) if s.to_lowercase() != "default" => s,
         _ => return None,
@@ -355,7 +355,7 @@ pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
     let dir = claude_dir().join("output-styles");
     let entries = fs::read_dir(&dir).ok()?;
     let mut files: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
         .collect();
@@ -407,7 +407,7 @@ pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), St
 /// `generated-by` marker is the user's and is left alone with a warning. Honors the dry run.
 pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
     let is_sym = is_symlink(path);
-    let has_mark = read_text(path).map(|t| t.contains(MARK)).unwrap_or(false);
+    let has_mark = read_text(path).is_some_and(|t| t.contains(MARK));
     if is_sym || (path.exists() && !has_mark) {
         warn(&format!("{} exists and is not ours, left untouched", tilde(path)));
         return;
@@ -416,24 +416,20 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
         && let Some(old) = read_text(path)
         && old == text
     {
-        let same_mode = mode
-            .map(|m| {
-                fs::metadata(path)
-                    .map(|md| {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            md.permissions().mode() & 0o777 == m
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            let _ = (m, md);
-                            true
-                        }
-                    })
-                    .unwrap_or(false)
+        let same_mode = mode.is_none_or(|m| {
+            fs::metadata(path).is_ok_and(|md| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    md.permissions().mode() & 0o777 == m
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = (m, md);
+                    true
+                }
             })
-            .unwrap_or(true);
+        });
         if mode.is_none() || same_mode {
             skip(&tilde(path));
             return;
@@ -453,7 +449,7 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
 /// Deletes a generated file (one with the `generated-by` marker, not a link) and says why.
 pub fn remove_generated(path: &Path, why: &str) {
     let is_sym = is_symlink(path);
-    let has_mark = read_text(path).map(|t| t.contains(MARK)).unwrap_or(false);
+    let has_mark = read_text(path).is_some_and(|t| t.contains(MARK));
     if path.is_file() && !is_sym && has_mark {
         if dry() {
             info(&format!("would remove {}", tilde(path)));
@@ -495,22 +491,18 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
         let _ = atomic_write(
             &bak,
             &fs::read_to_string(path).unwrap_or_default(),
-            Some(
-                fs::metadata(path)
-                    .map(|m| {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            m.permissions().mode() & 0o777
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            let _ = m;
-                            0o644
-                        }
-                    })
-                    .unwrap_or(0o644),
-            ),
+            Some(fs::metadata(path).map_or(0o644, |m| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    m.permissions().mode() & 0o777
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = m;
+                    0o644
+                }
+            })),
         );
     }
     let mode = if private { Some(0o600) } else { None };
@@ -522,7 +514,7 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
 }
 
 fn unix_ts() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 // MCP
@@ -598,8 +590,8 @@ pub fn cursor_rules(home: &Path, profile: &str) {
         style_file.file_name().unwrap().to_str().unwrap()
     );
     let _ = stampstr;
-    let body = format!("{}# Reply style: {}\n\n{}", stamp_line, name, sbody);
-    write_generated(&target, &mdc(&format!("Reply style \"{}\" (Claude outputStyle)", name), &body), None);
+    let body = format!("{stamp_line}# Reply style: {name}\n\n{sbody}");
+    write_generated(&target, &mdc(&format!("Reply style \"{name}\" (Claude outputStyle)"), &body), None);
 }
 
 /// Writes `~/.cursor/agents/<name>.md` from `claude/agents/*.md` and removes generated ones whose source is gone.
@@ -609,7 +601,7 @@ pub fn cursor_agents(home: &Path) {
     let agents_dir = claude_dir().join("agents");
     if let Ok(entries) = fs::read_dir(&agents_dir) {
         let mut files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
             .collect();
@@ -645,7 +637,7 @@ pub fn cursor_agents(home: &Path) {
                 src.file_name().unwrap().to_str().unwrap()
             );
             let text = format!("---\n{}\n---\n{}{}", lines.join("\n"), stamp_line, body.trim_start());
-            let out = dst.join(format!("{}.md", name));
+            let out = dst.join(format!("{name}.md"));
             wanted.insert(out.file_name().unwrap().to_str().unwrap().to_string());
             write_generated(&out, &text, None);
         }
@@ -653,7 +645,7 @@ pub fn cursor_agents(home: &Path) {
     if dst.is_dir() {
         let mut fslist: Vec<PathBuf> = fs::read_dir(&dst)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
             .collect();
@@ -706,9 +698,7 @@ pub fn cursor_hooks(home: &Path) {
             let ours: Vec<usize> = entries
                 .iter()
                 .enumerate()
-                .filter(|(_, e)| {
-                    e.get("command").and_then(|c| c.as_str()).map(|s| s.contains("guard_cursor")).unwrap_or(false)
-                })
+                .filter(|(_, e)| e.get("command").and_then(|c| c.as_str()).is_some_and(|s| s.contains("guard_cursor")))
                 .map(|(i, _)| i)
                 .collect();
             if !ours.is_empty() {
@@ -752,7 +742,7 @@ pub fn cursor_hooks(home: &Path) {
             let entries = hooks.entry(event.to_string()).or_insert(serde_json::json!([])).as_array_mut().unwrap();
             // an event can hold several of our entries: each goes after the ones placed before it
             let done = placed.entry(event).or_insert(0);
-            let idx = slots.get(event).map(|s| s + *done).unwrap_or(entries.len());
+            let idx = slots.get(event).map_or(entries.len(), |s| s + *done);
             *done += 1;
             if idx <= entries.len() {
                 entries.insert(idx, entry);
@@ -807,26 +797,25 @@ pub fn translate_permission(rule: &str, kind: &str) -> Option<String> {
         if re2.is_match(arg) {
             let cmd = re2.replace(arg, "").trim().to_string();
             if !cmd.is_empty() && !cmd.contains('*') {
-                return Some(format!("Shell({})", cmd));
-            } else {
-                return None;
+                return Some(format!("Shell({cmd})"));
             }
+            return None;
         }
         let trimmed = arg.trim();
         let (exe, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
         let rest = rest.trim();
         if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') {
-            return Some(format!("Shell({}:{})", exe, rest));
+            return Some(format!("Shell({exe}:{rest})"));
         }
         return None;
     }
     if tool == "Read" || tool == "Edit" || tool == "Write" {
         let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
         if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
-            path = format!("**/{}", path);
+            path = format!("**/{path}");
         }
         let readwrite = if tool == "Read" { "Read" } else { "Write" };
-        return Some(format!("{}({})", readwrite, path));
+        return Some(format!("{readwrite}({path})"));
     }
     if tool == "WebFetch" && arg.starts_with("domain:") {
         return Some(format!("WebFetch({})", &arg["domain:".len()..]));
@@ -866,7 +855,7 @@ pub fn cursor_cli_config(home: &Path) {
             .entry(kind.to_string())
             .or_insert(serde_json::json!([]))
             .as_array_mut()
-            .unwrap_or_else(|| panic!("TypeError: permissions.{} in cli-config.json is not a list", kind));
+            .unwrap_or_else(|| panic!("TypeError: permissions.{kind} in cli-config.json is not a list"));
         let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let want: Vec<String> =
             rules.iter().filter_map(|r| r.as_str()).filter_map(|r| translate_permission(r, kind)).collect();
@@ -910,7 +899,7 @@ pub fn cursor_cli_config(home: &Path) {
             serde_json::json!({"type":"command","command": "sh ~/.claude/hooks/rust-bin statusline","padding":0}),
         );
     }
-    let old_clone = old.clone();
+    let old_clone = old;
     save_json(&path, &old_clone, &new_mut, true);
     // sidecar
     if !dry()
@@ -930,7 +919,7 @@ pub fn opencode_agents(home: &Path) {
     let agents_dir = claude_dir().join("agents");
     if let Ok(entries) = fs::read_dir(&agents_dir) {
         let mut files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
             .collect();
@@ -964,12 +953,12 @@ pub fn opencode_agents(home: &Path) {
                 ]))
                 .count()
                 > 0;
-            if !write_tools {
+            if write_tools {
                 lines.push("permission:".to_string());
-                lines.push("  edit: deny".to_string());
                 lines.push("  skill: allow".to_string());
             } else {
                 lines.push("permission:".to_string());
+                lines.push("  edit: deny".to_string());
                 lines.push("  skill: allow".to_string());
             }
             let stamp_line = format!(
@@ -978,7 +967,7 @@ pub fn opencode_agents(home: &Path) {
                 src.file_name().unwrap().to_str().unwrap()
             );
             let text = format!("---\n{}\n---\n{}{}", lines.join("\n"), stamp_line, body.trim_start());
-            let out = dst.join(format!("{}.md", name));
+            let out = dst.join(format!("{name}.md"));
             wanted.insert(out.file_name().unwrap().to_str().unwrap().to_string());
             write_generated(&out, &text, None);
         }
@@ -986,7 +975,7 @@ pub fn opencode_agents(home: &Path) {
     if dst.is_dir() {
         let mut fslist: Vec<PathBuf> = fs::read_dir(&dst)
             .unwrap()
-            .filter_map(|e| e.ok())
+            .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
             .collect();
@@ -1050,31 +1039,30 @@ pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, St
         if re2.is_match(arg) {
             let cmd = re2.replace(arg, "").trim().to_string();
             if !cmd.is_empty() && !cmd.contains('*') {
-                return Some(("bash".to_string(), format!("{} *", cmd), kind.to_string()));
-            } else {
-                return None;
+                return Some(("bash".to_string(), format!("{cmd} *"), kind.to_string()));
             }
+            return None;
         }
         let trimmed = arg.trim();
         let (exe, rest_raw) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
         let exe = exe.trim();
         let rest = rest_raw.trim();
         if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') {
-            return Some(("bash".to_string(), format!("{} {}", exe, rest), kind.to_string()));
+            return Some(("bash".to_string(), format!("{exe} {rest}"), kind.to_string()));
         }
         return None;
     }
     if tool == "Read" {
         let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
         if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
-            path = format!("**/{}", path);
+            path = format!("**/{path}");
         }
         return Some(("read".to_string(), path, kind.to_string()));
     }
     if tool == "Edit" || tool == "Write" {
         let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
         if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
-            path = format!("**/{}", path);
+            path = format!("**/{path}");
         }
         return Some(("edit".to_string(), path, kind.to_string()));
     }
@@ -1227,12 +1215,11 @@ pub fn opencode_theme(home: &Path) {
 
     let path = home.join(".config").join("opencode").join("tui.json");
     let old = if path.exists() {
-        match load_json(&path) {
-            Some(v) => v,
-            None => {
-                warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
-                return;
-            }
+        if let Some(v) = load_json(&path) {
+            v
+        } else {
+            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+            return;
         }
     } else {
         serde_json::json!({})
@@ -1247,7 +1234,7 @@ pub fn opencode_theme(home: &Path) {
         let copperfile = home.join(".config").join("opencode").join("themes").join("copper.json");
         let shown = match theme {
             Value::String(s) => s.clone(),
-            other => crate::pycompat::py_repr(other),
+            other => pycompat::py_repr(other),
         };
         info(&format!(
             "{} uses your Opencode theme ({}); the copper one is in {}",
@@ -1314,7 +1301,7 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
             let _ = fs::create_dir_all(&pagents);
             if let Ok(entries) = fs::read_dir(&global_agents) {
                 let mut agent_files: Vec<PathBuf> = entries
-                    .filter_map(|e| e.ok())
+                    .filter_map(Result::ok)
                     .map(|e| e.path())
                     .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
                     .collect();
@@ -1344,7 +1331,7 @@ static PART_HOOK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Run one part of a command. Like the Python tool, one bad file must not stop the other parts:
 /// a failing part is reported as `skipped a part: <why>` and counted. True when it ran clean.
 fn run_part(part: impl FnOnce()) -> bool {
-    let _g = PART_HOOK.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = PART_HOOK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {})); // the warning below is the report, not a backtrace
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(part));
@@ -1354,10 +1341,10 @@ fn run_part(part: impl FnOnce()) -> bool {
         Err(p) => {
             let why = p
                 .downcast_ref::<&str>()
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
                 .or_else(|| p.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown error".to_string());
-            warn(&format!("skipped a part: {}", why));
+            warn(&format!("skipped a part: {why}"));
             false
         }
     }
@@ -1380,7 +1367,7 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
             failed += 1;
         }
     }
-    if failed > 0 { 1 } else { 0 }
+    i32::from(failed > 0)
 }
 
 /// Arguments of the `cursor` command.
@@ -1443,23 +1430,22 @@ pub fn cmd_user_rules(profile: &str, copy: bool, dry_run: bool) -> i32 {
     let home = home_dir();
     let text = user_rules_text(&home, profile);
     if !copy {
-        print!("{}", text);
+        print!("{text}");
         return 0;
     }
     let copycmd = clipboard_command();
     if copycmd.is_none() {
         warn("no clipboard tool found (install wl-clipboard or xclip). Printing the rules instead.");
-        print!("{}", text);
+        print!("{text}");
         return 1;
     }
     let c = copycmd.unwrap();
-    let mut child = match process::Command::new(&c[0]).args(&c[1..]).stdin(process::Stdio::piped()).spawn() {
-        Ok(ch) => ch,
-        Err(_) => {
-            warn("no clipboard tool found. Printing the rules instead.");
-            print!("{}", text);
-            return 1;
-        }
+    let mut child = if let Ok(ch) = process::Command::new(&c[0]).args(&c[1..]).stdin(process::Stdio::piped()).spawn() {
+        ch
+    } else {
+        warn("no clipboard tool found. Printing the rules instead.");
+        print!("{text}");
+        return 1;
     };
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(text.as_bytes());
@@ -1499,7 +1485,7 @@ pub fn drop_path(obj: &mut Value, path: &[&str]) {
         && sub.is_object()
     {
         drop_path(sub, &path[1..]);
-        if sub.as_object().map(|o| o.is_empty()).unwrap_or(false)
+        if sub.as_object().is_some_and(serde_json::Map::is_empty)
             && let Some(o) = obj.as_object_mut()
         {
             o.remove(path[0]);
@@ -1532,10 +1518,10 @@ fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
             p.push(k.clone());
             if v.is_null() {
                 out_obj.remove(k);
-            } else if out_obj.get(k).map(|x| x.is_object()).unwrap_or(false) && v.is_object() {
+            } else if out_obj.get(k).is_some_and(Value::is_object) && v.is_object() {
                 let merged = merge_inner(out_obj.get(k).unwrap(), v, &p);
                 out_obj.insert(k.clone(), merged);
-            } else if is_union(&p) && out_obj.get(k).map(|x| x.is_array()).unwrap_or(false) && v.is_array() {
+            } else if is_union(&p) && out_obj.get(k).is_some_and(Value::is_array) && v.is_array() {
                 let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();
                 for x in v.as_array().unwrap() {
                     if !arr.contains(x) {
@@ -1571,7 +1557,7 @@ fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(Stri
                 }
                 Some(oldv) if oldv.is_object() && v.is_object() => {
                     let (sub, n) = drift_inner(oldv, v, &p);
-                    if !sub.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                    if !sub.as_object().is_none_or(serde_json::Map::is_empty) {
                         patch.as_object_mut().unwrap().insert(k.clone(), sub);
                     }
                     notes.extend(n);
@@ -1637,7 +1623,7 @@ fn apply_patch_inner(layer: &Value, patch: &Value, path: &[String]) -> Value {
                 out_obj.insert(k.clone(), apply_patch_inner(&ov, v, &p));
                 continue;
             }
-            if is_union(&p) && v.is_array() && out_obj.get(k).map(|x| x.is_array()).unwrap_or(false) {
+            if is_union(&p) && v.is_array() && out_obj.get(k).is_some_and(Value::is_array) {
                 let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();
                 for x in v.as_array().unwrap() {
                     if !arr.contains(x) {
@@ -1690,15 +1676,13 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         };
         let (patch, n) = drift(&last, &live);
         notes = n;
-        if !patch.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        if !patch.as_object().is_none_or(serde_json::Map::is_empty) {
             layer = apply_patch(&layer, &patch);
             if dry() {
                 info(&format!("would keep {} change(s) in {}", notes.len(), tilde(&layer_f)));
-            } else {
-                if let Err(e) = atomic_write(&layer_f, &dump(&layer), Some(0o600)) {
-                    warn(&format!("could not write {}: {e}", tilde(&layer_f)));
-                    return 1;
-                }
+            } else if let Err(e) = atomic_write(&layer_f, &dump(&layer), Some(0o600)) {
+                warn(&format!("could not write {}: {e}", tilde(&layer_f)));
+                return 1;
             }
         }
     }
@@ -1706,17 +1690,16 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         let key = p.join(".");
         if kind == "removed" {
             warn(&format!(
-                "Claude removed {} item(s) from {}, but the repo or your private layer has them. Remove them there to make it stick.",
-                n, key
+                "Claude removed {n} item(s) from {key}, but the repo or your private layer has them. Remove them there to make it stick."
             ));
         } else {
             let what = match kind.as_str() {
                 "set" => "changed".to_string(),
-                "add" => format!("+{} item(s)", n),
+                "add" => format!("+{n} item(s)"),
                 "unset" => "removed".to_string(),
                 _ => kind.clone(),
             };
-            info(&format!("kept in your private layer: {} ({})", key, what));
+            info(&format!("kept in your private layer: {key} ({what})"));
         }
     }
     let text = dump(&merge(&base, &layer));
@@ -1764,20 +1747,19 @@ pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
     }
     let base = base.unwrap();
     let mut layer = layer.unwrap();
-    let value = match get_path(&layer, &path) {
-        Some(v) => v,
-        None => {
-            warn(&format!("{} is not in {}", dotted, tilde(&layer_f)));
-            return 1;
-        }
+    let value = if let Some(v) = get_path(&layer, &path) {
+        v
+    } else {
+        warn(&format!("{} is not in {}", dotted, tilde(&layer_f)));
+        return 1;
     };
-    let mut patch = value.clone();
+    let mut patch = value;
     for k in path.iter().rev() {
         let key = *k;
         patch = serde_json::json!({ key: patch});
     }
     let new_base = merge(&base, &patch);
-    drop_path(&mut layer, &path.to_vec());
+    drop_path(&mut layer, &path.clone());
     if dry() {
         info(&format!("would move {} to {}", dotted, tilde(&base_f)));
         return 0;
@@ -1814,7 +1796,7 @@ pub fn claude_settings_demote(home: &Path, dotted: &str) -> i32 {
         return 0;
     };
     if get_path(&layer, &path).as_ref() == Some(&value) {
-        skip(&format!("{} (already in your private layer)", dotted));
+        skip(&format!("{dotted} (already in your private layer)"));
         return 0;
     }
     let mut patch = value;
@@ -2009,7 +1991,7 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
             failed += 1;
         }
     }
-    if failed > 0 { 1 } else { 0 }
+    i32::from(failed > 0)
 }
 
 /// Writes `~/.config/opencode/AGENTS.md`: the rules, enabled presets, owner overlay and reply style.

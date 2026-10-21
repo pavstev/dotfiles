@@ -22,8 +22,7 @@ fn ok_run(args: &[&str]) -> bool {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// The commit the repo is on, or "" when git cannot say.
@@ -60,8 +59,7 @@ fn pull_saving_to(repo: &Path, saved_dir: &Path) -> bool {
         .stdin(Stdio::null())
         .stderr(Stdio::null()) // git's hint block; the caller warns in one line
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     pulled || heal_rewrite(repo, &before, saved_dir)
 }
 
@@ -76,7 +74,7 @@ fn heal_rewrite(repo: &Path, before: &str, saved_dir: &Path) -> bool {
     let anc = |a: &str, b: &str| ok_run(&["-C", &r, "merge-base", "--is-ancestor", a, b]);
     let up = out(&["-C", &r, "rev-parse", "--symbolic-full-name", "@{u}"]).unwrap_or_default();
     // The raw reflog lines are "<old> <new> <who> <when>\t<what>": both columns are tips it had.
-    let log = out(&["-C", &r, "rev-parse", "--git-path", &format!("logs/{}", up)])
+    let log = out(&["-C", &r, "rev-parse", "--git-path", &format!("logs/{up}")])
         .filter(|_| !up.is_empty())
         .and_then(|p| fs::read_to_string(repo.join(p)).ok())
         .unwrap_or_default();
@@ -102,8 +100,7 @@ fn heal_rewrite(repo: &Path, before: &str, saved_dir: &Path) -> bool {
         return false;
     }
     info(&format!(
-        "the dotfiles history was rewritten upstream; this clone had no work of its own, so it moved to the new one (old state: branch {})",
-        keep
+        "the dotfiles history was rewritten upstream; this clone had no work of its own, so it moved to the new one (old state: branch {keep})"
     ));
     if let Some(p) = saved {
         info(&format!("your edits to tracked files are saved in {} (git apply it to bring them back)", p.display()));
@@ -124,7 +121,7 @@ fn save_edits(repo: &Path, dir: &Path, name: &str) -> Option<std::path::PathBuf>
         return None;
     }
     fs::create_dir_all(dir).ok()?;
-    let p = dir.join(format!("{}.patch", name));
+    let p = dir.join(format!("{name}.patch"));
     fs::write(&p, &o.stdout).ok()?;
     Some(p)
 }
@@ -143,11 +140,11 @@ pub fn identity(name: &str, email: &str) {
     let cur_e = out(&["config", "-f", &fs_, "user.email"]).unwrap_or_default();
     if cur_n == name && cur_e == email {
         if verbose() {
-            skip(&format!("git identity ({} <{}>)", name, email));
+            skip(&format!("git identity ({name} <{email}>)"));
         }
     } else if ok_run(&["config", "-f", &fs_, "user.name", name]) && ok_run(&["config", "-f", &fs_, "user.email", email])
     {
-        ok(&format!("git commits use: {} <{}>", name, email));
+        ok(&format!("git commits use: {name} <{email}>"));
     } else {
         warn(&format!("couldn't write {}", f.display()));
     }
@@ -158,8 +155,7 @@ pub fn identity(name: &str, email: &str) {
 /// comes back, and ~/.gitconfig includes ~/.gitconfig.local for the identity.
 pub fn windows_gitconfig() {
     let g = os::home().join(".gitconfig");
-    let ours =
-        os::is_symlink(&g) || fs::read_to_string(&g).map(|t| t.contains("symlinked from this repo")).unwrap_or(false);
+    let ours = os::is_symlink(&g) || fs::read_to_string(&g).is_ok_and(|t| t.contains("symlinked from this repo"));
     if ours {
         let _ = fs::remove_file(&g);
         let name = ".gitconfig.bak-";
@@ -200,8 +196,7 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
     fn commit(dir: &Path, file: &str, text: &str) {
         fs::write(dir.join(file), text).unwrap();

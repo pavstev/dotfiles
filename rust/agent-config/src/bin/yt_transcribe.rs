@@ -521,8 +521,7 @@ fn ytdlp_message(stderr: &str) -> String {
         .rev()
         .find(|l| l.starts_with("ERROR:"))
         .or(lines.last())
-        .map(|l| l.trim_start_matches("ERROR:").trim().to_string())
-        .unwrap_or_else(|| "yt-dlp failed".into())
+        .map_or_else(|| "yt-dlp failed".into(), |l| l.trim_start_matches("ERROR:").trim().to_string())
 }
 
 /// Parse a json3 caption file: `events[].tStartMs`, `dDurationMs`, `segs[].utf8`.
@@ -1166,7 +1165,7 @@ mod tests {
             ]
         );
         assert!(parse_json3("not json").is_err());
-        assert!(parse_json3("{}").unwrap().is_empty());
+        assert_eq!(parse_json3("{}").unwrap(), [] as [Segment; 0]);
     }
 
     #[test]

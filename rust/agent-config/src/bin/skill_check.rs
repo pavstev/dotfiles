@@ -141,7 +141,7 @@ fn unquote(v: &str) -> String {
 fn find_junk(root: &Path, dir: &Path, r: &mut Report) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut entries: Vec<(String, bool)> = rd
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| {
             let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
             (e.file_name().to_string_lossy().into_owned(), is_dir)
@@ -306,7 +306,7 @@ fn check_skill(path: &Path) -> Report {
 fn list_skills(root: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(root) else { return vec![] };
     let mut names: Vec<String> =
-        rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        rd.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     names.sort();
     names
         .into_iter()

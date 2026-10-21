@@ -26,7 +26,7 @@ impl Drop for PathGuard {
 
 /// `claude auth status` says `"loggedIn": true`.
 fn claude_logged_in(status: &str) -> bool {
-    Regex::new(r#""loggedIn": *true"#).map(|r| r.is_match(status)).unwrap_or(false)
+    Regex::new(r#""loggedIn": *true"#).is_ok_and(|r| r.is_match(status))
 }
 
 /// The logins still to do: (menu label, command), for the tools that exist and are not signed in.
@@ -76,10 +76,10 @@ pub fn step(_repo: &Path) {
         }
         return;
     }
-    let first_run = std::env::var("DOTFILES_FIRST_RUN").map(|v| !v.is_empty()).unwrap_or(false);
+    let first_run = std::env::var("DOTFILES_FIRST_RUN").is_ok_and(|v| !v.is_empty());
     if !first_run || !os::at_terminal() {
         for (_, c) in &list {
-            info(&format!("not signed in yet, run: {}", c));
+            info(&format!("not signed in yet, run: {c}"));
         }
         return;
     }
@@ -91,15 +91,15 @@ pub fn step(_repo: &Path) {
         ask::one("\u{1F511} Sign in now? A browser opens for each one.", &[yes.clone(), later]).unwrap_or_default();
     if answer != yes {
         for (_, c) in &list {
-            info(&format!("later, run: {}", c));
+            info(&format!("later, run: {c}"));
         }
         return;
     }
     for (label, cmd) in &list {
-        info(&format!("{}: {}", label, cmd));
+        info(&format!("{label}: {cmd}"));
         let words: Vec<&str> = cmd.split_whitespace().collect();
         if !run(words[0], &words[1..]) {
-            warn(&format!("{} did not finish. Run it again later.", cmd));
+            warn(&format!("{cmd} did not finish. Run it again later."));
         }
         if os::is_macos()
             && *cmd == "agent login"
@@ -120,8 +120,7 @@ mod tests {
             logged
                 .iter()
                 .find(|(n, _, _)| *n == p)
-                .map(|(_, ok, out)| (*ok, out.to_string()))
-                .unwrap_or((false, String::new()))
+                .map_or((false, String::new()), |(_, ok, out)| (*ok, out.to_string()))
         }
     }
 
@@ -135,7 +134,7 @@ mod tests {
 
     #[test]
     fn only_tools_that_exist_and_are_signed_out_are_listed() {
-        assert!(pending(&|_| false, &fake(&[])).is_empty()); // nothing installed: nothing to do
+        assert_eq!(pending(&|_| false, &fake(&[])), [] as [(&str, &str); 0]); // nothing installed: nothing to do
         let probes = fake(&[
             ("gh", false, ""),
             ("claude", true, "{\"loggedIn\": true}"),

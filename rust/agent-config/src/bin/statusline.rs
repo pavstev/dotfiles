@@ -267,7 +267,7 @@ fn pace_json(input: &Value, now: u64) -> Option<String> {
     let mut out = Map::new();
     out.insert("updated".into(), Value::from(now));
     let five = match at(input, &["rate_limits", "five_hour"]) {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => Value::Null,
+        None | Some(Value::Null | Value::Bool(false)) => Value::Null,
         Some(v) => pick(v),
     };
     out.insert("five_hour".into(), five);
@@ -281,7 +281,7 @@ fn write_atomic(file: &Path, text: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = PathBuf::from(format!("{}.{}", file.display(), std::process::id()));
-    let res = std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, file));
+    let res = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, file));
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -430,7 +430,7 @@ mod tests {
                 .output()
         };
         let t = tempfile::tempdir().unwrap();
-        let ok = |r: std::io::Result<std::process::Output>| r.map(|o| o.status.success()).unwrap_or(false);
+        let ok = |r: std::io::Result<std::process::Output>| r.is_ok_and(|o| o.status.success());
         assert!(ok(git(t.path(), &["init", "-q", "-b", "main"])), "git is needed for this test");
         let commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"];
         assert!(ok(git(t.path(), &commit)));

@@ -131,11 +131,11 @@ fn unchanged_files_are_skipped_and_kept_in_the_state() {
     let mut first = Vec::new();
     let state = read_claude(home, &BTreeMap::new(), &mut |d| first.push(d)).unwrap();
     assert_eq!(state.len(), 1);
-    assert!(!first.is_empty());
+    assert_ne!(first, [] as [Doc; 0]);
 
     let mut second = Vec::new();
     let again = read_claude(home, &state, &mut |d| second.push(d)).unwrap();
-    assert!(second.is_empty());
+    assert_eq!(second, [] as [Doc; 0]);
     assert_eq!(again, state);
 }
 

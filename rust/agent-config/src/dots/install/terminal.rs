@@ -22,24 +22,20 @@ fn script() -> String {
         r#"tell application "Terminal"
     -- "Basic" may have been renamed; wrap it so a miss doesn't block the rest.
     try
-        set font name of settings set "Basic" to "{f}"
-        set font size of settings set "Basic" to {s}
-        set number of columns of settings set "Basic" to {c}
-        set number of rows of settings set "Basic" to {r}
+        set font name of settings set "Basic" to "{FONT_PS}"
+        set font size of settings set "Basic" to {FONT_SIZE}
+        set number of columns of settings set "Basic" to {COLUMNS}
+        set number of rows of settings set "Basic" to {ROWS}
     end try
     -- The default + startup profiles always resolve, whatever they're named.
-    set font name of default settings to "{f}"
-    set font size of default settings to {s}
-    set number of columns of default settings to {c}
-    set number of rows of default settings to {r}
-    set font name of startup settings to "{f}"
-    set font size of startup settings to {s}
+    set font name of default settings to "{FONT_PS}"
+    set font size of default settings to {FONT_SIZE}
+    set number of columns of default settings to {COLUMNS}
+    set number of rows of default settings to {ROWS}
+    set font name of startup settings to "{FONT_PS}"
+    set font size of startup settings to {FONT_SIZE}
 end tell
-"#,
-        f = FONT_PS,
-        s = FONT_SIZE,
-        c = COLUMNS,
-        r = ROWS
+"#
     )
 }
 
@@ -68,8 +64,7 @@ pub fn step(_repo: &Path) {
     }
     if feed("osascript", &[], &script(), false) {
         uptodate(&format!(
-            "Apple Terminal → FiraCode Nerd Font Mono {}pt, {}×{} (compact, icons on)",
-            FONT_SIZE, COLUMNS, ROWS
+            "Apple Terminal → FiraCode Nerd Font Mono {FONT_SIZE}pt, {COLUMNS}×{ROWS} (compact, icons on)"
         ));
     } else {
         warn("Couldn't set Apple Terminal appearance automatically.");

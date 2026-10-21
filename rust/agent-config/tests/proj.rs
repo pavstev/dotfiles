@@ -44,7 +44,7 @@ fn with<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
 }
 
 fn lines(cmds: Vec<Cmd>) -> Vec<String> {
-    cmds.iter().map(|c| c.line()).collect()
+    cmds.iter().map(Cmd::line).collect()
 }
 
 fn rel(root: &Path, line: &str) -> String {
@@ -86,8 +86,8 @@ fn installed_but_unconfigured_prettier_is_left_alone() {
     let root =
         project(&[("package.json", "{}"), ("package-lock.json", ""), ("node_modules/.bin/prettier", "#!/bin/sh\n")]);
     let p = proj::detect_with(&root, &with(&[])).unwrap();
-    assert!(p.tools().is_empty());
-    assert!(p.format_cmds(&[root.join("a.ts")]).is_empty());
+    assert_eq!(p.tools(), [] as [&str; 0]);
+    assert_eq!(p.format_cmds(&[root.join("a.ts")]), [] as [Cmd; 0]);
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn venv_tools_win_over_uv_and_missing_tools_give_nothing() {
     assert!(fmt[0].starts_with(&format!("{}/.venv/bin/ruff check --fix", root.display())), "{fmt:?}");
     let bare = project(&[("pyproject.toml", "[tool.ruff]\n")]);
     let p = proj::detect_with(&bare, &with(&[])).unwrap();
-    assert!(p.format_cmds(&[bare.join("m.py")]).is_empty());
+    assert_eq!(p.format_cmds(&[bare.join("m.py")]), [] as [Cmd; 0]);
 }
 
 #[test]
@@ -186,8 +186,8 @@ fn go_module() {
     assert_eq!(lines(p.check_full()), ["go vet ./...", "golangci-lint run", "go test ./..."]);
     // no go toolchain on PATH: nothing to run
     let p = proj::detect_with(&root, &with(&[])).unwrap();
-    assert!(p.format_cmds(&[root.join("main.go")]).is_empty());
-    assert!(p.check_full().is_empty());
+    assert_eq!(p.format_cmds(&[root.join("main.go")]), [] as [Cmd; 0]);
+    assert_eq!(p.check_full(), [] as [Cmd; 0]);
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn cargo_project() {
     let plain = project(&[("Cargo.toml", manifest), ("src/lib.rs", "")]);
     let p = proj::detect_with(&plain, &with(&["cargo", "rustfmt", "cargo-nextest"])).unwrap();
     // rustfmt has no config to find: the project must say it uses it
-    assert!(p.format_cmds(&[plain.join("src/lib.rs")]).is_empty());
+    assert_eq!(p.format_cmds(&[plain.join("src/lib.rs")]), [] as [Cmd; 0]);
     assert_eq!(
         lines(p.check_full()),
         ["cargo fmt --check", "cargo clippy --all-targets -- -D warnings", "cargo nextest run"]
@@ -229,7 +229,7 @@ fn justfile_contract() {
     assert_eq!(lines(p.check_fast()), ["just check-fast"]);
     assert_eq!(lines(p.fix()), ["just fix"]);
     // without `just` on PATH the contract cannot run
-    assert!(proj::detect_with(&root, &with(&[])).unwrap().check_full().is_empty());
+    assert_eq!(proj::detect_with(&root, &with(&[])).unwrap().check_full(), [] as [Cmd; 0]);
 }
 
 #[test]

@@ -58,8 +58,8 @@ pub struct Cmd {
 }
 
 impl Cmd {
-    fn new(argv: Vec<String>, dir: &Path) -> Cmd {
-        Cmd { argv, dir: dir.to_path_buf() }
+    fn new(argv: Vec<String>, dir: &Path) -> Self {
+        Self { argv, dir: dir.to_path_buf() }
     }
 
     /// The command as one shell line (arguments with odd characters in single quotes).
@@ -257,9 +257,8 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
         dirs.iter().map(|d| d.join("node_modules/.bin").join(&file)).find(|p| p.is_file())
     };
     let has_file = |pred: &dyn Fn(&str) -> bool| -> bool {
-        dirs.iter().any(|d| {
-            fs::read_dir(d).map(|rd| rd.flatten().any(|e| pred(&e.file_name().to_string_lossy()))).unwrap_or(false)
-        })
+        dirs.iter()
+            .any(|d| fs::read_dir(d).is_ok_and(|rd| rd.flatten().any(|e| pred(&e.file_name().to_string_lossy()))))
     };
     let biome_cfg = has_file(&|n| n == "biome.json" || n == "biome.jsonc");
     let prettier_cfg = has_file(&|n| n.starts_with(".prettierrc") || n.starts_with("prettier.config."))
@@ -278,7 +277,7 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
 
     let cargo_toml = read("Cargo.toml");
     static EDITION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?m)^\s*edition\s*=\s*"(\d{4})""#).unwrap());
-    let edition = EDITION.captures(&cargo_toml).map(|c| c[1].to_string()).unwrap_or_else(|| "2021".into());
+    let edition = EDITION.captures(&cargo_toml).map_or_else(|| "2021".into(), |c| c[1].to_string());
 
     // rustfmt and shfmt have no config the project must have: format only when the project says it uses them
     let rustfmt = dirs.iter().any(|d| d.join("rustfmt.toml").is_file() || d.join(".rustfmt.toml").is_file())
@@ -406,7 +405,7 @@ impl Project {
 
     /// The contract commands `(check, check:fast, fix)` the project states, as shell lines.
     pub fn contract_lines(&self) -> Value {
-        let line = |c: Option<Cmd>| c.map(|c| Value::String(c.line())).unwrap_or(Value::Null);
+        let line = |c: Option<Cmd>| c.map_or(Value::Null, |c| Value::String(c.line()));
         json!({
             "check": line(self.contract("check", "check")),
             "check_fast": line(self.contract("check:fast", "check-fast")),
@@ -424,7 +423,7 @@ impl Project {
         let mut add = |prefix: Vec<String>, tail: &[&str], files: Vec<String>| {
             if !files.is_empty() {
                 let mut argv = prefix;
-                argv.extend(tail.iter().map(|s| s.to_string()));
+                argv.extend(tail.iter().map(ToString::to_string));
                 argv.extend(files);
                 out.push(Cmd::new(argv, &self.root));
             }
@@ -471,7 +470,7 @@ impl Project {
         let mut add = |prefix: Vec<String>, tail: &[&str], files: Vec<String>| {
             if !files.is_empty() {
                 let mut argv = prefix;
-                argv.extend(tail.iter().map(|s| s.to_string()));
+                argv.extend(tail.iter().map(ToString::to_string));
                 argv.extend(files);
                 out.push(Cmd::new(argv, &self.root));
             }
@@ -523,9 +522,7 @@ impl Project {
         if self.pm.is_some() {
             let named: Vec<&str> =
                 ["lint", "typecheck", "types", "test"].into_iter().filter(|n| has_script(n)).collect();
-            if !named.is_empty() {
-                out.extend(named.into_iter().map(|n| self.pm_run(n)));
-            } else {
+            if named.is_empty() {
                 if let Some(b) = &self.biome {
                     out.push(Cmd::new(vec![Self::s(b), "check".into(), ".".into()], &self.root));
                 }
@@ -540,6 +537,8 @@ impl Project {
                 if let Some(t) = &self.tsc {
                     out.push(Cmd::new(vec![Self::s(t), "--noEmit".into()], &self.root));
                 }
+            } else {
+                out.extend(named.into_iter().map(|n| self.pm_run(n)));
             }
         }
         if self.ruff
@@ -773,8 +772,7 @@ pub fn tree_fingerprint(cwd: &Path) -> Option<String> {
         }
         let path = top.join(String::from_utf8_lossy(&entry[3..]).as_ref());
         if let Ok(m) = fs::metadata(&path) {
-            let t =
-                m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+            let t = m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
             h.update(m.len().to_le_bytes());
             h.update(t.to_le_bytes());
         }

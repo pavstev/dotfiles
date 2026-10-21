@@ -46,20 +46,18 @@ struct T {
 }
 
 impl T {
-    fn new() -> T {
+    fn new() -> Self {
         let tmp = tempfile::Builder::new().prefix("cursor-guard-test-").tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         let app_db = dir.join("no-app.vscdb").to_string_lossy().into_owned(); // never the real app store
-        T { _tmp: tmp, dir, app_db }
+        Self { _tmp: tmp, dir, app_db }
     }
 
     /// A fake Cursor.app state.vscdb: {conversation_id: composerData value}. False when there is no
     /// `sqlite3` tool to build it with (the caller returns early). Never false on macOS.
     fn app_store(&mut self, rows: &[(&str, &str)]) -> bool {
         if !have_sqlite() {
-            if cfg!(target_os = "macos") {
-                panic!("macOS ships sqlite3; these tests must not skip here");
-            }
+            assert!(!cfg!(target_os = "macos"), "macOS ships sqlite3; these tests must not skip here");
             eprintln!("skipped: no sqlite3 command line tool");
             return false;
         }

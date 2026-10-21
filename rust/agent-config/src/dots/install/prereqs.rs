@@ -63,7 +63,7 @@ pub fn linux_prereqs_missing(repo: &Path) -> Vec<String> {
 
 /// The install commands for the manager, run in order until one fails.
 pub fn install_commands(manager: &str, missing: &[String]) -> Vec<Vec<String>> {
-    let plain = |v: &[&str]| -> Vec<String> { v.iter().map(|x| x.to_string()).collect() };
+    let plain = |v: &[&str]| -> Vec<String> { v.iter().map(ToString::to_string).collect() };
     let s = |v: &[&str]| -> Vec<String> {
         let mut a = plain(v);
         a.extend(missing.iter().cloned());
@@ -101,26 +101,23 @@ pub fn linux_prereqs(repo: &Path) -> bool {
     }
     let list = missing.join(" ");
     if manager.is_empty() {
-        warn(&format!(
-            "no apt, dnf, pacman or apk here. Install these commands yourself, then run dots again: {}",
-            list
-        ));
+        warn(&format!("no apt, dnf, pacman or apk here. Install these commands yourself, then run dots again: {list}"));
         return false;
     }
     let mut use_sudo = false;
     if stdout_of("id", &["-u"]).trim() != "0" {
         if !os::have("sudo") {
-            warn(&format!("sudo is missing. As root, install with {}: {}", name, list));
+            warn(&format!("sudo is missing. As root, install with {name}: {list}"));
             return false;
         }
         use_sudo = true;
         if os::at_terminal() && !quiet("sudo", &["-n", "true"]) {
-            info(&format!("{} needs your password once.", name));
+            info(&format!("{name} needs your password once."));
         }
     }
-    info(&format!("installing with {}: {}", name, list));
+    info(&format!("installing with {name}: {list}"));
     let Ok(mut log) = tempfile::tempfile() else {
-        warn(&format!("{} could not install: {}", name, list));
+        warn(&format!("{name} could not install: {list}"));
         return false;
     };
     let mut good = true;
@@ -135,16 +132,16 @@ pub fn linux_prereqs(repo: &Path) -> bool {
             break;
         };
         let done = Command::new(prog).args(&args).stdout(Stdio::from(o)).stderr(Stdio::from(e)).status();
-        if !done.map(|s| s.success()).unwrap_or(false) {
+        if !done.is_ok_and(|s| s.success()) {
             good = false;
             break;
         }
     }
     if good {
-        ok(&format!("{} packages installed", name));
+        ok(&format!("{name} packages installed"));
         return true;
     }
-    warn(&format!("{} could not install: {}", name, list));
+    warn(&format!("{name} could not install: {list}"));
     let mut text = String::new();
     if log.seek(SeekFrom::Start(0)).is_ok() {
         let _ = log.read_to_string(&mut text);
@@ -183,7 +180,7 @@ mod tests {
         assert_eq!(parse_prereqs(FILE, "apk"), ["bash", "zsh"]);
         assert_eq!(parse_prereqs(FILE, ""), ["cc", "make", "curl"]);
         assert_eq!(parse_prereqs(FILE, "zypper"), ["cc", "make", "curl"]);
-        assert!(parse_prereqs("", "dnf").is_empty());
+        assert_eq!(parse_prereqs("", "dnf"), [] as [String; 0]);
     }
 
     #[test]
@@ -214,7 +211,7 @@ mod tests {
         assert_eq!(install_commands("dnf", &m)[0].join(" "), "dnf install -y -q git zsh");
         assert_eq!(install_commands("pacman", &m)[0].join(" "), "pacman -S --needed --noconfirm git zsh");
         assert_eq!(install_commands("apk", &m)[0].join(" "), "apk add -q --no-cache git zsh");
-        assert!(install_commands("", &m).is_empty());
+        assert_eq!(install_commands("", &m), [] as [Vec<String>; 0]);
     }
 
     #[test]

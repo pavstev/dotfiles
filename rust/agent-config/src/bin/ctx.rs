@@ -185,7 +185,7 @@ fn not_found(file: &str, query: &str, symbols: &[Symbol], paths: &[String]) -> R
     }
     let mut ranked: Vec<(usize, usize)> =
         (0..symbols.len()).map(|i| (lev(query, &symbols[i].name).min(lev(query, &paths[i])), i)).collect();
-    ranked.sort();
+    ranked.sort_unstable();
     let mut out = format!("not found: {query} in {file}. Closest:\n");
     let mut seen: Vec<&str> = Vec::new();
     for (_, i) in ranked {

@@ -58,16 +58,15 @@ pub fn edit() {
     let picked: Vec<&str> = if ask::fancy() {
         let marked: Vec<usize> =
             offered.iter().enumerate().filter(|(_, n)| now.iter().any(|x| x == *n)).map(|(i, _)| i).collect();
-        match ask::many(
+        if let Some(v) = ask::many(
             "🎨 Look changes: Space marks one · Enter saves (none marked: keep your own look)",
             &labels,
             &marked,
         ) {
-            Some(v) => offered.iter().zip(&labels).filter(|(_, l)| v.contains(l)).map(|(n, _)| *n).collect(),
-            None => {
-                info("looks: not changed");
-                return;
-            }
+            offered.iter().zip(&labels).filter(|(_, l)| v.contains(l)).map(|(n, _)| *n).collect()
+        } else {
+            info("looks: not changed");
+            return;
         }
     } else {
         info(&format!("looks: {} (or none)", offered.join(" ")));
@@ -78,11 +77,11 @@ pub fn edit() {
         offered.iter().copied().filter(|n| p.iter().any(|x| x == n)).collect()
     };
     let mut keep: Vec<String> = now.into_iter().filter(|n| !offered.contains(&n.as_str())).collect();
-    keep.extend(picked.iter().map(|n| n.to_string()));
+    keep.extend(picked.iter().map(ToString::to_string));
     let v = ALL.iter().map(|p| p.0).filter(|n| keep.iter().any(|k| k == n)).collect::<Vec<_>>().join(" ");
     let v = if v.is_empty() { "none".to_string() } else { v };
     if settings::set("LOOKS", &v) {
-        ok(&format!("looks: {}", v));
+        ok(&format!("looks: {v}"));
     } else {
         warn("couldn't save LOOKS");
     }

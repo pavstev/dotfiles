@@ -44,26 +44,26 @@ enum Py {
     Int(String),
     Float(f64),
     Str(String),
-    List(Vec<Py>),
-    Dict(Vec<(String, Py)>),
+    List(Vec<Self>),
+    Dict(Vec<(String, Self)>),
 }
 
 impl Py {
     fn truthy(&self) -> bool {
         match self {
-            Py::Null => false,
-            Py::Bool(b) => *b,
-            Py::Int(s) => s != "0",
-            Py::Float(f) => *f != 0.0,
-            Py::Str(s) => !s.is_empty(),
-            Py::List(l) => !l.is_empty(),
-            Py::Dict(d) => !d.is_empty(),
+            Self::Null => false,
+            Self::Bool(b) => *b,
+            Self::Int(s) => s != "0",
+            Self::Float(f) => *f != 0.0,
+            Self::Str(s) => !s.is_empty(),
+            Self::List(l) => !l.is_empty(),
+            Self::Dict(d) => !d.is_empty(),
         }
     }
 
     fn as_str(&self) -> Option<&str> {
         match self {
-            Py::Str(s) => Some(s),
+            Self::Str(s) => Some(s),
             _ => None,
         }
     }
@@ -89,7 +89,7 @@ fn float_repr(f: f64) -> String {
     let decpt = exp + 1;
     let n = digits.len() as i32;
     let body = if !(-3..=16).contains(&decpt) {
-        let m = if n > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
+        let m = if n > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
         let x = decpt - 1;
         format!("{}e{}{:02}", m, if x < 0 { '-' } else { '+' }, x.abs())
     } else if decpt <= 0 {
@@ -99,7 +99,7 @@ fn float_repr(f: f64) -> String {
     } else {
         format!("{}.{}", &digits[..decpt as usize], &digits[decpt as usize..])
     };
-    format!("{}{}", sign, body)
+    format!("{sign}{body}")
 }
 
 fn py_repr(v: &Py) -> String {
@@ -234,7 +234,7 @@ impl Reader {
 
     fn number(&self, start: usize) -> JR<(Py, usize)> {
         let s = &self.s;
-        let digit = |i: usize| s.get(i).is_some_and(|c| c.is_ascii_digit());
+        let digit = |i: usize| s.get(i).is_some_and(char::is_ascii_digit);
         let mut i = start;
         if s.get(i) == Some(&'-') {
             i += 1;
@@ -256,9 +256,9 @@ impl Reader {
             }
             is_float = true;
         }
-        if matches!(s.get(i), Some('e') | Some('E')) {
+        if matches!(s.get(i), Some('e' | 'E')) {
             let mut j = i + 1;
-            if matches!(s.get(j), Some('+') | Some('-')) {
+            if matches!(s.get(j), Some('+' | '-')) {
                 j += 1;
             }
             if digit(j) {
@@ -422,7 +422,7 @@ fn json_loads(text: &str) -> Result<Py, String> {
             Some(nl) => pos - nl,
             None => pos + 1,
         };
-        format!("{}: line {} column {} (char {})", msg, line, col, pos)
+        format!("{msg}: line {line} column {col} (char {pos})")
     };
     if r.s.first() == Some(&'\u{feff}') {
         return Err(fail("Unexpected UTF-8 BOM (decode using utf-8-sig)", 0));
@@ -447,7 +447,7 @@ fn decode_text(bytes: &[u8], universal_newlines: bool) -> Result<String, String>
             let b = bytes[p];
             let (what, reason) = match e.error_len() {
                 Some(1) => (
-                    format!("byte 0x{:02x} in position {}", b, p),
+                    format!("byte 0x{b:02x} in position {p}"),
                     if matches!(b, 0x80..=0xC1 | 0xF5..=0xFF) {
                         "invalid start byte"
                     } else {
@@ -458,13 +458,13 @@ fn decode_text(bytes: &[u8], universal_newlines: bool) -> Result<String, String>
                 None => {
                     let last = bytes.len() - 1;
                     if last == p {
-                        (format!("byte 0x{:02x} in position {}", b, p), "unexpected end of data")
+                        (format!("byte 0x{b:02x} in position {p}"), "unexpected end of data")
                     } else {
-                        (format!("bytes in position {}-{}", p, last), "unexpected end of data")
+                        (format!("bytes in position {p}-{last}"), "unexpected end of data")
                     }
                 }
             };
-            Err(format!("'utf-8' codec can't decode {}: {}", what, reason))
+            Err(format!("'utf-8' codec can't decode {what}: {reason}"))
         }
     }
 }
@@ -515,7 +515,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
             _ => return bad(format!("row {}: not an object", i + 1)),
         };
         match dget(d, "id") {
-            None | Some(Py::Null) | Some(Py::Str(_)) => {}
+            None | Some(Py::Null | Py::Str(_)) => {}
             Some(_) => return bad(format!("row {}: id must be a string", i + 1)),
         }
         dicts.push(d);
@@ -536,10 +536,10 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
             Some(Py::Str(s)) if !s.is_empty() => s.clone(),
             _ => {
                 let mut n = i + 1;
-                while taken.contains(&format!("r{}", n)) {
+                while taken.contains(&format!("r{n}")) {
                     n += 1;
                 }
-                let rid = format!("r{}", n);
+                let rid = format!("r{n}");
                 taken.insert(rid.clone());
                 rid
             }
@@ -555,7 +555,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
         }
         kept.push((rid, d, text));
     }
-    let gone: HashSet<&str> = dropped.iter().map(|s| s.as_str()).collect();
+    let gone: HashSet<&str> = dropped.iter().map(String::as_str).collect();
     let mut out: Vec<Row> = Vec::new();
     for (rid, d, text) in kept {
         let d: &[(String, Py)] = d;
@@ -578,12 +578,12 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
             }
         }
         if has_risk && kind != "work" {
-            return bad(format!("{}: risk only goes on kind work", rid));
+            return bad(format!("{rid}: risk only goes on kind work"));
         }
         let who = dget(d, "who").cloned().unwrap_or_else(|| Py::Str("me".into()));
         let who_s = who.as_str();
         if who_s != Some("me") && who_s != Some("you") {
-            return bad(format!("{}: who must be me or you", rid));
+            return bad(format!("{rid}: who must be me or you"));
         }
         if kind == "no-tool" {
             let tried = match dget(d, "tried") {
@@ -591,7 +591,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
                 None => String::new(),
             };
             if py_strip(&tried).is_empty() {
-                return bad(format!("{}: no-tool needs 'tried': name the tool you tried first", rid));
+                return bad(format!("{rid}: no-tool needs 'tried': name the tool you tried first"));
             }
         }
         let mut after: Vec<String> = Vec::new();
@@ -606,13 +606,13 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
                                 after.push(s.clone());
                             }
                         }
-                        _ => return bad(format!("{}: after must be a list of ids", rid)),
+                        _ => return bad(format!("{rid}: after must be a list of ids")),
                     }
                 }
             }
-            Some(_) => return bad(format!("{}: after must be a list of ids", rid)),
+            Some(_) => return bad(format!("{rid}: after must be a list of ids")),
         }
-        let flag = |k: &str| dget(d, k).is_some_and(|v| v.truthy());
+        let flag = |k: &str| dget(d, k).is_some_and(Py::truthy);
         out.push(Row {
             id: rid,
             text,
@@ -658,7 +658,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
         state.insert(rid.to_string(), 1);
         let mut np = path.to_vec();
         np.push(rid.to_string());
-        for dep in deps[rid].iter() {
+        for dep in deps[rid] {
             visit(dep, &np, deps, state)?;
         }
         state.insert(rid.to_string(), 2);
@@ -668,7 +668,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
     for r in &out {
         visit(&r.id, &[], &deps, &mut state)?;
     }
-    Ok((out, dropped.iter().map(|d| format!("dropped row {}: no text", d)).collect()))
+    Ok((out, dropped.iter().map(|d| format!("dropped row {d}: no text")).collect()))
 }
 
 fn first_route(r: &Row, kill: bool) -> &'static str {
@@ -773,8 +773,10 @@ fn render(res: &Res) -> String {
     lines.extend(res.dropped.iter().cloned());
     lines.push(String::new());
     let do_s = if res.do_ids.is_empty() { "nothing".to_string() } else { res.do_ids.join(", ") };
-    lines.push(format!("NEXT 1 do now: {}", do_s));
-    if !res.ask.is_empty() {
+    lines.push(format!("NEXT 1 do now: {do_s}"));
+    if res.ask.is_empty() {
+        lines.push("NEXT 2 ps:askme: nothing to ask".to_string());
+    } else {
         let parts: Vec<String> = res
             .ask
             .iter()
@@ -784,8 +786,6 @@ fn render(res: &Res) -> String {
             })
             .collect();
         lines.push(format!("NEXT 2 ps:askme: whatsleft: {}", parts.join("; ")));
-    } else {
-        lines.push("NEXT 2 ps:askme: nothing to ask".to_string());
     }
     if !res.default.is_empty() {
         lines.push(format!("       your pick, named in one line: {}", res.default.join(", ")));
@@ -899,7 +899,10 @@ fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
     while i < n {
         match &items[i] {
             Item::Pos | Item::Dash => {
-                if !pos_taken {
+                if pos_taken {
+                    extras.push(argv[i].clone());
+                    i += 1;
+                } else {
                     // -*A?-*
                     pos_taken = true;
                     while i < n && matches!(items[i], Item::Dash) {
@@ -912,9 +915,6 @@ fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
                     while i < n && matches!(items[i], Item::Dash) {
                         i += 1;
                     }
-                } else {
-                    extras.push(argv[i].clone());
-                    i += 1;
                 }
             }
             Item::Opt(None, _) => {
@@ -967,7 +967,7 @@ fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
                         return Err(ArgExit::Error("argument --cap: expected one argument".into()));
                     }
                 };
-                args.cap = positive_int(&value).map_err(|m| ArgExit::Error(format!("argument --cap: {}", m)))?;
+                args.cap = positive_int(&value).map_err(|m| ArgExit::Error(format!("argument --cap: {m}")))?;
             }
         }
     }
@@ -992,11 +992,11 @@ fn run(argv: &[String], stdin: &mut dyn Read) -> Outcome {
         Ok(a) => a,
         Err(ArgExit::Help) => return Outcome { code: 0, stdout: HELP.into(), stderr: String::new() },
         Err(ArgExit::Error(m)) => {
-            return Outcome { code: 2, stdout: String::new(), stderr: format!("{}{}: error: {}\n", USAGE, PROG, m) };
+            return Outcome { code: 2, stdout: String::new(), stderr: format!("{USAGE}{PROG}: error: {m}\n") };
         }
     };
     let bad_input =
-        |m: String| Outcome { code: 2, stdout: format!("route.py: bad input: {}\n", m), stderr: String::new() };
+        |m: String| Outcome { code: 2, stdout: format!("route.py: bad input: {m}\n"), stderr: String::new() };
     let (bytes, from_file) = match a.file.as_deref() {
         Some(path) if !path.is_empty() => match std::fs::read(path) {
             Ok(b) => (b, true),
@@ -1021,7 +1021,7 @@ fn run(argv: &[String], stdin: &mut dyn Read) -> Outcome {
         Err(m) => return bad_input(m),
     };
     let body = if a.json { res_json(&res) } else { render(&res) };
-    Outcome { code: 0, stdout: format!("{}\n", body), stderr: String::new() }
+    Outcome { code: 0, stdout: format!("{body}\n"), stderr: String::new() }
 }
 
 fn main() {
@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+        v.iter().map(ToString::to_string).collect()
     }
 
     fn pairs(v: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1086,7 +1086,7 @@ mod tests {
         assert_eq!(r(&res, "t2"), "KEEP");
         assert_eq!(r(&res, "d0"), "DONE");
         assert_eq!(res.ask, ids(&["m3", "t1", "o1", "o2"]));
-        assert!(res.default.is_empty());
+        assert_eq!(res.default, [] as [String; 0]);
         assert_eq!(res.then, "rerun");
     }
 
@@ -1115,7 +1115,7 @@ mod tests {
         let rows = p(r#"[{"id": "m1", "kind": "work", "text": "run lint"},
                          {"id": "y1", "kind": "login", "text": "gh auth login"}]"#);
         let res = route(&rows, false, CAP).unwrap();
-        assert!(res.ask.is_empty());
+        assert_eq!(res.ask, [] as [String; 0]);
         assert_eq!(res.then, "mic-drop");
         assert_eq!(route(&p("[]"), false, CAP).unwrap().then, "mic-drop");
     }
@@ -1124,7 +1124,7 @@ mod tests {
     fn test_answers_unlock() {
         // second round: the user said yes to m3, m1 and m2 are done
         let Py::List(mut rows) = p(SCENARIO) else { panic!() };
-        for row in rows.iter_mut() {
+        for row in &mut rows {
             let Py::Dict(d) = row else { panic!() };
             let id = dget(d, "id").unwrap().as_str().unwrap().to_string();
             let mut set = |k: &str| {
@@ -1223,7 +1223,7 @@ mod tests {
             (r#"[{"id": "x", "kind": "work", "risk": "rm -rf", "text": "t"}]"#, "x: risk 'rm -rf' not in"),
             (r#"[{"id": "x", "kind": "work", "text": "t", "who": null}]"#, "x: who must be me or you"),
             (r#"{"id": "x"}"#, "rows must be a JSON list"),
-            (r#"[5]"#, "row 1: not an object"),
+            (r"[5]", "row 1: not an object"),
             (r#"[{"id": "ok", "kind": "work", "text": "t"}, 5]"#, "row 2: not an object"),
             (r#"[{"id": 5, "kind": "work", "text": "t"}]"#, "row 1: id must be a string"),
             (r#"[{"id": ["a"], "kind": "work", "text": "t"}]"#, "row 1: id must be a string"),
@@ -1243,7 +1243,7 @@ mod tests {
         }
         // a row with no text is dropped, never an error, and a later row cannot name it
         let res = route(&p(r#"[{"id": "x", "kind": "work", "text": ""}]"#), false, CAP).unwrap();
-        assert!(res.routes.is_empty());
+        assert_eq!(res.routes, [] as [(String, String, Py); 0]);
         assert_eq!(res.dropped, ["dropped row x: no text"]);
         let res = route(&p(r#"[{"id": "a", "kind": "work", "text": "t", "after": ["b"]}, {"id": "b"}]"#), false, CAP)
             .unwrap();
@@ -1274,7 +1274,7 @@ mod tests {
     }
 
     fn cli(args: &[&str], stdin: &str) -> Outcome {
-        let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let argv: Vec<String> = args.iter().map(ToString::to_string).collect();
         run(&argv, &mut stdin.as_bytes())
     }
 

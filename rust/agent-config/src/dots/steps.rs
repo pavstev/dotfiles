@@ -9,7 +9,7 @@ const WINDOWS: [&str; 2] = ["12-tools", "57-claude-code"];
 
 /// The step names, in run order.
 pub fn names() -> Vec<String> {
-    install::STEPS.iter().map(|s| s.to_string()).collect()
+    install::STEPS.iter().map(ToString::to_string).collect()
 }
 
 /// Whether a step runs. `only`: DOTFILES_STEPS (runs just those, also ones in
@@ -23,7 +23,7 @@ pub fn wanted(name: &str, only: &str, skip: &str, windows: bool) -> Result<(), O
         return Err(None);
     }
     if skip.split_whitespace().any(|s| s == name) {
-        return Err(Some(format!("{} skipped (Steps to skip, in dots settings)", name)));
+        return Err(Some(format!("{name} skipped (Steps to skip, in dots settings)")));
     }
     Ok(())
 }
