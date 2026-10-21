@@ -222,73 +222,152 @@ fn expandvars(p: &str) -> String {
     out
 }
 
-/// Python `fnmatch.fnmatchcase`: `*` matches anything (also `/`), `?` one char, `[seq]`, `[!seq]`.
-fn fnmatch(name: &str, pat: &str) -> bool {
-    type Class = (usize, bool, Vec<(char, char)>);
-    fn class(pat: &[char], i: usize) -> Option<Class> {
-        // pat[i] == '['; returns (index after ']', negated, ranges)
-        let n = pat.len();
-        let mut j = i + 1;
-        if j < n && pat[j] == '!' {
-            j += 1;
-        }
-        if j < n && pat[j] == ']' {
-            j += 1;
-        }
-        while j < n && pat[j] != ']' {
-            j += 1;
-        }
-        if j >= n {
-            return None;
-        }
-        let mut k = i + 1;
-        let neg = pat[k] == '!';
-        if neg {
+/// One piece of an fnmatch pattern.
+enum Glob {
+    /// `*`: any run of chars, `/` too
+    Star,
+    /// `?`
+    Any,
+    /// `[seq]` or `[!seq]`
+    Class {
+        negated: bool,
+        ranges: Vec<(char, char)>,
+    },
+    Lit(char),
+}
+
+/// The class at `pat[i]` (a `[`): the index after its `]`, and the class. None when it is not closed.
+fn glob_class(pat: &[char], i: usize) -> Option<(usize, Glob)> {
+    let n = pat.len();
+    let mut j = i + 1;
+    if j < n && pat[j] == '!' {
+        j += 1;
+    }
+    if j < n && pat[j] == ']' {
+        j += 1;
+    }
+    while j < n && pat[j] != ']' {
+        j += 1;
+    }
+    if j >= n {
+        return None;
+    }
+    let mut k = i + 1;
+    let negated = pat[k] == '!';
+    if negated {
+        k += 1;
+    }
+    let mut ranges = Vec::new();
+    while k < j {
+        if k + 2 < j && pat[k + 1] == '-' {
+            ranges.push((pat[k], pat[k + 2]));
+            k += 3;
+        } else {
+            ranges.push((pat[k], pat[k]));
             k += 1;
         }
-        let mut ranges = Vec::new();
-        while k < j {
-            if k + 2 < j && pat[k + 1] == '-' {
-                ranges.push((pat[k], pat[k + 2]));
-                k += 3;
-            } else {
-                ranges.push((pat[k], pat[k]));
-                k += 1;
-            }
-        }
-        Some((j + 1, neg, ranges))
     }
-    fn go(n: &[char], p: &[char]) -> bool {
-        if p.is_empty() {
-            return n.is_empty();
-        }
-        match p[0] {
-            '*' => {
-                let mut rest = p;
-                while !rest.is_empty() && rest[0] == '*' {
-                    rest = &rest[1..];
-                }
-                (0..=n.len()).any(|k| go(&n[k..], rest))
-            }
-            '?' => !n.is_empty() && go(&n[1..], &p[1..]),
-            '[' => match class(p, 0) {
-                Some((end, neg, ranges)) => {
-                    !n.is_empty()
-                        && (ranges.iter().any(|&(a, b)| a <= n[0] && n[0] <= b) != neg)
-                        && go(&n[1..], &p[end..])
-                }
-                None => !n.is_empty() && n[0] == '[' && go(&n[1..], &p[1..]),
-            },
-            c => !n.is_empty() && n[0] == c && go(&n[1..], &p[1..]),
-        }
-    }
-    let n: Vec<char> = name.chars().collect();
+    Some((j + 1, Glob::Class { negated, ranges }))
+}
+
+fn glob_parse(pat: &str) -> Vec<Glob> {
     let p: Vec<char> = pat.chars().collect();
-    go(&n, &p)
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < p.len() {
+        match p[i] {
+            '*' => {
+                // a run of stars is one star
+                if !matches!(out.last(), Some(Glob::Star)) {
+                    out.push(Glob::Star);
+                }
+                i += 1;
+            }
+            '?' => {
+                out.push(Glob::Any);
+                i += 1;
+            }
+            '[' => {
+                if let Some((end, class)) = glob_class(&p, i) {
+                    out.push(class);
+                    i = end;
+                } else {
+                    out.push(Glob::Lit('['));
+                    i += 1;
+                }
+            }
+            c => {
+                out.push(Glob::Lit(c));
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+impl Glob {
+    /// Whether this one-char piece takes `c` (a star is handled by the caller).
+    fn takes(&self, c: char) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Class { negated, ranges } => ranges.iter().any(|&(a, b)| a <= c && c <= b) != *negated,
+            Self::Lit(l) => *l == c,
+            Self::Star => false,
+        }
+    }
+}
+
+/// Python `fnmatch.fnmatchcase`: `*` matches anything (also `/`), `?` one char, `[seq]`, `[!seq]`.
+/// Linear in name times pattern: a failed match falls back to the last star only, so many stars
+/// cost no more than one.
+fn fnmatch(name: &str, pat: &str) -> bool {
+    let toks = glob_parse(pat);
+    let name: Vec<char> = name.chars().collect();
+    let (mut t, mut n) = (0, 0);
+    let mut last_star: Option<(usize, usize)> = None; // (token after the star, name index it took up to)
+    while n < name.len() {
+        match toks.get(t) {
+            Some(Glob::Star) => {
+                last_star = Some((t + 1, n));
+                t += 1;
+            }
+            Some(tok) if tok.takes(name[n]) => {
+                t += 1;
+                n += 1;
+            }
+            _ => {
+                let Some((after, took)) = last_star else { return false };
+                last_star = Some((after, took + 1));
+                t = after;
+                n = took + 1;
+            }
+        }
+    }
+    toks[t..].iter().all(|tok| matches!(tok, Glob::Star))
 }
 
 fn case_fold(s: &str) -> String {
     if is_macos() { s.to_lowercase() } else { s.to_string() }
+}
+
+/// Where [`shlex_split`] is inside one token.
+#[derive(Clone, Copy)]
+enum Lex {
+    /// before the token (white space is skipped)
+    Between,
+    /// in a bare word
+    Word,
+    /// inside this quote character
+    Quoted(char),
+    /// after a backslash
+    Escaped(Resume),
+}
+
+/// Where a backslash escape returns to.
+#[derive(Clone, Copy)]
+enum Resume {
+    Word,
+    Quoted(char),
 }
 
 /// `shlex.split(s)` (posix, no comments); None where Python raises ValueError.
@@ -301,14 +380,13 @@ fn shlex_split(s: &str) -> Option<Vec<String>> {
         // one token
         let mut piece = String::new();
         let mut quoted = false;
-        let mut state = ' ';
-        let mut escaped = ' ';
+        let mut state = Lex::Between;
         let mut got = false;
         while i <= cs.len() {
             let c = cs.get(i).copied();
             i += 1;
             match state {
-                ' ' => match c {
+                Lex::Between => match c {
                     None => break,
                     Some(c) if ws(c) => {
                         if !piece.is_empty() || quoted {
@@ -316,50 +394,47 @@ fn shlex_split(s: &str) -> Option<Vec<String>> {
                             break;
                         }
                     }
-                    Some('\\') => {
-                        escaped = 'a';
-                        state = '\\';
-                    }
-                    Some(c @ ('\'' | '"')) => state = c,
+                    Some('\\') => state = Lex::Escaped(Resume::Word),
+                    Some(c @ ('\'' | '"')) => state = Lex::Quoted(c),
                     Some(c) => {
                         piece.push(c);
-                        state = 'a';
+                        state = Lex::Word;
                     }
                 },
-                '\'' | '"' => {
+                Lex::Quoted(quote) => {
                     quoted = true;
                     let c = c?; // No closing quotation
-                    if c == state {
-                        state = 'a';
-                    } else if state == '"' && c == '\\' {
-                        escaped = state;
-                        state = '\\';
+                    if c == quote {
+                        state = Lex::Word;
+                    } else if quote == '"' && c == '\\' {
+                        state = Lex::Escaped(Resume::Quoted(quote));
                     } else {
                         piece.push(c);
                     }
                 }
-                '\\' => {
+                Lex::Escaped(resume) => {
                     let c = c?; // No escaped character
-                    if (escaped == '\'' || escaped == '"') && c != state && c != escaped {
-                        piece.push(state);
+                    if let Resume::Quoted(quote) = resume {
+                        if c != '\\' && c != quote {
+                            piece.push('\\');
+                        }
+                        state = Lex::Quoted(quote);
+                    } else {
+                        state = Lex::Word;
                     }
                     piece.push(c);
-                    state = escaped;
                 }
-                _ => match c {
+                Lex::Word => match c {
                     None => break,
                     Some(c) if ws(c) => {
-                        state = ' ';
+                        state = Lex::Between;
                         if !piece.is_empty() || quoted {
                             got = true;
                             break;
                         }
                     }
-                    Some(c @ ('\'' | '"')) => state = c,
-                    Some('\\') => {
-                        escaped = 'a';
-                        state = '\\';
-                    }
+                    Some(c @ ('\'' | '"')) => state = Lex::Quoted(c),
+                    Some('\\') => state = Lex::Escaped(Resume::Word),
                     Some(c) => piece.push(c),
                 },
             }
@@ -415,7 +490,12 @@ fn heredoc_delims(line: &str) -> Vec<String> {
 }
 
 fn strip_heredocs(cmd: &str) -> String {
-    let (mut out, mut pending): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
+    strip_heredocs_marked(cmd).0
+}
+
+/// [`strip_heredocs`], and for each line that is left whether it starts a here-document.
+fn strip_heredocs_marked(cmd: &str) -> (String, Vec<bool>) {
+    let (mut out, mut starts, mut pending): (Vec<&str>, Vec<bool>, Vec<String>) = (Vec::new(), Vec::new(), Vec::new());
     for line in cmd.split('\n') {
         if !pending.is_empty() {
             if line.trim() == pending[0] {
@@ -424,9 +504,11 @@ fn strip_heredocs(cmd: &str) -> String {
             continue;
         }
         out.push(line);
-        pending.extend(heredoc_delims(line));
+        let delims = heredoc_delims(line);
+        starts.push(!delims.is_empty());
+        pending.extend(delims);
     }
-    out.join("\n")
+    (out.join("\n"), starts)
 }
 
 /// The text of every here-document in a command (an unterminated one runs to the end).
@@ -592,8 +674,7 @@ fn walk(cmd: &str, cwd: Option<String>, depth: usize) -> Vec<Cmd> {
 fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<String>) -> Vec<Cmd> {
     let mut out = Vec::new();
     let mut cwd = cwd;
-    let stripped = strip_heredocs(cmd);
-    let heredoc_lines: Vec<bool> = stripped.split('\n').map(|l| !heredoc_delims(l).is_empty()).collect();
+    let (stripped, heredoc_lines) = strip_heredocs_marked(cmd);
     for (seg, line) in segments(&stripped) {
         let Some(split) = shlex_split(&seg) else {
             unparsed.push(seg);
@@ -2557,6 +2638,12 @@ mod tests {
         assert!(fnmatch("a1", "a[0-9]"));
         assert!(!fnmatch("a1", "a[!0-9]"));
         assert!(!fnmatch("abc", "ab"));
+        assert!(fnmatch("a/b/c.txt", "a*c.txt")); // a star crosses `/`
+        assert!(fnmatch("x[y", "x[y")); // an unclosed class is literal
+        assert!(fnmatch("abcabc", "*abc"));
+        assert!(!fnmatch("abcab", "*abc"));
+        // many stars on a name that cannot match must not blow up
+        assert!(!fnmatch(&"a".repeat(60), &format!("{}b", "a*".repeat(30))));
     }
 
     #[test]
