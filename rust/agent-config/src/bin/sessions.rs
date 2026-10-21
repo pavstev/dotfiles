@@ -6,11 +6,13 @@
 //!
 //! Opencode and Cursor are not supported yet: `--source opencode|cursor` prints one line.
 
+// println! that stops quietly on a closed pipe (`sessions find x | head`).
 use agent_config::pycompat::{civil_from_days, days_from_civil, days_in_month};
+use agent_config::quiet_println as println;
 use agent_config::redact::redact;
 use agent_config::stores::{Doc, Skip, read_claude};
 use clap::{Parser, Subcommand};
-use serde_json::{Map, Value as Json, json};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fs;
@@ -22,7 +24,9 @@ use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
 use tantivy::directory::error::LockError;
 use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
-use tantivy::schema::{Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value};
+use tantivy::schema::{
+    Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
+};
 use tantivy::snippet::SnippetGenerator;
 use tantivy::tokenizer::{Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer};
 use tantivy::{Index, IndexWriter, TantivyDocument, TantivyError, Term};
@@ -31,8 +35,12 @@ type Res<T> = Result<T, Box<dyn Error>>;
 
 /// Writer heap. One indexing thread, so the budget is not split.
 const HEAP: usize = 50_000_000;
-/// How long `index` and `find` wait for the writer lock held by another run.
-const LOCK_WAIT: Duration = Duration::from_secs(5);
+/// How long `index` and `find` wait for the writer lock held by another run: 5 s, or
+/// `SESSIONS_LOCK_WAIT_MS` (the tests set it).
+fn lock_wait() -> Duration {
+    let ms = std::env::var("SESSIONS_LOCK_WAIT_MS").ok().and_then(|v| v.parse().ok());
+    ms.map_or(Duration::from_secs(5), Duration::from_millis)
+}
 const STATE_VERSION: u64 = 1;
 const SNIPPET_CHARS: usize = 200;
 const DEFAULT_LIMIT: usize = 10;
@@ -88,9 +96,9 @@ struct Fields {
 fn build_schema() -> (Schema, Fields) {
     let mut b = Schema::builder();
     let words = || {
-        TextOptions::default()
-            .set_stored()
-            .set_indexing_options(TextFieldIndexing::default().set_tokenizer(TOKENIZER).set_index_option(IndexRecordOption::WithFreqs))
+        TextOptions::default().set_stored().set_indexing_options(
+            TextFieldIndexing::default().set_tokenizer(TOKENIZER).set_index_option(IndexRecordOption::WithFreqs),
+        )
     };
     let f = Fields {
         source: b.add_text_field("source", STRING | STORED),
@@ -124,9 +132,9 @@ fn open_index(dir: &Path) -> Res<(Index, Fields)> {
     Ok((index, f))
 }
 
-/// Take the writer lock, retrying for up to `LOCK_WAIT`. None means another run holds it.
+/// Take the writer lock, retrying for up to `lock_wait()`. None means another run holds it.
 fn lock_writer(index: &Index) -> Res<Option<IndexWriter>> {
-    let deadline = Instant::now() + LOCK_WAIT;
+    let deadline = Instant::now() + lock_wait();
     loop {
         match index.writer_with_num_threads::<TantivyDocument>(1, HEAP) {
             Ok(w) => return Ok(Some(w)),
@@ -144,43 +152,53 @@ fn lock_writer(index: &Index) -> Res<Option<IndexWriter>> {
 type Stamps = BTreeMap<PathBuf, (u64, i64)>;
 
 /// What the last run indexed: the (size, mtime) of every transcript and how many documents each gave.
-#[derive(Default)]
+/// A missing field reads as empty; a missing `version` reads as 0, so the version check drops the file.
+#[derive(Serialize, Deserialize)]
 struct State {
+    #[serde(default)]
+    version: u64,
+    #[serde(default, with = "path_keys")]
     claude: Stamps,
+    #[serde(default)]
     docs: BTreeMap<String, u64>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self { version: STATE_VERSION, claude: Stamps::new(), docs: BTreeMap::new() }
+    }
+}
+
+/// A map keyed by path, written with the lossy text of each path as the key.
+mod path_keys {
+    use super::Stamps;
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::path::PathBuf;
+
+    pub fn serialize<S: Serializer>(map: &Stamps, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(map.iter().map(|(p, v)| (p.to_string_lossy(), v)))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Stamps, D::Error> {
+        let map = std::collections::BTreeMap::<String, (u64, i64)>::deserialize(d)?;
+        Ok(map.into_iter().map(|(k, v)| (PathBuf::from(k), v)).collect())
+    }
 }
 
 fn state_path(dir: &Path) -> PathBuf {
     dir.join("state.json")
 }
 
+/// The saved state. A missing, unreadable, malformed or other-version file gives an empty state,
+/// which reads every transcript again.
 fn load_state(dir: &Path) -> State {
-    let Ok(text) = fs::read_to_string(state_path(dir)) else { return State::default() };
-    let Ok(v) = serde_json::from_str::<Json>(&text) else { return State::default() };
-    if v.get("version").and_then(Json::as_u64) != Some(STATE_VERSION) {
-        return State::default();
-    }
-    let mut s = State::default();
-    for (k, e) in v.get("claude").and_then(Json::as_object).into_iter().flatten() {
-        if let (Some(size), Some(mtime)) = (e.get(0).and_then(Json::as_u64), e.get(1).and_then(Json::as_i64)) {
-            s.claude.insert(PathBuf::from(k), (size, mtime));
-        }
-    }
-    for (k, n) in v.get("docs").and_then(Json::as_object).into_iter().flatten() {
-        if let Some(n) = n.as_u64() {
-            s.docs.insert(k.clone(), n);
-        }
-    }
-    s
+    let state = fs::read(state_path(dir)).ok().and_then(|b| serde_json::from_slice::<State>(&b).ok());
+    state.filter(|s| s.version == STATE_VERSION).unwrap_or_default()
 }
 
 fn save_state(dir: &Path, s: &State) -> Res<()> {
-    let claude: Map<String, Json> =
-        s.claude.iter().map(|(p, (size, mtime))| (p.to_string_lossy().into_owned(), json!([size, mtime]))).collect();
-    let docs: Map<String, Json> = s.docs.iter().map(|(p, n)| (p.clone(), json!(n))).collect();
-    let body = json!({"version": STATE_VERSION, "claude": claude, "docs": docs});
     let tmp = dir.join("state.json.tmp");
-    fs::write(&tmp, serde_json::to_vec(&body)?)?;
+    fs::write(&tmp, serde_json::to_vec(s)?)?;
     fs::rename(&tmp, state_path(dir))?;
     Ok(())
 }
@@ -265,7 +283,7 @@ fn update(home: &Path, dir: &Path, f: &Fields, writer: &mut IndexWriter, state: 
     if dirty {
         writer.commit()?;
     }
-    let next = State { claude: fresh, docs };
+    let next = State { claude: fresh, docs, ..State::default() };
     let changed = next.claude != state.claude || next.docs != state.docs;
     *state = next;
     if changed {
@@ -366,7 +384,12 @@ fn parse_day(s: &str) -> Option<i64> {
 /// Words only: query syntax in a typed question (`:`, `-`, quotes, parentheses) is not wanted.
 fn plain_words(q: &str) -> String {
     // Lower case: the tokenizer lowers anyway, and upper-case NOT, AND, OR are query syntax.
-    q.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+    q.chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn str_of(d: &TantivyDocument, f: Field) -> String {
@@ -381,12 +404,21 @@ fn search(index: &Index, f: &Fields, a: &FindArgs) -> Res<Vec<Hit>> {
     }
     let mut parser = QueryParser::for_index(index, vec![f.text, f.title]);
     let mut filters: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-    filters.push((Occur::Must, Box::new(TermQuery::new(Term::from_field_text(f.source, "claude"), IndexRecordOption::Basic))));
+    filters.push((
+        Occur::Must,
+        Box::new(TermQuery::new(Term::from_field_text(f.source, "claude"), IndexRecordOption::Basic)),
+    ));
     if let Some(p) = &a.project {
-        filters.push((Occur::Must, Box::new(TermQuery::new(Term::from_field_text(f.project, p), IndexRecordOption::Basic))));
+        filters.push((
+            Occur::Must,
+            Box::new(TermQuery::new(Term::from_field_text(f.project, p), IndexRecordOption::Basic)),
+        ));
     }
     if let Some(t) = a.since {
-        filters.push((Occur::Must, Box::new(RangeQuery::new(Bound::Included(Term::from_field_i64(f.time, t)), Bound::Unbounded))));
+        filters.push((
+            Occur::Must,
+            Box::new(RangeQuery::new(Bound::Included(Term::from_field_i64(f.time, t)), Bound::Unbounded)),
+        ));
     }
     // Several documents of one session match; take enough to fill `limit` sessions.
     let take = (a.limit * 8).clamp(40, 400);
@@ -505,5 +537,19 @@ fn main() -> ExitCode {
             println!("• sessions: failed: {}", one_line(&e.to_string(), 150));
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_without_a_version_fails_the_version_check() {
+        let old: State = serde_json::from_str(r#"{"claude": {}, "docs": {}}"#).unwrap();
+        assert_eq!(old.version, 0);
+        let cur: State = serde_json::from_str(r#"{"version": 1}"#).unwrap();
+        assert_eq!(cur.version, STATE_VERSION);
+        assert!(cur.claude.is_empty() && cur.docs.is_empty());
     }
 }

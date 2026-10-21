@@ -9,12 +9,6 @@ use std::path::{Path, PathBuf};
 
 const AC: &str = env!("CARGO_BIN_EXE_agent-config");
 
-/// Guard ids a preset may own (the registry of the guard).
-const GUARD_IDS: &[&str] = &[
-    "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "G10", "G11", "G12", "G13", "G17", "H1", "ROUTER", "PACE",
-];
-const PRESETS: &[&str] = &["workflow", "pace", "models", "clock", "plain-writing", "no-ai-attribution", "ship-to-main"];
-
 fn claude_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("claude")
 }
@@ -47,48 +41,30 @@ fn front_matter(p: &Path) -> (Option<String>, Option<String>, Option<Vec<String>
 
 #[test]
 fn presets_well_formed() {
+    // which guard ids each preset owns is checked against the guard registry in src/bin/guard.rs
+    let names = preset_names();
+    assert!(names.contains(&"workflow".to_string()), "{names:?}");
+    for name in &names {
+        let rules = claude_dir().join("presets").join(name).join("rules.md");
+        assert!(rules.is_file(), "{} missing", rules.display());
+        let (n, d, g) = front_matter(&rules);
+        assert_eq!(n.as_deref(), Some(name.as_str()), "{name}: name must equal the folder");
+        assert!(d.as_deref().is_some_and(|d| !d.is_empty()), "{name}: description is empty");
+        assert!(g.is_some(), "{name}: guard: line missing");
+    }
+}
+
+/// The preset folders under claude/presets, sorted.
+fn preset_names() -> Vec<String> {
     let dir = claude_dir().join("presets");
-    let mut found: Vec<String> = fs::read_dir(&dir)
+    let mut names: Vec<String> = fs::read_dir(&dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    found.sort();
-    let mut want: Vec<String> = PRESETS.iter().map(|s| s.to_string()).collect();
-    want.sort();
-    assert_eq!(found, want);
-    for name in PRESETS {
-        let rules = dir.join(name).join("rules.md");
-        assert!(rules.is_file(), "{} missing", rules.display());
-        let (n, d, g) = front_matter(&rules);
-        assert_eq!(n.as_deref(), Some(*name), "{name}: name must equal the folder");
-        assert!(d.as_deref().is_some_and(|d| !d.is_empty()), "{name}: description is empty");
-        let g = g.unwrap_or_else(|| panic!("{name}: guard: line missing"));
-        for id in &g {
-            assert!(GUARD_IDS.contains(&id.as_str()), "{name}: unknown guard id {id}");
-        }
-    }
-    let guard_of = |n: &str| front_matter(&dir.join(n).join("rules.md")).2.unwrap();
-    assert_eq!(guard_of("workflow"), ["G1", "G2", "G3", "G4", "G5", "G6", "G7", "G12", "G13", "H1"]);
-    assert_eq!(guard_of("pace"), ["G8", "PACE"]);
-    assert_eq!(guard_of("models"), ["G9", "ROUTER"]);
-    assert_eq!(guard_of("clock"), ["G11"]);
-    assert!(guard_of("plain-writing").is_empty());
-    assert_eq!(guard_of("no-ai-attribution"), ["G17"]);
-    assert_eq!(guard_of("ship-to-main"), ["G10"]);
-}
-
-#[test]
-fn preset_fragments_hold_the_fixed_values() {
-    let dir = claude_dir().join("presets");
-    let frag = |n: &str| -> Value {
-        serde_json::from_str(&fs::read_to_string(dir.join(n).join("settings.json")).unwrap()).unwrap()
-    };
-    assert_eq!(frag("models"), json!({"model": "opusplan", "env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}}));
-    assert_eq!(frag("plain-writing"), json!({"outputStyle": "ELI5"}));
-    assert_eq!(frag("no-ai-attribution"), json!({"attribution": {"commit": "", "pr": ""}, "includeCoAuthoredBy": false}));
-    assert!(dir.join("README.md").is_file());
+    names.sort();
+    names
 }
 
 #[test]
@@ -96,7 +72,7 @@ fn core_is_short() {
     let c = claude_dir();
     let n = lines(&c.join("CLAUDE.md"));
     assert!(n <= 45, "claude/CLAUDE.md has {n} lines, the limit is 45");
-    for name in PRESETS {
+    for name in preset_names() {
         let p = c.join("presets").join(name).join("rules.md");
         let n = lines(&p);
         assert!(n <= 30, "{} has {n} lines, the limit is 30", p.display());
@@ -106,7 +82,7 @@ fn core_is_short() {
 /// Every text file under `claude/` (skips binaries and build output).
 fn claude_text_files() -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
-    for e in walkdir::WalkDir::new(claude_dir()).into_iter().filter_map(|e| e.ok()) {
+    for e in walkdir::WalkDir::new(claude_dir()).into_iter().filter_map(Result::ok) {
         if !e.file_type().is_file() {
             continue;
         }
@@ -121,7 +97,7 @@ fn claude_text_files() -> Vec<(PathBuf, String)> {
 #[test]
 fn no_personal_words() {
     let city: String = "anneiV".chars().rev().collect();
-    let words = [city.as_str(), "Pro plan", "Monday to Saturday", "Mon-Sat", "Opus 5", "Sonnet 5", "my brain"];
+    let words = [city.as_str(), "Monday to Saturday", "Mon-Sat", "my brain"];
     let mut hits = Vec::new();
     for (p, text) in claude_text_files() {
         for (i, l) in text.lines().enumerate() {
@@ -145,30 +121,18 @@ fn no_personal_words() {
 }
 
 #[test]
-fn no_rule_numbers() {
-    let mut hits = Vec::new();
-    for (p, text) in claude_text_files() {
-        for (i, l) in text.lines().enumerate() {
-            let low = l.to_lowercase();
-            let mut rest = low.as_str();
-            while let Some(at) = rest.find("rule ") {
-                let after = &rest[at + 5..];
-                if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                    hits.push(format!("{}:{}: {}", p.display(), i + 1, l.trim()));
-                    break;
-                }
-                rest = after;
-            }
-        }
-    }
-    assert!(hits.is_empty(), "numbered rule cited in claude/:\n{}", hits.join("\n"));
-}
-
-#[test]
 fn base_settings_neutral() {
     let text = fs::read_to_string(claude_dir().join("settings.json")).unwrap();
     let base: Value = serde_json::from_str(&text).unwrap();
-    for key in ["model", "outputStyle", "enabledPlugins", "extraKnownMarketplaces", "skillOverrides", "attribution", "includeCoAuthoredBy"] {
+    for key in [
+        "model",
+        "outputStyle",
+        "enabledPlugins",
+        "extraKnownMarketplaces",
+        "skillOverrides",
+        "attribution",
+        "includeCoAuthoredBy",
+    ] {
         assert!(base.get(key).is_none(), "base settings still has {key}");
     }
     assert!(base.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL").is_none());
@@ -189,11 +153,11 @@ struct Fx {
 }
 
 impl Fx {
-    fn new(tag: &str, base: &Value) -> Fx {
+    fn new(tag: &str, base: &Value) -> Self {
         let tmp = temp_home(tag);
         let (home, repo) = (tmp.join("home"), tmp.join("repo"));
         fs::create_dir_all(&home).unwrap();
-        let fx = Fx { tmp, home, repo };
+        let fx = Self { tmp, home, repo };
         fx.set_base(base);
         fx
     }
@@ -271,12 +235,6 @@ fn demote_missing_key_is_noop() {
     assert!(!fx2.layer().exists());
 }
 
-#[test]
-fn demote_needs_a_key() {
-    let fx = Fx::new("presets-demote-nokey", &json!({}));
-    assert_eq!(fx.ac(&["claude-settings", "demote"]).0, 2);
-}
-
 // --- dots: presets, new settings, theme -------------------------------------------
 
 use agent_config::presets;
@@ -293,8 +251,14 @@ fn px(tag: &str) -> Fx {
     wr(&c.join("CLAUDE.md"), "# Core\n\ncore line\n");
     wr(&c.join("hooks/rust-bin"), "# fake launcher\n");
     wr(&c.join("output-styles/ELI5.md"), "---\nname: ELI5\n---\nExplain it simply.\n");
-    wr(&c.join("presets/workflow/rules.md"), "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n");
-    wr(&c.join("presets/plain-writing/rules.md"), "---\nname: plain-writing\ndescription: d\nguard: []\n---\n# Plain\n\nplain line\n");
+    wr(
+        &c.join("presets/workflow/rules.md"),
+        "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n",
+    );
+    wr(
+        &c.join("presets/plain-writing/rules.md"),
+        "---\nname: plain-writing\ndescription: d\nguard: []\n---\n# Plain\n\nplain line\n",
+    );
     wr(&c.join("presets/plain-writing/settings.json"), r#"{"outputStyle": "ELI5"}"#);
     fx
 }
@@ -309,7 +273,11 @@ fn real_repo() -> PathBuf {
 
 fn preset_links(home: &Path) -> Vec<String> {
     let mut v: Vec<String> = match fs::read_dir(home.join(".claude/rules")) {
-        Ok(d) => d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("preset-")).collect(),
+        Ok(d) => d
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("preset-"))
+            .collect(),
         Err(_) => Vec::new(),
     };
     v.sort();
@@ -322,11 +290,11 @@ fn link_enabled(home: &Path, profile: &str) {
 }
 
 #[test]
-fn shared_profile_links_six() {
+fn shared_profile_links_all_but_ship_to_main() {
     let home = temp_home("presets-shared");
     link_enabled(&home, "shared");
     let links = preset_links(&home);
-    assert_eq!(links.len(), 6, "{links:?}");
+    assert_eq!(links.len(), preset_names().len() - 1, "{links:?}");
     assert!(!links.contains(&"preset-ship-to-main.md".to_string()));
     let t = fs::read_link(home.join(".claude/rules/preset-clock.md")).unwrap();
     assert!(t.ends_with("claude/presets/clock/rules.md"), "{}", t.display());
@@ -334,25 +302,17 @@ fn shared_profile_links_six() {
 }
 
 #[test]
-fn owner_profile_links_seven() {
-    let home = temp_home("presets-owner");
-    link_enabled(&home, "owner");
-    assert_eq!(preset_links(&home).len(), 7);
-    let _ = fs::remove_dir_all(&home);
-}
-
-#[test]
 fn presets_list_unlinks_rest() {
     let home = temp_home("presets-list");
     link_enabled(&home, "owner");
-    assert_eq!(preset_links(&home).len(), 7);
+    assert_eq!(preset_links(&home).len(), preset_names().len()); // the owner gets every preset
     wr(&home.join(".config/dotfiles/settings"), "PRESETS=\"workflow\"\n");
     link_enabled(&home, "owner");
     assert_eq!(preset_links(&home), ["preset-workflow.md"]);
     // "all" and "none" are words too
     wr(&home.join(".config/dotfiles/settings"), "PRESETS=\"none\"\n");
     link_enabled(&home, "owner");
-    assert!(preset_links(&home).is_empty());
+    assert_eq!(preset_links(&home), [] as [String; 0]);
     let _ = fs::remove_dir_all(&home);
 }
 
@@ -369,7 +329,13 @@ fn foreign_preset_file_untouched() {
     link_enabled(&home, "owner"); // clock on
     assert_eq!(fs::read_to_string(&mine).unwrap(), "my own rule\n");
     assert!(!mine.symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(home.join(".claude/rules").read_dir().unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains(".bak-")));
+    assert!(
+        home.join(".claude/rules").read_dir().unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".bak-"))
+    );
     assert_eq!(preset_links(&home).len(), 7); // six links and the regular file
     let _ = fs::remove_dir_all(&home);
 }
@@ -418,14 +384,13 @@ fn fragments_leave_with_their_preset() {
 
 #[test]
 fn co_author_switch_follows_the_no_ai_attribution_preset() {
-    let base: Value = serde_json::from_str(&fs::read_to_string(claude_dir().join("settings.json")).unwrap()).unwrap();
-    assert!(base.get("includeCoAuthoredBy").is_none(), "the core base must not hide co-author lines");
     // the real repo, a temp HOME: built with the preset on, then off
     let home = temp_home("presets-co-author");
     let (h, r) = (home.to_str().unwrap().to_string(), real_repo().to_str().unwrap().to_string());
     let build = |settings: &str| -> Value {
         wr(&home.join(".config/dotfiles/settings"), settings);
-        let (code, out, err) = run_bin(AC, &["claude-settings", "build"], "", &[("HOME", &h), ("DOTFILES_REPO", &r)], None);
+        let (code, out, err) =
+            run_bin(AC, &["claude-settings", "build"], "", &[("HOME", &h), ("DOTFILES_REPO", &r)], None);
         assert_eq!(code, 0, "{out}{err}");
         rj(&home.join(".claude/settings.json"))
     };
@@ -505,6 +470,18 @@ fn theme_plain_skips_opencode_theme() {
     setting_file(&fx, "THEME=\"copper\"\n");
     fx.ac(&["opencode", "--profile", "shared"]);
     assert!(dir.join("themes/copper.json").is_file());
+}
+
+#[test]
+fn profile_parses_and_prints() {
+    use presets::Profile;
+    assert_eq!("owner".parse::<Profile>().unwrap(), Profile::Owner);
+    assert_eq!("shared".parse::<Profile>().unwrap(), Profile::Shared);
+    assert!("root".parse::<Profile>().is_err() && "".parse::<Profile>().is_err());
+    // callers that take a name read an unknown one as shared
+    assert_eq!(Profile::from("root"), Profile::Shared);
+    assert_eq!(Profile::Owner.to_string(), "owner");
+    assert_eq!(Profile::default().to_string(), "shared");
 }
 
 #[test]

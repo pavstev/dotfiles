@@ -11,10 +11,9 @@
 //! skill_check -q           failures only, nothing when all pass
 //! ```
 
-#[macro_use]
-#[path = "../quiet_out.rs"]
-mod quiet_out;
-
+use agent_config::pycompat::py_repr_str;
+use agent_config::quiet_println as println;
+use clap::Parser;
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -23,9 +22,26 @@ use std::sync::LazyLock;
 /// Frontmatter keys Claude Code documents. Anything else is ignored by Claude Code, so it is
 /// almost always a typo.
 const KNOWN_KEYS: [&str; 20] = [
-    "name", "description", "when_to_use", "argument-hint", "arguments", "disable-model-invocation",
-    "user-invocable", "allowed-tools", "disallowed-tools", "model", "effort", "context", "agent",
-    "background", "hooks", "paths", "shell", "metadata", "license", "compatibility",
+    "name",
+    "description",
+    "when_to_use",
+    "argument-hint",
+    "arguments",
+    "disable-model-invocation",
+    "user-invocable",
+    "allowed-tools",
+    "disallowed-tools",
+    "model",
+    "effort",
+    "context",
+    "agent",
+    "background",
+    "hooks",
+    "paths",
+    "shell",
+    "metadata",
+    "license",
+    "compatibility",
 ];
 const NAME_PATTERN: &str = r"^(ps:)?[a-z0-9]+(-[a-z0-9]+)*$"; // spec regex + our ps: prefix
 const MAX_NAME: usize = 64;
@@ -51,27 +67,6 @@ struct Report {
     skill: String,
     fails: Vec<String>,
     warns: Vec<String>,
-}
-
-/// Python `repr()` of a str, as far as these messages need it.
-fn py_repr(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::from(q);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == q => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(q);
-    out
 }
 
 type Fields = Vec<(String, String)>;
@@ -100,12 +95,12 @@ fn parse_frontmatter(text: &str) -> (Fields, String, Vec<String>) {
             continue; // nested value (hooks:, metadata:) — not validated here
         }
         let Some((key, value)) = raw.split_once(':') else {
-            errors.push(format!("frontmatter line is not key: value → {}", py_repr(raw)));
+            errors.push(format!("frontmatter line is not key: value → {}", py_repr_str(raw)));
             continue;
         };
         let (key, value) = (key.trim().to_string(), value.trim().to_string());
         match fields.iter_mut().find(|(k, _)| *k == key) {
-            Some(slot) => slot.1 = value.clone(),
+            Some(slot) => slot.1.clone_from(&value),
             None => fields.push((key.clone(), value.clone())),
         }
         let Some(q) = value.chars().next() else { continue };
@@ -119,7 +114,7 @@ fn parse_frontmatter(text: &str) -> (Fields, String, Vec<String>) {
             errors.push(format!("{key}: unquoted value contains ': ' — quote the whole value"));
         }
         if "[]{}&*!|>%@`".contains(q) {
-            errors.push(format!("{key}: unquoted value starts with {} — quote it", py_repr(&q.to_string())));
+            errors.push(format!("{key}: unquoted value starts with {} — quote it", py_repr_str(&q.to_string())));
         }
         if value.contains(" #") {
             errors.push(format!("{key}: unquoted ' #' starts a YAML comment — quote the value"));
@@ -144,7 +139,7 @@ fn unquote(v: &str) -> String {
 fn find_junk(root: &Path, dir: &Path, r: &mut Report) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut entries: Vec<(String, bool)> = rd
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .map(|e| {
             let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
             (e.file_name().to_string_lossy().into_owned(), is_dir)
@@ -172,7 +167,8 @@ fn read_text(path: &Path) -> Result<String, std::io::Error> {
 
 fn check_skill(path: &Path) -> Report {
     let shown = path.to_string_lossy();
-    let name = Path::new(shown.trim_end_matches('/')).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+    let name =
+        Path::new(shown.trim_end_matches('/')).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
     let name = name.as_str();
     let mut r = Report { skill: name.to_string(), fails: vec![], warns: vec![] };
     let skill_md = path.join("SKILL.md");
@@ -273,7 +269,8 @@ fn check_skill(path: &Path) -> Report {
         if !path.join(rel).exists() {
             r.fails.push(format!("${{CLAUDE_SKILL_DIR}}/{rel} does not exist"));
         }
-        let before: String = body[..whole.start()].chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
+        let before: String =
+            body[..whole.start()].chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
         let prev = before.split_whitespace().last().map_or("", |w| w.trim_matches('`'));
         if rel.starts_with("scripts/") && !INTERPRETERS.contains(&prev) {
             r.warns.push(format!("run scripts through an interpreter (bash/python3 …): {rel}"));
@@ -289,11 +286,11 @@ fn check_skill(path: &Path) -> Report {
         let full = path.join(&target);
         if !full.exists() {
             r.fails.push(format!("link target missing: {target}"));
-        } else if full.to_string_lossy().ends_with(".md") {
+        } else if full.extension().is_some_and(|x| x == "md") {
             let sub = read_text(&full).unwrap_or_default();
             for n in MD_LINK.captures_iter(&sub) {
                 let t = n.get(1).unwrap().as_str();
-                if !NOT_LOCAL.iter().any(|p| t.starts_with(p)) && t.ends_with(".md") {
+                if !NOT_LOCAL.iter().any(|p| t.starts_with(p)) && Path::new(t).extension().is_some_and(|x| x == "md") {
                     r.warns.push(format!("{target} links on to {t} — keep references one level deep"));
                     break;
                 }
@@ -306,7 +303,8 @@ fn check_skill(path: &Path) -> Report {
 /// The skill folders inside `root`: sorted, no `_*` or `.*` folders, each with a SKILL.md.
 fn list_skills(root: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(root) else { return vec![] };
-    let mut names: Vec<String> = rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let mut names: Vec<String> =
+        rd.filter_map(Result::ok).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     names.sort();
     names
         .into_iter()
@@ -349,6 +347,19 @@ fn run(paths: &[PathBuf], quiet: bool) -> i32 {
 
 const USAGE: &str = "usage: skill_check [-q] [skill name or folder | skills dir]...";
 
+#[derive(Parser)]
+#[command(name = "skill_check", disable_help_flag = true, disable_version_flag = true)]
+struct Cli {
+    /// Print the usage line.
+    #[arg(short = 'h', long = "help")]
+    help: bool,
+    /// Failures only.
+    #[arg(short = 'q')]
+    quiet: bool,
+    /// Skill names, skill folders or folders of skills.
+    targets: Vec<String>,
+}
+
 /// What one command-line target means: a skill folder, a folder of skills, or a skill name under
 /// the repo's claude/skills.
 fn resolve(arg: &str, skills_root: &Path) -> Vec<PathBuf> {
@@ -370,19 +381,20 @@ fn resolve(arg: &str, skills_root: &Path) -> Vec<PathBuf> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    let Cli { help, quiet, targets } = Cli::parse();
+    if help {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let quiet = args.iter().any(|a| a == "-q");
-    let targets: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     let root = agent_config::claude_dir().join("skills");
     let paths: Vec<PathBuf> = if targets.is_empty() {
         let found = list_skills(&root);
         if found.is_empty() {
             // an empty list would pass silently: that is a miss, not a clean tree
-            eprintln!("skill_check: no skills found in {}. Run it inside the dotfiles repo or set DOTFILES_REPO.", root.display());
+            eprintln!(
+                "skill_check: no skills found in {}. Run it inside the dotfiles repo or set DOTFILES_REPO.",
+                root.display()
+            );
             return ExitCode::from(1);
         }
         found

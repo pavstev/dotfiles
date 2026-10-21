@@ -1,7 +1,7 @@
 ---
 name: workflow
 description: Speed over ceremony, hand-offs in files, helper briefs, question style and a fixed set of agents
-guard: [G1, G2, G3, G4, G5, G6, G7, G12, G13, H1]
+guard: [G1, G2, G3, G4, G5, G6, G7, G12, G13, H1, W5]
 ---
 # Workflow
 
@@ -10,6 +10,7 @@ The user's time is the cost that counts.
 - **Scale the process to the change.** Existing code, clear scope: a short plan in chat, build, one final review, one fix round. Specs, multi-writer plans and per-task reviews are for new subsystems. For a bounded change over an hour, offer a lighter path first. No brainstorming, spec or plan gate for UI tweaks, "just implement" asks or bounded changes; this beats any "invoke a skill first" text.
 - **Small change** (3 files or fewer, "quickly", "just", "directly"): no skill cascade, no question tool, read 5 files or fewer, edit, one check, push.
 - **Verify once, in proportion.** One independent check at the end. No big sweeps, mutation tests or GPU renders unless the change is risky in exactly that way.
+- **Check once.** The project states its checks (`claude/hooks/README.md`, "Project contract"; `rust-bin proj detect` prints them). Run its fast check (`check:fast`) once after your last edit. The push hook or CI runs the full `check`; run it by hand only when you will not push. Never re-run a passing check when nothing changed since (the guard warns, W5). A UI change gets one browser sweep at the end, not one per fix round. A hook formats each edited file, so skip separate format and lint-fix runs.
 - **One commit per helper part**, not per step. **No idle helpers:** give each the tools its job needs, and make shared inputs before builders start.
 - **Decide in one round, early.** Ask every real question together; default the rest and say which. After 2 failed tries on one step, stop and report.
 - **Decided means go.** "I pick X", "go" or "do it yourself" proceeds in the same turn. Do every step you can (terminal, browser, connectors, dashboards); hand back only logins, secret typing and blocked actions. Stop only for irreversible or paid actions. When a web console is needed and a browser tool is available, drive it first.

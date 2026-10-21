@@ -2,8 +2,8 @@
 //! unsupported on a given macOS version, the remaining settings still apply.
 
 use super::super::os;
-use super::{only_macos, quiet, run};
-use crate::out::{self, info, uptodate, verbose};
+use super::{only_macos, quiet, run, stdout_of};
+use crate::out::{self, info, ok, uptodate, verbose};
 use std::path::Path;
 
 /// (domain, key, type flag, value). The domain `-g` is the global one.
@@ -48,26 +48,70 @@ const AFTER_SCREENSHOTS: [Pref; 4] = [
 /// Every `defaults write` argument list, in the order they run.
 fn writes(home: &Path) -> Vec<Vec<String>> {
     let shots = home.join("Screenshots").to_string_lossy().into_owned();
-    let line = |(d, k, t, v): Pref| -> Vec<String> { ["write", d, k, t, v].iter().map(|s| s.to_string()).collect() };
+    let line = |(d, k, t, v): Pref| -> Vec<String> { ["write", d, k, t, v].iter().map(ToString::to_string).collect() };
     let mut all: Vec<Vec<String>> = BEFORE_SCREENSHOTS.iter().copied().map(line).collect();
-    all.push(["write", "com.apple.screencapture", "location", "-string", &shots].iter().map(|s| s.to_string()).collect());
+    all.push(
+        ["write", "com.apple.screencapture", "location", "-string", &shots].iter().map(ToString::to_string).collect(),
+    );
     all.extend(SCREENSHOTS.iter().copied().map(line));
     all.extend(AFTER_SCREENSHOTS.iter().copied().map(line));
     all
 }
 
+/// True when `defaults read` printed `read` for a key written with type flag `ty` and value `want`.
+/// `defaults read` prints a bool as 1 or 0 and a float in its own format.
+fn same_value(ty: &str, want: &str, read: &str) -> bool {
+    let read = read.trim();
+    match ty {
+        "-bool" => read == if want == "true" { "1" } else { "0" },
+        "-float" => matches!((read.parse::<f64>(), want.parse::<f64>()), (Ok(r), Ok(w)) if (r - w).abs() < 1e-9),
+        _ => read == want,
+    }
+}
+
+/// The app to restart so a changed key takes effect (the global domain needs a logout instead).
+fn owner_app(domain: &str) -> Option<&'static str> {
+    match domain {
+        "com.apple.finder" | "com.apple.desktopservices" => Some("Finder"),
+        "com.apple.dock" => Some("Dock"),
+        "com.apple.screencapture" => Some("SystemUIServer"),
+        _ => None,
+    }
+}
+
 pub fn step(_repo: &Path) {
-    if !only_macos("macOS defaults") { return; }
+    if !only_macos("macOS defaults") {
+        return;
+    }
     out::step("macOS defaults");
-    if verbose() { info("Applying curated development defaults…"); }
+    if verbose() {
+        info("Applying curated development defaults…");
+    }
     let home = os::home();
     let _ = std::fs::create_dir_all(home.join("Screenshots"));
+    let mut changed = 0;
+    let mut restart: Vec<&str> = Vec::new();
     for args in writes(&home) {
+        let [_, domain, key, ty, value] = <[String; 5]>::try_from(args.clone()).expect("five words");
+        if same_value(&ty, &value, &stdout_of("defaults", &["read", &domain, &key])) {
+            continue;
+        }
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        run("defaults", &a);
+        if run("defaults", &a) {
+            changed += 1;
+            if let Some(app) = owner_app(&domain).filter(|app| !restart.contains(app)) {
+                restart.push(app);
+            }
+        }
     }
-    for app in ["Finder", "Dock", "SystemUIServer"] { quiet("killall", &[app]); }
-    uptodate("macOS defaults applied (a few settings need logout/login to fully take effect)");
+    if changed == 0 {
+        uptodate("macOS defaults: all set");
+        return;
+    }
+    for app in restart {
+        quiet("killall", &[app]);
+    }
+    ok(&format!("macOS defaults: {changed} changed (a few need logout/login to take effect)"));
 }
 
 #[cfg(test)]
@@ -75,13 +119,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_defaults_in_order() {
+    fn every_default_is_one_write() {
         let w = writes(Path::new("/h"));
-        assert_eq!(w.len(), 16 + 1 + 2 + 4);
-        assert_eq!(w[0].join(" "), "write -g KeyRepeat -int 2");
-        assert_eq!(w[16].join(" "), "write com.apple.screencapture location -string /h/Screenshots");
-        assert_eq!(w[19].join(" "), "write com.apple.dock autohide-time-modifier -float 0.15");
-        assert_eq!(w.last().unwrap().join(" "), "write -g NSAutomaticSpellingCorrectionEnabled -bool false");
-        assert!(w.iter().all(|a| a.len() == 5));
+        assert!(w.iter().all(|a| a.len() == 5 && a[0] == "write"), "{w:?}");
+        let shots = "write com.apple.screencapture location -string /h/Screenshots";
+        assert!(w.iter().any(|a| a.join(" ") == shots), "the screenshot folder is under HOME");
+    }
+
+    #[test]
+    fn same_value_reads_defaults_formats() {
+        assert!(same_value("-bool", "true", "1\n"));
+        assert!(same_value("-bool", "false", "0"));
+        assert!(!same_value("-bool", "true", "0"));
+        assert!(!same_value("-bool", "true", ""), "a missing key is a change");
+        assert!(same_value("-float", "0.15", "0.15"));
+        assert!(same_value("-int", "2", "2"));
+        assert!(same_value("-string", "Nlsv", "Nlsv\n"));
+        assert!(!same_value("-string", "png", "jpg"));
     }
 }

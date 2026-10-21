@@ -12,6 +12,7 @@
 use agent_config::codeview::{self, Refusal, Symbol};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -85,7 +86,11 @@ fn refusal_reply(file: &str, r: &Refusal) -> Reply {
 }
 
 fn no_scanner(ext: &str) -> String {
-    if ext.is_empty() { "no scanner for this file type; use Read".into() } else { format!("no scanner for .{ext}; use Read") }
+    if ext.is_empty() {
+        "no scanner for this file type; use Read".into()
+    } else {
+        format!("no scanner for .{ext}; use Read")
+    }
 }
 
 /// `outer.inner` style path of every symbol.
@@ -168,7 +173,7 @@ fn read_cmd(file: &str, query: &str, if_changed: Option<&str>) -> Reply {
         many => {
             let mut out = format!("ambiguous: {query} matches {} symbols in {file}; use a longer path\n", many.len());
             for &i in many {
-                out.push_str(&format!("  {file}:{}-{}  {}\n", symbols[i].start, symbols[i].end, paths[i]));
+                let _ = writeln!(out, "  {file}:{}-{}  {}", symbols[i].start, symbols[i].end, paths[i]);
             }
             Reply { text: out, code: 1 }
         }
@@ -181,7 +186,7 @@ fn not_found(file: &str, query: &str, symbols: &[Symbol], paths: &[String]) -> R
     }
     let mut ranked: Vec<(usize, usize)> =
         (0..symbols.len()).map(|i| (lev(query, &symbols[i].name).min(lev(query, &paths[i])), i)).collect();
-    ranked.sort();
+    ranked.sort_unstable();
     let mut out = format!("not found: {query} in {file}. Closest:\n");
     let mut seen: Vec<&str> = Vec::new();
     for (_, i) in ranked {
@@ -192,7 +197,7 @@ fn not_found(file: &str, query: &str, symbols: &[Symbol], paths: &[String]) -> R
             continue;
         }
         seen.push(&paths[i]);
-        out.push_str(&format!("  {}  ({}-{})\n", paths[i], symbols[i].start, symbols[i].end));
+        let _ = writeln!(out, "  {}  ({}-{})", paths[i], symbols[i].start, symbols[i].end);
     }
     Reply { text: out, code: 1 }
 }
@@ -201,10 +206,10 @@ fn body(file: &str, text: &str, sym: &Symbol, path: &str, scan: &str, hash: &str
     let mut out = format!("{file}:{}-{}  {path}  scan={scan}  hash={hash}\n", sym.start, sym.end);
     let total = sym.end - sym.start + 1;
     for (i, line) in text.lines().enumerate().skip(sym.start - 1).take(total.min(CAP)) {
-        out.push_str(&format!("{}\t{line}\n", i + 1));
+        let _ = writeln!(out, "{}\t{line}", i + 1);
     }
     if total > CAP {
-        out.push_str(&format!("… cut at {CAP} of {total} lines; use Read with offset\n"));
+        let _ = writeln!(out, "… cut at {CAP} of {total} lines; use Read with offset");
     }
     out
 }

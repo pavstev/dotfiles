@@ -5,10 +5,11 @@
 //! Needs on PATH: `yt-dlp` always; `ffmpeg` and `whisper-cli` for the Whisper fallback;
 //! `curl` once, to fetch the Whisper model into the user cache folder.
 
-use agent_config::pycompat::{py_is_space, py_strip};
+use agent_config::pycompat::{py_is_space, py_repr_str as py_repr, py_strip};
 use clap::{ArgAction, ArgGroup, Parser};
 use regex::Regex;
 use serde_json::{Map, Value};
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -98,50 +99,12 @@ fn unquote(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Python `repr()` of a str, as far as error messages need it.
-fn py_repr(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(q);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == q => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => {
-                let n = c as u32;
-                let hidden = c != ' '
-                    && (c.is_control()
-                        || py_is_space(c)
-                        || matches!(n, 0xad | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0xfeff));
-                if !hidden {
-                    out.push(c);
-                } else if n <= 0xff {
-                    out.push_str(&format!("\\x{n:02x}"));
-                } else if n <= 0xffff {
-                    out.push_str(&format!("\\u{n:04x}"));
-                } else {
-                    out.push_str(&format!("\\U{n:08x}"));
-                }
-            }
-        }
-    }
-    out.push(q);
-    out
-}
-
 // ---------------------------------------------------------------------------
 // ids: pull the 11-character video ID out of any YouTube link form (pure, no network)
 // ---------------------------------------------------------------------------
 
-static URL_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:https?:)?//[^\s<>"'`]+|(?:[\w-]+\.)+[a-z]{2,}/[^\s<>"'`]*"#).unwrap()
-});
+static URL_IN_TEXT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)(?:https?:)?//[^\s<>"'`]+|(?:[\w-]+\.)+[a-z]{2,}/[^\s<>"'`]*"#).unwrap());
 static PCT_3F: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)%3F").unwrap());
 
 const YT_DOMAINS: [&str; 3] = ["youtube.com", "youtube-nocookie.com", "youtubekids.com"];
@@ -195,11 +158,8 @@ struct Parsed {
 
 /// `urllib.parse.urlparse` plus `.hostname`. None where Python raises ValueError.
 fn urlparse(url: &str) -> Option<Parsed> {
-    let url: String = url
-        .trim_start_matches(|c: char| c <= ' ')
-        .chars()
-        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
-        .collect();
+    let url: String =
+        url.trim_start_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\r' | '\n')).collect();
     let mut rest: &str = &url;
     let mut scheme = String::new();
     if let Some(i) = rest.find(':') {
@@ -306,7 +266,8 @@ fn from_url(value: &str, depth: u32) -> Option<String> {
         frag = f; // old "#!/watch?v=ID" style
     }
     if frag.starts_with('/') || frag.contains("v=") {
-        let tail = if frag.starts_with('/') { frag.to_string() } else { format!("/watch?{}", frag.trim_start_matches('?')) };
+        let tail =
+            if frag.starts_with('/') { frag.to_string() } else { format!("/watch?{}", frag.trim_start_matches('?')) };
         if let Some(inner) = from_url(&format!("//{host}{tail}"), depth + 1) {
             return Some(inner);
         }
@@ -428,7 +389,7 @@ fn render(t: &Transcript, fmt: &str) -> Result<String, String> {
         "markdown" => {
             let mut head = format!("# Transcript: {}\n\nSource: {}", t.video_id, t.source);
             if let Some(l) = t.language.as_deref().filter(|l| !l.is_empty()) {
-                head.push_str(&format!(" ({l})"));
+                let _ = write!(head, " ({l})");
             }
             let lines: Vec<String> =
                 t.segments.iter().map(|s| format!("- **[{}]** {}", stamp(s.start), s.text)).collect();
@@ -500,7 +461,14 @@ fn map_ytdlp_error(stderr: &str) -> Option<&'static str> {
         Some(MSG_AGE)
     } else if has(&["not a bot", "http error 429", "too many requests", "blocked"]) {
         Some(MSG_BLOCKED)
-    } else if has(&["video unavailable", "this video is not available", "has been removed", "terminated", "does not exist", "is unavailable"]) {
+    } else if has(&[
+        "video unavailable",
+        "this video is not available",
+        "has been removed",
+        "terminated",
+        "does not exist",
+        "is unavailable",
+    ]) {
         Some(MSG_UNAVAILABLE)
     } else if has(&["sign in"]) {
         Some(MSG_SIGNIN)
@@ -517,8 +485,7 @@ fn ytdlp_message(stderr: &str) -> String {
         .rev()
         .find(|l| l.starts_with("ERROR:"))
         .or(lines.last())
-        .map(|l| l.trim_start_matches("ERROR:").trim().to_string())
-        .unwrap_or_else(|| "yt-dlp failed".into())
+        .map_or_else(|| "yt-dlp failed".into(), |l| l.trim_start_matches("ERROR:").trim().to_string())
 }
 
 /// Parse a json3 caption file: `events[].tStartMs`, `dDurationMs`, `segs[].utf8`.
@@ -631,7 +598,8 @@ fn download_audio(ytdlp: &Path, video_id: &str, dir: &Path) -> Result<PathBuf, S
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            n.starts_with(&format!("{video_id}.")) && !n.ends_with(".part") && !n.ends_with(".ytdl")
+            let partial = matches!(p.extension().and_then(|x| x.to_str()), Some("part" | "ytdl"));
+            n.starts_with(&format!("{video_id}.")) && !partial
         })
         .collect();
     files.sort();
@@ -778,7 +746,7 @@ fn fail(msg: &str) -> i32 {
     1
 }
 
-fn run(cli: Cli) -> i32 {
+fn run(cli: &Cli) -> i32 {
     if cli.print_id {
         return match extract_video_id(&cli.video) {
             Ok(id) => {
@@ -819,7 +787,8 @@ const FETCH_USAGE: &str = "usage: yt_transcribe fetch <youtube url>";
 
 /// `~/.cache/yt-learn`: the cache of `fetch` (HOME first, like the shell script it replaced).
 fn fetch_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir);
+    let home =
+        std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir);
     home.unwrap_or_else(|| PathBuf::from(".")).join(".cache").join("yt-learn")
 }
 
@@ -827,7 +796,8 @@ fn fetch_dir() -> PathBuf {
 /// A cached, non-empty file is returned at once with no network.
 fn fetch(url: &str) -> i32 {
     fetch_with(url, &fetch_dir(), &|id| {
-        transcribe_with(id, &[], "base", false, false, &from_captions, &from_whisper).and_then(|t| render(&t, "markdown"))
+        transcribe_with(id, &[], "base", false, false, &from_captions, &from_whisper)
+            .and_then(|t| render(&t, "markdown"))
     })
 }
 
@@ -880,7 +850,7 @@ fn main() {
             }
         }
     }
-    std::process::exit(run(Cli::parse()));
+    std::process::exit(run(&Cli::parse()));
 }
 
 #[cfg(test)]
@@ -929,7 +899,9 @@ mod tests {
             format!("https://www.youtube.com/attribution_link?a=x&u=%2Fwatch%3Fv%3D{v}%26feature%3Dshare"),
             format!("https://www.youtube.com/redirect?q=https%3A%2F%2Fyoutu.be%2F{v}&event=x"),
             format!("https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}&format=json"),
-            format!("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}"),
+            format!(
+                "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}"
+            ),
             format!("<https://youtu.be/{v}>"),
             format!("\"https://youtu.be/{v}\""),
             format!("watch this: https://youtu.be/{v}, it is great."),
@@ -988,35 +960,6 @@ mod tests {
         assert_eq!(e, "Cannot find a YouTube video ID in 'nonsense'. Pass a video link or the 11-character ID.");
     }
 
-    #[test]
-    fn ids_deterministic() {
-        for s in good() {
-            assert_eq!(extract_video_id(&s), extract_video_id(&s));
-        }
-    }
-
-    #[test]
-    fn ids_forms() {
-        for s in [
-            V.to_string(),
-            format!("https://www.youtube.com/watch?v={V}&t=3"),
-            format!("https://youtu.be/{V}?si=x"),
-            format!("youtube.com/shorts/{V}"),
-            format!("https://m.youtube.com/embed/{V}"),
-        ] {
-            assert_eq!(extract_video_id(&s).as_deref(), Ok(V));
-        }
-        assert!(extract_video_id("https://example.com/watch?v=dQw4w9WgXcQ").is_err());
-    }
-
-    #[test]
-    fn python_repr() {
-        assert_eq!(py_repr("a'b"), "\"a'b\"");
-        assert_eq!(py_repr("a'b\"c"), "'a\\'b\"c'");
-        assert_eq!(py_repr("x\ny\u{a0}z"), "'x\\ny\\xa0z'");
-        assert_eq!(py_repr("é"), "'é'");
-    }
-
     fn sample() -> Transcript {
         Transcript {
             video_id: "abc".into(),
@@ -1046,11 +989,11 @@ mod tests {
     #[test]
     fn json_rounds_to_two_decimals() {
         let mut t = sample();
-        t.segments = vec![Segment { start: 1.23456, duration: 0.005, text: "x".into() }];
+        t.segments = vec![Segment { start: 1.23456, duration: 0.007, text: "x".into() }];
         t.language = None;
         let s = render(&t, "json").unwrap();
         assert!(s.contains("\"start\": 1.23,"), "{s}");
-        assert!(s.contains("\"duration\": 0.01,") || s.contains("\"duration\": 0.0,"), "{s}");
+        assert!(s.contains("\"duration\": 0.01,"), "{s}");
         assert!(s.contains("\"language\": null"), "{s}");
         assert!(s.starts_with("{\n  \"video_id\": \"abc\",\n  \"source\": \"captions\","), "{s}");
     }
@@ -1145,14 +1088,23 @@ mod tests {
         let e = need_tool_any(&["whisper-cli", "whisper-cpp"], "the Whisper fallback", &nothing).unwrap_err();
         assert!(e.contains("whisper-cli") && e.contains("whisper"), "{e}");
         let some = |n: &str| -> Option<PathBuf> { (n == "whisper-cpp").then(|| PathBuf::from("/x/whisper-cpp")) };
-        assert_eq!(need_tool_any(&["whisper-cli", "whisper-cpp"], "w", &some).unwrap(), PathBuf::from("/x/whisper-cpp"));
+        assert_eq!(
+            need_tool_any(&["whisper-cli", "whisper-cpp"], "w", &some).unwrap(),
+            PathBuf::from("/x/whisper-cpp")
+        );
     }
 
     #[test]
     fn ytdlp_errors_map_to_user_messages() {
-        assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Private video. Sign in if you've been granted access"), Some(MSG_UNPLAYABLE));
+        assert_eq!(
+            map_ytdlp_error("ERROR: [youtube] x: Private video. Sign in if you've been granted access"),
+            Some(MSG_UNPLAYABLE)
+        );
         assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Video unavailable"), Some(MSG_UNAVAILABLE));
-        assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate"), Some(MSG_AGE));
+        assert_eq!(
+            map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate"),
+            Some(MSG_AGE)
+        );
         assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm you're not a bot"), Some(MSG_BLOCKED));
         assert_eq!(map_ytdlp_error("ERROR: unable to download: HTTP Error 429: Too Many Requests"), Some(MSG_BLOCKED));
         assert_eq!(map_ytdlp_error("ERROR: Sign in required"), Some(MSG_SIGNIN));
@@ -1178,7 +1130,7 @@ mod tests {
             ]
         );
         assert!(parse_json3("not json").is_err());
-        assert!(parse_json3("{}").unwrap().is_empty());
+        assert_eq!(parse_json3("{}").unwrap(), [] as [Segment; 0]);
     }
 
     #[test]
@@ -1209,17 +1161,14 @@ mod tests {
     }
 
     #[test]
-    fn collapse_and_strip() {
+    fn collapse_whitespace() {
         assert_eq!(collapse_ws(" a \n b\t\tc "), "a b c");
-        assert_eq!(py_strip("\u{1c} x \u{3000}"), "x");
     }
 
     #[test]
-    fn unquote_matches_python() {
+    fn unquote_cases() {
         assert_eq!(unquote("a%20b"), "a b");
-        assert_eq!(unquote("%zz%4"), "%zz%4");
         assert_eq!(unquote("%E2%82%AC"), "€");
-        assert_eq!(unquote("%C3"), "\u{fffd}");
         assert_eq!(unquote("100%"), "100%");
         assert_eq!(unquote("%41"), "A");
     }

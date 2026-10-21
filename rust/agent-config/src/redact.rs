@@ -10,10 +10,7 @@ const MARK: &str = "[REDACTED]";
 /// (group 1) and replaces only the value (group 2).
 const RULES: &[(&str, &str)] = &[
     // Private key blocks, also a block cut off before its END line.
-    (
-        r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)",
-        MARK,
-    ),
+    (r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)", MARK),
     // OpenAI and Anthropic style keys (`sk-`, `sk-ant-`).
     (r"\bsk-[A-Za-z0-9_-]{20,}", MARK),
     // GitHub tokens: classic (`ghp_` and kin) and fine-grained.
@@ -39,10 +36,7 @@ struct Rules {
 
 static COMPILED: LazyLock<Rules> = LazyLock::new(|| Rules {
     set: RegexSet::new(RULES.iter().map(|(p, _)| *p)).expect("redact patterns compile"),
-    list: RULES
-        .iter()
-        .map(|(p, r)| (Regex::new(p).expect("redact pattern compiles"), *r))
-        .collect(),
+    list: RULES.iter().map(|(p, r)| (Regex::new(p).expect("redact pattern compiles"), *r)).collect(),
 });
 
 /// Replace secrets in `text` with `[REDACTED]`. Returns `Cow::Borrowed` when nothing matched.
@@ -53,7 +47,7 @@ pub fn redact(text: &str) -> Cow<'_, str> {
         return Cow::Borrowed(text);
     }
     let mut out = text.to_string();
-    for i in hits.iter() {
+    for i in &hits {
         let (re, rep) = &rules.list[i];
         if let Cow::Owned(next) = re.replace_all(&out, *rep) {
             out = next;
@@ -80,12 +74,8 @@ mod tests {
     }
 
     #[test]
-    fn openai_style_key() {
+    fn openai_and_anthropic_style_keys() {
         gone(&("sk-".to_string() + &rep("a1B2", 10)));
-    }
-
-    #[test]
-    fn anthropic_style_key() {
         gone(&("sk-ant-".to_string() + &rep("aB3_-", 18)));
     }
 
@@ -141,13 +131,9 @@ mod tests {
     #[test]
     fn named_value_keeps_the_name() {
         let value = rep("q7Zx", 5);
-        for (name, sep) in [
-            ("api_key", "="),
-            ("API_KEY", ": "),
-            ("auth_token", " = "),
-            ("client_secret", ":"),
-            ("DB_PASSWORD", "="),
-        ] {
+        for (name, sep) in
+            [("api_key", "="), ("API_KEY", ": "), ("auth_token", " = "), ("client_secret", ":"), ("DB_PASSWORD", "=")]
+        {
             let input = format!("{name}{sep}{value}");
             let out = redact(&input);
             assert!(!out.contains(&value), "value left in: {out}");

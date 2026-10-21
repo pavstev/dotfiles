@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 
 /// The real skill folders: a SKILL.md inside, not `_template`, not a dot folder.
 pub fn list(src: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(src).into_iter().flatten().flatten()
+    let mut names: Vec<String> = fs::read_dir(src)
+        .into_iter()
+        .flatten()
+        .flatten()
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| !n.starts_with('_') && !n.starts_with('.'))
@@ -26,12 +29,20 @@ fn prune(root: &Path, src: &Path) {
     let mut n = 0;
     for e in fs::read_dir(root).into_iter().flatten().flatten() {
         let link = e.path();
-        if !os::is_symlink(&link) { continue; }
+        if !os::is_symlink(&link) {
+            continue;
+        }
         let Some(t) = os::readlink(&link) else { continue };
-        if !t.starts_with(src) || t == src || t.exists() { continue; }
-        if fs::remove_file(&link).is_ok() { n += 1; }
+        if !t.starts_with(src) || t == src || t.exists() {
+            continue;
+        }
+        if fs::remove_file(&link).is_ok() {
+            n += 1;
+        }
     }
-    if n > 0 { plain(&format!("·  removed {} old skill links from {}", n, root.display())); }
+    if n > 0 {
+        plain(&format!("·  removed {} old skill links from {}", n, root.display()));
+    }
 }
 
 /// Link every skill into `root`. Returns false when something could not be linked.
@@ -50,7 +61,9 @@ pub fn link_each(root: &Path, src: &Path) -> bool {
     for name in list(src) {
         let link = root.join(&name);
         let target: PathBuf = src.join(&name);
-        if os::is_symlink(&link) && os::readlink(&link).as_deref() == Some(target.as_path()) { continue; }
+        if os::is_symlink(&link) && os::readlink(&link).as_deref() == Some(target.as_path()) {
+            continue;
+        }
         // Windows: an earlier run (before native links) left a copy of our own skill. A copy
         // never follows the repo, so it is replaced by a link. Only our ps_* names.
         if os::is_windows() && name.starts_with("ps_") && link.is_dir() && !os::is_symlink(&link) {
@@ -60,12 +73,16 @@ pub fn link_each(root: &Path, src: &Path) -> bool {
             plain(&format!("·  {} exists (not ours) — left untouched", link.display()));
             continue;
         }
-        if os::symlink(&target, &link).is_ok() { made += 1; } else {
+        if os::symlink(&target, &link).is_ok() {
+            made += 1;
+        } else {
             plain_err(&format!("!  can't link {}", link.display()));
             good = false;
         }
     }
-    if made > 0 { plain(&format!("✓ linked {} skills into {}", made, root.display())); }
+    if made > 0 {
+        plain(&format!("✓ linked {} skills into {}", made, root.display()));
+    }
     good
 }
 
@@ -76,7 +93,9 @@ pub fn sync(repo: &Path) -> (bool, Vec<(String, bool)>) {
     crate::out::capture(|| {
         let _ = fs::create_dir_all(&claude);
         let good = link_each(&claude.join("skills"), &src);
-        if verbose() { plain("✓ skill links complete"); }
+        if verbose() {
+            plain("✓ skill links complete");
+        }
         good
     })
 }

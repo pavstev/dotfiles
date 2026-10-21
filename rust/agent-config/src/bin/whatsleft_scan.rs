@@ -1,19 +1,21 @@
 //! whatsleft-scan: collect proof of what is still open in a Claude Code session.
-//! Port of the old Python tool whatsleft-scan.py (deleted; its tests are mapped in tests/PORTED.md).
 //!
 //! Reads the session transcript (JSONL) and the git state of every repo the session touched.
 //! Prints tagged evidence lines so the agent can build the "me / you" table.
 //! Read-only, except `git fetch` (skip with --no-fetch).
 
-use agent_config::pycompat::{
-    basename, civil_from_days, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str, truthy,
-};
+use agent_config::guard_checks::expanduser;
+use agent_config::paths;
+use agent_config::pycompat::{basename, dirname, fname, list_dir, mtime, parse_ts, py_splitlines, py_str, truthy};
+use agent_config::scan::{Search, find_session, py_dumps};
+use agent_config::transcript::{Body, Line};
 use clap::Parser;
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,10 +56,7 @@ rx!(
     r"(?i)\bTODO:|\bFIXME\b|\bfollow[- ]?ups?\b|\bnext steps?\b|\bnot (?:\w+ )?yet\b|\bskipped\b|\bstill (?:need|needs|have|has) to\b|\byou(?:'ll| will)? (?:need|have|must|should) to\b|\bleft to do\b|\b(?:I|we) (?:could not|couldn't|can't|cannot|did not|didn't)\b|\bblocked (?:by|on)\b|\bwaiting (?:for|on)\b|\b(?:is|are|was|were|still) (?:failing|broken|pending|missing)\b"
 );
 rx!(LATER, r"(?i)\blater\b");
-rx!(
-    MARKER,
-    r"(?:#|//|/\*|<!--|--|;|^\s*\*)\s*(?:TODO|FIXME|XXX|HACK)\b|\b(?:TODO|FIXME|XXX|HACK)\b(?:\([^)]*\))?:"
-);
+rx!(MARKER, r"(?:#|//|/\*|<!--|--|;|^\s*\*)\s*(?:TODO|FIXME|XXX|HACK)\b|\b(?:TODO|FIXME|XXX|HACK)\b(?:\([^)]*\))?:");
 rx!(DENIED, r"(?i)doesn't want to proceed|was denied|permission .{0,40}denied|rejected by the user");
 rx!(
     BG_RESULT,
@@ -91,15 +90,11 @@ rx!(
 rx!(BIG_AGENT, r"(?i)research|refactor|thorough|migrate|audit");
 rx!(ARTIFACT_URL, r"https://claude\.ai/(?:code/)?artifact/[\w-]+");
 rx!(WS, r"\s+");
-rx!(NON_ALNUM, r"[^A-Za-z0-9]");
 rx!(SYS_REMINDER, r"(?s)<system-reminder>.*?</system-reminder>");
 rx!(PASTED, r"(?s)<pasted_content[^>]*>.*?</pasted_content>");
 rx!(CMD_NAME, r"<command-name>([^<]*)</command-name>");
 rx!(CMD_ARGS, r"<command-args>([^<]*)</command-args>");
-rx!(
-    ASK_SKIP,
-    r"^\s*(<(task-notification|local-command|bash-|command-message)|\[Request interrupted)"
-);
+rx!(ASK_SKIP, r"^\s*(<(task-notification|local-command|bash-|command-message)|\[Request interrupted)");
 rx!(FENCE, r"(?s)```.*?```");
 rx!(TASK_NUM, r"#?(\d+)");
 rx!(CRON_ID, r"\b(?:id|ID|job)[:\s]+([\w-]+)");
@@ -120,7 +115,7 @@ static STATE: Mutex<State> = Mutex::new(State { me: 0, you: 0, check: 0, later: 
 
 fn emit(s: &str) {
     if !QUIET.load(Ordering::Relaxed) {
-        let _ = writeln!(std::io::stdout(), "{}", s);
+        let _ = writeln!(io::stdout(), "{s}");
     }
 }
 
@@ -162,63 +157,8 @@ fn line(tag: &str, text: &str) {
 // Python-compat helpers
 // ---------------------------------------------------------------------------
 
-fn home() -> String {
-    for k in ["HOME", "USERPROFILE"] {
-        if let Ok(h) = std::env::var(k)
-            && !h.is_empty()
-        {
-            return h;
-        }
-    }
-    dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
-}
-
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
-}
-
-/// json.dumps(v) with Python defaults.
-fn py_dumps(v: &Value) -> String {
-    let mut s = String::new();
-    dump(v, &mut s);
-    s
-}
-
-fn dump(v: &Value, out: &mut String) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            if n.is_i64() || n.is_u64() {
-                out.push_str(&n.to_string());
-            } else {
-                out.push_str(&py_float(n.as_f64().unwrap_or(0.0)));
-            }
-        }
-        Value::String(s) => json_str(out, s),
-        Value::Array(a) => {
-            out.push('[');
-            for (i, x) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                dump(x, out);
-            }
-            out.push(']');
-        }
-        Value::Object(o) => {
-            out.push('{');
-            for (i, (k, x)) in o.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                json_str(out, k);
-                out.push_str(": ");
-                dump(x, out);
-            }
-            out.push('}');
-        }
-    }
 }
 
 /// str(v or "")
@@ -257,18 +197,8 @@ fn vshort(v: &Value, n: usize) -> String {
 }
 
 fn tilde(p: &str) -> String {
-    let h = home();
+    let h = paths::home().to_string_lossy().into_owned();
     if p.starts_with(&h) { p.replacen(&h, "~", 1) } else { p.to_string() }
-}
-
-fn expanduser(p: &str) -> String {
-    if p == "~" {
-        home()
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        format!("{}/{}", home().trim_end_matches('/'), rest)
-    } else {
-        p.to_string()
-    }
 }
 
 /// open(path, errors="replace") with universal newlines.
@@ -277,90 +207,30 @@ fn read_text(p: &Path) -> Option<String> {
 }
 
 fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// Local calendar fields for a unix time: (year, month, day, hour, minute, second).
-#[cfg(all(unix, target_pointer_width = "64"))]
-fn local_fields(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
-    #[repr(C)]
-    struct Tm {
-        tm_sec: i32,
-        tm_min: i32,
-        tm_hour: i32,
-        tm_mday: i32,
-        tm_mon: i32,
-        tm_year: i32,
-        tm_wday: i32,
-        tm_yday: i32,
-        tm_isdst: i32,
-        tm_gmtoff: i64,
-        tm_zone: *const u8,
-    }
-    unsafe extern "C" {
-        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
-    }
-    let mut tm = Tm {
-        tm_sec: 0,
-        tm_min: 0,
-        tm_hour: 0,
-        tm_mday: 0,
-        tm_mon: 0,
-        tm_year: 0,
-        tm_wday: 0,
-        tm_yday: 0,
-        tm_isdst: 0,
-        tm_gmtoff: 0,
-        tm_zone: std::ptr::null(),
-    };
-    // SAFETY: both pointers are valid for the call; localtime_r only writes into `tm`.
-    let r = unsafe { localtime_r(&secs, &mut tm) };
-    if r.is_null() {
-        return utc_fields(secs);
-    }
-    (tm.tm_year as i64 + 1900, tm.tm_mon as i64 + 1, tm.tm_mday as i64, tm.tm_hour as i64, tm.tm_min as i64, tm.tm_sec as i64)
+/// The local wall-clock time of a unix time in microseconds.
+fn local_datetime(micros: i64) -> jiff::civil::DateTime {
+    jiff::Timestamp::from_microsecond(micros)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system())
+        .datetime()
 }
 
-#[cfg(not(all(unix, target_pointer_width = "64")))]
-fn local_fields(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
-    // No portable local-time call without a new crate: other platforms show UTC.
-    utc_fields(secs)
-}
-
-fn utc_fields(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
-    let days = secs.div_euclid(86400);
-    let sod = secs.rem_euclid(86400);
-    let (y, m, d) = civil_from_days(days);
-    (y, m, d, sod / 3600, sod % 3600 / 60, sod % 60)
-}
-
-/// datetime.fromtimestamp(ts).isoformat()
+/// datetime.fromtimestamp(ts).isoformat(): microseconds only when not zero.
 fn local_iso(ts: f64) -> String {
-    let t = ts.trunc();
-    let mut us = ((ts - t) * 1e6).round_ties_even() as i64;
-    let mut secs = t as i64;
-    if us >= 1_000_000 {
-        secs += 1;
-        us -= 1_000_000;
-    } else if us < 0 {
-        secs -= 1;
-        us += 1_000_000;
+    let at = local_datetime((ts * 1e6).round_ties_even() as i64);
+    let mut o = at.strftime("%Y-%m-%dT%H:%M:%S").to_string();
+    if at.subsec_nanosecond() != 0 {
+        let _ = write!(o, ".{:06}", at.subsec_nanosecond() / 1000);
     }
-    let (y, mo, d, h, mi, s) = local_fields(secs);
-    let mut o = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", y, mo, d, h, mi, s);
-    if us != 0 {
-        o.push_str(&format!(".{:06}", us));
-    }
-    // The UTC fallback must say so: git reads a zone-less --since time as local time.
-    #[cfg(not(all(unix, target_pointer_width = "64")))]
-    o.push('Z');
     o
 }
 
 /// datetime.fromtimestamp(ts).strftime("%H:%M")
 fn local_hm(ts: f64) -> String {
-    let (_, _, _, h, mi, _) = local_fields(ts.floor() as i64);
-    format!("{:02}:{:02}", h, mi)
+    local_datetime((ts.floor() * 1e6) as i64).strftime("%H:%M").to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +239,11 @@ fn local_hm(ts: f64) -> String {
 
 fn run(args: &[&str], cwd: Option<&str>, timeout: u64) -> (i32, String) {
     let mut cmd = Command::new(args[0]);
-    cmd.args(&args[1..]).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(&args[1..])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
@@ -413,53 +287,11 @@ fn git(root: &str, args: &[&str], t: u64) -> (i32, String) {
 // 1. Find and read the session
 // ---------------------------------------------------------------------------
 
-fn projects_dir() -> PathBuf {
-    Path::new(&home()).join(".claude").join("projects")
-}
-
-fn session_hits(prefix: &str, exact: bool) -> Vec<PathBuf> {
-    let mut hits = vec![];
-    for d in list_dir(&projects_dir()) {
-        for f in list_dir(&d) {
-            let n = fname(&f);
-            let ok = if exact { n == format!("{}.jsonl", prefix) } else { n.starts_with(prefix) && n.ends_with(".jsonl") };
-            if ok {
-                hits.push(f);
-            }
-        }
-    }
-    hits
-}
-
 fn cwd_string() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn find_session(arg: Option<&str>) -> Option<PathBuf> {
-    if let Some(a) = arg.filter(|a| !a.is_empty()) {
-        if Path::new(a).is_file() {
-            return Some(PathBuf::from(a));
-        }
-        return session_hits(a, false).into_iter().next();
-    }
-    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID")
-        && !sid.is_empty()
-        && let Some(h) = session_hits(&sid, true).into_iter().next()
-    {
-        return Some(h);
-    }
-    let enc = NON_ALNUM.replace_all(&cwd_string(), "-").into_owned();
-    let mine: Vec<PathBuf> = list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
-    let mut best: Option<(f64, PathBuf)> = None;
-    for p in mine {
-        let m = mtime(&p).unwrap_or(0.0);
-        if best.as_ref().map(|(bm, _)| m > *bm).unwrap_or(true) {
-            best = Some((m, p));
-        }
-    }
-    best.map(|(_, p)| p)
-}
-
+// Differs from the other `text_of` copies on purpose (newline join, empty string); see stores/claude.rs.
 fn text_of(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
@@ -486,23 +318,20 @@ fn clean_ask(t: &str) -> String {
     short(&t, 150)
 }
 
-fn is_human(obj: &Value, content: &Value) -> bool {
-    if truthy(get(obj, "isMeta")) || truthy(get(obj, "isSidechain")) {
+fn is_human(line: &Line) -> bool {
+    if line.is_meta.0 || line.is_sidechain.0 {
         return false;
     }
-    let origin = get(obj, "origin");
-    if origin.is_object() {
-        let k = get(origin, "kind");
-        if !(k.is_null() || k.as_str() == Some("human")) {
-            return false;
-        }
-    }
-    if let Some(a) = content.as_array()
-        && a.iter().any(|b| b.is_object() && get(b, "type").as_str() == Some("tool_result"))
+    if let Some(origin) = &line.origin.0
+        && !(origin.kind.is_null() || origin.kind.as_str() == Some("human"))
     {
         return false;
     }
-    !text_of(content).trim().is_empty()
+    let content = &line.msg().content;
+    if content.blocks().iter().any(|b| b.kind.as_str() == Some("tool_result")) {
+        return false;
+    }
+    !content.text("\n").trim().is_empty()
 }
 
 fn strings<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
@@ -550,6 +379,20 @@ struct Session {
 }
 
 impl Session {
+    /// Record the task notices in every string of a line that holds one. The line is read as plain
+    /// JSON again, because a notice can sit anywhere in it.
+    fn read_notices(&mut self, raw: &str) {
+        let Ok(obj) = serde_json::from_str::<Value>(raw) else { return };
+        let mut strs = vec![];
+        strings(&obj, &mut strs);
+        for txt in strs {
+            for n in NOTICE.captures_iter(txt) {
+                let summary = n.name("summary").map(|m| m.as_str().to_string()).unwrap_or_default();
+                self.notices.insert(n["tool"].to_string(), (n["status"].to_string(), summary));
+            }
+        }
+    }
+
     fn result(&self, uid: &str) -> (bool, &str) {
         match self.results.get(uid) {
             Some((e, b)) => (*e, b.as_str()),
@@ -560,89 +403,80 @@ impl Session {
 
 fn read_session(path: &Path) -> Session {
     let mut s = Session::default();
-    let text = String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned();
-    for raw in text.split('\n') {
-        let Ok(obj) = serde_json::from_str::<Value>(raw) else { continue };
-        if !obj.is_object() {
-            continue;
+    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let mut reader = BufReader::new(src);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if !reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            break;
         }
+        let text = String::from_utf8_lossy(&buf);
+        let raw = text.strip_suffix('\n').unwrap_or(&text);
+        let Some(o) = Line::parse_str(raw) else { continue };
         if raw.contains("<task-notification>") {
-            let mut strs = vec![];
-            strings(&obj, &mut strs);
-            for txt in strs {
-                for n in NOTICE.captures_iter(txt) {
-                    s.notices.insert(
-                        n["tool"].to_string(),
-                        (n["status"].to_string(), n.name("summary").map(|m| m.as_str().to_string()).unwrap_or_default()),
-                    );
-                }
-            }
+            s.read_notices(raw);
         }
-        let ts = get(&obj, "timestamp").as_str().and_then(parse_ts);
+        let ts = o.timestamp.as_str().and_then(parse_ts);
         if let Some(t) = ts
             && t != 0.0
         {
-            if !s.start.map(|x| x != 0.0).unwrap_or(false) {
+            if !s.start.is_some_and(|x| x != 0.0) {
                 s.start = Some(t);
             }
             s.end = Some(t);
         }
-        let sidechain = truthy(get(&obj, "isSidechain"));
-        if let Some(c) = get(&obj, "cwd").as_str().filter(|c| !c.is_empty())
+        let sidechain = o.is_sidechain.0;
+        if let Some(c) = o.cwd.as_str().filter(|c| !c.is_empty())
             && !sidechain
         {
             s.cwds.insert(c.to_string());
         }
-        let empty = Value::Object(Default::default());
-        let m = get(&obj, "message");
-        let msg = if truthy(m) && m.is_object() { m } else { &empty };
-        let content = get(msg, "content");
-        let typ = get(&obj, "type").as_str().unwrap_or("");
+        let content = &o.msg().content;
+        let typ = o.kind.or_empty();
         if typ == "user" && !sidechain {
-            if is_human(&obj, content) {
-                let ask = clean_ask(&text_of(content));
+            if is_human(&o) {
+                let ask = clean_ask(&content.text("\n"));
                 if !ask.is_empty() {
                     s.asks.push((ts, ask, s.order.len()));
                 }
             }
-            if let Some(arr) = content.as_array() {
-                for b in arr {
-                    if b.is_object() && get(b, "type").as_str() == Some("tool_result") {
-                        let c = get(b, "content");
-                        let body = match c {
-                            Value::String(x) => x.clone(),
-                            other => {
-                                let t = text_of(other);
-                                if !t.is_empty() { t } else { pychars(&py_dumps(other), 0, 2000) }
-                            }
-                        };
-                        let id = py_str(get(b, "tool_use_id"));
-                        if !s.results.contains_key(&id) {
-                            s.results_keys.push(id.clone());
-                        }
-                        s.results.insert(id, (truthy(get(b, "is_error")), pychars(&body, 0, 2000)));
+            for b in content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_result")) {
+                let body = match &b.content {
+                    Body::Text(x) => x.to_string(),
+                    Body::Json(other) => {
+                        let t = text_of(other);
+                        if t.is_empty() { pychars(&py_dumps(other), 0, 2000) } else { t }
                     }
+                };
+                let id = b.tool_use_id.or_empty().to_string();
+                if !s.results.contains_key(&id) {
+                    s.results_keys.push(id.clone());
                 }
+                s.results.insert(id, (b.is_error.0, pychars(&body, 0, 2000)));
             }
-        } else if typ == "assistant" && !sidechain && content.is_array() {
-            for b in content.as_array().unwrap() {
-                if !b.is_object() {
-                    continue;
-                }
-                let bt = get(b, "type").as_str().unwrap_or("");
-                if bt == "text" && get(b, "text").as_str().map(|t| !t.trim().is_empty()).unwrap_or(false) {
-                    s.texts.push(get(b, "text").as_str().unwrap().to_string());
+        } else if typ == "assistant" && !sidechain {
+            for b in content.blocks() {
+                let bt = b.kind.or_empty();
+                if bt == "text" && b.text.as_str().is_some_and(|t| !t.trim().is_empty()) {
+                    s.texts.push(b.text.or_empty().to_string());
                 } else if bt == "tool_use" {
-                    let inp0 = get(b, "input");
-                    let inp = if truthy(inp0) { inp0.clone() } else { Value::Object(Default::default()) };
-                    let id = py_str(get(b, "id"));
-                    let name = get(b, "name").as_str().unwrap_or("").to_string();
+                    let inp =
+                        if truthy(&b.input) { b.input.clone() } else { Value::Object(serde_json::Map::default()) };
+                    let id = b.id.or_empty().to_string();
+                    let name = b.name.or_empty().to_string();
                     if !s.uses.contains_key(&id) {
                         s.uses_keys.push(id.clone());
                     }
                     s.uses.insert(
                         id.clone(),
-                        Use { name: name.clone(), inp: inp.clone(), ts, cwd: get(&obj, "cwd").as_str().map(|c| c.to_string()), idx: s.order.len() },
+                        Use {
+                            name: name.clone(),
+                            inp: inp.clone(),
+                            ts,
+                            cwd: o.cwd.as_str().map(ToString::to_string),
+                            idx: s.order.len(),
+                        },
                     );
                     s.order.push(id);
                     if name == "TodoWrite" {
@@ -667,7 +501,7 @@ fn read_session(path: &Path) -> Session {
         };
         let res = s.result(uid).1.to_string();
         if name == "TaskCreate" {
-            let key = TASK_NUM.captures(&res).map(|m| m[1].to_string()).unwrap_or_else(|| uid.clone());
+            let key = TASK_NUM.captures(&res).map_or_else(|| uid.clone(), |m| m[1].to_string());
             let subj = {
                 let v = first_truthy(&inp, &["subject", "title", "description"]);
                 if truthy(v) { py_str(v) } else { "?".to_string() }
@@ -687,7 +521,7 @@ fn read_session(path: &Path) -> Session {
                 t.2 = py_str(get(&inp, "status"));
             }
         } else if name == "CronCreate" {
-            let key = CRON_ID.captures(&res).map(|m| m[1].to_string()).unwrap_or_else(|| uid.clone());
+            let key = CRON_ID.captures(&res).map_or_else(|| uid.clone(), |m| m[1].to_string());
             let val = {
                 let v = first_truthy(&inp, &["prompt", "cron"]);
                 if truthy(v) { py_str(v) } else { "?".to_string() }
@@ -746,7 +580,13 @@ fn section_todos(s: &Session) {
             let c = first_truthy(t, &["content", "activeForm"]);
             let c = if truthy(c) { py_str(c) } else { "?".to_string() };
             let st = match get(t, "status") {
-                Value::Null => if t.get("status").is_some() { "None".to_string() } else { "?".to_string() },
+                Value::Null => {
+                    if t.get("status").is_some() {
+                        "None".to_string()
+                    } else {
+                        "?".to_string()
+                    }
+                }
                 v => py_str(v),
             };
             items.push((c, st));
@@ -792,16 +632,20 @@ fn background_tasks(s: &Session) -> Vec<Bg> {
         let u = &s.uses[uid];
         let res = s.result(uid).1;
         let m = BG_RESULT.captures(res);
-        let mut task_id = m.as_ref().map(|m| m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default()).unwrap_or_default();
+        let mut task_id = m
+            .as_ref()
+            .map(|m| m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default())
+            .unwrap_or_default();
         let is_bg = m.is_some()
             || res.trim_start().starts_with("Async agent launched")
-            || (get(&u.inp, "run_in_background") == &Value::Bool(true) && ["Bash", "Agent", "Monitor"].contains(&u.name.as_str()));
+            || (get(&u.inp, "run_in_background") == &Value::Bool(true)
+                && ["Bash", "Agent", "Monitor"].contains(&u.name.as_str()));
         if !is_bg {
             continue;
         }
         if task_id.is_empty() {
             let a = AGENT_ID.captures(res).or_else(|| ANY_ID.captures(res));
-            task_id = a.map(|a| a[1].to_string()).unwrap_or_else(|| uid.clone());
+            task_id = a.map_or_else(|| uid.clone(), |a| a[1].to_string());
         }
         let (mut status, summary) = s.notices.get(uid).cloned().unwrap_or_default();
         if s.stopped.contains(&task_id) && status.is_empty() {
@@ -810,12 +654,10 @@ fn background_tasks(s: &Session) -> Vec<Bg> {
         let o = OUTFILE.captures(res);
         let prompt = or_blank(get(&u.inp, "prompt"));
         let d = DEADLINE.captures(&prompt);
-        let deadline = d
-            .map(|d| {
-                let n: i64 = d[1].parse().unwrap_or(0);
-                n.saturating_mul(if d[2].starts_with(['h', 'H']) { 60 } else { 1 })
-            })
-            .unwrap_or(0);
+        let deadline = d.map_or(0, |d| {
+            let n: i64 = d[1].parse().unwrap_or(0);
+            n.saturating_mul(if d[2].starts_with(['h', 'H']) { 60 } else { 1 })
+        });
         rows.push(Bg {
             id: task_id,
             name: u.name.clone(),
@@ -858,14 +700,15 @@ fn advise(t: &mut Bg) -> (bool, String) {
         return (false, "server, stop it when work ends".into());
     }
     if let Some(q) = quiet
-        && q >= 20.0 && run >= 20.0
+        && q >= 20.0
+        && run >= 20.0
     {
         return (false, format!("quiet for {}m, read its output before stopping", q as i64));
     }
     if run < 5.0 {
         return (false, "just started".into());
     }
-    (false, if quiet.map(|q| q < 20.0).unwrap_or(false) { "output is recent".into() } else { "inside its time".into() })
+    (false, if quiet.is_some_and(|q| q < 20.0) { "output is recent".into() } else { "inside its time".into() })
 }
 
 fn section_background(s: &Session) {
@@ -891,14 +734,26 @@ fn section_background(s: &Session) {
             None => "no file".to_string(),
             Some(a) => format!("{}m ago", a as i64),
         };
-        pl!("  TASK  {} | {} | {} | {}m | {} | {}: {}", t.id, kind, what, t.run_min as i64, last, if stop { "STOP" } else { "KEEP" }, why);
+        pl!(
+            "  TASK  {} | {} | {} | {}m | {} | {}: {}",
+            t.id,
+            kind,
+            what,
+            t.run_min as i64,
+            last,
+            if stop { "STOP" } else { "KEEP" },
+            why
+        );
     }
     if stops > 0 {
-        line("ME", &format!("stop {} dead task(s) marked STOP above (TaskStop)", stops));
+        line("ME", &format!("stop {stops} dead task(s) marked STOP above (TaskStop)"));
     }
     for t in &rows {
         if t.status == "failed" {
-            line("CHECK", &format!("failed: {} — {} — still needed?", describe(&t.name, &t.inp), short(&t.summary, 90)));
+            line(
+                "CHECK",
+                &format!("failed: {} — {} — still needed?", describe(&t.name, &t.inp), short(&t.summary, 90)),
+            );
         }
     }
     for (_, what) in &s.crons {
@@ -906,7 +761,7 @@ fn section_background(s: &Session) {
     }
     let done = rows.iter().filter(|t| ["completed", "killed", "stopped"].contains(&t.status.as_str())).count();
     if done > 0 {
-        line("OK", &format!("{} background task(s) finished or stopped", done));
+        line("OK", &format!("{done} background task(s) finished or stopped"));
     }
     pl!();
 }
@@ -925,7 +780,7 @@ fn hurry_binary() -> Option<PathBuf> {
 }
 
 fn section_speed(path: &Path) {
-    let bin = hurry_binary().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "hurry_scan".to_string());
+    let bin = hurry_binary().map_or_else(|| "hurry_scan".to_string(), |p| p.to_string_lossy().into_owned());
     let (rc, out) = run(&[&bin, "--brief", "--session", &path.to_string_lossy()], None, 30);
     if rc == 0 && !out.trim().is_empty() {
         pl!("== SPEED (slow session? [ME] rows are mine, [YOU] rows are yours) ==");
@@ -947,7 +802,7 @@ fn section_deliverable(s: &Session, roots: &[String]) {
                 Some(st) if st != 0.0 => local_iso(st),
                 _ => "1 day ago".to_string(),
             };
-            let (_, sha) = git(r, &["log", &format!("--since={}", since), "--format=%h", "-1"], 10);
+            let (_, sha) = git(r, &["log", &format!("--since={since}"), "--format=%h", "-1"], 10);
             if !sha.is_empty() {
                 w = format!("{} ({})", sha, basename(r));
                 break;
@@ -1020,13 +875,13 @@ fn estimate(s: &Session) -> (i64, i64, i64) {
         }
     }
     let mid = serial as f64 + parallel;
-    let low = if mid != 0.0 { 5.max(up5(mid * 0.7)) } else { 0 };
+    let low = if mid == 0.0 { 0 } else { 5.max(up5(mid * 0.7)) };
     (up5(mid), low, up5(mid * 2.0))
 }
 
 fn eta_line(s: &Session) -> String {
     let (mid, low, high) = estimate(s);
-    if mid == 0 { "ETA ~0 min (nothing open)".to_string() } else { format!("ETA ~{} min ({}-{})", mid, low, high) }
+    if mid == 0 { "ETA ~0 min (nothing open)".to_string() } else { format!("ETA ~{mid} min ({low}-{high})") }
 }
 
 fn section_recent(s: &Session) {
@@ -1054,10 +909,10 @@ fn section_recent(s: &Session) {
     }
     pl!("== RECENT ERRORS (last work turn) ==");
     for (desc, _) in &denials[denials.len().saturating_sub(5)..] {
-        line("YOU", &format!("you said no to: {} — do it yourself, or tell me another way", desc));
+        line("YOU", &format!("you said no to: {desc} — do it yourself, or tell me another way"));
     }
     for (desc, res) in &errs[errs.len().saturating_sub(5)..] {
-        line("CHECK", &format!("error: {} → {} — fixed later?", desc, res));
+        line("CHECK", &format!("error: {desc} → {res} — fixed later?"));
     }
     pl!();
 }
@@ -1100,7 +955,7 @@ fn section_open_words(s: &Session) {
     }
     pl!("== OPEN WORDS (from Claude's last replies) ==");
     for h in hits {
-        line("CHECK", &format!("\"{}\"", h));
+        line("CHECK", &format!("\"{h}\""));
     }
     pl!();
 }
@@ -1161,7 +1016,7 @@ fn strip_heredocs(cmd: &str) -> String {
                 scan = end;
             }
             None => {
-                scan = hm.start() + cmd[hm.start()..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                scan = hm.start() + cmd[hm.start()..].chars().next().map_or(1, char::len_utf8);
             }
         }
     }
@@ -1235,7 +1090,7 @@ fn check_state(s: &Session, uid: &str, bare: &str, check_end: usize) -> String {
         }
     }
     let mask = masked_exit(bare, check_end);
-    if mask.is_empty() { "passed".into() } else { format!("hidden: {}", mask) }
+    if mask.is_empty() { "passed".into() } else { format!("hidden: {mask}") }
 }
 
 fn check_freshness(s: &Session, root: &str) {
@@ -1249,7 +1104,8 @@ fn check_freshness(s: &Session, root: &str) {
         }
         let cmd = or_blank(get(&u.inp, "command"));
         let bare = strip_heredocs(&cmd);
-        let here = u.name == "Bash" && (in_repo(u.cwd.as_deref().unwrap_or(""), root) || expanduser_text(&bare).contains(root));
+        let here = u.name == "Bash"
+            && (in_repo(u.cwd.as_deref().unwrap_or(""), root) || expanduser_text(&bare).contains(root));
         if here && IN_PLACE_EDIT.is_match(&bare) {
             last_edit = Some(u.idx);
         }
@@ -1263,10 +1119,13 @@ fn check_freshness(s: &Session, root: &str) {
         None => line("ME", "files edited, but no test/lint/check ran in this repo this session"),
         Some(lc) if lc < le => line("ME", "files edited after the last check run — run the checks again"),
         _ if state == "failed" => line("ME", "the last check run failed — fix it, then run it again"),
-        _ if state == "running" => line("ME", "the last check is still running: wait for its notice, then read its exit line"),
-        _ if state.starts_with("hidden: ") => {
-            line("ME", &format!("the last check's exit code is hidden ({}): read its log or run it again without it", &state[8..]))
+        _ if state == "running" => {
+            line("ME", "the last check is still running: wait for its notice, then read its exit line");
         }
+        _ if state.starts_with("hidden: ") => line(
+            "ME",
+            &format!("the last check's exit code is hidden ({}): read its log or run it again without it", &state[8..]),
+        ),
         _ => line("OK", "a check ran after the last edit, and it passed"),
     }
 }
@@ -1281,11 +1140,14 @@ fn new_markers(root: &str, since: Option<f64>) -> Vec<String> {
     let mut cmds: Vec<Vec<String>> = vec![vec!["git".into(), "diff".into(), "HEAD".into(), "-U0".into()]];
     if let Some(st) = since.filter(|s| *s != 0.0) {
         cmds.push(
-            ["git", "log", &format!("--since={}", local_iso(st)), "-p", "-U0", "--format="].iter().map(|s| s.to_string()).collect(),
+            ["git", "log", &format!("--since={}", local_iso(st)), "-p", "-U0", "--format="]
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         );
     }
     for args in cmds {
-        let a: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        let a: Vec<&str> = args.iter().map(String::as_str).collect();
         let (_, diff) = run(&a, Some(root), 20);
         let mut f = "?".to_string();
         for ln in py_splitlines(&diff) {
@@ -1344,9 +1206,15 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     let main = main0.replacen("origin/", "", 1);
     let main = if main.is_empty() { "main".to_string() } else { main };
 
-    for (marker, what) in [("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")] {
+    for (marker, what) in [
+        ("MERGE_HEAD", "merge"),
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+    ] {
         if !gd.is_empty() && Path::new(&gd).join(marker).exists() {
-            line("ME", &format!("a {} is half done — finish it", what));
+            line("ME", &format!("a {what} is half done — finish it"));
             break;
         }
     }
@@ -1358,11 +1226,13 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     if branch.is_empty() {
         line("ME", "detached HEAD — put the work on a branch");
     } else if branch != main {
-        line("YOU", &format!("on branch '{}', not '{}' — merge it, or open a PR? (your call)", branch, main));
+        line("YOU", &format!("on branch '{branch}', not '{main}' — merge it, or open a PR? (your call)"));
     }
 
     let (_, status) = g(&["status", "--porcelain"], 20);
-    if !status.is_empty() {
+    if status.is_empty() {
+        line("OK", "working tree clean");
+    } else {
         let st = py_splitlines(&status);
         let new = st.iter().filter(|x| x.starts_with("??")).count();
         line("ME", &format!("not committed: {} changed, {} new file(s)", st.len() - new, new));
@@ -1372,16 +1242,14 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
         if st.len() > 6 {
             pl!("          … {} more", st.len() - 6);
         }
-    } else {
-        line("OK", "working tree clean");
     }
 
     if !branch.is_empty() {
         let (rc, up) = g(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 20);
         if rc != 0 || up.is_empty() {
-            line("ME", &format!("branch '{}' was never pushed (no upstream)", branch));
+            line("ME", &format!("branch '{branch}' was never pushed (no upstream)"));
         } else {
-            let (_, lr) = g(&["rev-list", "--left-right", "--count", &format!("{}...HEAD", up)], 20);
+            let (_, lr) = g(&["rev-list", "--left-right", "--count", &format!("{up}...HEAD")], 20);
             let parts: Vec<&str> = lr.split_whitespace().collect();
             let (behind, ahead): (i64, i64) = if parts.is_empty() {
                 (0, 0)
@@ -1389,14 +1257,14 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
                 (parts[0].parse().unwrap_or(0), parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0))
             };
             if ahead != 0 {
-                line("ME", &format!("{} commit(s) not pushed to {}", ahead, up));
+                line("ME", &format!("{ahead} commit(s) not pushed to {up}"));
             }
             if behind != 0 {
-                line("ME", &format!("{} commit(s) on {} not pulled", behind, up));
+                line("ME", &format!("{behind} commit(s) on {up} not pulled"));
             }
             if ahead == 0 && behind == 0 {
                 let (_, sha) = g(&["rev-parse", "--short", "HEAD"], 20);
-                line("OK", &format!("in sync with {} ({})", up, sha));
+                line("OK", &format!("in sync with {up} ({sha})"));
             }
         }
     }
@@ -1412,17 +1280,32 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     if ci && !branch.is_empty() && workflow_files(root) {
         let (_, head) = g(&["rev-parse", "HEAD"], 20);
         let (rc, runs) = run(
-            &["gh", "run", "list", "--commit", &head, "--json", "name,status,conclusion", "-q", r#".[] | "\(.status)|\(.conclusion)|\(.name)""#],
+            &[
+                "gh",
+                "run",
+                "list",
+                "--commit",
+                &head,
+                "--json",
+                "name,status,conclusion",
+                "-q",
+                r#".[] | "\(.status)|\(.conclusion)|\(.name)""#,
+            ],
             Some(root),
             20,
         );
         if rc != 0 {
             line("CHECK", "could not read CI (gh missing or not logged in)");
         } else if !runs.is_empty() {
-            let rows: Vec<Vec<String>> = py_splitlines(&runs).iter().map(|r| r.splitn(3, '|').map(|x| x.to_string()).collect()).collect();
+            let rows: Vec<Vec<String>> =
+                py_splitlines(&runs).iter().map(|r| r.splitn(3, '|').map(ToString::to_string).collect()).collect();
             let mut bad: Vec<String> = rows
                 .iter()
-                .filter(|r| r.len() >= 3 && r[0] == "completed" && ["failure", "cancelled", "timed_out", "startup_failure"].contains(&r[1].as_str()))
+                .filter(|r| {
+                    r.len() >= 3
+                        && r[0] == "completed"
+                        && ["failure", "cancelled", "timed_out", "startup_failure"].contains(&r[1].as_str())
+                })
                 .map(|r| r[2].clone())
                 .collect();
             bad.sort();
@@ -1432,7 +1315,7 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
                 line("ME", &format!("CI failed on HEAD: {}", bad.join(", ")));
             }
             if pending > 0 {
-                line("CHECK", &format!("{} CI run(s) still running on HEAD — wait, then look again", pending));
+                line("CHECK", &format!("{pending} CI run(s) still running on HEAD — wait, then look again"));
             }
             if bad.is_empty() && pending == 0 {
                 line("OK", "CI green on HEAD");
@@ -1441,21 +1324,23 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     }
 
     for m in new_markers(root, s.start).into_iter().take(5) {
-        line("CHECK", &format!("new TODO marker: {}", m));
+        line("CHECK", &format!("new TODO marker: {m}"));
     }
     pl!();
 }
 
 fn leftovers_path() -> String {
-    std::env::var("MIC_LEFTOVERS").unwrap_or_else(|_| Path::new(&home()).join(".claude").join("leftovers.md").to_string_lossy().into_owned())
+    std::env::var("MIC_LEFTOVERS")
+        .unwrap_or_else(|_| paths::home().join(".claude").join("leftovers.md").to_string_lossy().into_owned())
 }
 
 fn section_leftovers(roots: &[String]) {
     let lp = leftovers_path();
     let Some(text) = read_text(Path::new(&lp)) else { return };
-    let rows: Vec<String> = text.split_inclusive('\n').filter(|l| l.starts_with("- [ ]")).map(|l| l.trim().to_string()).collect();
+    let rows: Vec<String> =
+        text.split_inclusive('\n').filter(|l| l.starts_with("- [ ]")).map(|l| l.trim().to_string()).collect();
     let names: HashSet<String> = roots.iter().map(|r| basename(r)).collect();
-    let mine: Vec<&String> = rows.iter().filter(|r| names.iter().any(|n| r.contains(&format!("**{}**", n)))).collect();
+    let mine: Vec<&String> = rows.iter().filter(|r| names.iter().any(|n| r.contains(&format!("**{n}**")))).collect();
     if mine.is_empty() {
         return;
     }
@@ -1490,7 +1375,7 @@ struct Cli {
 
 fn main() {
     let a = Cli::parse();
-    let Some(path) = find_session(a.session.as_deref()) else {
+    let Some(path) = find_session(a.session.as_deref(), Search::ThisProject) else {
         pl!("No session transcript found. Pass --session <id|path>.");
         pl!("VERDICT: NO SESSION — build the table from this conversation only");
         return;
@@ -1540,9 +1425,17 @@ fn main() {
         (st.me, st.you, st.check, st.later)
     };
     let total = me + you + check;
-    let later_s = if later > 0 { format!(" · LATER {}", later) } else { String::new() };
-    let head = if total > 0 { format!("{} open", total) } else { "NOTHING OPEN FOUND".to_string() };
-    pl!("VERDICT: {} — ME {} · YOU {} · CHECK {}{} (+ {} asks to cross-check)", head, me, you, check, later_s, s.asks.len());
+    let later_s = if later > 0 { format!(" · LATER {later}") } else { String::new() };
+    let head = if total > 0 { format!("{total} open") } else { "NOTHING OPEN FOUND".to_string() };
+    pl!(
+        "VERDICT: {} — ME {} · YOU {} · CHECK {}{} (+ {} asks to cross-check)",
+        head,
+        me,
+        you,
+        check,
+        later_s,
+        s.asks.len()
+    );
 }
 
 #[cfg(test)]
@@ -1596,12 +1489,18 @@ mod tests {
     }
 
     #[test]
-    fn workflow_glob_like_fnmatch() {
-        let ok = |n: &str| {
-            let b = n.as_bytes();
-            n.ends_with("ml") && b.len() >= 4 && (0..=b.len() - 4).any(|i| &b[i..i + 2] == b".y")
-        };
-        assert!(ok("ci.yml") && ok("ci.yaml") && !ok("ci.json"));
+    fn workflow_files_finds_yaml() {
+        let d = tempfile::tempdir().unwrap();
+        let wf = d.path().join(".github").join("workflows");
+        fs::create_dir_all(&wf).unwrap();
+        let root = d.path().to_str().unwrap();
+        fs::write(wf.join("ci.json"), "").unwrap();
+        assert!(!workflow_files(root));
+        fs::write(wf.join("ci.yml"), "").unwrap();
+        assert!(workflow_files(root));
+        fs::remove_file(wf.join("ci.yml")).unwrap();
+        fs::write(wf.join("ci.yaml"), "").unwrap();
+        assert!(workflow_files(root));
     }
 
     #[test]
@@ -1613,13 +1512,6 @@ mod tests {
         assert_eq!(tail_start(30, 25), 5);
         assert_eq!(tail_start(3, 25), 0);
         assert_eq!(tail_start(3, 0), 0);
-    }
-
-    #[test]
-    fn splitlines_like_python() {
-        assert_eq!(py_splitlines("a\nb\r\nc\n"), vec!["a", "b", "c"]);
-        assert_eq!(py_splitlines("a\n\nb"), vec!["a", "", "b"]);
-        assert_eq!(py_splitlines(""), Vec::<String>::new());
     }
 
     #[test]

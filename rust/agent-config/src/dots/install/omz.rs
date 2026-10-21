@@ -29,14 +29,14 @@ fn custom_dir(zsh_custom: Option<String>, home: &Path) -> PathBuf {
 fn clone_plugin(zc: &Path, url: &str, name: &str) {
     let dir = zc.join("plugins").join(name);
     if dir.is_dir() {
-        skip(&format!("plugin {}", name));
+        skip(&format!("plugin {name}"));
         return;
     }
-    info(&format!("cloning {}…", name));
+    info(&format!("cloning {name}…"));
     if quiet("git", &["clone", "--depth=1", url, &dir.to_string_lossy()]) {
         ok(name);
     } else {
-        warn(&format!("clone of {} failed (network?) — re-run: ./dotfiles", name));
+        warn(&format!("clone of {name} failed (network?) — re-run: ./dotfiles"));
     }
 }
 
@@ -44,9 +44,14 @@ fn clone_plugin(zc: &Path, url: &str, name: &str) {
 /// the installer reads $REPO as its GitHub slug (ohmyzsh/ohmyzsh), and the clone would 404.
 fn install_omz() -> bool {
     let Some(script) = curl_text(&["-fsSL", INSTALLER]).filter(|s| !s.is_empty()) else { return false };
-    Command::new("sh").args(["-c", &script, "", "--unattended"])
-        .env("RUNZSH", "no").env("CHSH", "no").env("KEEP_ZSHRC", "yes").env("REPO", "")
-        .status().map(|s| s.success()).unwrap_or(false)
+    Command::new("sh")
+        .args(["-c", &script, "", "--unattended"])
+        .env("RUNZSH", "no")
+        .env("CHSH", "no")
+        .env("KEEP_ZSHRC", "yes")
+        .env("REPO", "")
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 pub fn step(_repo: &Path) {
@@ -70,7 +75,9 @@ pub fn step(_repo: &Path) {
     }
     let zc = custom_dir(std::env::var("ZSH_CUSTOM").ok(), &home);
     let _ = std::fs::create_dir_all(zc.join("plugins"));
-    for (url, name) in PLUGINS { clone_plugin(&zc, url, name); }
+    for (url, name) in PLUGINS {
+        clone_plugin(&zc, url, name);
+    }
     ok_if_changed("Oh My Zsh + plugins ready");
 }
 
@@ -92,6 +99,6 @@ mod tests {
         std::fs::create_dir_all(d.path().join("plugins/fzf-tab")).unwrap();
         // A folder that is there never reaches git: no "cloning" line, no warning.
         let ((), lines) = out::capture(|| clone_plugin(d.path(), "https://invalid.example/none", "fzf-tab"));
-        assert!(lines.iter().all(|(l, err)| !*err && !l.contains("cloning")), "{:?}", lines);
+        assert!(lines.iter().all(|(l, err)| !*err && !l.contains("cloning")), "{lines:?}");
     }
 }

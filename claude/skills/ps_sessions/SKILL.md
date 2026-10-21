@@ -22,9 +22,14 @@ Work with the user's other Claude Code sessions. One rule matters most: never po
 | Remote Control on or off | `mcp__ccd_session_mgmt__set_remote_control` (`session_id`, `enabled`) |
 | Interrupt a turn | `mcp__ccd_session_mgmt__stop_session` (`session_id`) |
 | Archive | `mcp__ccd_session_mgmt__archive_session` (`session_id`, `reason`) |
-| Start a new session with a prompt, Remote Control on | `ps:spawn` skill |
+| Start a new session with a prompt, Remote Control on | `mcp__ccd_session__start_session`, see "Start a session" |
 
 `ListAgents` finds agents and sessions to address with `SendMessage`. Its row says busy or idle.
+
+## Start a session
+
+1. `mcp__ccd_session__start_session` with `initiation: "user_asked"`, a `title`, a `prompt` (the task, the files, what done looks like) and a `background` of 80 or more characters (the goal and the constraints so far). It returns the new session's id.
+2. Remote Control has no start flag. Call `mcp__ccd_session_mgmt__set_remote_control` with that id and `enabled: true` right away. It returns the state. It works only on a session that has run a turn: if it is refused, end your turn. The app wakes you when the new session ends its turn; then call it again.
 
 ## Hub report
 

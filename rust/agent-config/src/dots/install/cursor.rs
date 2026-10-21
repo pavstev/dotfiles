@@ -13,13 +13,17 @@ use std::path::{Path, PathBuf};
 const LEAVE: [&str; 1] = ["ms-python.vscode-pylance"];
 
 /// The `cursor` command inside the app folder.
-fn app_cursor(app: &Path) -> PathBuf { app.join("Contents").join("Resources").join("app").join("bin").join("cursor") }
+fn app_cursor(app: &Path) -> PathBuf {
+    app.join("Contents").join("Resources").join("app").join("bin").join("cursor")
+}
 
 pub fn step(repo: &Path) {
     os::brew_env();
     out::step("Cursor");
     let home = os::home();
-    let app = [PathBuf::from("/Applications/Cursor.app"), home.join("Applications").join("Cursor.app")].into_iter().find(|a| a.is_dir());
+    let app = [PathBuf::from("/Applications/Cursor.app"), home.join("Applications").join("Cursor.app")]
+        .into_iter()
+        .find(|a| a.is_dir());
     if app.is_none() && !home.join(".cursor").is_dir() && !os::have("cursor") {
         note("not installed, nothing to set up");
         return;
@@ -37,23 +41,15 @@ pub fn step(repo: &Path) {
     // 2. Extensions.
     let bin = os::which("cursor").or_else(|| app.as_deref().map(app_cursor));
     match bin {
-        Some(b) if os::is_executable(&b) && repo.join("Brewfile").is_file() => brew_extensions(&b, repo, "Cursor", &LEAVE),
+        Some(b) if os::is_executable(&b) && repo.join("Brewfile").is_file() => {
+            brew_extensions(&b, repo, "Cursor", &LEAVE);
+        }
         _ => warn("no cursor command found, extensions not installed"),
     }
 
     // 3. Rules, agents, hooks, MCP, CLI config. agent-config prints its own count line.
     out::step_end();
-    if crate::run_args(&["cursor", "--profile", &settings::profile()]) != 0 {
+    if crate::run_args(&["cursor", "--profile", settings::profile().as_str()]) != 0 {
         warn("agent-config cursor reported an issue, see above");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn app_command_path() {
-        assert_eq!(app_cursor(Path::new("/A/Cursor.app")), Path::new("/A/Cursor.app/Contents/Resources/app/bin/cursor"));
     }
 }

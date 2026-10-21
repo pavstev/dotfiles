@@ -10,7 +10,9 @@
 //! guard's Stop pass left a status file for the session (`agent_config::status_path`). `NO_COLOR` set (non-empty) or `THEME=plain` in the
 //! dotfiles settings prints the same text without escape codes.
 
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,13 +24,7 @@ const RST: &str = "\x1b[0m";
 /// Context size (in K) from which the segment turns copper.
 const CTX_WARN_K: i64 = 300;
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
+use agent_config::paths::home as home_dir;
 
 /// `jq -r "<path> // empty"`: nothing for null, false or a missing key; strings as they are;
 /// anything else as JSON text.
@@ -51,34 +47,140 @@ fn int_text(v: Option<&Value>) -> Option<String> {
         Value::String(s) => s.trim().parse::<f64>().ok()?,
         _ => return None,
     };
-    Some(format!("{n:.0}"))
+    Some(format!("{:.0}", n.round_ties_even()))
 }
 
-/// The last call's input plus cache tokens (`total_input_tokens` is a session running total).
-fn ctx_tokens(input: &Value) -> Option<f64> {
-    let from_usage = at(input, &["context_window", "current_usage"]).and_then(|u| {
-        let u = u.as_object()?;
+/// A part of the input that is missing, or not the shape asked for, reads as empty. (The input
+/// comes from Claude Code; a field of another shape must not blank the whole line.)
+struct Soft<T>(Option<T>);
+
+impl<T> Default for Soft<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Soft<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self(T::deserialize(d).ok()))
+    }
+}
+
+impl<T: Default> Soft<T> {
+    fn get(self) -> T {
+        self.0.unwrap_or_default()
+    }
+}
+
+/// The session JSON, as far as the line uses it. Leaves stay `Value`: `jq` reads a string, a
+/// number or a numeric string alike, and the helpers above keep that.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Input {
+    cwd: Option<Value>,
+    session_id: Option<Value>,
+    workspace: Soft<Workspace>,
+    model: Soft<Model>,
+    context_window: Soft<ContextWindow>,
+    rate_limits: Soft<RateLimits>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Workspace {
+    current_dir: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Model {
+    display_name: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ContextWindow {
+    current_usage: Soft<Usage>,
+    total_input_tokens: Option<Value>,
+    used_percentage: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Usage {
+    input_tokens: Option<Value>,
+    cache_creation_input_tokens: Option<Value>,
+    cache_read_input_tokens: Option<Value>,
+}
+
+impl Usage {
+    /// The last call's input plus cache tokens, or `None` when none is given or one is not a number
+    /// (`jq` would fail on the addition).
+    fn tokens(&self) -> Option<f64> {
         let mut sum = 0.0;
         let mut any = false;
-        for key in ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] {
-            match u.get(key) {
-                None | Some(Value::Null) => {}
+        for v in [&self.input_tokens, &self.cache_creation_input_tokens, &self.cache_read_input_tokens] {
+            match v {
+                None => {}
                 Some(Value::Number(n)) => {
                     sum += n.as_f64()?;
                     any = true;
                 }
-                Some(_) => return None, // jq would fail on the addition
+                Some(_) => return None,
             }
         }
         any.then_some(sum)
-    });
-    match from_usage {
-        Some(t) if t != 0.0 => Some(t),
-        _ => match at(input, &["context_window", "total_input_tokens"]) {
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct RateLimits {
+    five_hour: Soft<Window>,
+    seven_day: Soft<Window>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Window {
+    used_percentage: Option<Value>,
+}
+
+/// What the line shows, read from the input once.
+#[derive(Default)]
+struct View {
+    /// `workspace.current_dir`, else `cwd`; empty when neither is set.
+    cwd: String,
+    model: String,
+    /// Context size in tokens.
+    ctx_tokens: Option<f64>,
+    ctx_percent: Option<String>,
+    five_hour_percent: Option<String>,
+    seven_day_percent: Option<String>,
+    session_id: String,
+}
+
+impl View {
+    fn from_json(doc: &Value) -> Self {
+        let input = Input::deserialize(doc).unwrap_or_default();
+        let (ctx, limits) = (input.context_window.get(), input.rate_limits.get());
+        // `total_input_tokens` is a session running total: only the fallback.
+        let usage = ctx.current_usage.get().tokens().filter(|t| *t != 0.0);
+        let total = match &ctx.total_input_tokens {
             Some(Value::Number(n)) => n.as_f64(),
             Some(Value::String(s)) => s.trim().parse().ok(),
             _ => None,
-        },
+        };
+        let cwd = jq_str(input.workspace.get().current_dir.as_ref()).filter(|s| !s.is_empty());
+        Self {
+            cwd: cwd.or_else(|| jq_str(input.cwd.as_ref())).unwrap_or_default(),
+            model: jq_str(input.model.get().display_name.as_ref()).unwrap_or_default(),
+            ctx_tokens: usage.or(total),
+            ctx_percent: int_text(ctx.used_percentage.as_ref()),
+            five_hour_percent: int_text(limits.five_hour.get().used_percentage.as_ref()),
+            seven_day_percent: int_text(limits.seven_day.get().used_percentage.as_ref()),
+            session_id: jq_str(input.session_id.as_ref()).unwrap_or_default(),
+        }
     }
 }
 
@@ -107,13 +209,8 @@ fn git_branch(cwd: &str) -> String {
 }
 
 /// Env vars that change how git finds the repo. With one set, only git itself can answer.
-const GIT_ENV: [&str; 5] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-];
+const GIT_ENV: [&str; 5] =
+    ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"];
 
 /// The branch without a git process, or `None` when git must answer.
 fn fast_branch(cwd: &str) -> Option<String> {
@@ -187,46 +284,46 @@ fn parse_head(head: &str) -> Option<String> {
 }
 
 /// Build the line. `branch` is looked up by the caller so tests can pass it in.
-fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
-    let cwd = jq_str(at(input, &["workspace", "current_dir"]))
-        .filter(|s| !s.is_empty())
-        .or_else(|| jq_str(input.get("cwd")).filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| pwd.to_string());
-    let model = jq_str(at(input, &["model", "display_name"])).unwrap_or_default();
-    let dir = basename(&cwd);
-    let branch = branch_of(&cwd);
+fn render(input: &View, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
+    let cwd = if input.cwd.is_empty() { pwd } else { &input.cwd };
+    let dir = basename(cwd);
+    let branch = branch_of(cwd);
     let paint = |code: &str, text: &str| if color { format!("{code}{text}{RST}") } else { text.to_string() };
 
     let mut line = paint(COPPER, &format!(" {dir}"));
     if !branch.is_empty() {
-        line.push_str(&format!("  {}", paint(SAGE, &format!(" {branch}"))));
+        line.push_str("  ");
+        line.push_str(&paint(SAGE, &format!(" {branch}")));
     }
-    if !model.is_empty() {
-        line.push_str(&format!("  {}", paint(STONE, &model)));
+    if !input.model.is_empty() {
+        line.push_str("  ");
+        line.push_str(&paint(STONE, &input.model));
     }
 
-    if let Some(tok) = ctx_tokens(input) {
-        let k = (format!("{tok:.0}").parse::<f64>().unwrap_or(0.0) as i64) / 1000;
+    if let Some(tok) = input.ctx_tokens {
+        let k = (tok.round_ties_even() as i64) / 1000;
         let code = if k >= CTX_WARN_K { COPPER } else { STONE };
         let mut ctx = format!("ctx {k}K");
-        if let Some(p) = int_text(at(input, &["context_window", "used_percentage"])) {
-            ctx.push_str(&format!(" {p}%"));
+        if let Some(p) = &input.ctx_percent {
+            let _ = write!(ctx, " {p}%");
         }
-        line.push_str(&format!("  {}", paint(code, &ctx)));
+        line.push_str("  ");
+        line.push_str(&paint(code, &ctx));
     }
 
     let mut caps = String::new();
-    if let Some(p) = int_text(at(input, &["rate_limits", "five_hour", "used_percentage"])) {
+    if let Some(p) = &input.five_hour_percent {
         caps = format!("5h {p}%");
     }
-    if let Some(p) = int_text(at(input, &["rate_limits", "seven_day", "used_percentage"])) {
+    if let Some(p) = &input.seven_day_percent {
         if !caps.is_empty() {
             caps.push_str(" · ");
         }
-        caps.push_str(&format!("7d {p}%"));
+        let _ = write!(caps, "7d {p}%");
     }
     if !caps.is_empty() {
-        line.push_str(&format!("  {}", paint(STONE, &caps)));
+        line.push_str("  ");
+        line.push_str(&paint(STONE, &caps));
     }
     line
 }
@@ -253,9 +350,11 @@ fn left_text(file: &str) -> Option<String> {
 
 /// The line segment for what is left in this session: written by the guard's Stop pass, so it
 /// only shows when the file for the input's `session_id` exists.
-fn left_segment(input: &Value, color: bool) -> Option<String> {
-    let sid = jq_str(input.get("session_id")).filter(|s| !s.is_empty())?;
-    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&sid)).ok()?)?;
+fn left_segment(input: &View, color: bool) -> Option<String> {
+    if input.session_id.is_empty() {
+        return None;
+    }
+    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&input.session_id)).ok()?)?;
     Some(if color { format!("{COPPER}{text}{RST}") } else { text })
 }
 
@@ -272,7 +371,7 @@ fn pace_json(input: &Value, now: u64) -> Option<String> {
     let mut out = Map::new();
     out.insert("updated".into(), Value::from(now));
     let five = match at(input, &["rate_limits", "five_hour"]) {
-        None | Some(Value::Null) | Some(Value::Bool(false)) => Value::Null,
+        None | Some(Value::Null | Value::Bool(false)) => Value::Null,
         Some(v) => pick(v),
     };
     out.insert("five_hour".into(), five);
@@ -286,39 +385,32 @@ fn write_atomic(file: &Path, text: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = PathBuf::from(format!("{}.{}", file.display(), std::process::id()));
-    let res = std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, file));
+    let res = std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, file));
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     res
 }
 
-fn cache_dir() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| home_dir().join(".cache"))
-}
-
 fn main() {
     let mut raw = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut raw);
-    let input: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+    let doc: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    if let Some(json) = pace_json(&input, now) {
-        let _ = write_atomic(&cache_dir().join("claude-pace.json"), &format!("{json}\n"));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Some(json) = pace_json(&doc, now) {
+        let _ = write_atomic(&agent_config::paths::cache().join("claude-pace.json"), &format!("{json}\n"));
     }
 
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let plain = agent_config::setting(&home_dir(), "THEME") == "plain";
     let pwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
     let color = !(no_color || plain);
+    let input = View::from_json(&doc);
     let mut line = render(&input, &pwd, &git_branch, color);
     if let Some(left) = left_segment(&input, color) {
-        line.push_str(&format!("  {left}"));
+        line.push_str("  ");
+        line.push_str(&left);
     }
     let mut out = std::io::stdout();
     let _ = out.write_all(line.as_bytes());
@@ -341,13 +433,33 @@ mod tests {
     }
 
     #[test]
-    fn plain_branch() {
-        let t = repo("ref: refs/heads/main\n");
-        assert_eq!(branch_from_head(t.path()), Some("main".into()));
+    fn percents_round_half_to_even() {
+        for (given, shown) in [(0.5, "0"), (1.5, "2"), (2.5, "2"), (3.5, "4"), (-0.4, "-0"), (97.0, "97")] {
+            assert_eq!(int_text(Some(&Value::from(given))).as_deref(), Some(shown), "{given}");
+        }
+        assert_eq!(int_text(Some(&Value::from(" 2.5 "))).as_deref(), Some("2"));
+        assert_eq!(int_text(Some(&Value::Bool(true))), None);
+    }
+
+    #[test]
+    fn line_from_the_input() {
+        let doc: Value = serde_json::from_str(
+            r#"{"workspace": {"current_dir": "/w/app"}, "model": {"display_name": "Opus"},
+                "context_window": {"current_usage": {"input_tokens": 1500, "cache_read_input_tokens": 1000},
+                                   "used_percentage": 2.5},
+                "rate_limits": {"five_hour": {"used_percentage": 10.5}, "seven_day": {"used_percentage": 40}}}"#,
+        )
+        .unwrap();
+        let line = render(&View::from_json(&doc), "/elsewhere", &|_| "main".into(), false);
+        assert_eq!(line, " app   main  Opus  ctx 2K 2%  5h 10% · 7d 40%");
+        // no workspace and no cwd: the process folder
+        let line = render(&View::default(), "/elsewhere", &|_| String::new(), false);
+        assert_eq!(line, " elsewhere");
     }
 
     #[test]
     fn branch_with_slash_from_a_subdir() {
+        assert_eq!(branch_from_head(repo("ref: refs/heads/main\n").path()), Some("main".into()));
         let t = repo("ref: refs/heads/feat/x\n");
         let sub = t.path().join("a/b");
         fs::create_dir_all(&sub).unwrap();
@@ -387,35 +499,32 @@ mod tests {
     }
 
     #[test]
-    fn bad_gitdir_file_defers_to_git() {
-        let t = tempfile::tempdir().unwrap();
-        fs::write(t.path().join(".git"), "nonsense\n").unwrap();
-        assert_eq!(branch_from_head(t.path()), None);
-    }
-
-    #[test]
-    fn invalid_branch_defers_to_git() {
-        let t = repo("ref: refs/heads/.invalid\n");
-        assert_eq!(branch_from_head(t.path()), None);
+    fn defers_to_git() {
+        // each case gives None, so the status line asks git itself
+        let gitdir_file = tempfile::tempdir().unwrap();
+        fs::write(gitdir_file.path().join(".git"), "nonsense\n").unwrap();
+        let no_head = tempfile::tempdir().unwrap();
+        fs::create_dir(no_head.path().join(".git")).unwrap();
+        let (invalid, unknown, main) =
+            (repo("ref: refs/heads/.invalid\n"), repo("garbage\n"), repo("ref: refs/heads/main\n"));
+        let plain = tempfile::tempdir().unwrap();
+        let dirs = [
+            gitdir_file.path().to_path_buf(),
+            no_head.path().to_path_buf(),
+            invalid.path().to_path_buf(),
+            unknown.path().to_path_buf(),
+            main.path().join(".git"),  // the cwd is inside the git dir
+            plain.path().join("nope"), // a missing cwd
+        ];
+        for dir in dirs {
+            assert_eq!(branch_from_head(&dir), None, "{}", dir.display());
+        }
     }
 
     #[test]
     fn ref_outside_heads_is_empty() {
         let t = repo("ref: refs/remotes/x\n");
         assert_eq!(branch_from_head(t.path()), Some(String::new()));
-    }
-
-    #[test]
-    fn unknown_head_defers_to_git() {
-        let t = repo("garbage\n");
-        assert_eq!(branch_from_head(t.path()), None);
-    }
-
-    #[test]
-    fn git_dir_without_head_defers_to_git() {
-        let t = tempfile::tempdir().unwrap();
-        fs::create_dir(t.path().join(".git")).unwrap();
-        assert_eq!(branch_from_head(t.path()), None);
     }
 
     #[test]
@@ -432,34 +541,21 @@ mod tests {
     }
 
     #[test]
-    fn cwd_inside_git_dir_defers_to_git() {
-        let t = repo("ref: refs/heads/main\n");
-        assert_eq!(branch_from_head(&t.path().join(".git")), None);
-    }
-
-    #[test]
-    fn missing_cwd_defers_to_git() {
-        let t = tempfile::tempdir().unwrap();
-        assert_eq!(branch_from_head(&t.path().join("nope")), None);
-    }
-
-    #[test]
     fn matches_real_git() {
+        let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
         let git = |dir: &Path, args: &[&str]| {
             Command::new("git")
                 .arg("-C")
                 .arg(dir)
                 .args(args)
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
-                .env("GIT_CONFIG_SYSTEM", "/dev/null")
+                .env("GIT_CONFIG_GLOBAL", null)
+                .env("GIT_CONFIG_SYSTEM", null)
                 .stdin(Stdio::null())
                 .output()
         };
         let t = tempfile::tempdir().unwrap();
-        let ok = |r: std::io::Result<std::process::Output>| r.map(|o| o.status.success()).unwrap_or(false);
-        if !ok(git(t.path(), &["init", "-q", "-b", "main"])) {
-            return; // no git on PATH
-        }
+        let ok = |r: std::io::Result<std::process::Output>| r.is_ok_and(|o| o.status.success());
+        assert!(ok(git(t.path(), &["init", "-q", "-b", "main"])), "git is needed for this test");
         let commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"];
         assert!(ok(git(t.path(), &commit)));
         let want = |dir: &Path| {

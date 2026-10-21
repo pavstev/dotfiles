@@ -12,18 +12,20 @@ use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{LazyLock, mpsc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SECRET_FILE: &str = "~/.config/zsh/local.zsh";
 
 const MSG_G14: &str = "G14: bare sed -i on macOS eats the script as the backup suffix. Give a suffix: `sed -i '' 's/a/b/' f` (or `-i.bak`). Or use the Edit tool.";
 const MSG_G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
-const MSG_G15_PS: &str = "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
-const MSG_G15_PGREP: &str = "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
+const MSG_G15_PS: &str =
+    "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
+const MSG_G15_PGREP: &str =
+    "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
 const MSG_G15_PROCS: &str = "G15: procs prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, then `ps -o pid=,etime=,ucomm= -p <pid>`.";
 
 /// The G15 message for a search that can reach local.zsh: the exact exclude flag of the tool used.
@@ -47,8 +49,15 @@ pub enum Verdict {
     Deny(String),
 }
 
+/// A message means a refusal, no message means let it through.
+impl From<Option<String>> for Verdict {
+    fn from(msg: Option<String>) -> Self {
+        msg.map_or(Self::Allow, Self::Deny)
+    }
+}
+
 fn deny_or_allow(msg: Option<&str>) -> Verdict {
-    msg.map(|m| Verdict::Deny(m.to_string())).unwrap_or(Verdict::Allow)
+    Verdict::from(msg.map(String::from))
 }
 
 // --- small path helpers (shared with the guard binary) ----------------------------
@@ -70,9 +79,9 @@ fn path_join(a: &str, b: &str) -> String {
     if b.starts_with('/') {
         b.to_string()
     } else if a.ends_with('/') {
-        format!("{}{}", a, b)
+        format!("{a}{b}")
     } else {
-        format!("{}/{}", a, b)
+        format!("{a}/{b}")
     }
 }
 
@@ -84,9 +93,7 @@ pub fn expanduser(p: &str) -> String {
     if i != 1 {
         return p.to_string(); // ~user form: left as is
     }
-    let home = env::var("HOME")
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
+    let home = env::var("HOME").ok().or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
     let Some(home) = home else { return p.to_string() };
     let home = home.trim_end_matches('/');
     let out = format!("{}{}", home, &p[i..]);
@@ -99,8 +106,8 @@ pub fn realpath(p: &str) -> String {
     let abs = if p.starts_with('/') {
         p.to_string()
     } else {
-        let cwd = env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".to_string());
-        format!("{}/{}", cwd, p)
+        let cwd = env::current_dir().map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned());
+        format!("{cwd}/{p}")
     };
     let mut resolved = String::from("/");
     let mut todo: VecDeque<String> = abs.split('/').map(String::from).collect();
@@ -115,8 +122,8 @@ pub fn realpath(p: &str) -> String {
             }
             continue;
         }
-        let cand = if resolved == "/" { format!("/{}", c) } else { format!("{}/{}", resolved, c) };
-        let is_link = fs::symlink_metadata(&cand).map(|m| m.file_type().is_symlink()).unwrap_or(false);
+        let cand = if resolved == "/" { format!("/{c}") } else { format!("{resolved}/{c}") };
+        let is_link = fs::symlink_metadata(&cand).is_ok_and(|m| m.file_type().is_symlink());
         if is_link && links < 40 {
             links += 1;
             match fs::read_link(&cand) {
@@ -145,7 +152,7 @@ fn normpath(p: &str) -> String {
     if p.is_empty() {
         return ".".to_string();
     }
-    let initial = if p.starts_with("//") && !p.starts_with("///") { 2 } else if p.starts_with('/') { 1 } else { 0 };
+    let initial = if p.starts_with("//") && !p.starts_with("///") { 2 } else { usize::from(p.starts_with('/')) };
     let mut out: Vec<&str> = Vec::new();
     for c in p.split('/') {
         if c.is_empty() || c == "." {
@@ -164,7 +171,7 @@ fn normpath(p: &str) -> String {
 
 /// `os.path.split`.
 fn path_split(p: &str) -> (String, String) {
-    let i = p.rfind('/').map(|x| x + 1).unwrap_or(0);
+    let i = p.rfind('/').map_or(0, |x| x + 1);
     let (mut head, tail) = (p[..i].to_string(), p[i..].to_string());
     if !head.is_empty() && head.chars().any(|c| c != '/') {
         head = head.trim_end_matches('/').to_string();
@@ -215,73 +222,152 @@ fn expandvars(p: &str) -> String {
     out
 }
 
-/// Python `fnmatch.fnmatchcase`: `*` matches anything (also `/`), `?` one char, `[seq]`, `[!seq]`.
-fn fnmatch(name: &str, pat: &str) -> bool {
-    type Class = (usize, bool, Vec<(char, char)>);
-    fn class(pat: &[char], i: usize) -> Option<Class> {
-        // pat[i] == '['; returns (index after ']', negated, ranges)
-        let n = pat.len();
-        let mut j = i + 1;
-        if j < n && pat[j] == '!' {
-            j += 1;
-        }
-        if j < n && pat[j] == ']' {
-            j += 1;
-        }
-        while j < n && pat[j] != ']' {
-            j += 1;
-        }
-        if j >= n {
-            return None;
-        }
-        let mut k = i + 1;
-        let neg = pat[k] == '!';
-        if neg {
+/// One piece of an fnmatch pattern.
+enum Glob {
+    /// `*`: any run of chars, `/` too
+    Star,
+    /// `?`
+    Any,
+    /// `[seq]` or `[!seq]`
+    Class {
+        negated: bool,
+        ranges: Vec<(char, char)>,
+    },
+    Lit(char),
+}
+
+/// The class at `pat[i]` (a `[`): the index after its `]`, and the class. None when it is not closed.
+fn glob_class(pat: &[char], i: usize) -> Option<(usize, Glob)> {
+    let n = pat.len();
+    let mut j = i + 1;
+    if j < n && pat[j] == '!' {
+        j += 1;
+    }
+    if j < n && pat[j] == ']' {
+        j += 1;
+    }
+    while j < n && pat[j] != ']' {
+        j += 1;
+    }
+    if j >= n {
+        return None;
+    }
+    let mut k = i + 1;
+    let negated = pat[k] == '!';
+    if negated {
+        k += 1;
+    }
+    let mut ranges = Vec::new();
+    while k < j {
+        if k + 2 < j && pat[k + 1] == '-' {
+            ranges.push((pat[k], pat[k + 2]));
+            k += 3;
+        } else {
+            ranges.push((pat[k], pat[k]));
             k += 1;
         }
-        let mut ranges = Vec::new();
-        while k < j {
-            if k + 2 < j && pat[k + 1] == '-' {
-                ranges.push((pat[k], pat[k + 2]));
-                k += 3;
-            } else {
-                ranges.push((pat[k], pat[k]));
-                k += 1;
-            }
-        }
-        Some((j + 1, neg, ranges))
     }
-    fn go(n: &[char], p: &[char]) -> bool {
-        if p.is_empty() {
-            return n.is_empty();
-        }
-        match p[0] {
-            '*' => {
-                let mut rest = p;
-                while !rest.is_empty() && rest[0] == '*' {
-                    rest = &rest[1..];
-                }
-                (0..=n.len()).any(|k| go(&n[k..], rest))
-            }
-            '?' => !n.is_empty() && go(&n[1..], &p[1..]),
-            '[' => match class(p, 0) {
-                Some((end, neg, ranges)) => {
-                    !n.is_empty()
-                        && (ranges.iter().any(|&(a, b)| a <= n[0] && n[0] <= b) != neg)
-                        && go(&n[1..], &p[end..])
-                }
-                None => !n.is_empty() && n[0] == '[' && go(&n[1..], &p[1..]),
-            },
-            c => !n.is_empty() && n[0] == c && go(&n[1..], &p[1..]),
-        }
-    }
-    let n: Vec<char> = name.chars().collect();
+    Some((j + 1, Glob::Class { negated, ranges }))
+}
+
+fn glob_parse(pat: &str) -> Vec<Glob> {
     let p: Vec<char> = pat.chars().collect();
-    go(&n, &p)
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < p.len() {
+        match p[i] {
+            '*' => {
+                // a run of stars is one star
+                if !matches!(out.last(), Some(Glob::Star)) {
+                    out.push(Glob::Star);
+                }
+                i += 1;
+            }
+            '?' => {
+                out.push(Glob::Any);
+                i += 1;
+            }
+            '[' => {
+                if let Some((end, class)) = glob_class(&p, i) {
+                    out.push(class);
+                    i = end;
+                } else {
+                    out.push(Glob::Lit('['));
+                    i += 1;
+                }
+            }
+            c => {
+                out.push(Glob::Lit(c));
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+impl Glob {
+    /// Whether this one-char piece takes `c` (a star is handled by the caller).
+    fn takes(&self, c: char) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Class { negated, ranges } => ranges.iter().any(|&(a, b)| a <= c && c <= b) != *negated,
+            Self::Lit(l) => *l == c,
+            Self::Star => false,
+        }
+    }
+}
+
+/// Python `fnmatch.fnmatchcase`: `*` matches anything (also `/`), `?` one char, `[seq]`, `[!seq]`.
+/// Linear in name times pattern: a failed match falls back to the last star only, so many stars
+/// cost no more than one.
+fn fnmatch(name: &str, pat: &str) -> bool {
+    let toks = glob_parse(pat);
+    let name: Vec<char> = name.chars().collect();
+    let (mut t, mut n) = (0, 0);
+    let mut last_star: Option<(usize, usize)> = None; // (token after the star, name index it took up to)
+    while n < name.len() {
+        match toks.get(t) {
+            Some(Glob::Star) => {
+                last_star = Some((t + 1, n));
+                t += 1;
+            }
+            Some(tok) if tok.takes(name[n]) => {
+                t += 1;
+                n += 1;
+            }
+            _ => {
+                let Some((after, took)) = last_star else { return false };
+                last_star = Some((after, took + 1));
+                t = after;
+                n = took + 1;
+            }
+        }
+    }
+    toks[t..].iter().all(|tok| matches!(tok, Glob::Star))
 }
 
 fn case_fold(s: &str) -> String {
     if is_macos() { s.to_lowercase() } else { s.to_string() }
+}
+
+/// Where [`shlex_split`] is inside one token.
+#[derive(Clone, Copy)]
+enum Lex {
+    /// before the token (white space is skipped)
+    Between,
+    /// in a bare word
+    Word,
+    /// inside this quote character
+    Quoted(char),
+    /// after a backslash
+    Escaped(Resume),
+}
+
+/// Where a backslash escape returns to.
+#[derive(Clone, Copy)]
+enum Resume {
+    Word,
+    Quoted(char),
 }
 
 /// `shlex.split(s)` (posix, no comments); None where Python raises ValueError.
@@ -294,14 +380,13 @@ fn shlex_split(s: &str) -> Option<Vec<String>> {
         // one token
         let mut piece = String::new();
         let mut quoted = false;
-        let mut state = ' ';
-        let mut escaped = ' ';
+        let mut state = Lex::Between;
         let mut got = false;
         while i <= cs.len() {
             let c = cs.get(i).copied();
             i += 1;
             match state {
-                ' ' => match c {
+                Lex::Between => match c {
                     None => break,
                     Some(c) if ws(c) => {
                         if !piece.is_empty() || quoted {
@@ -309,50 +394,47 @@ fn shlex_split(s: &str) -> Option<Vec<String>> {
                             break;
                         }
                     }
-                    Some('\\') => {
-                        escaped = 'a';
-                        state = '\\';
-                    }
-                    Some(c @ ('\'' | '"')) => state = c,
+                    Some('\\') => state = Lex::Escaped(Resume::Word),
+                    Some(c @ ('\'' | '"')) => state = Lex::Quoted(c),
                     Some(c) => {
                         piece.push(c);
-                        state = 'a';
+                        state = Lex::Word;
                     }
                 },
-                '\'' | '"' => {
+                Lex::Quoted(quote) => {
                     quoted = true;
                     let c = c?; // No closing quotation
-                    if c == state {
-                        state = 'a';
-                    } else if state == '"' && c == '\\' {
-                        escaped = state;
-                        state = '\\';
+                    if c == quote {
+                        state = Lex::Word;
+                    } else if quote == '"' && c == '\\' {
+                        state = Lex::Escaped(Resume::Quoted(quote));
                     } else {
                         piece.push(c);
                     }
                 }
-                '\\' => {
+                Lex::Escaped(resume) => {
                     let c = c?; // No escaped character
-                    if (escaped == '\'' || escaped == '"') && c != state && c != escaped {
-                        piece.push(state);
+                    if let Resume::Quoted(quote) = resume {
+                        if c != '\\' && c != quote {
+                            piece.push('\\');
+                        }
+                        state = Lex::Quoted(quote);
+                    } else {
+                        state = Lex::Word;
                     }
                     piece.push(c);
-                    state = escaped;
                 }
-                _ => match c {
+                Lex::Word => match c {
                     None => break,
                     Some(c) if ws(c) => {
-                        state = ' ';
+                        state = Lex::Between;
                         if !piece.is_empty() || quoted {
                             got = true;
                             break;
                         }
                     }
-                    Some(c @ ('\'' | '"')) => state = c,
-                    Some('\\') => {
-                        escaped = 'a';
-                        state = '\\';
-                    }
+                    Some(c @ ('\'' | '"')) => state = Lex::Quoted(c),
+                    Some('\\') => state = Lex::Escaped(Resume::Word),
                     Some(c) => piece.push(c),
                 },
             }
@@ -408,7 +490,12 @@ fn heredoc_delims(line: &str) -> Vec<String> {
 }
 
 fn strip_heredocs(cmd: &str) -> String {
-    let (mut out, mut pending): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
+    strip_heredocs_marked(cmd).0
+}
+
+/// [`strip_heredocs`], and for each line that is left whether it starts a here-document.
+fn strip_heredocs_marked(cmd: &str) -> (String, Vec<bool>) {
+    let (mut out, mut starts, mut pending): (Vec<&str>, Vec<bool>, Vec<String>) = (Vec::new(), Vec::new(), Vec::new());
     for line in cmd.split('\n') {
         if !pending.is_empty() {
             if line.trim() == pending[0] {
@@ -417,9 +504,11 @@ fn strip_heredocs(cmd: &str) -> String {
             continue;
         }
         out.push(line);
-        pending.extend(heredoc_delims(line));
+        let delims = heredoc_delims(line);
+        starts.push(!delims.is_empty());
+        pending.extend(delims);
     }
-    out.join("\n")
+    (out.join("\n"), starts)
 }
 
 /// The text of every here-document in a command (an unterminated one runs to the end).
@@ -585,8 +674,7 @@ fn walk(cmd: &str, cwd: Option<String>, depth: usize) -> Vec<Cmd> {
 fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<String>) -> Vec<Cmd> {
     let mut out = Vec::new();
     let mut cwd = cwd;
-    let stripped = strip_heredocs(cmd);
-    let heredoc_lines: Vec<bool> = stripped.split('\n').map(|l| !heredoc_delims(l).is_empty()).collect();
+    let (stripped, heredoc_lines) = strip_heredocs_marked(cmd);
     for (seg, line) in segments(&stripped) {
         let Some(split) = shlex_split(&seg) else {
             unparsed.push(seg);
@@ -609,7 +697,10 @@ fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<St
         }
         if matches!(name.as_str(), "bash" | "sh" | "zsh" | "dash" | "ksh") {
             for (k, t) in toks.iter().enumerate().skip(1) {
-                let is_c = t.len() >= 2 && t.starts_with('-') && t.ends_with('c') && t[1..].chars().all(|c| c.is_ascii_alphabetic());
+                let is_c = t.len() >= 2
+                    && t.starts_with('-')
+                    && t.ends_with('c')
+                    && t[1..].chars().all(|c| c.is_ascii_alphabetic());
                 if is_c && k + 1 < toks.len() {
                     out.extend(walk_full(&toks[k + 1], cwd.clone(), depth + 1, unparsed));
                     break;
@@ -652,7 +743,8 @@ fn command_of(input: &Value) -> Option<&str> {
 /// True when the word after a bare `-i` is an explicit BSD backup suffix: empty (`''`) or a
 /// dot-word such as `.bak`. Anything else is the script, which BSD sed would eat as the suffix.
 fn is_bsd_suffix(word: &str) -> bool {
-    word.is_empty() || (word.starts_with('.') && word.len() > 1 && !word.contains(|c: char| c.is_whitespace() || c == '/'))
+    word.is_empty()
+        || (word.starts_with('.') && word.len() > 1 && !word.contains(|c: char| c.is_whitespace() || c == '/'))
 }
 
 /// True when sed's arguments hold a BSD-unsafe in-place flag: -i, -ni, -Ei, --in-place[=SUFFIX]
@@ -735,10 +827,7 @@ fn is_redirect(t: &str) -> bool {
 }
 
 fn cat_file(args: &[String]) -> Option<String> {
-    args.iter()
-        .take_while(|t| !is_redirect(t))
-        .find(|t| !t.starts_with('-'))
-        .cloned()
+    args.iter().take_while(|t| !is_redirect(t)).find(|t| !t.starts_with('-')).cloned()
 }
 
 /// `sed -n SCRIPT FILE` (or `-n -e SCRIPT FILE`): the file. No `-n` or an in-place edit: None.
@@ -779,16 +868,27 @@ fn sed_n_file(args: &[String]) -> Option<String> {
 // --- G15 secret reads ----------------------------------------------------------
 
 const SECRET_READERS: &[&str] = &[
-    "cat", "bat", "batcat", "less", "more", "most", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack",
-    "sed", "gsed", "awk", "gawk", "mawk", "cut", "strings", "xxd", "hexdump", "od", "nl", "tac", "rev", "sort",
-    "uniq", "paste", "fold", "column", "cp", "mv", "scp", "rsync", "open", "code", "cursor", "vim", "vi", "nvim",
-    "nano", "view", "pbcopy", "base64", "jq", "yq", "diff", "cmp", "ln", "install",
+    "cat", "bat", "batcat", "less", "more", "most", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack", "sed",
+    "gsed", "awk", "gawk", "mawk", "cut", "strings", "xxd", "hexdump", "od", "nl", "tac", "rev", "sort", "uniq",
+    "paste", "fold", "column", "cp", "mv", "scp", "rsync", "open", "code", "cursor", "vim", "vi", "nvim", "nano",
+    "view", "pbcopy", "base64", "jq", "yq", "diff", "cmp", "ln", "install",
 ];
 const SECRET_SEARCHERS: &[&str] = &["rg", "grep", "egrep", "fgrep", "ag", "ack"];
 const ARGS_FIELDS: &[&str] = &["args", "command", "cmd", "command_line", "cmdline"];
 const PS_VALUE_LONG: &[&str] = &[
-    "--format", "--pid", "--ppid", "--sid", "--tty", "--user", "--group", "--sort", "--cols", "--columns", "--width",
-    "--lines", "--rows",
+    "--format",
+    "--pid",
+    "--ppid",
+    "--sid",
+    "--tty",
+    "--user",
+    "--group",
+    "--sort",
+    "--cols",
+    "--columns",
+    "--width",
+    "--lines",
+    "--rows",
 ];
 
 type Target = (String, String);
@@ -849,7 +949,7 @@ fn ps_leaks(args: &[String]) -> bool {
                 if "oOpCtuUgGsD".contains(c) {
                     let mut val: String = cs[k + 1..].iter().collect();
                     if val.is_empty() && i < n {
-                        val = args[i].clone();
+                        val.clone_from(&args[i]);
                         i += 1;
                     }
                     if c == 'o' || c == 'O' {
@@ -876,7 +976,11 @@ fn ps_leaks(args: &[String]) -> bool {
             return true;
         }
     }
-    if flags.get(&'w').copied().unwrap_or(0) >= 2 || flags.contains_key(&'f') || bare.contains(&'e') || bare.contains(&'u') {
+    if flags.get(&'w').copied().unwrap_or(0) >= 2
+        || flags.contains_key(&'f')
+        || bare.contains(&'e')
+        || bare.contains(&'u')
+    {
         return true;
     }
     if fmt.is_empty() && "eAaxd".chars().any(|c| flags.contains_key(&c)) {
@@ -920,34 +1024,93 @@ fn search_val(fam: &str) -> (&'static str, &'static [&'static str]) {
         "grep" => (
             "efmABCdD",
             &[
-                "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context",
-                "--directories", "--devices", "--include", "--exclude", "--exclude-dir", "--exclude-from",
-                "--label", "--binary-files", "--group-separator",
+                "--regexp",
+                "--file",
+                "--max-count",
+                "--after-context",
+                "--before-context",
+                "--context",
+                "--directories",
+                "--devices",
+                "--include",
+                "--exclude",
+                "--exclude-dir",
+                "--exclude-from",
+                "--label",
+                "--binary-files",
+                "--group-separator",
             ],
         ),
         "rg" => (
             "efgmABCdjMrtTE",
             &[
-                "--regexp", "--file", "--glob", "--iglob", "--max-count", "--after-context", "--before-context",
-                "--context", "--max-depth", "--maxdepth", "--threads", "--max-columns", "--replace", "--type",
-                "--type-not", "--type-add", "--type-clear", "--ignore-file", "--encoding", "--colors", "--color",
-                "--sort", "--sortr", "--path-separator", "--pre", "--pre-glob", "--engine", "--dfa-size-limit",
-                "--regex-size-limit", "--max-filesize", "--context-separator", "--field-context-separator",
-                "--field-match-separator", "--hostname-bin", "--hyperlink-format",
+                "--regexp",
+                "--file",
+                "--glob",
+                "--iglob",
+                "--max-count",
+                "--after-context",
+                "--before-context",
+                "--context",
+                "--max-depth",
+                "--maxdepth",
+                "--threads",
+                "--max-columns",
+                "--replace",
+                "--type",
+                "--type-not",
+                "--type-add",
+                "--type-clear",
+                "--ignore-file",
+                "--encoding",
+                "--colors",
+                "--color",
+                "--sort",
+                "--sortr",
+                "--path-separator",
+                "--pre",
+                "--pre-glob",
+                "--engine",
+                "--dfa-size-limit",
+                "--regex-size-limit",
+                "--max-filesize",
+                "--context-separator",
+                "--field-context-separator",
+                "--field-match-separator",
+                "--hostname-bin",
+                "--hyperlink-format",
             ],
         ),
         "ag" => (
             "ABCGgmpW",
             &[
-                "--ignore", "--ignore-dir", "--depth", "--file-search-regex", "--path-to-ignore", "--pager",
-                "--after", "--before", "--context", "--max-count", "--width", "--workers",
+                "--ignore",
+                "--ignore-dir",
+                "--depth",
+                "--file-search-regex",
+                "--path-to-ignore",
+                "--pager",
+                "--after",
+                "--before",
+                "--context",
+                "--max-count",
+                "--width",
+                "--workers",
             ],
         ),
         _ => (
             "ABCmgt",
             &[
-                "--ignore-dir", "--noignore-dir", "--ignore-file", "--type", "--after-context", "--before-context",
-                "--context", "--max-count", "--output", "--pager",
+                "--ignore-dir",
+                "--noignore-dir",
+                "--ignore-file",
+                "--type",
+                "--after-context",
+                "--before-context",
+                "--context",
+                "--max-count",
+                "--output",
+                "--pager",
             ],
         ),
     }
@@ -1004,12 +1167,15 @@ fn search_long(fam: &str, key: &str, val: &str, o: &mut SearchOpts) {
             o.pat = true;
         } else if key == "--glob" || key == "--iglob" {
             o.globs.push(val.to_string());
-        } else if key == "--hidden" || key == "--unrestricted" || (key.starts_with("--no-ignore") && key != "--no-ignore-messages") {
+        } else if key == "--hidden"
+            || key == "--unrestricted"
+            || (key.starts_with("--no-ignore") && key != "--no-ignore-messages")
+        {
             o.unres = true;
         }
     } else if fam == "ag" {
         if key == "--ignore" {
-            o.globs.push(format!("!{}", val));
+            o.globs.push(format!("!{val}"));
         } else if key == "--ignore-dir" {
             o.xdir.push(val.to_string());
         } else if key == "--unrestricted" || key == "--skip-vcs-ignores" || key == "--hidden" {
@@ -1040,7 +1206,7 @@ fn search_opts(fam: &str, args: &[String]) -> SearchOpts {
                 None => (a.as_str(), false, String::new()),
             };
             if !eq && long_val.contains(&key) && i < n {
-                val = args[i].clone();
+                val.clone_from(&args[i]);
                 i += 1;
             }
             search_long(fam, key, &val, &mut o);
@@ -1051,7 +1217,7 @@ fn search_opts(fam: &str, args: &[String]) -> SearchOpts {
                 if short_val.contains(c) {
                     let mut val: String = cs[k + 1..].iter().collect();
                     if val.is_empty() && i < n {
-                        val = args[i].clone();
+                        val.clone_from(&args[i]);
                         i += 1;
                     }
                     search_short(fam, c, Some(&val), &mut o);
@@ -1075,14 +1241,14 @@ fn glob_hits(g: &str, dirs: &[String], fname: &str, path: &str) -> bool {
     if g.is_empty() {
         return false;
     }
-    let mut names: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
+    let mut names: Vec<&str> = dirs.iter().map(String::as_str).collect();
     if !only_dir {
         names.push(fname);
     }
     if names.iter().any(|c| fnmatch(c, g)) {
         return true;
     }
-    [g.to_string(), format!("*/{}", g), format!("*/{}/*", g)].iter().any(|p| fnmatch(path, p))
+    [g.to_string(), format!("*/{g}"), format!("*/{g}/*")].iter().any(|p| fnmatch(path, p))
 }
 
 /// True when the search options leave `path` out (--exclude, --exclude-dir, --include, rg/ag globs).
@@ -1104,7 +1270,7 @@ fn search_excluded(o: &SearchOpts, path: &str, dirs: &[String], fname: &str) -> 
     if !keep.is_empty() {
         return !keep.iter().any(|g| {
             let g = case_fold(g);
-            fnmatch(fname, &g) || fnmatch(&path, &g) || fnmatch(&path, &format!("*/{}", g))
+            fnmatch(fname, &g) || fnmatch(&path, &g) || fnmatch(&path, &format!("*/{g}"))
         });
     }
     false
@@ -1157,9 +1323,10 @@ fn search_leaks(name: &str, args: &[String], cwd: Option<&str>, target: &Target)
     }
     let operands: Vec<&String> = if o.pat { o.pos.iter().collect() } else { o.pos.iter().skip(1).collect() };
     let mut paths: Vec<String> = operands.into_iter().filter(|p| p.as_str() != "-").cloned().collect();
-    let cwd_s = cwd.map(String::from).unwrap_or_else(|| {
-        env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| "/".to_string())
-    });
+    let cwd_s = cwd.map_or_else(
+        || env::current_dir().map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned()),
+        String::from,
+    );
     if paths.is_empty() {
         paths.push(cwd_s.clone());
     }
@@ -1466,7 +1633,7 @@ fn parse_opts(args: &[String], short_val: &str, long_val: &[&str], abbr: bool) -
                 if short_val.contains(cs[k]) {
                     let mut val: String = cs[k + 1..].iter().collect();
                     if val.is_empty() && i < n {
-                        val = args[i].clone();
+                        val.clone_from(&args[i]);
                         i += 1;
                     }
                     opts.push((format!("-{}", cs[k]), val));
@@ -1483,11 +1650,41 @@ fn parse_opts(args: &[String], short_val: &str, long_val: &[&str], abbr: bool) -
 
 const CURL_SHORT_VAL: &str = "AbcCdeEFHKmoPQrtTuUwxXyYz";
 const CURL_LONG_VAL: &[&str] = &[
-    "--data", "--data-raw", "--data-binary", "--data-ascii", "--data-urlencode", "--json", "--form",
-    "--form-string", "--upload-file", "--header", "--user", "--user-agent", "--output", "--request", "--url",
-    "--proxy", "--cookie", "--cookie-jar", "--referer", "--cacert", "--cert", "--key", "--max-time",
-    "--connect-timeout", "--retry", "--write-out", "--config", "--range", "--resolve", "--url-query",
-    "--oauth2-bearer", "--proxy-user", "--time-cond", "--variable", "--expand-data",
+    "--data",
+    "--data-raw",
+    "--data-binary",
+    "--data-ascii",
+    "--data-urlencode",
+    "--json",
+    "--form",
+    "--form-string",
+    "--upload-file",
+    "--header",
+    "--user",
+    "--user-agent",
+    "--output",
+    "--request",
+    "--url",
+    "--proxy",
+    "--cookie",
+    "--cookie-jar",
+    "--referer",
+    "--cacert",
+    "--cert",
+    "--key",
+    "--max-time",
+    "--connect-timeout",
+    "--retry",
+    "--write-out",
+    "--config",
+    "--range",
+    "--resolve",
+    "--url-query",
+    "--oauth2-bearer",
+    "--proxy-user",
+    "--time-cond",
+    "--variable",
+    "--expand-data",
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1573,9 +1770,23 @@ fn curl_payload(args: &[String]) -> Option<Payload> {
 
 const WGET_SHORT_VAL: &str = "OoaetTwPUiBQlIARXD";
 const WGET_LONG_VAL: &[&str] = &[
-    "--post-data", "--post-file", "--body-data", "--body-file", "--header", "--user-agent", "--output-document",
-    "--output-file", "--method", "--referer", "--load-cookies", "--save-cookies", "--directory-prefix",
-    "--http-user", "--http-password", "--user", "--password",
+    "--post-data",
+    "--post-file",
+    "--body-data",
+    "--body-file",
+    "--header",
+    "--user-agent",
+    "--output-document",
+    "--output-file",
+    "--method",
+    "--referer",
+    "--load-cookies",
+    "--save-cookies",
+    "--directory-prefix",
+    "--http-user",
+    "--http-password",
+    "--user",
+    "--password",
 ];
 
 fn wget_payload(args: &[String]) -> Option<Payload> {
@@ -1604,7 +1815,18 @@ fn gh_api_payload(args: &[String]) -> Option<Payload> {
     let o = parse_opts(
         args,
         "XfFHqtp",
-        &["--method", "--raw-field", "--field", "--header", "--input", "--jq", "--template", "--hostname", "--cache", "--preview"],
+        &[
+            "--method",
+            "--raw-field",
+            "--field",
+            "--header",
+            "--input",
+            "--jq",
+            "--template",
+            "--hostname",
+            "--cache",
+            "--preview",
+        ],
         false,
     );
     let mut p = Payload::default();
@@ -1616,7 +1838,7 @@ fn gh_api_payload(args: &[String]) -> Option<Payload> {
                 sends = true;
                 match v.split_once('=').and_then(|(_, rhs)| rhs.strip_prefix('@')) {
                     Some(f) => {
-                        p.texts.push(v.split_once('=').map(|(name, _)| name).unwrap_or("").to_string());
+                        p.texts.push(v.split_once('=').map_or("", |(name, _)| name).to_string());
                         p.file(f);
                     }
                     None => p.texts.push(v.clone()),
@@ -1663,11 +1885,38 @@ fn gh_text_payload(group: &str, verb: &str, args: &[String]) -> Payload {
         args,
         short,
         &[
-            "--assignee", "--base", "--body", "--body-file", "--head", "--label", "--milestone", "--project",
-            "--repo", "--reviewer", "--template", "--title", "--notes", "--notes-file", "--comment", "--reason",
-            "--target", "--discussion-category", "--add-assignee", "--add-label", "--remove-label",
-            "--add-reviewer", "--add-project", "--subject", "--match-head-commit", "--description",
-            "--homepage", "--color", "--field", "--raw-field", "--ref", "--category",
+            "--assignee",
+            "--base",
+            "--body",
+            "--body-file",
+            "--head",
+            "--label",
+            "--milestone",
+            "--project",
+            "--repo",
+            "--reviewer",
+            "--template",
+            "--title",
+            "--notes",
+            "--notes-file",
+            "--comment",
+            "--reason",
+            "--target",
+            "--discussion-category",
+            "--add-assignee",
+            "--add-label",
+            "--remove-label",
+            "--add-reviewer",
+            "--add-project",
+            "--subject",
+            "--match-head-commit",
+            "--description",
+            "--homepage",
+            "--color",
+            "--field",
+            "--raw-field",
+            "--ref",
+            "--category",
         ],
         false,
     );
@@ -1793,7 +2042,9 @@ pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> 
         if MCP_SEND.is_match(tool) {
             let mut all = Vec::new();
             strings_of(input, &mut all);
-            all.iter().for_each(|s| scan_text(s, &words, &mut kinds));
+            for s in &all {
+                scan_text(s, &words, &mut kinds);
+            }
         }
     } else if tool == "Bash"
         && let Some(cmd) = command_of(input)
@@ -1851,7 +2102,9 @@ pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> 
             }
         }
         if sends {
-            heredoc_bodies(cmd).iter().for_each(|b| scan_text(b, &words, &mut kinds));
+            for b in &heredoc_bodies(cmd) {
+                scan_text(b, &words, &mut kinds);
+            }
             if has_substitution(cmd) {
                 add_kind(&mut kinds, "a body it cannot read (a shell expansion)".to_string());
             }
@@ -1918,8 +2171,19 @@ fn git_message(c: &Cmd, base: &str) -> Option<(Payload, PathBuf)> {
         rest,
         "mFCct",
         &[
-            "--message", "--file", "--trailer", "--author", "--date", "--template", "--reuse-message",
-            "--reedit-message", "--fixup", "--squash", "--cleanup", "--strategy", "--strategy-option",
+            "--message",
+            "--file",
+            "--trailer",
+            "--author",
+            "--date",
+            "--template",
+            "--reuse-message",
+            "--reedit-message",
+            "--fixup",
+            "--squash",
+            "--cleanup",
+            "--strategy",
+            "--strategy-option",
         ],
         false,
     );
@@ -1953,11 +2217,11 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
         let name = name.strip_suffix(".exe").unwrap_or(name);
         let found = match name {
             "git" => git_message(&c, &base),
-            "gh" => gh_split(&c.toks[1..])
-                .filter(|(group, _, _)| G17_GH_GROUPS.contains(group))
-                .map(|(group, verb, rest)| {
+            "gh" => gh_split(&c.toks[1..]).filter(|(group, _, _)| G17_GH_GROUPS.contains(group)).map(
+                |(group, verb, rest)| {
                     (gh_text_payload(group, verb, rest), PathBuf::from(c.cwd.as_deref().unwrap_or(&base)))
-                }),
+                },
+            ),
             _ => None,
         };
         let Some((p, dir)) = found else { continue };
@@ -1972,7 +2236,9 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
         }
     }
     if targeted {
-        heredoc_bodies(cmd).iter().for_each(|b| scan_attribution(b, &mut kinds));
+        for b in &heredoc_bodies(cmd) {
+            scan_attribution(b, &mut kinds);
+        }
         if whole {
             scan_attribution(cmd, &mut kinds);
         }
@@ -1988,22 +2254,65 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
 
 // --- private words, shadow mode ------------------------------------------------------
 
-pub fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).or_else(dirs::home_dir)
+/// A child that ended in time: whether it exited with success, and what it wrote to stdout.
+pub struct Finished {
+    pub success: bool,
+    pub stdout: Vec<u8>,
 }
 
-/// The output of a git command run with HOME set to `home` (in `dir` when given), or "".
-fn git_out(home: &Path, dir: Option<&Path>, args: &[&str]) -> String {
+/// Run `cmd` (stdin and stderr closed, stdout read) and wait at most `limit` for it. None when it
+/// cannot start or runs past the limit; a child past the limit is killed. The one spawn helper of
+/// the guard, the Cursor adapter and the checks.
+pub fn run_limited(cmd: &mut Command, limit: Duration) -> Option<Finished> {
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut out = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = out.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    if let Ok(stdout) = rx.recv_timeout(limit) {
+        let success = child.wait().is_ok_and(|s| s.success());
+        Some(Finished { success, stdout })
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    }
+}
+
+/// How long a git call of the private-word lookup may run.
+const GIT_LOOKUP_LIMIT: Duration = Duration::from_secs(5);
+
+/// The `remote.origin.url`, `user.email` and `user.name` of the git config in effect (HOME set to
+/// `home`, in `dir` when given), from one `git config -z --get-regexp` call. Missing ones are "".
+struct GitIdentity {
+    url: String,
+    email: String,
+    name: String,
+}
+
+fn git_identity(home: &Path, dir: Option<&Path>) -> GitIdentity {
+    let mut found = GitIdentity { url: String::new(), email: String::new(), name: String::new() };
     let mut c = Command::new("git");
-    c.args(args).env("HOME", home).stdin(Stdio::null()).stderr(Stdio::null());
+    c.args(["config", "-z", "--get-regexp", r"^(remote\.origin\.url|user\.(email|name))$"]).env("HOME", home);
     if let Some(d) = dir {
         c.current_dir(d);
     }
-    c.output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
+    let Some(done) = run_limited(&mut c, GIT_LOOKUP_LIMIT).filter(|d| d.success) else { return found };
+    // entries are `key\nvalue` split by NUL; the first url and the last identity win, as in `git config`
+    for entry in String::from_utf8_lossy(&done.stdout).split('\0') {
+        let Some((key, value)) = entry.split_once('\n') else { continue };
+        let value = value.trim().to_string();
+        match key {
+            "remote.origin.url" if found.url.is_empty() => found.url = value,
+            "user.email" => found.email = value,
+            "user.name" => found.name = value,
+            _ => {}
+        }
+    }
+    found
 }
 
 /// The words the repo must not leak, lower case and without repeats: `PRIVATE_PROJECTS` and
@@ -2028,13 +2337,9 @@ pub fn private_words_at(home: &Path, dir: Option<&Path>) -> Vec<String> {
             push(&mut out, w);
         }
     }
-    let url = git_out(home, dir, &["remote", "get-url", "origin"]).to_lowercase();
-    let idents = [
-        crate::setting(home, "GIT_EMAIL"),
-        crate::setting(home, "GIT_NAME"),
-        git_out(home, dir, &["config", "user.email"]),
-        git_out(home, dir, &["config", "user.name"]),
-    ];
+    let git = git_identity(home, dir);
+    let url = git.url.to_lowercase();
+    let idents = [crate::setting(home, "GIT_EMAIL"), crate::setting(home, "GIT_NAME"), git.email, git.name];
     for raw in idents {
         let name = raw.trim().to_lowercase();
         let joined: String = name.split_whitespace().collect();
@@ -2049,111 +2354,266 @@ pub fn private_words_at(home: &Path, dir: Option<&Path>) -> Vec<String> {
 
 /// True when check `id` runs in shadow mode: it is in env `GUARD_SHADOW` (even an empty one wins)
 /// or else in the `GUARD_SHADOW` setting; a comma or space list.
-pub fn shadow(id: &str) -> bool {
-    let raw = match env::var("GUARD_SHADOW") {
-        Ok(v) => v,
-        Err(_) => home_dir().map(|h| crate::setting(&h, "GUARD_SHADOW")).unwrap_or_default(),
-    };
-    let id = id.to_uppercase();
-    raw.to_uppercase().split(|c: char| c.is_whitespace() || c == ',').any(|p| p == id)
+pub fn shadow(check: Check) -> bool {
+    let raw = env::var("GUARD_SHADOW").unwrap_or_else(|_| crate::setting(&crate::paths::home(), "GUARD_SHADOW"));
+    raw.split(|c: char| c.is_whitespace() || c == ',').any(|p| p.eq_ignore_ascii_case(check.id()))
+}
+
+fn unix_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// What a check did when it fired, as the fire log spells it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FireKind {
+    Deny,
+    Ask,
+    /// a Stop reminder
+    Stop,
+    Warn,
+    Hint,
+    Note,
+    /// the router changed or annotated an Agent call
+    Route,
+    /// a shadow-mode check that would have fired
+    Shadow,
+}
+
+impl FireKind {
+    const ALL: [Self; 8] =
+        [Self::Deny, Self::Ask, Self::Stop, Self::Warn, Self::Hint, Self::Note, Self::Route, Self::Shadow];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Ask => "ask",
+            Self::Stop => "stop",
+            Self::Warn => "warn",
+            Self::Hint => "hint",
+            Self::Note => "note",
+            Self::Route => "route",
+            Self::Shadow => "shadow",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == s)
+    }
+}
+
+/// One line of the fire log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fire {
+    /// unix seconds
+    pub at: u64,
+    pub check: Check,
+    pub kind: FireKind,
+}
+
+/// The fire log: one line per check that fired.
+pub fn fire_log_path() -> PathBuf {
+    crate::paths::cache().join("dots-guard-fires.log")
+}
+
+/// Past this size the fire log moves to `<name>.old` (one old file kept), so it stays small.
+const FIRE_LOG_MAX: u64 = 1_000_000;
+
+/// Append `<unix secs> <check id> <kind>` to the fire log. Never the message or the matched text.
+/// `harness_stats guard` reads this to find checks that no longer fire.
+pub fn fire_log(check: Check, kind: FireKind) {
+    fire_log_at(&fire_log_path(), check, kind);
+}
+
+fn fire_log_at(path: &Path, check: Check, kind: FireKind) {
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    if fs::metadata(path).is_ok_and(|m| m.len() > FIRE_LOG_MAX) {
+        let _ = fs::rename(path, rolled(path));
+    }
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{} {} {}", unix_secs(), check.id(), kind.as_str());
+    }
+}
+
+/// `<path>.old`: where a full fire log goes.
+fn rolled(path: &Path) -> PathBuf {
+    let mut old = path.as_os_str().to_owned();
+    old.push(".old");
+    PathBuf::from(old)
+}
+
+/// The fires in the fire log at `path` and in its rolled `.old` file, oldest first.
+pub fn read_fire_log(path: &Path) -> Vec<Fire> {
+    let text = |p: &Path| fs::read_to_string(p).unwrap_or_default();
+    read_fires(&(text(&rolled(path)) + &text(path)))
+}
+
+/// The fires in a fire log. A bad line, or one of a check or kind this build does not know, is skipped.
+pub fn read_fires(text: &str) -> Vec<Fire> {
+    text.lines()
+        .filter_map(|l| {
+            let mut p = l.split_whitespace();
+            let at = p.next()?.parse().ok()?;
+            Some(Fire { at, check: Check::parse(p.next()?)?, kind: FireKind::parse(p.next()?)? })
+        })
+        .collect()
 }
 
 /// Append one line to `${XDG_CACHE_HOME:-~/.cache}/dots-guard-shadow.log`: time, check id, what the
 /// check would have done, and a short summary. Never the matched text: callers pass the message.
-pub fn shadow_log(id: &str, v: &Verdict, summary: &str) {
-    let dir = env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|h| h.join(".cache")));
-    let Some(dir) = dir else { return };
+/// The check also goes to the fire log as `shadow`.
+pub fn shadow_log(check: Check, v: &Verdict, summary: &str) {
+    fire_log(check, FireKind::Shadow);
+    let dir = crate::paths::cache();
     let _ = fs::create_dir_all(&dir);
+    let id = check.id();
     let what = match v {
         Verdict::Allow => "allow",
         Verdict::Ask(_) => "ask",
         Verdict::Deny(_) => "deny",
     };
     let one_line: String = summary.chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect();
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("dots-guard-shadow.log")) {
-        let _ = writeln!(f, "{ts} {id} {what} {one_line}");
+        let _ = writeln!(f, "{} {id} {what} {one_line}", unix_secs());
     }
 }
 
 // --- the gate: which checks run ------------------------------------------------------
 
-/// Every check: its id and the preset that owns it (`core` is always on). The ids match the `guard:`
-/// lists in `claude/presets/*/rules.md`; a test compares the two. The Claude guard, the Cursor adapter
-/// and the Opencode plugin (through the guard) all read this one list.
-pub const REGISTRY: &[(&str, &str)] = &[
-    ("G1", "workflow"),
-    ("G2", "workflow"),
-    ("G3", "workflow"),
-    ("G4", "workflow"),
-    ("G5", "workflow"),
-    ("G6", "workflow"),
-    ("G7", "workflow"),
-    ("G12", "workflow"),
-    ("G13", "workflow"),
-    ("H1", "workflow"),
-    ("G8", "pace"),
-    ("PACE", "pace"),
-    ("G9", "models"),
-    ("ROUTER", "models"),
-    ("G10", "ship-to-main"),
-    ("G11", "clock"),
-    ("G17", "no-ai-attribution"),
-    ("G14", "core"),
-    ("G15", "core"),
-    ("G16", "core"),
+/// One guard check. The ids match the `guard:` lists in `claude/presets/*/rules.md`; a test compares
+/// the two. The Claude guard, the Cursor adapter and the Opencode plugin (through the guard) all
+/// read [`REGISTRY`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    G1,
+    G2,
+    G3,
+    G4,
+    G5,
+    G6,
+    G7,
+    G12,
+    G13,
+    H1,
+    W5,
+    G8,
+    Pace,
+    G9,
+    Router,
+    G10,
+    G11,
+    G17,
+    G14,
+    G15,
+    G16,
+}
+
+impl Check {
+    /// The id as `GUARD_OFF` and the preset lists spell it.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::G1 => "G1",
+            Self::G2 => "G2",
+            Self::G3 => "G3",
+            Self::G4 => "G4",
+            Self::G5 => "G5",
+            Self::G6 => "G6",
+            Self::G7 => "G7",
+            Self::G12 => "G12",
+            Self::G13 => "G13",
+            Self::H1 => "H1",
+            Self::W5 => "W5",
+            Self::G8 => "G8",
+            Self::Pace => "PACE",
+            Self::G9 => "G9",
+            Self::Router => "ROUTER",
+            Self::G10 => "G10",
+            Self::G11 => "G11",
+            Self::G17 => "G17",
+            Self::G14 => "G14",
+            Self::G15 => "G15",
+            Self::G16 => "G16",
+        }
+    }
+
+    /// The check named `id`, in any case.
+    pub fn parse(id: &str) -> Option<Self> {
+        REGISTRY.iter().map(|(c, _)| *c).find(|c| c.id().eq_ignore_ascii_case(id))
+    }
+
+    /// The preset that owns the check (`core` is always on).
+    pub fn preset(self) -> &'static str {
+        REGISTRY.iter().find(|(c, _)| *c == self).map_or("core", |(_, p)| p)
+    }
+}
+
+/// Every check and the preset that owns it.
+pub const REGISTRY: &[(Check, &str)] = &[
+    (Check::G1, "workflow"),
+    (Check::G2, "workflow"),
+    (Check::G3, "workflow"),
+    (Check::G4, "workflow"),
+    (Check::G5, "workflow"),
+    (Check::G6, "workflow"),
+    (Check::G7, "workflow"),
+    (Check::G12, "workflow"),
+    (Check::G13, "workflow"),
+    (Check::H1, "workflow"),
+    (Check::W5, "workflow"),
+    (Check::G8, "pace"),
+    (Check::Pace, "pace"),
+    (Check::G9, "models"),
+    (Check::Router, "models"),
+    (Check::G10, "ship-to-main"),
+    (Check::G11, "clock"),
+    (Check::G17, "no-ai-attribution"),
+    (Check::G14, "core"),
+    (Check::G15, "core"),
+    (Check::G16, "core"),
 ];
 
 /// What the gate reads from the settings: the checks switched off and the presets that are on.
 pub struct Gate {
-    pub off: Vec<String>,
+    pub off: Vec<Check>,
     pub presets: Vec<String>,
 }
 
 impl Gate {
     /// Every preset on, nothing off: the answer when the settings cannot be read.
-    pub fn all_on() -> Gate {
-        Gate { off: Vec::new(), presets: crate::presets::ALL.iter().map(|p| p.to_string()).collect() }
+    pub fn all_on() -> Self {
+        Self { off: Vec::new(), presets: crate::presets::ALL.iter().map(ToString::to_string).collect() }
     }
 
     /// Read `GUARD_OFF` (env, even an empty one, else the setting; a comma or space list) and the
     /// enabled presets of the profile from `home`.
-    pub fn load(home: &Path) -> Gate {
+    pub fn load(home: &Path) -> Self {
         std::panic::catch_unwind(|| {
             let raw = env::var("GUARD_OFF").unwrap_or_else(|_| crate::setting(home, "GUARD_OFF"));
-            let off = raw
-                .to_uppercase()
-                .split(|c: char| c.is_whitespace() || c == ',')
-                .filter(|p| !p.is_empty())
-                .map(String::from)
-                .collect();
+            let off = raw.split(|c: char| c.is_whitespace() || c == ',').filter_map(Check::parse).collect();
             let profile = crate::presets::profile(home);
-            Gate { off, presets: crate::presets::enabled_quiet(home, &profile) }
+            Self { off, presets: crate::presets::enabled_quiet(home, &profile) }
         })
-        .unwrap_or_else(|_| Gate::all_on())
+        .unwrap_or_else(|_| Self::all_on())
     }
 
     /// True when check `id` runs: it is not in `GUARD_OFF` and its preset is on. `core` checks
     /// ignore the presets.
-    pub fn enabled(&self, id: &str) -> bool {
-        let id = id.to_uppercase();
-        if self.off.contains(&id) {
+    pub fn enabled(&self, check: Check) -> bool {
+        if self.off.contains(&check) {
             return false;
         }
-        match REGISTRY.iter().find(|(i, _)| *i == id) {
-            Some((_, preset)) if *preset != "core" => self.presets.iter().any(|p| p == preset),
-            _ => true,
+        match check.preset() {
+            "core" => true,
+            preset => self.presets.iter().any(|p| p == preset),
         }
     }
 }
 
 /// [`Gate::enabled`] for this process, with the gate read once from the user's home.
-pub fn check_enabled(id: &str) -> bool {
+pub fn check_enabled(check: Check) -> bool {
     static GATE: std::sync::OnceLock<Gate> = std::sync::OnceLock::new();
-    GATE.get_or_init(|| home_dir().map(|h| Gate::load(&h)).unwrap_or_else(Gate::all_on)).enabled(id)
+    GATE.get_or_init(|| Gate::load(&crate::paths::home())).enabled(check)
 }
 
 #[cfg(test)]
@@ -2165,27 +2625,30 @@ mod tests {
         let split = |s: &str| shlex_split(s);
         assert_eq!(split("a 'b c' \"d e\" f\\ g"), Some(vec!["a".into(), "b c".into(), "d e".into(), "f g".into()]));
         assert_eq!(split("echo \"a\\\"b\" 'c\\d'"), Some(vec!["echo".into(), "a\"b".into(), "c\\d".into()]));
-        assert_eq!(split("x '' y"), Some(vec!["x".into(), "".into(), "y".into()]));
+        assert_eq!(split("x '' y"), Some(vec!["x".into(), String::new(), "y".into()]));
         assert_eq!(split("unbalanced 'quote"), None);
         assert_eq!(split("trailing \\"), None);
         assert_eq!(split("   "), Some(vec![]));
     }
 
     #[test]
-    fn fnmatch_matches_python() {
+    fn fnmatch_cases() {
         assert!(fnmatch("/a/b/local.zsh", "*/local.zsh"));
         assert!(fnmatch("local.zsh", "local.z?h"));
         assert!(fnmatch("a1", "a[0-9]"));
         assert!(!fnmatch("a1", "a[!0-9]"));
-        assert!(fnmatch("a[", "a["));
         assert!(!fnmatch("abc", "ab"));
+        assert!(fnmatch("a/b/c.txt", "a*c.txt")); // a star crosses `/`
+        assert!(fnmatch("x[y", "x[y")); // an unclosed class is literal
+        assert!(fnmatch("abcabc", "*abc"));
+        assert!(!fnmatch("abcab", "*abc"));
+        // many stars on a name that cannot match must not blow up
+        assert!(!fnmatch(&"a".repeat(60), &format!("{}b", "a*".repeat(30))));
     }
 
     #[test]
-    fn normpath_matches_python() {
+    fn normpath_cases() {
         assert_eq!(normpath("/a//b/./c/../d"), "/a/b/d");
-        assert_eq!(normpath("//a"), "//a");
-        assert_eq!(normpath("///a"), "/a");
         assert_eq!(normpath(""), ".");
         assert_eq!(normpath("../x"), "../x");
         assert_eq!(normpath("/.."), "/");
@@ -2195,7 +2658,7 @@ mod tests {
     fn heredoc_delims_match_python() {
         assert_eq!(heredoc_delims("cat <<EOF"), vec!["EOF"]);
         assert_eq!(heredoc_delims("cat <<-'EOF' > x"), vec!["EOF"]);
-        assert!(heredoc_delims("cat <<< word").is_empty());
+        assert_eq!(heredoc_delims("cat <<< word"), [] as [String; 0]);
         assert_eq!(strip_heredocs("cat <<E\nsed -i x\nE\nls"), "cat <<E\nls");
     }
 
@@ -2204,7 +2667,7 @@ mod tests {
         assert_eq!(heredoc_bodies("cat <<E\nsed -i x\nE\nls"), vec!["sed -i x\n"]);
         assert_eq!(heredoc_bodies("a <<A; b <<B\none\nA\ntwo\nB"), vec!["one\n", "two\n"]);
         assert_eq!(heredoc_bodies("cat <<E\nopen"), vec!["open\n"]);
-        assert!(heredoc_bodies("echo hi").is_empty());
+        assert_eq!(heredoc_bodies("echo hi"), [] as [String; 0]);
     }
 
     #[test]
@@ -2232,11 +2695,25 @@ mod tests {
     }
 
     #[test]
-    fn whole_word_for_short_words() {
-        assert!(word_hit("abc ok", "abc"));
-        assert!(word_hit("x-abc-y", "abc"));
-        assert!(!word_hit("abcdef", "abc"));
-        assert!(!word_hit("xabc", "abc"));
-        assert!(word_hit("xabcdefx", "abcde"));
+    fn fire_log_appends_parses_and_rolls_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("sub/fires.log");
+        fire_log_at(&p, Check::G12, FireKind::Stop);
+        fire_log_at(&p, Check::Pace, FireKind::Note);
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains(" G12 stop\n") && text.contains(" PACE note\n"), "{text}");
+        let got = read_fires(&text);
+        let ids: Vec<_> = got.iter().map(|f| (f.check, f.kind)).collect();
+        assert_eq!(ids, [(Check::G12, FireKind::Stop), (Check::Pace, FireKind::Note)]);
+        assert!(got[0].at > 1_700_000_000);
+        let bad = "junk\n12 G1\n\nx G2 deny\n5 G99 deny\n5 G1 bark\n5 g1 deny\n";
+        assert_eq!(read_fires(bad), [Fire { at: 5, check: Check::G1, kind: FireKind::Deny }], "bad lines are skipped");
+        fs::write(&p, "x".repeat(usize::try_from(FIRE_LOG_MAX).unwrap() + 1)).unwrap();
+        fire_log_at(&p, Check::G1, FireKind::Deny);
+        assert_eq!(read_fires(&fs::read_to_string(&p).unwrap()).len(), 1, "a full log moves to .old");
+        assert!(dir.path().join("sub/fires.log.old").exists());
+        fs::write(dir.path().join("sub/fires.log.old"), "7 G2 warn\n").unwrap();
+        let both: Vec<_> = read_fire_log(&p).into_iter().map(|f| f.check).collect();
+        assert_eq!(both, [Check::G2, Check::G1], "the rolled file is read first");
     }
 }

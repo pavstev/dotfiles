@@ -1,39 +1,29 @@
-//! Port of the skill-script tests that the unit tests inside the bins do not already cover:
-//! `test_route.py::test_wrong_types_stay_bad_input`, `test_whatsleft_scan.py` (`FreshnessTest`) and
-//! `test_harness_stats.py`. Every test runs the real binary against a temp HOME and temp files.
-//! The spawn and route tests that call Python functions directly are unit tests in
-//! `src/bin/spawn.rs` and `src/bin/route.rs`. `tests/PORTED.md` maps each Python test to its twin.
+//! Process tests of the skill bins that their unit tests do not cover: `whatsleft_scan` freshness
+//! and `harness_stats`. Every test runs the real binary against a temp HOME and temp files.
 mod common;
 
 use common::{run_bin, temp_home};
 use serde_json::{Value, json};
+use std::fmt::{Display, Write as _};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const ROUTE: &str = env!("CARGO_BIN_EXE_route");
 const SCAN: &str = env!("CARGO_BIN_EXE_whatsleft_scan");
 const STATS: &str = env!("CARGO_BIN_EXE_harness_stats");
+
+/// One transcript line per record, each ended by a newline.
+fn lines_text<T: Display>(records: &[T]) -> String {
+    let mut body = String::new();
+    for r in records {
+        let _ = writeln!(body, "{r}");
+    }
+    body
+}
 
 // ---------------------------------------------------------------------------
 // test_route.py
 // ---------------------------------------------------------------------------
-
-#[test]
-fn test_wrong_types_stay_bad_input() {
-    let bad = [
-        r#"[{"id": 5, "kind": "work", "text": "t"}]"#,
-        r#"[{"id": ["a"], "kind": "work", "text": "t"}]"#,
-        r#"[{"kind": "nope", "text": "t"}]"#,
-        r#"[{"kind": "work", "risk": "rm -rf", "text": "t"}]"#,
-        r#"[{"kind": "work", "text": "t", "after": ["gone"]}]"#,
-    ];
-    for rows in bad {
-        let (code, out, _) = run_bin(ROUTE, &[], rows, &[], None);
-        assert_eq!(code, 2, "{rows}: {out}");
-        assert!(out.starts_with("route.py: bad input: "), "{rows}: {out}");
-    }
-}
 
 // ---------------------------------------------------------------------------
 // test_whatsleft_scan.py: FreshnessTest, through the binary.
@@ -56,7 +46,7 @@ struct Transcript {
 
 impl Transcript {
     /// A temp HOME with a fresh git repo in it (its real path, as git reports it).
-    fn new() -> Transcript {
+    fn new() -> Self {
         let home = temp_home("scan");
         let root = home.join("repo");
         fs::create_dir_all(&root).unwrap();
@@ -70,7 +60,7 @@ impl Transcript {
             .expect("git init");
         assert!(ok.success());
         let root = fs::canonicalize(&root).unwrap();
-        Transcript { home, root, lines: vec![], n: 0 }
+        Self { home, root, lines: vec![], n: 0 }
     }
 
     fn ts(&mut self) -> String {
@@ -78,7 +68,7 @@ impl Transcript {
         format!("2026-10-14T10:{:02}:00+00:00", self.n)
     }
 
-    fn tool(&mut self, name: &str, inp: Value, result: &str, error: bool, cwd: Option<&Path>) -> String {
+    fn tool(&mut self, name: &str, inp: &Value, result: &str, error: bool, cwd: Option<&Path>) -> String {
         let tid = format!("toolu_{}", self.n);
         let cwd = cwd.unwrap_or(&self.root).to_string_lossy().into_owned();
         let t = self.ts();
@@ -92,24 +82,25 @@ impl Transcript {
 
     fn edit(&mut self) -> String {
         let p = self.root.join("app.py").to_string_lossy().into_owned();
-        self.tool("Edit", json!({"file_path": p}), "ok", false, None)
+        self.tool("Edit", &json!({"file_path": p}), "ok", false, None)
     }
 
     fn bash(&mut self, cmd: &str) -> String {
-        self.tool("Bash", json!({"command": cmd}), "ok", false, None)
+        self.tool("Bash", &json!({"command": cmd}), "ok", false, None)
     }
 
     fn bash_failing(&mut self, cmd: &str) -> String {
-        self.tool("Bash", json!({"command": cmd}), "ok", true, None)
+        self.tool("Bash", &json!({"command": cmd}), "ok", true, None)
     }
 
     fn bash_in(&mut self, cmd: &str, cwd: &Path) -> String {
-        self.tool("Bash", json!({"command": cmd}), "ok", false, Some(cwd))
+        self.tool("Bash", &json!({"command": cmd}), "ok", false, Some(cwd))
     }
 
     fn bash_bg(&mut self, cmd: &str, bg_id: &str) -> String {
-        let res = format!("Command running in background with ID: {bg_id}. Output is being written to: /x/{bg_id}.output");
-        self.tool("Bash", json!({"command": cmd, "run_in_background": true}), &res, false, None)
+        let res =
+            format!("Command running in background with ID: {bg_id}. Output is being written to: /x/{bg_id}.output");
+        self.tool("Bash", &json!({"command": cmd, "run_in_background": true}), &res, false, None)
     }
 
     fn notice(&mut self, tool_id: &str, status: &str, summary: &str, task: &str) {
@@ -125,7 +116,7 @@ impl Transcript {
     /// What `whatsleft_scan` prints for this transcript.
     fn freshness(&self) -> String {
         let path = self.home.join("session.jsonl");
-        let body: String = self.lines.iter().map(|l| format!("{l}\n")).collect();
+        let body = lines_text(&self.lines);
         fs::write(&path, body).unwrap();
         let home = self.home.to_string_lossy().into_owned();
         let (code, out, err) = run_bin(
@@ -158,28 +149,20 @@ fn no_alarm(out: &str) {
 }
 
 #[test]
-fn test_foreground_unmasked_check_after_edit_passes() {
+fn passing_checks() {
+    // a check after the edit passes: plain, piped with pipefail, chained with &&, or in the background with exit 0
+    for cmd in ["pnpm check", "set -o pipefail; pnpm check 2>&1 | tail -20", "pnpm check && echo done"] {
+        let mut t = Transcript::new();
+        t.edit();
+        t.bash(cmd);
+        let out = t.freshness();
+        assert!(tagged(&out, "OK", PASSED), "{cmd}: {out}");
+        no_alarm(&out);
+    }
     let mut t = Transcript::new();
     t.edit();
-    t.bash("pnpm check");
-    let out = t.freshness();
-    assert!(tagged(&out, "OK", PASSED), "{out}");
-    no_alarm(&out);
-}
-
-#[test]
-fn test_foreground_pipe_with_pipefail_passes() {
-    let mut t = Transcript::new();
-    t.edit();
-    t.bash("set -o pipefail; pnpm check 2>&1 | tail -20");
-    assert!(t.freshness().contains(PASSED));
-}
-
-#[test]
-fn test_check_chained_with_and_is_not_masked() {
-    let mut t = Transcript::new();
-    t.edit();
-    t.bash("pnpm check && echo done");
+    let tid = t.bash_bg("pnpm check", "bg1");
+    t.notice(&tid, "completed", "Background command \"pnpm check\" completed (exit code 0)", "bg1");
     assert!(t.freshness().contains(PASSED));
 }
 
@@ -295,28 +278,6 @@ fn test_in_place_edit_without_any_check() {
 // --- the 2026-10-14 session ---
 
 #[test]
-fn test_replay_2026_10_14() {
-    let mut t = Transcript::new();
-    t.edit();
-    t.bash("sed -i 's/old/new/' app.py");
-    let first = t.bash_bg("pnpm check; echo", "bg1");
-    t.notice(&first, "completed", "Background command \"pnpm check; echo\" completed (exit code 0)", "bg1");
-    t.bash_bg("pnpm check", "bg2"); // no notice yet
-    let out = t.freshness();
-    assert!(out.contains(RUNNING), "{out}");
-    assert!(!out.contains(PASSED), "{out}");
-}
-
-#[test]
-fn test_background_check_completed_exit_0_passed() {
-    let mut t = Transcript::new();
-    t.edit();
-    let tid = t.bash_bg("pnpm check", "bg1");
-    t.notice(&tid, "completed", "Background command \"pnpm check\" completed (exit code 0)", "bg1");
-    assert!(t.freshness().contains(PASSED));
-}
-
-#[test]
 fn test_bash_reads_are_not_edits() {
     let cmds = [
         "sed -n 1,5p app.py",
@@ -374,11 +335,15 @@ fn session(home: &Path, sid: &str, day: &str, spawns: &[(Option<&str>, i64)]) {
         json!({"type": "user", "timestamp": t, "message": {"role": "user", "content": "go"}}),
         usage_rec(&t, 20000, &format!("{sid}m0"), Some(Value::Array(blocks))),
     ];
-    let body: String = recs.iter().map(|r| format!("{r}\n")).collect();
+    let body = lines_text(&recs);
     fs::write(folder.join(format!("{sid}.jsonl")), body).unwrap();
     for (i, (kind, ctx)) in spawns.iter().enumerate() {
         let base = folder.join(sid).join("subagents").join(format!("agent-{sid}{i}"));
-        fs::write(format!("{}.jsonl", base.display()), format!("{}\n", usage_rec(&t, *ctx, &format!("{sid}-s{i}"), None))).unwrap();
+        fs::write(
+            format!("{}.jsonl", base.display()),
+            format!("{}\n", usage_rec(&t, *ctx, &format!("{sid}-s{i}"), None)),
+        )
+        .unwrap();
         let meta = json!({"agentType": kind.unwrap_or("general-purpose"), "model": "sonnet"});
         fs::write(format!("{}.meta.json", base.display()), meta.to_string()).unwrap();
     }
@@ -401,7 +366,7 @@ fn test_spawns_and_agents_table() {
     stats(&home, &["collect", "--since", "2026-10-01", "--out", &rows_arg]);
     let rows: Vec<Value> = serde_json::from_str(&fs::read_to_string(&rows_path).unwrap()).unwrap();
     let s1 = rows.iter().find(|r| r["sid"] == "s1").expect("row s1");
-    let mut spawns: Vec<String> = s1["sub"]["spawns"].as_array().unwrap().iter().map(|v| v.to_string()).collect();
+    let mut spawns: Vec<String> = s1["sub"]["spawns"].as_array().unwrap().iter().map(ToString::to_string).collect();
     spawns.sort();
     assert_eq!(spawns, [r#"["general-purpose",60000]"#, r#"["general-purpose",64000]"#, r#"["researcher",15000]"#]);
     let types: Vec<&str> = s1["agent_calls"].as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();

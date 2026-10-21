@@ -23,8 +23,10 @@ static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// True the first time `name` fails in this process.
 fn first_failure(name: &str) -> bool {
-    let mut w = WARNED.lock().unwrap_or_else(|e| e.into_inner());
-    if w.iter().any(|n| n == name) { return false; }
+    let mut w = WARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if w.iter().any(|n| n == name) {
+        return false;
+    }
     w.push(name.to_string());
     true
 }
@@ -35,12 +37,16 @@ fn color() -> bool {
 fn c(code: &str, s: &str) -> String {
     if color() { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() }
 }
-fn green(s: &str) -> String { c("38;5;108", s) }
-fn dim(s: &str) -> String { c("38;5;245", s) }
+fn green(s: &str) -> String {
+    c("38;5;108", s)
+}
+fn dim(s: &str) -> String {
+    c("38;5;245", s)
+}
 
-fn list_path(arg: Option<String>) -> Option<PathBuf> {
-    if let Some(p) = arg {
-        return Some(PathBuf::from(p));
+fn list_path(arg: Option<PathBuf>) -> Option<PathBuf> {
+    if arg.is_some() {
+        return arg;
     }
     if let Some(r) = std::env::var_os("DOTFILES_REPO") {
         return Some(PathBuf::from(r).join("tools.list"));
@@ -55,16 +61,28 @@ fn list_path(arg: Option<String>) -> Option<PathBuf> {
 /// tools, so it comes first and needs nothing else (no Homebrew, no cargo).
 fn ensure_mise() -> bool {
     let have = || RealEnv::new().has("mise");
-    if have() { return true; }
+    if have() {
+        return true;
+    }
     let quiet = |mut c: Command| c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
     if cfg!(windows) {
         if !RealEnv::new().has("winget") {
-            out::warn("mise is missing and winget was not found. Install mise: https://mise.jdx.dev/installing-mise.html");
+            out::warn(
+                "mise is missing and winget was not found. Install mise: https://mise.jdx.dev/installing-mise.html",
+            );
             return false;
         }
         out::info("installing mise (WinGet)");
         let mut cmd = Command::new("winget");
-        cmd.args(["install", "--id", "jdx.mise", "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"]);
+        cmd.args([
+            "install",
+            "--id",
+            "jdx.mise",
+            "-e",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--silent",
+        ]);
         quiet(cmd);
     } else {
         if !RealEnv::new().has("curl") {
@@ -92,41 +110,51 @@ fn needs_mise(tools: &[core::Tool], host: Host, only: &[String]) -> bool {
     tools.iter().any(|t| miss.contains(&t.name) && t.sources.iter().any(|s| matches!(s, Source::Mise(_))))
 }
 
+/// The arguments of `tools`.
+#[derive(clap::Parser, Debug)]
+#[command(name = "tools", about = "Install the command-line tools of tools.list for this OS.")]
+struct Args {
+    /// Install nothing: list what is missing and exit 1.
+    #[arg(long)]
+    check: bool,
+    /// Print the plan for this OS (name, then its sources).
+    #[arg(long)]
+    list: bool,
+    /// Only these tools.
+    #[arg(long, value_name = "a,b", value_delimiter = ',', num_args = 1)]
+    only: Vec<String>,
+    /// Plan for another machine: macos, linux, linux-musl or windows.
+    #[arg(long, value_name = "NAME", value_parser = parse_host)]
+    host: Option<Host>,
+    /// Read this list instead of the repo's tools.list.
+    #[arg(long, value_name = "tools.list")]
+    file: Option<PathBuf>,
+    /// Print nothing when nothing changed.
+    #[arg(short, long)]
+    quiet: bool,
+    /// Print every tool.
+    #[arg(short, long)]
+    verbose: bool,
+}
+
+fn parse_host(s: &str) -> Result<Host, String> {
+    Host::parse(s).ok_or_else(|| format!("unknown host {s} (macos, linux, linux-musl, windows)"))
+}
+
 /// The whole command. `args` are the arguments after the program name. Returns the exit code.
 pub fn run(args: Vec<String>) -> u8 {
-    let mut args = args.into_iter();
-    let mut quiet = false;
-    let (mut check, mut list, mut verbose) = (false, false, out::verbose());
-    let (mut only, mut host, mut file) = (Vec::<String>::new(), None::<String>, None::<String>);
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "--check" => check = true,
-            "--list" => list = true,
-            "-q" | "--quiet" => quiet = true,
-            "-v" | "--verbose" => verbose = true,
-            "--only" => only = args.next().unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(String::from).collect(),
-            "--host" => host = args.next(),
-            "--file" => file = args.next(),
-            "-h" | "--help" => {
-                println!("usage: tools [--check] [--list] [--only a,b] [--host macos|linux|linux-musl|windows] [--file tools.list] [-q] [-v]");
-                return 0;
-            }
-            other => {
-                eprintln!("tools: unknown argument {other}");
-                return 2;
-            }
+    use clap::Parser;
+    let args = match Args::try_parse_from(std::iter::once("tools".to_string()).chain(args)) {
+        Ok(a) => a,
+        Err(e) => {
+            let _ = e.print();
+            return if e.use_stderr() { 2 } else { 0 };
         }
-    }
-    let host = match host.as_deref() {
-        None => Host::detect(),
-        Some(h) => match Host::parse(h) {
-            Some(h) => h,
-            None => {
-                eprintln!("tools: unknown host {h}");
-                return 2;
-            }
-        },
     };
+    let Args { check, list, mut only, host, file, quiet, verbose } = args;
+    only.retain(|s| !s.is_empty());
+    let verbose = verbose || out::verbose();
+    let host = host.unwrap_or_else(Host::detect);
     let Some(path) = list_path(file) else {
         eprintln!("tools: cannot find tools.list (set DOTFILES_REPO)");
         return 2;
@@ -177,7 +205,9 @@ pub fn run(args: Vec<String>) -> u8 {
                 println!("{} {} installed {}", green("✓"), n, dim(&format!("({src})")));
             }
             Outcome::Failed(n, tried) => {
-                if !first_failure(n) { continue; }
+                if !first_failure(n) {
+                    continue;
+                }
                 failed += 1;
                 let why = if tried.is_empty() { "no source fits this machine".to_string() } else { tried.join("; ") };
                 out::warn(&format!("{n} did not install: {why}"));
@@ -191,17 +221,35 @@ pub fn run(args: Vec<String>) -> u8 {
             println!("{} Tools: {} up to date", dim("•"), present);
         }
     } else if installed > 0 {
-        println!("{} Tools: {} installed, {} up to date{}", green("✓"), installed, present, if failed > 0 { format!(", {failed} failed") } else { String::new() });
+        println!(
+            "{} Tools: {} installed, {} up to date{}",
+            green("✓"),
+            installed,
+            present,
+            if failed > 0 { format!(", {failed} failed") } else { String::new() }
+        );
     }
     if failed > 0 {
-        out::warn(&format!("{} {} missing. Fix the error above, then run dots again.", failed, if failed == 1 { "tool is" } else { "tools are" }));
+        out::warn(&format!(
+            "{} {} missing. Fix the error above, then run dots again.",
+            failed,
+            if failed == 1 { "tool is" } else { "tools are" }
+        ));
     }
     0
 }
 
 #[cfg(test)]
 mod tests {
-    use super::first_failure;
+    use super::{first_failure, run};
+
+    #[test]
+    fn a_flag_without_its_value_is_an_error() {
+        assert_eq!(run(vec!["--only".into()]), 2, "an empty --only must not mean every tool");
+        assert_eq!(run(vec!["--host".into()]), 2);
+        assert_eq!(run(vec!["--host".into(), "beos".into()]), 2);
+        assert_eq!(run(vec!["--file".into()]), 2);
+    }
 
     #[test]
     fn a_failed_tool_warns_once_per_process() {

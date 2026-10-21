@@ -17,9 +17,7 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// threads never share one. The caller removes it (or leaves it to the OS temp cleaner).
 pub fn temp_home(tag: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir()
-        .join("agent-config-tests")
-        .join(format!("{}-{}-{}", tag, std::process::id(), n));
+    let dir = std::env::temp_dir().join("agent-config-tests").join(format!("{}-{}-{}", tag, std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create temp home");
     dir
@@ -42,8 +40,18 @@ pub fn iso_utc(epoch: i64) -> String {
 }
 
 const CLEARED: [&str; 12] = [
-    "GUARD_OFF", "GUARD_SHADOW", "GUARD_PLATFORM", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CONFIG_DIR", "TZ",
-    "DOTFILES_REPO", "DOTFILES_PROFILE", "DOTFILES_MCP", "DOTFILES_PROJECTS", "DOTFILES_VERBOSE", "DOTFILES_WARN_FILE",
+    "GUARD_OFF",
+    "GUARD_SHADOW",
+    "GUARD_PLATFORM",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CONFIG_DIR",
+    "TZ",
+    "DOTFILES_REPO",
+    "DOTFILES_PROFILE",
+    "DOTFILES_MCP",
+    "DOTFILES_PROJECTS",
+    "DOTFILES_VERBOSE",
+    "DOTFILES_WARN_FILE",
 ];
 
 /// Run `bin` (a path such as `env!("CARGO_BIN_EXE_guard")`) with `args`, feed `stdin`, return

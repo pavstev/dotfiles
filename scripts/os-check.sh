@@ -175,6 +175,26 @@ win_quit_utm() {
   sleep 1
 }
 
+# win_restart_utm <vm>: quit and reopen UTM, then wait until `utmctl list` shows the clone again.
+# The fix for utmctl exit 142 (OSStatus -609, UTM's Apple Events are stuck). It never restarts a
+# UTM with a running VM, and a UTM that does not answer only when this run opened it.
+win_restart_utm() {
+  local out
+  if out="$(win_ctl 20 list 2>/dev/null)"; then
+    if grep -Eiq '^[0-9A-F-]{36} +(started|starting|resuming|paused|pausing)' <<<"$out"; then
+      echo "   not restarting UTM: a VM is running"
+      return 1
+    fi
+  elif ((!WIN_UTM_OURS)); then
+    return 1
+  fi
+  echo "   restarting UTM"
+  WIN_UTM_OURS=1 # the exit trap closes the UTM opened here
+  win_quit_utm
+  open -a UTM || return 1
+  win_listed "$1" 90
+}
+
 # win_cleanup: stop and delete the check clone. Never touches win11-golden.
 win_cleanup() {
   local vm="$WIN_CLONE" i out
@@ -256,10 +276,11 @@ run_windows() {
     # "started", or "starting": the IP wait below proves the boot.
     if grep -qi '^start' <<<"$st"; then ok=1; break; fi
     echo "   start try $try failed: utmctl exit $rc, status: ${st:-none}"
+    # utmctl exit 142 (OSStatus -609): UTM's Apple Events are stuck. A restart of UTM fixes it.
+    if ((try < 3)); then win_restart_utm "$vm" || true; fi
     sleep 5
   done
-  # utmctl exit 142 (OSStatus -609): UTM's Apple Events are stuck. A restart of UTM fixes it.
-  ((ok)) || { echo "FAIL  couldn't start $vm. With no VM running, quit and reopen UTM, then run this again."; return 1; }
+  ((ok)) || { echo "FAIL  couldn't start $vm, also after restarting UTM. With no VM running, quit and reopen UTM by hand, then run this again."; return 1; }
   echo "== wait for the guest IP and SSH (5 minutes at most)"
   end=$((SECONDS + 300))
   while ((SECONDS < end)); do
@@ -301,7 +322,17 @@ done
 if [ ! -L ~/.gitconfig ] && git config --global --get-all include.path | grep -q gitconfig.local; then echo GITCONFIG_OK; else echo GITCONFIG_BAD; fi
 pwsh_out="$(pwsh -Command exit 2>&1)"; echo "PWSH_EXIT=$?"
 [ -z "$pwsh_out" ] && echo PWSH_QUIET || { echo PWSH_NOISY; printf '%s\n' "$pwsh_out"; }
+# dots uninstall: the links go, the repo stays, and a second run still works.
+./dotfiles uninstall -y </dev/null >~/uninstall.log 2>&1
+echo "UNINSTALL_EXIT=$?"
+for p in .claude/CLAUDE.md .claude/hooks .config/gh/config.yml; do
+  if [ ! -e ~/"$p" ] && [ ! -L ~/"$p" ]; then echo "UNLINK_OK $p"; else echo "UNLINK_BAD $p"; fi
+done
+[ -f ~/dotfiles/dotfiles ] && echo REPO_KEPT || echo REPO_GONE
+./dotfiles uninstall -y </dev/null >~/uninstall2.log 2>&1
+echo "UNINSTALL2_EXIT=$?"
 for n in 1 2 3; do echo "=== run$n.log"; cat ~/run$n.log; done
+echo "=== uninstall.log"; cat ~/uninstall.log
 GUEST
   )" || true
   printf '%s\n' "$out"
@@ -316,7 +347,12 @@ GUEST
   grep -qx PWSH_QUIET <<<"$out" || { echo "FAIL  pwsh -Command exit prints an error or did not run"; rc=1; }
   grep -qx PULL_OK <<<"$out" || { echo "FAIL  run 3 did not pull the new commit"; rc=1; }
   grep -qx RESTART_OK <<<"$out" || { echo "FAIL  run 3 did not restart after the pull"; rc=1; }
-  ((rc)) || echo "ok: the 3 runs exit 0 (the 3rd pulls, restarts and rebuilds dots.exe), the links are there, pwsh is quiet"
+  for m in UNINSTALL_EXIT UNINSTALL2_EXIT; do
+    grep -qx "$m=0" <<<"$out" || { echo "FAIL  $m is not 0: dots uninstall -y failed (log lines above)"; rc=1; }
+  done
+  if grep -q '^UNLINK_BAD' <<<"$out"; then echo "FAIL  dots uninstall left a link: $(grep '^UNLINK_BAD' <<<"$out" | tr '\n' ' ')"; rc=1; fi
+  grep -qx REPO_KEPT <<<"$out" || { echo "FAIL  dots uninstall removed the repo folder"; rc=1; }
+  ((rc)) || echo "ok: the 3 runs exit 0 (the 3rd pulls, restarts and rebuilds dots.exe), the links are there, pwsh is quiet, dots uninstall removes the links and keeps the repo"
   return $rc
 }
 

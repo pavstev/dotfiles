@@ -1,0 +1,3 @@
+# Wide lines and one-line short blocks keep the dense style of this crate with the least churn.
+max_width = 120
+use_small_heuristics = "Max"

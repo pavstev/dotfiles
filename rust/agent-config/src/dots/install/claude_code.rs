@@ -13,9 +13,25 @@ pub fn step(_repo: &Path) {
     if os::have("claude") || os::is_executable(&os::home().join(".local").join("bin").join("claude")) {
         skip("Claude Code");
     } else if os::is_windows() {
-        let winget = os::have("winget") && quiet("winget", &["install", "--id", "Anthropic.ClaudeCode", "-e",
-            "--accept-package-agreements", "--accept-source-agreements", "--silent"]);
-        if winget || quiet("powershell.exe", &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"]) {
+        let winget = os::have("winget")
+            && quiet(
+                "winget",
+                &[
+                    "install",
+                    "--id",
+                    "Anthropic.ClaudeCode",
+                    "-e",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                    "--silent",
+                ],
+            );
+        if winget
+            || quiet(
+                "powershell.exe",
+                &["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"],
+            )
+        {
             ok("Claude Code installed");
         } else {
             warn("Claude Code did not install. In PowerShell run: irm https://claude.ai/install.ps1 | iex");

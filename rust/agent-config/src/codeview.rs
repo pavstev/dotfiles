@@ -17,6 +17,7 @@
 //! or brace that is not balanced, shell arithmetic like `$((a<<b))`, Python f-strings that nest
 //! the same quote (3.12), Markdown setext headings.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 const MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -118,7 +119,7 @@ pub fn render(symbols: &[Symbol]) -> String {
     let mut out = String::new();
     for s in symbols {
         out.push_str(&"  ".repeat(s.depth));
-        out.push_str(&format!("{} {} {}-{}\n", s.kind, s.name, s.start, s.end));
+        let _ = writeln!(out, "{} {} {}-{}", s.kind, s.name, s.start, s.end);
     }
     out
 }
@@ -173,9 +174,9 @@ struct Doc {
 }
 
 impl Doc {
-    fn new(orig: Vec<char>, masked: Vec<char>) -> Doc {
+    fn new(orig: Vec<char>, masked: Vec<char>) -> Self {
         let lines = line_ranges(&orig);
-        Doc { orig, masked, lines }
+        Self { orig, masked, lines }
     }
     fn len(&self) -> usize {
         self.lines.len()
@@ -338,7 +339,20 @@ fn regex_ok(p: &Prev) -> bool {
         Some('>') => p.c2 == Some('='),
         Some(c) if is_ident(c) => matches!(
             p.word.as_str(),
-            "return" | "typeof" | "case" | "do" | "else" | "in" | "of" | "void" | "delete" | "throw" | "new" | "yield" | "await" | "instanceof"
+            "return"
+                | "typeof"
+                | "case"
+                | "do"
+                | "else"
+                | "in"
+                | "of"
+                | "void"
+                | "delete"
+                | "throw"
+                | "new"
+                | "yield"
+                | "await"
+                | "instanceof"
         ),
         _ => false,
     }
@@ -672,7 +686,18 @@ fn cand(kind: &'static str, name: String) -> Option<Cand> {
 
 const TS_PREFIX: [&str; 5] = ["export", "default", "declare", "abstract", "async"];
 const TS_MODS: [&str; 12] = [
-    "public", "private", "protected", "static", "async", "readonly", "override", "abstract", "get", "set", "declare", "accessor",
+    "public",
+    "private",
+    "protected",
+    "static",
+    "async",
+    "readonly",
+    "override",
+    "abstract",
+    "get",
+    "set",
+    "declare",
+    "accessor",
 ];
 
 fn ts_method(s: &[char], start: usize) -> Option<Cand> {
@@ -695,7 +720,10 @@ fn ts_method(s: &[char], start: usize) -> Option<Cand> {
             k = skip_ws(s, k + 1);
         }
         if matches!(s.get(k).copied(), Some('(' | '<')) {
-            if matches!(name.as_str(), "if" | "for" | "while" | "switch" | "catch" | "return" | "with" | "super" | "function") {
+            if matches!(
+                name.as_str(),
+                "if" | "for" | "while" | "switch" | "catch" | "return" | "with" | "super" | "function"
+            ) {
                 return None;
             }
             return cand("method", name);
@@ -731,12 +759,11 @@ fn ts_const(s: &[char], k: usize) -> Option<Cand> {
         return cand("const", name);
     }
     let r2 = if w == "async" { skip_ws(s, we) } else { r };
-    let arrow = match s.get(r2) {
-        Some('(' | '<') => true,
-        _ => {
-            let (w2, e2) = word(s, r2);
-            !w2.is_empty() && s[skip_ws(s, e2)..].starts_with(&['=', '>'])
-        }
+    let arrow = if let Some('(' | '<') = s.get(r2) {
+        true
+    } else {
+        let (w2, e2) = word(s, r2);
+        !w2.is_empty() && s[skip_ws(s, e2)..].starts_with(&['=', '>'])
     };
     arrow.then_some(Cand { kind: "const", name, arrow: true })
 }
@@ -817,14 +844,15 @@ fn detect_rust(doc: &Doc, ln: usize, col: usize) -> Option<Cand> {
 
 /// The name of an `impl`: the text after its own generics, up to `{` or `where`.
 fn rust_impl(doc: &Doc, ln: usize, k: usize) -> Option<Cand> {
-    let name = impl_text(doc, ln, k)
-        .filter(|t| !t.is_empty())
-        .or_else(|| (ln + 1 < doc.len()).then(|| impl_text(doc, ln + 1, 0)).flatten())
-        .filter(|t| !t.is_empty())?;
+    let first = impl_text(doc, ln, k);
+    let name = if first.is_empty() && ln + 1 < doc.len() { impl_text(doc, ln + 1, 0) } else { first };
+    if name.is_empty() {
+        return None;
+    }
     Some(Cand { kind: "impl", name, arrow: false })
 }
 
-fn impl_text(doc: &Doc, ln: usize, from: usize) -> Option<String> {
+fn impl_text(doc: &Doc, ln: usize, from: usize) -> String {
     let o = doc.o(ln);
     let m = doc.m(ln);
     let mut p = skip_ws(o, from);
@@ -846,7 +874,7 @@ fn impl_text(doc: &Doc, ln: usize, from: usize) -> Option<String> {
     let stop = m[p..].iter().position(|&c| c == '{').map_or(o.len(), |x| p + x);
     let text: String = o[p..stop].iter().collect();
     let words: Vec<&str> = text.split_whitespace().take_while(|w| *w != "where").collect();
-    Some(words.join(" "))
+    words.join(" ")
 }
 
 fn detect_go(s: &[char], col: usize) -> Option<Cand> {
@@ -868,7 +896,18 @@ fn detect_go(s: &[char], col: usize) -> Option<Cand> {
 }
 
 const JAVA_MODS: [&str; 12] = [
-    "public", "protected", "private", "static", "final", "abstract", "sealed", "strictfp", "synchronized", "native", "default", "transient",
+    "public",
+    "protected",
+    "private",
+    "static",
+    "final",
+    "abstract",
+    "sealed",
+    "strictfp",
+    "synchronized",
+    "native",
+    "default",
+    "transient",
 ];
 
 fn detect_java(s: &[char], col: usize, host: Option<&str>) -> Option<Cand> {
@@ -907,7 +946,23 @@ fn java_method(s: &[char], start: usize, host: &str) -> Option<Cand> {
     let first = word(s, start).0;
     if matches!(
         first.as_str(),
-        "return" | "new" | "if" | "else" | "for" | "while" | "switch" | "catch" | "try" | "throw" | "synchronized" | "do" | "case" | "assert" | "super" | "this" | "yield"
+        "return"
+            | "new"
+            | "if"
+            | "else"
+            | "for"
+            | "while"
+            | "switch"
+            | "catch"
+            | "try"
+            | "throw"
+            | "synchronized"
+            | "do"
+            | "case"
+            | "assert"
+            | "super"
+            | "this"
+            | "yield"
     ) {
         return None;
     }
@@ -933,7 +988,8 @@ fn detect_css(doc: &Doc, ln: usize, col: usize) -> Option<Cand> {
     if m.get(col) == Some(&'}') {
         return None;
     }
-    let brace_at = |line: &[char], from: usize| (from..line.len()).find(|&p| line[p] == '{' && !(p > 0 && line[p - 1] == '#'));
+    let brace_at =
+        |line: &[char], from: usize| (from..line.len()).find(|&p| line[p] == '{' && !(p > 0 && line[p - 1] == '#'));
     if let Some(p) = brace_at(m, col) {
         let prelude: String = o[col..p].iter().collect();
         let prelude = prelude.trim();
@@ -1230,7 +1286,13 @@ fn scan_brace(lang: Lang, text: &str) -> Vec<Symbol> {
             start = start.max(symbols[pi].start - 1);
             last = last.min(symbols[pi].end - 1);
         }
-        symbols.push(Symbol { kind: c.kind.to_string(), name: c.name, start: start + 1, end: last + 1, depth: stack.len() });
+        symbols.push(Symbol {
+            kind: c.kind.to_string(),
+            name: c.name,
+            start: start + 1,
+            end: last + 1,
+            depth: stack.len(),
+        });
         stack.push((symbols.len() - 1, brace_at[ln]));
     }
     symbols
@@ -1483,7 +1545,13 @@ fn scan_markdown(text: &str) -> Vec<Symbol> {
         while stack.last().is_some_and(|&si| symbols[si].end < ln + 1) {
             stack.pop();
         }
-        symbols.push(Symbol { kind: format!("h{level}"), name: name.clone(), start: ln + 1, end: end + 1, depth: stack.len() });
+        symbols.push(Symbol {
+            kind: format!("h{level}"),
+            name: name.clone(),
+            start: ln + 1,
+            end: end + 1,
+            depth: stack.len(),
+        });
         stack.push(symbols.len() - 1);
     }
     symbols

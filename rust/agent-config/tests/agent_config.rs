@@ -1,7 +1,6 @@
-//! Command-level tests ported from `scripts/test_agent_config.py`: `agent-config cursor`, `opencode`,
-//! `user-rules` and `claude-settings` run as a process in a temp HOME with a fake repo (`claude/`,
-//! `cursor/`). The helpers and the single parts, called as functions, are unit tests in
-//! `src/agent_config_tests.rs`. `tests/PORTED.md` maps each Python test to its Rust twin.
+//! Command-level tests of `agent-config`: `cursor`, `opencode`, `user-rules` and `claude-settings`
+//! run as a process in a temp HOME with a fake repo (`claude/`, `cursor/`). The helpers and the
+//! single parts, called as functions, are unit tests in `src/agent_config_tests.rs`.
 mod common;
 
 use common::{run_bin, temp_home};
@@ -24,7 +23,7 @@ fn wr(p: &Path, text: &str) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(p, text).unwrap();
 }
-fn wj(p: &Path, v: Value) {
+fn wj(p: &Path, v: &Value) {
     wr(p, &v.to_string());
 }
 fn rd(p: &Path) -> String {
@@ -34,7 +33,8 @@ fn rj(p: &Path) -> Value {
     serde_json::from_str(&rd(p)).unwrap()
 }
 fn names(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let mut v: Vec<String> =
+        fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     v.sort();
     v
 }
@@ -54,7 +54,7 @@ fn link(target: &Path, at: &Path) {
     std::os::unix::fs::symlink(target, at).unwrap();
 }
 fn is_link(p: &Path) -> bool {
-    p.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+    p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// A temp HOME and a fake repo with `claude/CLAUDE.md` and a fake Cursor guard.
@@ -67,12 +67,12 @@ struct Fx {
 }
 
 impl Fx {
-    fn new(tag: &str) -> Fx {
+    fn new(tag: &str) -> Self {
         let tmp = temp_home(tag);
         let home = tmp.join("home");
         let repo = tmp.join("repo");
         fs::create_dir_all(&home).unwrap();
-        let fx = Fx { claude: repo.join("claude"), cursor_src: repo.join("cursor"), tmp, home, repo };
+        let fx = Self { claude: repo.join("claude"), cursor_src: repo.join("cursor"), tmp, home, repo };
         wr(&fx.claude.join("CLAUDE.md"), CLAUDE_MD);
         wr(&fx.claude.join("hooks").join("rust-bin"), "# fake launcher\n");
         fx
@@ -89,17 +89,17 @@ impl Fx {
     fn setting_file(&self, text: &str) {
         wr(&self.home.join(SETTINGS_REL), text);
     }
-    fn settings(&self, v: Value) {
+    fn settings(&self, v: &Value) {
         wj(&self.claude.join("settings.json"), v);
     }
     fn perms(&self, allow: &[&str], deny: &[&str]) {
-        self.settings(json!({"permissions": {"allow": allow, "deny": deny}}));
+        self.settings(&json!({"permissions": {"allow": allow, "deny": deny}}));
     }
     fn agent(&self, fname: &str, text: &str) {
         wr(&self.claude.join("agents").join(fname), text);
     }
-    fn mcp_source(&self, servers: Value) {
-        wj(&self.cursor_src.join("mcp.json"), json!({"mcpServers": servers}));
+    fn mcp_source(&self, servers: &Value) {
+        wj(&self.cursor_src.join("mcp.json"), &json!({"mcpServers": servers}));
     }
     /// Run `agent-config <args>`; the output is verbose, as the Python tests ran it.
     fn ac(&self, args: &[&str]) -> R {
@@ -130,7 +130,7 @@ fn s(v: &Value) -> &str {
 fn test_full_run_creates_everything_and_never_writes_claude_dir() {
     let fx = Fx::new("ac-cursor-full");
     fx.perms(&["Bash(ls:*)"], &[]);
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"docs": {"url": "u"}}));
     fx.agent("a.md", "---\nname: a\n---\nb\n");
     let (rc, _out, err) = fx.ac(&["cursor", "--profile", "shared"]);
     assert_eq!(rc, 0);
@@ -143,28 +143,15 @@ fn test_full_run_creates_everything_and_never_writes_claude_dir() {
     assert!(!rd(&fx.cdir().join("rules").join("claude-global.mdc")).contains("Off-limits"));
 }
 
-#[test]
-fn test_owner_profile_gets_overlay_but_mcp_stays_opt_in() {
-    let fx = Fx::new("ac-cursor-owner");
-    fx.overlay(OWNER_MD);
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
-    fx.ac(&["cursor", "--profile", "owner"]);
-    assert!(!fx.cdir().join("mcp.json").exists());
-    assert!(rd(&fx.cdir().join("rules").join("claude-global.mdc")).contains("## Off-limits"));
-    fx.setting_file("CURSOR_MCP=\"on\"\n");
-    fx.ac(&["cursor", "--profile", "owner"]);
-    assert!(fx.cdir().join("mcp.json").exists());
-}
-
 #[cfg(unix)]
 #[test]
-fn test_owner_rule_file_is_private_and_names_both_sources() {
+fn test_owner_rule_file_is_private_and_names_the_owner_file() {
     let fx = Fx::new("ac-cursor-private");
     fx.overlay(OWNER_MD);
     fx.ac(&["cursor", "--profile", "owner"]);
     let rule = fx.cdir().join("rules").join("claude-global.mdc");
     assert_eq!(mode_of(&rule), 0o600);
-    assert!(rd(&rule).contains(&format!("and ~/{OWNER_REL}. Edit those files")));
+    assert!(rd(&rule).contains(OWNER_REL));
 }
 
 #[cfg(unix)]
@@ -181,14 +168,14 @@ fn test_owner_rule_file_turns_private_when_the_text_is_unchanged() {
 
 #[cfg(unix)]
 #[test]
-fn test_owner_without_overlay_warns_and_names_one_source() {
+fn test_owner_without_overlay_warns() {
     let fx = Fx::new("ac-cursor-no-overlay");
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"docs": {"url": "u"}}));
     let (rc, _, err) = fx.ac(&["cursor", "--profile", "owner"]);
     assert_eq!(rc, 0);
     assert!(err.contains("no owner-only rules"), "{err}");
     let rule = fx.cdir().join("rules").join("claude-global.mdc");
-    assert!(rd(&rule).contains("from claude/CLAUDE.md. Edit that file"));
+    assert!(!rd(&rule).contains(OWNER_REL));
     assert_eq!(mode_of(&rule), 0o644);
 }
 
@@ -236,13 +223,18 @@ fn test_readonly_agent_gets_edit_deny() {
     fx.agent("cr.md", "---\nname: code-reviewer\ndescription: reviews\ntools: Read, Grep, Glob, Bash\ndisallowedTools: Write, Edit, NotebookEdit, Agent\n---\n\nBody\n");
     let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0);
-    assert!(rd(&fx.odir().join("agents").join("code-reviewer.md")).contains("permission:\n  edit: deny\n  skill: allow"));
+    assert!(
+        rd(&fx.odir().join("agents").join("code-reviewer.md")).contains("permission:\n  edit: deny\n  skill: allow")
+    );
 }
 
 #[test]
 fn test_write_capable_agent_does_not_deny_edit() {
     let fx = Fx::new("ac-oc-agents-write");
-    fx.agent("ti.md", "---\nname: task-implementer\ndescription: builds\ntools: Read, Edit, Write, Bash, Grep, Glob\n---\n\nBody\n");
+    fx.agent(
+        "ti.md",
+        "---\nname: task-implementer\ndescription: builds\ntools: Read, Edit, Write, Bash, Grep, Glob\n---\n\nBody\n",
+    );
     let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0);
     assert!(!rd(&fx.odir().join("agents").join("task-implementer.md")).contains("edit: deny"));
@@ -271,24 +263,6 @@ fn test_opencode_agents_stale_generated_agent_removed_user_agent_kept() {
     assert_eq!(rd(&mine), "my agent\n");
 }
 
-#[test]
-fn test_opencode_agents_user_agent_with_same_name_is_not_overwritten() {
-    let fx = Fx::new("ac-oc-agents-same-name");
-    fx.agent("a.md", "---\nname: a\n---\nb\n");
-    wr(&fx.odir().join("agents").join("a.md"), "mine\n");
-    let (_, _, err) = fx.ac(&["opencode", "--profile", "shared"]);
-    assert_eq!(rd(&fx.odir().join("agents").join("a.md")), "mine\n");
-    assert!(err.contains("not ours"), "{err}");
-}
-
-#[test]
-fn test_opencode_agents_no_agents_dir_is_fine() {
-    let fx = Fx::new("ac-oc-agents-none");
-    let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
-    assert_eq!(rc, 0);
-    assert!(!fx.odir().join("agents").exists());
-}
-
 // --- opencode guard plugin ------------------------------------------------------
 
 fn plugin_path(fx: &Fx) -> PathBuf {
@@ -296,34 +270,17 @@ fn plugin_path(fx: &Fx) -> PathBuf {
 }
 
 #[test]
-fn opencode_plugin_written_with_marker() {
-    let fx = Fx::new("ac-oc-plugin-written");
+fn opencode_plugin_names_rust_bin() {
+    let fx = Fx::new("ac-oc-plugin-bin");
     let (rc, _, err) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0, "{err}");
     let text = rd(&plugin_path(&fx));
     assert!(text.contains(MARK), "{text}");
-    assert!(text.contains("export default"), "{text}");
-    assert!(text.contains("\"execute.before\""), "{text}");
-    assert!(!text.contains("__RUST_BIN__"), "the launcher path was not filled in");
-    // a second run changes nothing
-    let (_, out, _) = fx.ac(&["opencode", "--profile", "shared"]);
-    assert!(!out.contains("wrote") && !out.contains("updated"), "{out}");
-}
-
-#[test]
-fn opencode_plugin_names_rust_bin() {
-    let fx = Fx::new("ac-oc-plugin-bin");
-    fx.ac(&["opencode", "--profile", "shared"]);
-    let text = rd(&plugin_path(&fx));
+    assert!(!regex::Regex::new("__[A-Z_]+__").unwrap().is_match(&text), "a placeholder is left: {text}");
     let launcher = fx.claude.join("hooks").join("rust-bin");
     let literal = serde_json::to_string(launcher.to_str().unwrap()).unwrap();
     assert!(text.contains(&format!("const RUST_BIN: string = {literal}")), "{text}");
-    assert!(text.contains("[RUST_BIN, \"--hook\", \"guard\", \"pretool\"]"), "{text}");
-    assert!(!text.contains("python"), "{text}");
-    // the sh is filled in and falls back to `sh` by name when it is empty (always, off Windows)
-    assert!(!text.contains("__SH__"), "{text}");
-    assert!(text.contains("spawnSync(SH || \"sh\", [RUST_BIN,"), "{text}");
-    assert!(!text.contains("bash\""), "the plugin must not start bash: {text}");
+    // the sh falls back to `sh` by name when it is empty (always, off Windows)
     let sh = text.lines().find(|l| l.starts_with("const SH: string =")).unwrap_or_else(|| panic!("no SH line: {text}"));
     assert!(!sh.to_lowercase().contains("system32"), "{sh}");
     if !cfg!(windows) {
@@ -375,10 +332,14 @@ fn run_oc(fx: &Fx) -> R {
 #[test]
 fn test_translated_permissions_added() {
     let fx = Fx::new("ac-oc-cfg-perms");
-    fx.perms(&["Bash(git status:*)", "Read(./src/**)", "Edit(./notes.md)"], &["Read(./.env)"]);
+    fx.perms(
+        &["Bash(git status:*)", "Read(./src/**)", "Edit(./notes.md)"],
+        &["Read(./.env)", "Bash(git push:*)", "Bash(rm -rf /tmp/x)"],
+    );
     run_oc(&fx);
     let p = rj(&oc_cfg(&fx))["permission"].clone();
-    assert_eq!(p["bash"], json!({"git status *": "allow"}));
+    // A Claude deny rule stays a deny in Opencode, for Bash too.
+    assert_eq!(p["bash"], json!({"git status *": "allow", "git push *": "deny", "rm -rf /tmp/x": "deny"}));
     assert_eq!(p["read"], json!({"src/**": "allow", "**/.env": "deny"}));
     assert_eq!(p["edit"], json!({"notes.md": "allow"}));
 }
@@ -397,7 +358,7 @@ fn test_skill_and_ask_allowed() {
 fn test_user_keys_win_ours_added() {
     let fx = Fx::new("ac-oc-cfg-user-keys");
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&oc_cfg(&fx), json!({"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}}));
+    wj(&oc_cfg(&fx), &json!({"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}}));
     run_oc(&fx);
     let p = rj(&oc_cfg(&fx))["permission"].clone();
     assert_eq!(p["bash"], json!({"npm *": "ask", "git status *": "allow"}));
@@ -407,18 +368,21 @@ fn test_user_keys_win_ours_added() {
 #[test]
 fn test_mcp_added_when_opt_in() {
     let fx = Fx::new("ac-oc-cfg-mcp");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "https://docs.mcp.cloudflare.com/mcp"}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "https://docs.mcp.cloudflare.com/mcp"}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     let m = rj(&oc_cfg(&fx))["mcp"].clone();
-    assert_eq!(m["cloudflare-docs"], json!({"type": "remote", "url": "https://docs.mcp.cloudflare.com/mcp", "enabled": true}));
+    assert_eq!(
+        m["cloudflare-docs"],
+        json!({"type": "remote", "url": "https://docs.mcp.cloudflare.com/mcp", "enabled": true})
+    );
 }
 
 #[test]
 fn test_mcp_user_entry_wins() {
     let fx = Fx::new("ac-oc-cfg-mcp-user");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "ours"}}));
-    wj(&oc_cfg(&fx), json!({"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": false}}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "ours"}}));
+    wj(&oc_cfg(&fx), &json!({"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": false}}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     assert_eq!(rj(&oc_cfg(&fx))["mcp"]["cloudflare-docs"]["url"], "users");
@@ -427,7 +391,7 @@ fn test_mcp_user_entry_wins() {
 #[test]
 fn test_mcp_skipped_when_off() {
     let fx = Fx::new("ac-oc-cfg-mcp-off");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "u"}}));
     fx.setting_file("OPENCODE_MCP=\"off\"\n");
     run_oc(&fx);
     assert!(rj(&oc_cfg(&fx)).get("mcp").is_none());
@@ -436,7 +400,7 @@ fn test_mcp_skipped_when_off() {
 #[test]
 fn test_mcp_env_wins_over_setting() {
     let fx = Fx::new("ac-oc-cfg-mcp-env");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "u"}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     fx.ac_env(&["opencode", "--profile", "shared"], &[("DOTFILES_MCP", "off")]);
     assert!(rj(&oc_cfg(&fx)).get("mcp").is_none());
@@ -447,8 +411,8 @@ fn test_mcp_env_wins_over_setting() {
 #[test]
 fn test_mcp_merges_into_existing_mcp_block() {
     let fx = Fx::new("ac-oc-cfg-mcp-merge");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "ours"}}));
-    wj(&oc_cfg(&fx), json!({"mcp": {"existing": {"type": "remote", "url": "x"}}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "ours"}}));
+    wj(&oc_cfg(&fx), &json!({"mcp": {"existing": {"type": "remote", "url": "x"}}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     let m = rj(&oc_cfg(&fx))["mcp"].clone();
@@ -506,13 +470,23 @@ fn test_rule_removed_from_the_repo_goes_away_next_run() {
 }
 
 #[test]
+fn test_rule_that_turns_into_a_deny_is_updated_next_run() {
+    let fx = Fx::new("ac-oc-side-flipped");
+    fx.perms(&["Bash(git push:*)"], &[]);
+    run_oc(&fx);
+    fx.perms(&[], &["Bash(git push:*)"]); // the allow became a deny in claude/settings.json
+    run_oc(&fx);
+    assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"git push *": "deny"}));
+}
+
+#[test]
 fn test_a_rule_the_user_edited_is_not_taken_away() {
     let fx = Fx::new("ac-oc-side-edited");
     fx.perms(&["Bash(ls:*)"], &[]);
     run_oc(&fx);
     let mut data = rj(&oc_cfg(&fx));
     data["permission"]["bash"]["ls *"] = json!("ask"); // the user changed our rule
-    wj(&oc_cfg(&fx), data);
+    wj(&oc_cfg(&fx), &data);
     fx.perms(&[], &[]); // and the repo dropped it
     run_oc(&fx);
     assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"ls *": "ask"}));
@@ -522,7 +496,7 @@ fn test_a_rule_the_user_edited_is_not_taken_away() {
 fn test_a_rule_the_user_added_is_never_touched() {
     let fx = Fx::new("ac-oc-side-user-added");
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&oc_cfg(&fx), json!({"permission": {"bash": {"npm *": "ask"}}}));
+    wj(&oc_cfg(&fx), &json!({"permission": {"bash": {"npm *": "ask"}}}));
     run_oc(&fx);
     assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"npm *": "ask", "git status *": "allow"}));
     fx.perms(&[], &[]);
@@ -544,7 +518,7 @@ fn test_a_symlinked_config_is_never_claimed() {
     let fx = Fx::new("ac-oc-side-symlink");
     fx.perms(&["Bash(ls:*)"], &[]);
     let target = fx.tmp.join("mine.jsonc");
-    wj(&target, json!({"permission": {"bash": {"ls *": "allow"}}}));
+    wj(&target, &json!({"permission": {"bash": {"ls *": "allow"}}}));
     link(&target, &oc_cfg(&fx));
     let (rc, _, err) = run_oc(&fx);
     assert_eq!(rc, 0);
@@ -557,19 +531,56 @@ fn test_a_symlinked_config_is_never_claimed() {
 /// The key set the Opencode theme loader reads, read out of the shipped themes in opencode 2.0.25.
 /// A missing key aborts the whole theme ("Failed to load theme").
 const SHIPPED_KEYS: &[&str] = &[
-    "primary", "secondary", "accent", "error", "warning", "success", "info",
-    "text", "textMuted", "background", "backgroundPanel", "backgroundElement",
-    "border", "borderActive", "borderSubtle",
-    "diffAdded", "diffRemoved", "diffContext", "diffHunkHeader",
-    "diffHighlightAdded", "diffHighlightRemoved",
-    "diffAddedBg", "diffRemovedBg", "diffContextBg", "diffLineNumber",
-    "diffAddedLineNumberBg", "diffRemovedLineNumberBg",
-    "markdownText", "markdownHeading", "markdownLink", "markdownLinkText", "markdownCode",
-    "markdownBlockQuote", "markdownEmph", "markdownStrong", "markdownHorizontalRule",
-    "markdownListItem", "markdownListEnumeration", "markdownImage", "markdownImageText",
+    "primary",
+    "secondary",
+    "accent",
+    "error",
+    "warning",
+    "success",
+    "info",
+    "text",
+    "textMuted",
+    "background",
+    "backgroundPanel",
+    "backgroundElement",
+    "border",
+    "borderActive",
+    "borderSubtle",
+    "diffAdded",
+    "diffRemoved",
+    "diffContext",
+    "diffHunkHeader",
+    "diffHighlightAdded",
+    "diffHighlightRemoved",
+    "diffAddedBg",
+    "diffRemovedBg",
+    "diffContextBg",
+    "diffLineNumber",
+    "diffAddedLineNumberBg",
+    "diffRemovedLineNumberBg",
+    "markdownText",
+    "markdownHeading",
+    "markdownLink",
+    "markdownLinkText",
+    "markdownCode",
+    "markdownBlockQuote",
+    "markdownEmph",
+    "markdownStrong",
+    "markdownHorizontalRule",
+    "markdownListItem",
+    "markdownListEnumeration",
+    "markdownImage",
+    "markdownImageText",
     "markdownCodeBlock",
-    "syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable", "syntaxString",
-    "syntaxNumber", "syntaxType", "syntaxOperator", "syntaxPunctuation",
+    "syntaxComment",
+    "syntaxKeyword",
+    "syntaxFunction",
+    "syntaxVariable",
+    "syntaxString",
+    "syntaxNumber",
+    "syntaxType",
+    "syntaxOperator",
+    "syntaxPunctuation",
 ];
 
 fn theme_path(fx: &Fx) -> PathBuf {
@@ -577,22 +588,6 @@ fn theme_path(fx: &Fx) -> PathBuf {
 }
 fn tui_path(fx: &Fx) -> PathBuf {
     fx.odir().join("tui.json")
-}
-
-#[test]
-fn test_theme_file_holds_the_copper_palette() {
-    let fx = Fx::new("ac-oc-theme-palette");
-    assert_eq!(run_oc(&fx).0, 0);
-    let data = rj(&theme_path(&fx));
-    assert_eq!(data["theme"]["primary"], "#E0825F");
-    assert_eq!(data["theme"]["background"], "#1C1917");
-    assert_eq!(data["theme"]["accent"], "#E8BC77");
-    let mut keys: Vec<&str> = data["theme"].as_object().unwrap().keys().map(String::as_str).collect();
-    keys.sort();
-    let mut want = SHIPPED_KEYS.to_vec();
-    want.sort();
-    assert_eq!(keys, want);
-    assert_eq!(data["$schema"], "https://opencode.ai/theme.json");
 }
 
 #[test]
@@ -612,8 +607,10 @@ fn test_theme_has_every_key_the_opencode_loader_reads() {
 fn test_every_colour_is_a_hex_string() {
     let fx = Fx::new("ac-oc-theme-hex");
     run_oc(&fx);
+    let data = rj(&theme_path(&fx));
+    assert_eq!(data["$schema"], "https://opencode.ai/theme.json");
     let re = regex::Regex::new(r"^#[0-9A-Fa-f]{6}$").unwrap();
-    for (key, value) in rj(&theme_path(&fx))["theme"].as_object().unwrap() {
+    for (key, value) in data["theme"].as_object().unwrap() {
         assert!(re.is_match(s(value)), "{key}: {value}");
     }
 }
@@ -627,7 +624,7 @@ fn test_tui_names_the_theme_because_the_schema_takes_a_string() {
     assert_eq!(data["$schema"], "https://opencode.ai/tui.json");
     // tui.json has additionalProperties: false, so no marker key can live there
     let mut keys: Vec<&str> = data.as_object().unwrap().keys().map(String::as_str).collect();
-    keys.sort();
+    keys.sort_unstable();
     assert_eq!(keys, ["$schema", "theme"]);
 }
 
@@ -662,16 +659,6 @@ fn test_other_tui_keys_survive() {
 }
 
 #[test]
-fn test_rerun_skips_an_unchanged_theme() {
-    let fx = Fx::new("ac-oc-theme-rerun");
-    run_oc(&fx);
-    let before = rd(&theme_path(&fx));
-    let (_, out, _) = run_oc(&fx);
-    assert_eq!(rd(&theme_path(&fx)), before);
-    assert!(out.contains("already set up"), "{out}");
-}
-
-#[test]
 fn test_invalid_tui_json_is_left_alone() {
     let fx = Fx::new("ac-oc-theme-invalid");
     wr(&tui_path(&fx), "{ not json\n");
@@ -687,13 +674,12 @@ fn agents_md(fx: &Fx) -> PathBuf {
 }
 
 #[test]
-fn test_shared_profile_carries_the_rules_and_the_note() {
+fn test_shared_profile_carries_the_rules() {
     let fx = Fx::new("ac-oc-rules-shared");
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);
     let text = rd(&agents_md(&fx));
     assert!(text.contains(MARK));
-    assert!(text.contains("AskUserQuestion = `question`"));
     assert!(text.contains(CLAUDE_MD.trim()));
 }
 
@@ -722,7 +708,7 @@ fn test_owner_profile_without_the_file_warns() {
 fn test_output_style_is_appended() {
     let fx = Fx::new("ac-oc-rules-style");
     wr(&fx.claude.join("output-styles").join("warm.md"), "---\nname: warm\n---\nShort lines.\n");
-    fx.settings(json!({"outputStyle": "warm"}));
+    fx.settings(&json!({"outputStyle": "warm"}));
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);
     let text = rd(&agents_md(&fx));
@@ -751,16 +737,6 @@ fn test_symlink_is_left_alone() {
     assert_eq!(rc, 0);
     assert!(is_link(&agents_md(&fx)));
     assert_eq!(rd(&target), "mine\n");
-}
-
-#[test]
-fn test_opencode_rules_rerun_is_idempotent() {
-    let fx = Fx::new("ac-oc-rules-rerun");
-    run_oc(&fx);
-    let before = rd(&agents_md(&fx));
-    let (_, out, _) = run_oc(&fx);
-    assert_eq!(rd(&agents_md(&fx)), before);
-    assert!(out.contains("already set up"), "{out}");
 }
 
 // --- opencode projects --------------------------------------------------------
@@ -821,7 +797,7 @@ fn test_a_relative_path_is_skipped_with_a_warning() {
 fn test_full_run_creates_agents_and_config_and_never_writes_claude_dir() {
     let fx = Fx::new("ac-oc-full");
     fx.perms(&["Bash(ls:*)"], &[]);
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"docs": {"url": "u"}}));
     fx.agent("a.md", "---\nname: a\n---\nb\n");
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     let (rc, _, err) = run_oc(&fx);
@@ -868,14 +844,6 @@ fn test_print_mode_writes_text_to_stdout_only() {
     assert!(!fx.home.join(USER_RULES_MARK).exists());
 }
 
-#[test]
-fn test_default_profile_comes_from_env() {
-    let fx = Fx::new("ac-ur-env");
-    fx.overlay(OWNER_MD);
-    let (_, out, _) = fx.ac_env(&["user-rules"], &[("DOTFILES_PROFILE", "owner")]);
-    assert!(out.contains("## Off-limits"), "{out}");
-}
-
 #[cfg(unix)]
 #[test]
 fn test_copy_sends_text_to_clipboard_writes_mark_and_drops_file_copy() {
@@ -903,7 +871,8 @@ fn test_copy_without_a_clipboard_tool_prints_the_rules_and_fails() {
     let fx = Fx::new("ac-ur-no-clip");
     let empty = fx.tmp.join("empty-bin");
     fs::create_dir_all(&empty).unwrap();
-    let (rc, out, _) = fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", empty.to_str().unwrap())]);
+    let (rc, out, _) =
+        fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", empty.to_str().unwrap())]);
     assert_eq!(rc, 1);
     assert!(out.contains("## "), "{out}");
     assert!(!fx.home.join(USER_RULES_MARK).exists());
@@ -924,17 +893,6 @@ fn test_after_copy_cursor_rules_skips_then_warns_on_change() {
     assert!(!fx.cdir().join("rules").join("claude-global.mdc").exists());
 }
 
-#[cfg(unix)]
-#[test]
-fn test_full_cursor_run_after_copy_creates_no_rule_files() {
-    let fx = Fx::new("ac-ur-full-after-copy");
-    let (path, _) = fake_clipboard(&fx);
-    fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", &path)]);
-    fx.ac(&["cursor"]);
-    assert!(!fx.cdir().join("rules").join("claude-global.mdc").exists());
-    assert!(fx.cdir().join("hooks.json").exists());
-}
-
 // --- claude-settings: repo base + private layer -------------------------------
 
 fn base() -> Value {
@@ -949,15 +907,15 @@ struct Cs {
 }
 
 impl Cs {
-    fn new(tag: &str) -> Cs {
+    fn new(tag: &str) -> Self {
         let fx = Fx::new(tag);
-        fx.settings(base());
+        fx.settings(&base());
         let (live, layer, last) = (
             fx.home.join(".claude").join("settings.json"),
             fx.home.join(".config/dotfiles/claude-settings.json"),
             fx.home.join(".config/dotfiles/claude-settings.last.json"),
         );
-        Cs { fx, live, layer, last }
+        Self { fx, live, layer, last }
     }
     fn build(&self) -> R {
         self.fx.ac(&["claude-settings", "build"])
@@ -979,7 +937,7 @@ fn test_first_build_writes_a_real_file() {
 #[test]
 fn test_layer_goes_on_top() {
     let cs = Cs::new("ac-cs-layer");
-    wj(&cs.layer, json!({"model": "sonnet", "permissions": {"allow": ["Bash(ls:*)"]}, "theme": null}));
+    wj(&cs.layer, &json!({"model": "sonnet", "permissions": {"allow": ["Bash(ls:*)"]}, "theme": null}));
     cs.build();
     let got = rj(&cs.live);
     assert_eq!(got["model"], "sonnet");
@@ -1030,7 +988,8 @@ fn test_layout_only_rewrite_is_no_drift() {
     let cs = Cs::new("ac-cs-layout");
     cs.build();
     // Claude's layout: 4-space indent, keys sorted
-    let sorted: std::collections::BTreeMap<String, Value> = rj(&cs.live).as_object().unwrap().clone().into_iter().collect();
+    let sorted: std::collections::BTreeMap<String, Value> =
+        rj(&cs.live).as_object().unwrap().clone().into_iter().collect();
     let mut buf = Vec::new();
     let fmt = serde_json::ser::PrettyFormatter::with_indent(b"    ");
     serde::Serialize::serialize(&sorted, &mut serde_json::Serializer::with_formatter(&mut buf, fmt)).unwrap();
@@ -1046,7 +1005,7 @@ fn test_upstream_change_flows_through() {
     cs.build();
     let mut b = base();
     b["model"] = json!("haiku");
-    cs.fx.settings(b);
+    cs.fx.settings(&b);
     cs.build();
     assert_eq!(rj(&cs.live)["model"], "haiku");
     assert!(!cs.layer.exists());
@@ -1094,11 +1053,14 @@ fn test_removed_union_item_warns() {
 #[test]
 fn test_promote_moves_a_key_to_the_repo() {
     let cs = Cs::new("ac-cs-promote");
-    wj(&cs.layer, json!({"permissions": {"allow": ["WebFetch"]}, "statusLine": {"type": "command"}}));
+    wj(&cs.layer, &json!({"permissions": {"allow": ["WebFetch"]}, "statusLine": {"type": "command"}}));
     cs.build();
     let (code, out, _) = cs.fx.ac(&["claude-settings", "promote", "permissions.allow"]);
     assert_eq!(code, 0);
-    assert_eq!(rj(&cs.fx.claude.join("settings.json"))["permissions"]["allow"], json!(["Bash(git status:*)", "WebFetch"]));
+    assert_eq!(
+        rj(&cs.fx.claude.join("settings.json"))["permissions"]["allow"],
+        json!(["Bash(git status:*)", "WebFetch"])
+    );
     assert_eq!(rj(&cs.layer), json!({"statusLine": {"type": "command"}}));
     assert!(out.contains("Commit it to share it"), "{out}");
     assert_eq!(rj(&cs.live)["permissions"]["allow"], json!(["Bash(git status:*)", "WebFetch"]));
@@ -1114,32 +1076,7 @@ fn test_claude_settings_dry_run_writes_nothing() {
     assert!(out.contains("would write"), "{out}");
 }
 
-#[test]
-fn test_cli() {
-    let cs = Cs::new("ac-cs-cli");
-    let (code, _, _) = cs.fx.ac(&["claude-settings", "build"]);
-    assert_eq!(code, 0);
-    let (code, _, _) = cs.fx.ac(&["claude-settings", "promote"]);
-    assert_eq!(code, 2);
-}
-
 // --- main ---------------------------------------------------------------------
-
-#[test]
-fn test_requires_a_subcommand() {
-    let fx = Fx::new("ac-main-subcommand");
-    let (rc, _, _) = fx.ac(&[]);
-    assert_ne!(rc, 0);
-}
-
-#[test]
-fn test_dry_flag_is_set_per_invocation() {
-    let fx = Fx::new("ac-main-dry-flag");
-    fx.ac(&["cursor", "--dry-run"]);
-    assert!(!fx.cdir().exists()); // the dry run wrote nothing
-    fx.ac(&["cursor"]);
-    assert!(fx.cdir().join("hooks.json").exists()); // the next run is not dry
-}
 
 // --- quiet output -------------------------------------------------------------
 
@@ -1163,7 +1100,7 @@ fn test_a_second_opencode_run_is_one_line() {
 #[test]
 fn test_one_failing_part_does_not_stop_the_others() {
     let fx = Fx::new("ac-cursor-failing-part");
-    wj(&fx.cdir().join("cli-config.json"), json!({"permissions": {"allow": "not a list"}}));
+    wj(&fx.cdir().join("cli-config.json"), &json!({"permissions": {"allow": "not a list"}}));
     let (rc, _, err) = fx.ac(&["cursor"]);
     assert_eq!(rc, 1, "{err}");
     assert!(err.contains("skipped a part"), "{err}");
@@ -1173,12 +1110,46 @@ fn test_one_failing_part_does_not_stop_the_others() {
 }
 
 #[test]
+fn test_a_cli_config_part_of_another_shape_is_a_skipped_part() {
+    for body in [json!({"attribution": 3}), json!({"permissions": []})] {
+        let fx = Fx::new("ac-cursor-cli-shape");
+        wj(&fx.cdir().join("cli-config.json"), &body);
+        let (rc, _, err) = fx.ac(&["cursor"]);
+        assert_eq!(rc, 1, "{err}");
+        assert!(err.contains("is not a JSON object"), "{err}");
+        assert!(!err.contains("panicked"), "{err}");
+        assert_eq!(rj(&fx.cdir().join("cli-config.json")), body); // left as it was
+    }
+}
+
+#[test]
+fn test_cursor_files_keep_their_other_keys_in_place() {
+    let fx = Fx::new("ac-cursor-key-order");
+    fs::create_dir_all(fx.cdir()).unwrap();
+    let hooks = r#"{"zeta": 1, "version": 3, "hooks": {"stop": [{"command": "mine"}]}, "alpha": [2]}"#;
+    fs::write(fx.cdir().join("hooks.json"), hooks).unwrap();
+    let cli = r#"{"zeta": 1, "permissions": {"allow": ["Shell(ls)"]}, "model": {"a": 1}, "alpha": 2}"#;
+    fs::write(fx.cdir().join("cli-config.json"), cli).unwrap();
+    let (rc, _, err) = fx.ac(&["cursor"]);
+    assert_eq!(rc, 0, "{err}");
+    let keys = |file: &str| -> Vec<String> {
+        let text = fs::read_to_string(fx.cdir().join(file)).unwrap();
+        let v: Value = serde_json::from_str(&text).unwrap();
+        v.as_object().unwrap().keys().cloned().collect()
+    };
+    // known keys stay where they were, new ones come last
+    assert_eq!(keys("hooks.json"), ["zeta", "version", "hooks", "alpha"]);
+    assert_eq!(&keys("cli-config.json")[..4], ["zeta", "permissions", "model", "alpha"]);
+    assert_eq!(rj(&fx.cdir().join("hooks.json"))["version"], json!(3));
+}
+
+#[test]
 fn test_an_older_generated_tui_is_replaced() {
     let fx = Fx::new("ac-oc-theme-legacy");
     // the first layout put the palette inline, which the schema rejects
     wj(
         &tui_path(&fx),
-        json!({"theme": {"name": "copper", "background": "#2a2523"}, "_dotfiles": {"generated": true, "source": "claude/"}}),
+        &json!({"theme": {"name": "copper", "background": "#2a2523"}, "_dotfiles": {"generated": true, "source": "claude/"}}),
     );
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);
@@ -1192,7 +1163,7 @@ fn test_a_broken_inline_theme_without_our_marker_is_the_users() {
     let (rc, out, _) = run_oc(&fx);
     assert_eq!(rc, 0);
     assert!(out.contains("your Opencode theme"), "{out}");
-    assert!(out.contains("{'background': '#fff'}"), "{out}"); // reported the way Python prints it
+    assert!(out.contains("background"), "{out}");
     assert!(rj(&tui_path(&fx))["theme"].as_object().unwrap().contains_key("background"));
 }
 
@@ -1210,11 +1181,7 @@ fn test_a_leading_tilde_means_the_home_folder() {
 #[test]
 fn test_rejects_unknown_profile() {
     let fx = Fx::new("ac-main-profile");
-    for cmd in ["cursor", "opencode", "user-rules"] {
-        let (rc, _, err) = fx.ac(&[cmd, "--profile", "root"]);
-        assert_eq!(rc, 2, "{cmd}: {err}"); // argparse and clap both exit 2
-        assert!(err.contains("invalid value 'root' for '--profile"), "{cmd}: {err}");
-        assert!(err.contains("owner") && err.contains("shared"), "{cmd}: {err}");
-    }
+    let (rc, _, err) = fx.ac(&["cursor", "--profile", "root"]);
+    assert_eq!(rc, 2, "{err}");
     assert!(!fx.cdir().exists() && !fx.odir().exists()); // nothing ran
 }

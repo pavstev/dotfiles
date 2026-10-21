@@ -8,7 +8,7 @@
 #  binary itself. With no binary:
 #
 #    ~/.claude/hooks/rust-bin --hook guard pretool    # a hook exits 0, silent
-#    ~/.claude/hooks/rust-bin spawn --prompt-file p.md # a skill call says "Run: dots", exit 127
+#    ~/.claude/hooks/rust-bin ctx outline f.rs        # a skill call says "Run: dots", exit 127
 #
 #  Windows (Git Bash) runs <name>.exe. stdin, stdout, stderr and the exit code pass through.
 #  It runs on every hook, so it starts no subshell and no other program: plain POSIX sh,

@@ -80,7 +80,7 @@ ETA ~35 min (25-50)
 | # | What's left | What I do |
 |---|---|---|
 | 1 | No test for password reset | Add a test for the reset email |
-| 2 | Code changed after the last lint | Run `pnpm lint` |
+| 2 | Code changed after the last check | Run the project's fast check (its `check:fast`) |
 
 ### 🧑 You
 | # | What's left | Do this |

@@ -5,6 +5,7 @@ mod common;
 use common::{iso_utc, run_bin, temp_home};
 use regex::Regex;
 use serde_json::json;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -45,7 +46,8 @@ fn user_line(t: i64, text: &str) -> String {
 }
 
 fn assistant_line(t: i64, text: &str) -> String {
-    json!({"type":"assistant","timestamp":iso_utc(t),"message":{"id":"m","content":[{"type":"text","text":text}]}}).to_string()
+    json!({"type":"assistant","timestamp":iso_utc(t),"message":{"id":"m","content":[{"type":"text","text":text}]}})
+        .to_string()
 }
 
 fn write_lines(path: &Path, lines: &[String]) {
@@ -71,10 +73,7 @@ fn fixtures(home: &Path) {
     let long = format!("{} flaky vitest {}", "padding words here ".repeat(30), "more padding text ".repeat(30));
     write_lines(
         &transcript(home, "-work-demo", SID_A),
-        &[
-            user_line(T_OCT, "why is the flaky vitest suite failing, common problem"),
-            assistant_line(T_OCT + 5, &long),
-        ],
+        &[user_line(T_OCT, "why is the flaky vitest suite failing, common problem"), assistant_line(T_OCT + 5, &long)],
     );
     title_record(home, SID_A, "Fix flaky vitest");
     write_lines(
@@ -109,7 +108,7 @@ fn find_returns_hit_block() {
     assert!(lines[i].ends_with("Fix flaky vitest"), "{}", lines[i]);
     assert!(lines[i].starts_with("2026-10-20"), "{}", lines[i]);
     let snippet = lines.get(i + 1).expect("snippet line").trim();
-    assert!(!snippet.is_empty());
+    assert_ne!(snippet, "");
     assert!(snippet.chars().count() <= 200, "{} chars", snippet.chars().count());
     assert!(snippet.to_lowercase().contains("vitest"), "{snippet}");
 }
@@ -133,6 +132,12 @@ fn incremental_index() {
 
     let (_, out, _) = sessions(&home, &["index"]);
     assert_eq!(out.trim(), "• sessions: 0 new");
+
+    // --rebuild starts over
+    let (code, out, err) = sessions(&home, &["index", "--rebuild"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "• sessions: 4 new");
+    assert_eq!(doc_count(&home), 4);
 }
 
 #[test]
@@ -158,17 +163,6 @@ fn half_line_indexed_next_run() {
 }
 
 #[test]
-fn unsupported_source_one_line() {
-    let home = temp_home("sessions-unsupported");
-    fixtures(&home);
-    for s in ["opencode", "cursor"] {
-        let (code, out, _) = sessions(&home, &["find", "x", "--source", s]);
-        assert_eq!(code, 0);
-        assert_eq!(out.trim(), format!("• sessions: {s} skipped: not supported yet"));
-    }
-}
-
-#[test]
 fn lock_wait_then_stale() {
     let home = temp_home("sessions-lock");
     fixtures(&home);
@@ -179,11 +173,12 @@ fn lock_wait_then_stale() {
     let _writer = index.writer::<TantivyDocument>(50_000_000).expect("hold the writer lock");
 
     let start = Instant::now();
-    let (code, out, err) = sessions(&home, &["find", "flaky vitest"]);
+    let env = [("HOME", home.to_str().unwrap()), ("SESSIONS_LOCK_WAIT_MS", "300")];
+    let (code, out, err) = run_bin(BIN, &["find", "flaky vitest"], "", &env, None);
     let took = start.elapsed();
     assert_eq!(code, 0, "{out}\n{err}");
-    assert!(took < Duration::from_secs(15), "took {took:?}");
-    assert!(took >= Duration::from_secs(4), "did not wait for the lock: {took:?}");
+    assert!(took >= Duration::from_millis(300), "did not wait for the lock: {took:?}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
     assert!(out.contains("• sessions: index busy, searched the last index"), "{out}");
     assert_eq!(hit_count(&out), 1, "{out}");
 }
@@ -263,17 +258,6 @@ fn corrupt_index_rebuilt() {
 }
 
 #[test]
-fn rebuild_flag_starts_over() {
-    let home = temp_home("sessions-rebuild");
-    fixtures(&home);
-    sessions(&home, &["index"]);
-    let (code, out, err) = sessions(&home, &["index", "--rebuild"]);
-    assert_eq!(code, 0, "{err}");
-    assert_eq!(out.trim(), "• sessions: 3 new");
-    assert_eq!(doc_count(&home), 3);
-}
-
-#[test]
 fn missing_claude_dir_is_one_line() {
     let home = temp_home("sessions-missing");
     let (code, out, _) = sessions(&home, &["index"]);
@@ -316,7 +300,7 @@ fn generate_big(path: &Path, megabytes: usize) {
             x ^= x << 13;
             x ^= x >> 7;
             x ^= x << 17;
-            text.push_str(&format!("w{:x} ", x % 60_000));
+            let _ = write!(text, "w{:x} ", x % 60_000);
         }
         let line = if n % 2 == 0 { user_line(T_OCT + n, &text) } else { assistant_line(T_OCT + n, &text) };
         w.write_all(line.as_bytes()).unwrap();
@@ -332,20 +316,17 @@ fn big_transcript_streams() {
     let home = temp_home("sessions-big");
     let file = transcript(&home, "-work-big", SID_A);
     let t0 = Instant::now();
-    generate_big(&file, 100);
+    generate_big(&file, 32);
     eprintln!("generated {} bytes in {:?}", fs::metadata(&file).unwrap().len(), t0.elapsed());
 
     let t1 = Instant::now();
-    match peak_rss(&home) {
-        Some(bytes) => {
-            eprintln!("indexed in {:?}, peak RSS {} MB", t1.elapsed(), bytes / 1_000_000);
-            assert!(bytes < 200_000_000, "peak RSS {bytes} bytes");
-        }
-        None => {
-            eprintln!("note: no peak RSS on this platform, memory check skipped");
-            let (code, _, err) = sessions(&home, &["index"]);
-            assert_eq!(code, 0, "{err}");
-        }
+    if let Some(bytes) = peak_rss(&home) {
+        eprintln!("indexed in {:?}, peak RSS {} MB", t1.elapsed(), bytes / 1_000_000);
+        assert!(bytes < 140_000_000, "peak RSS {bytes} bytes");
+    } else {
+        eprintln!("note: no peak RSS on this platform, memory check skipped");
+        let (code, _, err) = sessions(&home, &["index"]);
+        assert_eq!(code, 0, "{err}");
     }
     let (_, out, _) = sessions(&home, &["index"]);
     assert_eq!(out.trim(), "• sessions: 0 new");

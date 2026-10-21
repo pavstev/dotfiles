@@ -10,41 +10,121 @@
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Write};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+// The environment is read once, here, and never again. `dots` calls `init` before it starts the
+// "still working" ticker thread, so no thread of this module reads the environment while another
+// one writes it (`dots::os::set_env`).
 
 /// `THEME=plain` in the dotfiles settings: no color codes at all. Read once per process.
 fn plain_theme() -> bool {
     static PLAIN: OnceLock<bool> = OnceLock::new();
-    *PLAIN.get_or_init(|| crate::setting(&crate::home_dir(), "THEME") == "plain")
+    *PLAIN.get_or_init(|| crate::setting(&crate::paths::home(), "THEME") == "plain")
 }
 
 /// Colors print when NO_COLOR is unset, the theme is not plain and stdout is a terminal.
-fn colors_on(no_color: bool, plain: bool, tty: bool) -> bool { !no_color && !plain && tty }
-
-/// True when this process prints color codes.
-pub fn color_enabled() -> bool {
-    if env::var("NO_COLOR").is_ok() { return false; }
-    colors_on(false, plain_theme(), io::stdout().is_terminal())
+fn colors_on(no_color: bool, plain: bool, tty: bool) -> bool {
+    !no_color && !plain && tty
 }
-fn c(code: &'static str) -> &'static str { if color_enabled() { code } else { "" } }
+
+/// A yes/no switch that reads its source on the first call, and that a caller can set.
+struct Switch(AtomicU8);
+
+impl Switch {
+    const fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+    /// The value; the first call stores what `read` says (0 means not read yet).
+    fn get(&self, read: impl FnOnce() -> bool) -> bool {
+        match self.0.load(Ordering::Relaxed) {
+            0 => {
+                let on = read();
+                self.set(on);
+                on
+            }
+            v => v == 2,
+        }
+    }
+    fn set(&self, on: bool) {
+        self.0.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+    }
+}
+
+static COLOR: Switch = Switch::new();
+static VERBOSE: Switch = Switch::new();
+
+/// True when this process prints color codes. Read once per process.
+pub fn color_enabled() -> bool {
+    COLOR.get(|| colors_on(env::var_os("NO_COLOR").is_some(), plain_theme(), io::stdout().is_terminal()))
+}
+
+/// Turns color on or off for this process (a test does not depend on its terminal).
+pub fn set_color(on: bool) {
+    COLOR.set(on);
+}
+fn c(code: &'static str) -> &'static str {
+    if color_enabled() { code } else { "" }
+}
 /// Sage color code for success; empty when color is off.
-pub fn g() -> &'static str { c("\x1b[38;5;108m") }
+pub fn g() -> &'static str {
+    c("\x1b[38;5;108m")
+}
 /// Amber color code for warnings; empty when color is off.
-pub fn y() -> &'static str { c("\x1b[38;5;179m") }
+pub fn y() -> &'static str {
+    c("\x1b[38;5;179m")
+}
 /// Stone color code for skipped and dim text; empty when color is off.
-pub fn d() -> &'static str { c("\x1b[38;5;245m") }
+pub fn d() -> &'static str {
+    c("\x1b[38;5;245m")
+}
 /// Teal color code for info; empty when color is off.
-pub fn b() -> &'static str { c("\x1b[38;5;73m") }
+pub fn b() -> &'static str {
+    c("\x1b[38;5;73m")
+}
 /// Copper color code for step headings; empty when color is off.
-pub fn a() -> &'static str { c("\x1b[1;38;5;173m") }
+pub fn a() -> &'static str {
+    c("\x1b[1;38;5;173m")
+}
 /// The reset code that ends a color; empty when color is off.
-pub fn z() -> &'static str { c("\x1b[0m") }
+pub fn z() -> &'static str {
+    c("\x1b[0m")
+}
 
-/// True when `DOTFILES_VERBOSE` is set (`dots -v`): print every line, count nothing.
-pub fn verbose() -> bool { env::var("DOTFILES_VERBOSE").map(|v| !v.is_empty() && v != "0").unwrap_or(false) }
+/// True when `DOTFILES_VERBOSE` is set (`dots -v`): print every line, count nothing. The first
+/// call reads the variable; `set_verbose` overrides it.
+pub fn verbose() -> bool {
+    VERBOSE.get(|| env::var("DOTFILES_VERBOSE").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
 
-struct Step { title: String, shown: u8, skips: usize }
+/// Turns verbose output on or off for this process.
+pub fn set_verbose(on: bool) {
+    VERBOSE.set(on);
+}
+
+/// The file every warning is also appended to (`DOTFILES_WARN_FILE`), read once.
+fn warn_file() -> &'static Mutex<Option<PathBuf>> {
+    static FILE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    FILE.get_or_init(|| Mutex::new(env::var_os("DOTFILES_WARN_FILE").filter(|v| !v.is_empty()).map(PathBuf::from)))
+}
+
+/// Sends every later warning to this file too (or to none). `dots` sets the same variable for its
+/// child processes; this is the copy its own warnings use.
+pub fn set_warn_file(path: Option<PathBuf>) {
+    *warn_file().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+}
+
+/// Reads verbose, color and the warn file now. Call it before starting a thread that prints.
+pub fn init() {
+    let _ = (verbose(), color_enabled(), warn_file());
+}
+
+struct Step {
+    title: String,
+    shown: u8,
+    skips: usize,
+}
 static STEP: Mutex<Step> = Mutex::new(Step { title: String::new(), shown: 0, skips: 0 });
 static SKIPPED: AtomicUsize = AtomicUsize::new(0);
 static WRITTEN: AtomicUsize = AtomicUsize::new(0);
@@ -54,20 +134,27 @@ thread_local! {
     static CAPTURED: std::cell::RefCell<Option<Vec<(String, bool)>>> = const { std::cell::RefCell::new(None) };
 }
 
-fn step_state() -> std::sync::MutexGuard<'static, Step> { STEP.lock().unwrap_or_else(|e| e.into_inner()) }
+fn step_state() -> std::sync::MutexGuard<'static, Step> {
+    STEP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Print one line, on stderr when `err`. Captured lines are kept, in order.
 fn emit(line: &str, err: bool) {
     let kept = CAPTURED.with(|c| match c.borrow_mut().as_mut() {
-        Some(buf) => { buf.push((line.to_string(), err)); true }
+        Some(buf) => {
+            buf.push((line.to_string(), err));
+            true
+        }
         None => false,
     });
-    if kept { return; }
+    if kept {
+        return;
+    }
     if err {
         let _ = io::stdout().flush();
-        eprintln!("{}", line);
+        eprintln!("{line}");
     } else {
-        println!("{}", line);
+        println!("{line}");
     }
 }
 
@@ -82,7 +169,9 @@ pub fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<(String, bool)>) {
 
 /// Print lines kept by `capture`, each on the stream it was meant for.
 pub fn replay(lines: &[(String, bool)]) {
-    for (l, err) in lines { emit(l, *err); }
+    for (l, err) in lines {
+        emit(l, *err);
+    }
 }
 
 /// Print the waiting step header, once.
@@ -100,10 +189,12 @@ fn head() {
 pub fn step(title: &str) {
     step_end();
     let v = verbose();
-    if v { emit(&format!("\n{}▸ {}{}", a(), title, z()), false); }
+    if v {
+        emit(&format!("\n{}▸ {}{}", a(), title, z()), false);
+    }
     let mut s = step_state();
     s.title = title.to_string();
-    s.shown = if v { 1 } else { 0 };
+    s.shown = u8::from(v);
 }
 
 /// Close the step in progress with its count line.
@@ -117,40 +208,58 @@ pub fn step_end() {
         } else {
             format!("{}•{} {}: {} up to date", d(), z(), s.title, s.skips)
         })
-    } else { None };
+    } else {
+        None
+    };
     s.title.clear();
     s.shown = 0;
     s.skips = 0;
     drop(s);
-    if let Some(l) = line { emit(&l, false); }
+    if let Some(l) = line {
+        emit(&l, false);
+    }
 }
 
 /// The title of the step in progress, or "" between steps.
-pub fn step_title() -> String { step_state().title.clone() }
+pub fn step_title() -> String {
+    step_state().title.clone()
+}
 
 /// An info line (`»»`), under the step header.
-pub fn info(msg: &str) { head(); emit(&format!("{}»»{} {}", b(), z(), msg), false); }
+pub fn info(msg: &str) {
+    head();
+    emit(&format!("{}»»{} {}", b(), z(), msg), false);
+}
 
-/// A success line (`✓`). A message that starts with "wrote ", "updated " or "built " counts as a written file.
+/// A success line (`✓`).
 pub fn ok(msg: &str) {
-    if msg.starts_with("wrote ") || msg.starts_with("updated ") || msg.starts_with("built ") { WRITTEN.fetch_add(1, Ordering::Relaxed); }
     head();
     emit(&format!("{}✓{} {}", g(), z(), msg), false);
 }
 
-/// A warning line on stderr. It is counted, and appended to `DOTFILES_WARN_FILE` when that is set.
+/// A success line for a file that was written. It also joins the written count of `summary`.
+pub fn wrote(msg: &str) {
+    WRITTEN.fetch_add(1, Ordering::Relaxed);
+    ok(msg);
+}
+
+/// A warning line on stderr. It is counted, and appended to the warn file when there is one.
 pub fn warn(msg: &str) {
     head();
     emit(&format!("{}!{}  {}", y(), z(), msg), true);
     WARNS.fetch_add(1, Ordering::Relaxed);
-    if let Ok(f) = env::var("DOTFILES_WARN_FILE") && !f.is_empty()
-        && let Ok(mut fh) = OpenOptions::new().append(true).create(true).open(&f) {
-        let _ = writeln!(fh, "{}", msg);
+    let file = warn_file().lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    if let Some(f) = file
+        && let Ok(mut fh) = OpenOptions::new().append(true).create(true).open(f)
+    {
+        let _ = writeln!(fh, "{msg}");
     }
 }
 
 /// The warnings printed by this process.
-pub fn warn_count() -> usize { WARNS.load(Ordering::Relaxed) }
+pub fn warn_count() -> usize {
+    WARNS.load(Ordering::Relaxed)
+}
 
 /// It was already there. Counted in a step (or toward `summary`), printed in verbose mode.
 pub fn skip(msg: &str) {
@@ -160,57 +269,87 @@ pub fn skip(msg: &str) {
         return;
     }
     let mut s = step_state();
-    if s.title.is_empty() { SKIPPED.fetch_add(1, Ordering::Relaxed); } else { s.skips += 1; }
+    if s.title.is_empty() {
+        SKIPPED.fetch_add(1, Ordering::Relaxed);
+    } else {
+        s.skips += 1;
+    }
 }
 
 /// Count one more up-to-date item in the step, with no message (a link that is right).
 pub fn count_skip() {
-    if verbose() { return; }
+    if verbose() {
+        return;
+    }
     let mut s = step_state();
-    if !s.title.is_empty() { s.skips += 1; }
+    if !s.title.is_empty() {
+        s.skips += 1;
+    }
 }
 
 /// The step found nothing to do: a line in verbose mode, a count otherwise.
-pub fn uptodate(msg: &str) { if verbose() { ok(msg) } else { skip(msg) } }
+pub fn uptodate(msg: &str) {
+    if verbose() { ok(msg) } else { skip(msg) }
+}
 
 /// A closing line, only when the step did or said something before.
 pub fn ok_if_changed(msg: &str) {
-    let (shown, empty) = { let s = step_state(); (s.shown, s.title.is_empty()) };
-    if verbose() || shown != 0 || empty { ok(msg); }
+    let (shown, empty) = {
+        let s = step_state();
+        (s.shown, s.title.is_empty())
+    };
+    if verbose() || shown != 0 || empty {
+        ok(msg);
+    }
 }
 
 /// The whole step in one line ("• Title: msg"), when there is nothing to do.
 pub fn note(msg: &str) {
     let title = step_title();
-    if verbose() || title.is_empty() { info(msg); return; }
+    if verbose() || title.is_empty() {
+        info(msg);
+        return;
+    }
     emit(&format!("{}•{} {}: {}", d(), z(), title, msg), false);
     step_state().shown = 2;
 }
 
 /// The line that says what a command reads. Verbose runs only.
-pub fn header(msg: &str) { if verbose() { info(msg); } }
+pub fn header(msg: &str) {
+    if verbose() {
+        info(msg);
+    }
+}
 
 /// The count line for the files that were up to date, e.g. "Opencode config: 12 up to date, 1 written".
 pub fn summary(label: &str) {
     let skipped = SKIPPED.swap(0, Ordering::Relaxed);
     let written = WRITTEN.swap(0, Ordering::Relaxed);
     if !verbose() && skipped > 0 {
-        let more = if written > 0 { format!(", {} written", written) } else { String::new() };
+        let more = if written > 0 { format!(", {written} written") } else { String::new() };
         emit(&format!("{}•{} {}: {} up to date{}", d(), z(), label, skipped, more), false);
     }
 }
 
 /// Seconds as a short time: "42s", "6m12s", "1h03m".
 pub fn duration(secs: u64) -> String {
-    if secs < 60 { format!("{}s", secs) }
-    else if secs < 3600 { format!("{}m{:02}s", secs / 60, secs % 60) }
-    else { format!("{}h{:02}m", secs / 3600, secs % 3600 / 60) }
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, secs % 3600 / 60)
+    }
 }
 
 /// A plain line, the way a script prints it (no prefix, no step header).
-pub fn plain(msg: &str) { emit(msg, false); }
+pub fn plain(msg: &str) {
+    emit(msg, false);
+}
 /// Like `plain`, on stderr.
-pub fn plain_err(msg: &str) { emit(msg, true); }
+pub fn plain_err(msg: &str) {
+    emit(msg, true);
+}
 
 #[cfg(test)]
 mod tests {

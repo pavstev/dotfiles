@@ -6,28 +6,59 @@ rust-version = "1.89" # File::lock (the guard's state file)
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json ={ version = "1", features = ["preserve_order", "float_roundtrip"] }
 dirs = "6"
 sha2 = "0.10"
 tempfile = "3"
 walkdir = "2"
 regex = "1"
 tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "stopwords", "stemmer"] }
+thiserror = "2"
+# jiff's system time zone (`tz-system`) links windows-link (raw-dylib). Next to tantivy's winapi
+# import libraries that makes every exe crash before main on windows-gnu, so it is on for macOS and
+# Linux only (below). Windows reads the TZ variable, else UTC.
+jiff = { version = "0.2", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated", "perf-inline"] }
+memchr = "2"
 
 # The prompt backend. crossterm pulls winapi 0.3, whose GNU import libraries clash with the
 # raw-dylib ones of windows-sys: on windows-gnu the linked exe crashes before main. So Windows
 # uses the console backend.
 [target.'cfg(not(windows))'.dependencies]
 inquire = { version = "0.9.4", default-features = false, features = ["crossterm", "editor"] }
+jiff = { version = "0.2", features = ["tz-system"] } # see the jiff line above
 
 [target.'cfg(windows)'.dependencies]
 inquire = { version = "0.9.4", default-features = false, features = ["console", "editor"] }
 
-[dev-dependencies]
-serde = "1" # one test pretty-prints with a custom indent
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+redundant_clone = "warn"
+use_self = "warn"
+# Too noisy for a crate of small command-line tools:
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+struct_field_names = "allow"
+items_after_statements = "allow"
+unreadable_literal = "allow"
+struct_excessive_bools = "allow" # flag structs of the command lines
 
 # Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
-# after a pull about 4 times slower, with the same start-up time (BENCHMARK.md). Keep the default
+# after a pull about 4 times slower, with the same start-up time. Keep the default
 # panic = "unwind": guard and guard_cursor fail open through catch_unwind.
 [profile.release]
 strip = "symbols"
@@ -43,10 +74,6 @@ path = "src/bin/guard_cursor.rs"
 [[bin]]
 name = "guard"
 path = "src/bin/guard.rs"
-
-[[bin]]
-name = "spawn"
-path = "src/bin/spawn.rs"
 
 [[bin]]
 name = "route"
@@ -96,10 +123,6 @@ path = "src/bin/mic_check.rs"
 name = "bag_check"
 path = "src/bin/bag_check.rs"
 
-[[bench]]
-name = "hooks"
-harness = false
-
 [[bin]]
 name = "ctx"
 path = "src/bin/ctx.rs"
@@ -107,3 +130,7 @@ path = "src/bin/ctx.rs"
 [[bin]]
 name = "sessions"
 path = "src/bin/sessions.rs"
+
+[[bin]]
+name = "proj"
+path = "src/bin/proj.rs"

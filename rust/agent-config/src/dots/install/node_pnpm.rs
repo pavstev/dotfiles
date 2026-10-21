@@ -14,7 +14,9 @@ pub fn step(_repo: &Path) {
         warn("mise not found — skipping node/pnpm.");
         return;
     }
-    if os::is_musl() { return; }
+    if os::is_musl() {
+        return;
+    }
     // corepack asks "download pnpm? [Y/n]" before a download; the commands below hide it.
     os::set_env("COREPACK_ENABLE_DOWNLOAD_PROMPT", "0");
 

@@ -1,9 +1,8 @@
 //! `println!` and `print!` that stop quietly on a closed pipe (`mic_check | head`), like the shell
-//! scripts did, instead of panicking with "failed printing to stdout". Included by the bins with
-//! `#[macro_use] #[path = "../quiet_out.rs"] mod quiet_out;`; the macros shadow the std ones.
+//! scripts did, instead of panicking with "failed printing to stdout". A bin that wants them
+//! imports them over the std ones:
+//! `use agent_config::{quiet_print as print, quiet_println as println};`
 //! Any other write error is treated the same way: nothing can be printed, so exit 0 at once.
-
-#![allow(unused_macros)] // a bin may use only one of the two
 
 use std::io::Write;
 
@@ -15,11 +14,13 @@ pub fn emit(args: std::fmt::Arguments) {
     }
 }
 
-macro_rules! println {
+#[macro_export]
+macro_rules! quiet_println {
     () => { $crate::quiet_out::emit(format_args!("\n")) };
     ($($arg:tt)*) => { $crate::quiet_out::emit(format_args!("{}\n", format_args!($($arg)*))) };
 }
 
-macro_rules! print {
+#[macro_export]
+macro_rules! quiet_print {
     ($($arg:tt)*) => { $crate::quiet_out::emit(format_args!($($arg)*)) };
 }

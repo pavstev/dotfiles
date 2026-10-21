@@ -1,15 +1,17 @@
 //! hurry-scan: find out why a Claude Code session is slow, and what to cut.
-//! Port of the old Python tool hurry-scan.py (deleted; its tests are mapped in tests/PORTED.md).
 //! Read-only: it never changes anything.
 
-use agent_config::pycompat::{basename, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_str, truthy};
+use agent_config::paths;
+use agent_config::pycompat::{basename, dirname, json_str, parse_ts, py_float, py_str, truthy};
+use agent_config::scan::{self, Search, find_session};
+use agent_config::transcript::{Body, Line};
 use clap::Parser;
 use regex::Regex;
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -26,29 +28,17 @@ ranked report. Read-only: it never changes anything.
 static NULL: Value = Value::Null;
 
 macro_rules! out {
-    () => { let _ = writeln!(std::io::stdout()); };
-    ($($a:tt)*) => { let _ = writeln!(std::io::stdout(), $($a)*); };
+    () => { let _ = writeln!(io::stdout()); };
+    ($($a:tt)*) => { let _ = writeln!(io::stdout(), $($a)*); };
 }
 
 static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-static NON_ALNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^A-Za-z0-9]").unwrap());
 static MODEL5: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"claude-(opus|sonnet|fable)-5").unwrap());
 static MCP_SERVER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^mcp__(.+?)__").unwrap());
 
 // ---------------------------------------------------------------------------
 // Python-compat helpers
 // ---------------------------------------------------------------------------
-
-fn home() -> String {
-    for k in ["HOME", "USERPROFILE"] {
-        if let Ok(h) = std::env::var(k)
-            && !h.is_empty()
-        {
-            return h;
-        }
-    }
-    dirs::home_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "~".into())
-}
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
     v.get(k).unwrap_or(&NULL)
@@ -62,7 +52,7 @@ fn num(v: &Value) -> f64 {
 }
 
 fn pyround1(x: f64) -> f64 {
-    format!("{:.1}", x).parse().unwrap_or(x)
+    format!("{x:.1}").parse().unwrap_or(x)
 }
 
 /// json.dumps(v, indent=2) with ensure_ascii.
@@ -145,7 +135,7 @@ fn human(n: f64) -> String {
     let mut n = n;
     for unit in ["B", "KB", "MB", "GB"] {
         if n < 1024.0 || unit == "GB" {
-            return if unit == "B" { format!("{:.0}{}", n, unit) } else { format!("{:.1}{}", n, unit) };
+            return if unit == "B" { format!("{n:.0}{unit}") } else { format!("{n:.1}{unit}") };
         }
         n /= 1024.0;
     }
@@ -164,7 +154,7 @@ fn rglob(root: &Path, pick: impl Fn(&str) -> bool) -> Vec<PathBuf> {
         .min_depth(1)
         .into_iter()
         .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'))
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
     {
         if pick(&e.file_name().to_string_lossy()) {
             v.push(e.path().to_path_buf());
@@ -177,63 +167,8 @@ fn rglob(root: &Path, pick: impl Fn(&str) -> bool) -> Vec<PathBuf> {
 // 1. Find the session transcript
 // ---------------------------------------------------------------------------
 
-fn projects_dir() -> PathBuf {
-    Path::new(&home()).join(".claude").join("projects")
-}
-
-fn session_hits(prefix: &str) -> Vec<PathBuf> {
-    let mut hits = vec![];
-    for d in list_dir(&projects_dir()) {
-        for f in list_dir(&d) {
-            let n = fname(&f);
-            if n.starts_with(prefix) && n.ends_with(".jsonl") {
-                hits.push(f);
-            }
-        }
-    }
-    hits
-}
-
-fn newest(v: Vec<PathBuf>) -> Option<PathBuf> {
-    let mut best: Option<(f64, PathBuf)> = None;
-    for p in v {
-        let m = mtime(&p).unwrap_or(0.0);
-        if best.as_ref().map(|(bm, _)| m > *bm).unwrap_or(true) {
-            best = Some((m, p));
-        }
-    }
-    best.map(|(_, p)| p)
-}
-
 fn cwd_string() -> String {
     std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
-}
-
-fn find_session(arg: Option<&str>, use_all: bool) -> Option<PathBuf> {
-    if let Some(a) = arg.filter(|a| !a.is_empty()) {
-        if Path::new(a).is_file() {
-            return Some(PathBuf::from(a));
-        }
-        return session_hits(a).into_iter().next();
-    }
-    if let Ok(sid) = std::env::var("CLAUDE_CODE_SESSION_ID")
-        && !sid.is_empty()
-    {
-        let want = format!("{}.jsonl", sid);
-        let hit = session_hits(&sid).into_iter().find(|p| fname(p) == want);
-        if hit.is_some() {
-            return hit;
-        }
-    }
-    if !use_all {
-        let enc = NON_ALNUM.replace_all(&cwd_string(), "-").into_owned();
-        let mine: Vec<PathBuf> = list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
-        if !mine.is_empty() {
-            return newest(mine);
-        }
-    }
-    let all = session_hits("");
-    newest(all)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,41 +199,7 @@ fn short_input(inp: &Value) -> String {
     String::new()
 }
 
-/// Insertion-ordered counter.
-#[derive(Default, Clone)]
-struct Counter {
-    keys: Vec<String>,
-    idx: HashMap<String, usize>,
-    vals: Vec<i64>,
-}
-
-impl Counter {
-    fn add(&mut self, k: &str, n: i64) {
-        match self.idx.get(k) {
-            Some(&i) => self.vals[i] += n,
-            None => {
-                self.idx.insert(k.to_string(), self.keys.len());
-                self.keys.push(k.to_string());
-                self.vals.push(n);
-            }
-        }
-    }
-    fn get(&self, k: &str) -> i64 {
-        self.idx.get(k).map(|&i| self.vals[i]).unwrap_or(0)
-    }
-    fn most_common(&self, n: usize) -> Vec<(String, i64)> {
-        let mut it: Vec<(String, i64)> = self.keys.iter().cloned().zip(self.vals.iter().cloned()).collect();
-        it.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
-        it.truncate(n);
-        it
-    }
-    fn total(&self) -> i64 {
-        self.vals.iter().sum()
-    }
-    fn is_empty(&self) -> bool {
-        self.keys.is_empty()
-    }
-}
+type Counter = scan::Counter<String>;
 
 struct Transcript {
     path: String,
@@ -326,7 +227,7 @@ struct Transcript {
 fn scan_transcript(path: &Path) -> Transcript {
     let mut s = Transcript {
         path: path.to_string_lossy().into_owned(),
-        bytes: fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        bytes: fs::metadata(path).map_or(0, |m| m.len()),
         turns_assistant: 0,
         sidechain: 0,
         model: None,
@@ -347,95 +248,90 @@ fn scan_transcript(path: &Path) -> Transcript {
         mcp_tools: HashSet::new(),
     };
     let mut pending: HashMap<String, (String, String, Option<f64>)> = HashMap::new();
-    let text = read_text(path);
-    for raw in text.split_inclusive('\n') {
-        let Ok(o) = serde_json::from_str::<Value>(raw) else { continue };
-        if !o.is_object() {
-            continue;
+    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let mut reader = BufReader::new(src);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        if !reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            break;
         }
-        let t = get(&o, "type").as_str().unwrap_or("");
-        let ts = if truthy(get(&o, "timestamp")) { get(&o, "timestamp").as_str().and_then(parse_ts) } else { None };
+        let raw = String::from_utf8_lossy(&buf);
+        let Some(o) = Line::parse_str(&raw) else { continue };
+        let ts = o.timestamp.as_str().and_then(parse_ts);
         if let Some(ts) = ts {
-            if !s.first_ts.map(|f| f != 0.0).unwrap_or(false) {
+            if !s.first_ts.is_some_and(|f| f != 0.0) {
                 s.first_ts = Some(ts);
             }
             s.last_ts = Some(ts);
         }
-        if s.cwd.as_deref().map(|c| c.is_empty()).unwrap_or(true)
-            && let Some(c) = get(&o, "cwd").as_str()
+        if s.cwd.as_deref().is_none_or(str::is_empty)
+            && let Some(c) = o.cwd.as_str()
         {
             s.cwd = Some(c.to_string());
         }
-        if truthy(get(&o, "isSidechain")) {
+        if o.is_sidechain.0 {
             s.sidechain += 1;
         }
-        if t == "system" && get(&o, "subtype").as_str() == Some("compact_boundary") {
-            let meta = get(&o, "compactMetadata");
-            let pre = if truthy(get(meta, "preTokens")) { Some(num(get(meta, "preTokens"))) } else { None };
-            s.compactions.push(pre);
-        } else if t == "attachment" {
-            let att = get(&o, "attachment");
-            let ty = match get(att, "type") {
-                Value::String(x) => x.clone(),
-                Value::Null => "?".into(),
-                other => other.to_string(),
-            };
-            s.attach_by_type.add(&ty, clen(raw) as i64);
-            if let Some(names) = get(att, "addedNames").as_array() {
-                for n in names {
-                    if let Some(n) = n.as_str()
-                        && n.starts_with("mcp__")
-                    {
+        let msg = o.msg();
+        match o.kind.or_empty() {
+            "system" if o.subtype.as_str() == Some("compact_boundary") => {
+                let pre = o.compact.0.as_ref().map(|c| &c.pre_tokens).filter(|v| truthy(v)).map(num);
+                s.compactions.push(pre);
+            }
+            "attachment" => {
+                let att = o.attachment.0.as_ref();
+                let ty = match att.map(|a| &a.kind) {
+                    None | Some(Value::Null) => "?".into(),
+                    Some(Value::String(x)) => x.clone(),
+                    Some(other) => other.to_string(),
+                };
+                // The old reader counted a CRLF line without its CR.
+                let len = clen(&raw) - usize::from(raw.ends_with("\r\n"));
+                s.attach_by_type.add(ty, len as i64);
+                for n in att.and_then(|a| a.added_names.0.as_deref()).unwrap_or_default() {
+                    if let Some(n) = n.as_str().filter(|n| n.starts_with("mcp__")) {
                         s.mcp_tools.insert(n.to_string());
                     }
                 }
             }
-        } else if t == "assistant" {
-            let msg = get(&o, "message");
-            s.turns_assistant += 1;
-            s.think_ms += num(get(&o, "thinkingDurationMs"));
-            if let Some(m) = get(msg, "model").as_str().filter(|m| !m.is_empty()) {
-                s.model = Some(m.to_string());
-            }
-            let u = get(msg, "usage");
-            let ctx = num(get(u, "input_tokens")) as i64 + num(get(u, "cache_read_input_tokens")) as i64
-                + num(get(u, "cache_creation_input_tokens")) as i64;
-            if ctx != 0 && !truthy(get(&o, "isSidechain")) {
-                s.ctx_now = ctx;
-                s.ctx_max = s.ctx_max.max(ctx);
-            }
-            if let Some(arr) = get(msg, "content").as_array() {
-                for b in arr {
-                    if !b.is_object() || get(b, "type").as_str() != Some("tool_use") {
-                        continue;
-                    }
-                    let name = match get(b, "name") {
-                        Value::Null => "?".to_string(),
-                        Value::String(x) => x.clone(),
-                        other => other.to_string(),
-                    };
-                    let inp = get(b, "input");
-                    s.tool_calls.add(&name, 1);
-                    pending.insert(get(b, "id").to_string(), (name.clone(), short_input(inp), ts));
-                    if name == "Read" && inp.is_object() && truthy(get(inp, "file_path")) {
-                        s.reads.add(&py_str(get(inp, "file_path")), 1);
+            "assistant" => {
+                s.turns_assistant += 1;
+                s.think_ms += o.thinking_ms.get();
+                if let Some(m) = msg.model.as_str().filter(|m| !m.is_empty()) {
+                    s.model = Some(m.to_string());
+                }
+                let ctx = msg.usage.0.as_ref().map_or(0, |u| {
+                    u.input_tokens.get() as i64
+                        + u.cache_read_input_tokens.get() as i64
+                        + u.cache_creation_input_tokens.get() as i64
+                });
+                if ctx != 0 && !o.is_sidechain.0 {
+                    s.ctx_now = ctx;
+                    s.ctx_max = s.ctx_max.max(ctx);
+                }
+                for b in msg.content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_use")) {
+                    let name = b.name.as_str().unwrap_or("?").to_string();
+                    s.tool_calls.add(name.clone(), 1);
+                    pending.insert(b.id.or_empty().to_string(), (name.clone(), short_input(&b.input), ts));
+                    if name == "Read"
+                        && let Some(p) = b.input.get("file_path").filter(|p| truthy(p))
+                    {
+                        s.reads.add(py_str(p), 1);
                     }
                 }
             }
-        } else if t == "user"
-            && let Some(arr) = get(get(&o, "message"), "content").as_array()
-        {
-            for b in arr {
-                if !b.is_object() {
-                    continue;
-                }
-                if let Some("tool_result") = get(b, "type").as_str() {
+            "user" => {
+                for b in msg.content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_result")) {
                     let (name, summ, t0) =
-                        pending.remove(&get(b, "tool_use_id").to_string()).unwrap_or(("?".into(), String::new(), None));
-                    let size = result_size(get(b, "content"));
-                    s.tool_bytes.add(&name, size as i64);
+                        pending.remove(b.tool_use_id.or_empty()).unwrap_or(("?".into(), String::new(), None));
+                    let size = match &b.content {
+                        Body::Text(t) => clen(t),
+                        Body::Json(v) => result_size(v),
+                    };
+                    s.tool_bytes.add(name.clone(), size as i64);
                     s.results.push((size, name.clone(), summ.clone()));
-                    if truthy(get(b, "is_error")) {
+                    if b.is_error.0 {
                         s.errors += 1;
                     }
                     if let (Some(t0), Some(ts)) = (t0.filter(|x| *x != 0.0), ts.filter(|x| *x != 0.0))
@@ -445,8 +341,14 @@ fn scan_transcript(path: &Path) -> Transcript {
                     }
                 }
             }
+            _ => {}
         }
     }
+    finish(s)
+}
+
+/// Order the results the way the report lists them.
+fn finish(mut s: Transcript) -> Transcript {
     s.results.sort_by(|a, b| b.cmp(a));
     s.slow.sort_by(|a, b| {
         b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal).then_with(|| b.1.cmp(&a.1)).then_with(|| b.2.cmp(&a.2))
@@ -459,7 +361,7 @@ fn scan_transcript(path: &Path) -> Transcript {
 // ---------------------------------------------------------------------------
 
 fn claude_dir() -> PathBuf {
-    Path::new(&home()).join(".claude")
+    paths::home().join(".claude")
 }
 
 fn realpath(p: &Path) -> PathBuf {
@@ -474,7 +376,7 @@ fn claude_md_files(cwd: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     }
     let mut d = if cwd.is_empty() { cwd_string() } else { cwd.to_string() };
     let mut seen: HashSet<String> = HashSet::new();
-    let h = home();
+    let h = paths::home().to_string_lossy().into_owned();
     while !d.is_empty() && d != "/" && !seen.contains(&d) {
         seen.insert(d.clone());
         for name in ["CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md"] {
@@ -491,7 +393,7 @@ fn claude_md_files(cwd: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
         }
         d = dirname(&d);
     }
-    let rules = rglob(&claude_dir().join("rules"), |n| n.ends_with(".md"));
+    let rules = rglob(&claude_dir().join("rules"), |n| Path::new(n).extension().is_some_and(|x| x == "md"));
     (found, rules)
 }
 
@@ -507,19 +409,19 @@ struct Weight {
 
 impl Weight {
     fn hook(&self, ev: &str) -> i64 {
-        self.hooks.iter().find(|(k, _)| k == ev).map(|(_, v)| *v).unwrap_or(0)
+        self.hooks.iter().find(|(k, _)| k == ev).map_or(0, |(_, v)| *v)
     }
     fn hook_total(&self) -> i64 {
         self.hooks.iter().map(|(_, v)| *v).sum()
     }
 }
 
-fn static_weight(cwd: &Option<String>) -> Weight {
-    let cwd_s = cwd.clone().unwrap_or_default();
+fn static_weight(cwd: Option<&str>) -> Weight {
+    let cwd_s = cwd.unwrap_or_default().to_string();
     let (files, rules) = claude_md_files(&cwd_s);
     let claude_md: Vec<(PathBuf, usize)> = files.iter().map(|p| (p.clone(), clen(&read_text(p)))).collect();
     let rules_w = (rules.len(), rules.iter().map(|p| clen(&read_text(p))).sum());
-    let base = if cwd_s.is_empty() { cwd_string() } else { cwd_s.clone() };
+    let base = if cwd_s.is_empty() { cwd_string() } else { cwd_s };
     let settings = load_json(&claude_dir().join("settings.json"));
     let local = load_json(&Path::new(&base).join(".claude").join("settings.json"));
     let mut hooks: Vec<(String, i64)> = vec![];
@@ -530,7 +432,7 @@ fn static_weight(cwd: &Option<String>) -> Weight {
                 if let Some(arr) = groups.as_array() {
                     for g in arr {
                         if g.is_object() {
-                            n += get(g, "hooks").as_array().map(|a| a.len() as i64).unwrap_or(0);
+                            n += get(g, "hooks").as_array().map_or(0, |a| a.len() as i64);
                         }
                     }
                 }
@@ -551,7 +453,7 @@ fn static_weight(cwd: &Option<String>) -> Weight {
     }
     let mut plugins_on: Vec<String> = plugins.iter().filter(|(_, v)| truthy(v)).map(|(k, _)| k.clone()).collect();
     plugins_on.sort();
-    let cj = load_json(&Path::new(&home()).join(".claude.json"));
+    let cj = load_json(&paths::home().join(".claude.json"));
     let mut mcp: Vec<String> = vec![];
     let mut add_keys = |v: &Value| {
         if let Some(o) = v.as_object() {
@@ -601,11 +503,8 @@ unsafe extern "C" {
 }
 
 fn machine_load() -> Load {
-    let mut out = Load {
-        load: None,
-        cpus: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
-        top: vec![],
-    };
+    let mut out =
+        Load { load: None, cpus: std::thread::available_parallelism().map_or(1, std::num::NonZero::get), top: vec![] };
     #[cfg(unix)]
     {
         let mut l = [0f64; 3];
@@ -621,12 +520,11 @@ fn machine_load() -> Load {
         let mut ok = true;
         for r in text.lines().skip(1) {
             if let Some((a, b, c)) = split_none2(r) {
-                match (a.parse::<f64>(), b.parse::<i64>()) {
-                    (Ok(cpu), Ok(rss)) => rows.push((cpu, rss.div_euclid(1024), basename(c))),
-                    _ => {
-                        ok = false;
-                        break;
-                    }
+                if let (Ok(cpu), Ok(rss)) = (a.parse::<f64>(), b.parse::<i64>()) {
+                    rows.push((cpu, rss.div_euclid(1024), basename(c)));
+                } else {
+                    ok = false;
+                    break;
                 }
             }
         }
@@ -666,7 +564,7 @@ fn guess_window(s: &Transcript) -> i64 {
 }
 
 fn plural(n: usize) -> &'static str {
-    if n != 1 { "s" } else { "" }
+    if n == 1 { "" } else { "s" }
 }
 
 fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
@@ -676,11 +574,21 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
     };
     let pct = if window != 0 { 100.0 * s.ctx_now as f64 / window as f64 } else { 0.0 };
     if pct >= 75.0 {
-        add(100, "you", format!("Context is {:.0}% full", pct), "Every turn re-reads the whole history. Replies get slow and fuzzy.".into(),
-            "Run /compact now. Or /clear and paste a short handoff.");
+        add(
+            100,
+            "you",
+            format!("Context is {pct:.0}% full"),
+            "Every turn re-reads the whole history. Replies get slow and fuzzy.".into(),
+            "Run /compact now. Or /clear and paste a short handoff.",
+        );
     } else if pct >= 50.0 {
-        add(70, "you", format!("Context is {:.0}% full", pct), "Each turn costs more as the history grows.".into(),
-            "Run /compact at the next calm moment.");
+        add(
+            70,
+            "you",
+            format!("Context is {pct:.0}% full"),
+            "Each turn costs more as the history grows.".into(),
+            "Run /compact at the next calm moment.",
+        );
     }
     let big: Vec<&(usize, String, String)> = s.results.iter().filter(|r| r.0 >= 20000).collect();
     if !big.is_empty() {
@@ -694,14 +602,7 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
             "I will use offset/limit, rg, head, and subagents for big output.",
         );
     }
-    let rereads: Vec<(String, i64)> = s
-        .reads
-        .keys
-        .iter()
-        .zip(&s.reads.vals)
-        .filter(|(_, n)| **n >= 3)
-        .map(|(p, n)| (p.clone(), *n))
-        .collect();
+    let rereads: Vec<(String, i64)> = s.reads.iter().filter(|(_, n)| *n >= 3).map(|(p, n)| (p.clone(), n)).collect();
     if !rereads.is_empty() {
         // max(rereads, key=count): first of the maximal
         let mut best = &rereads[0];
@@ -724,87 +625,149 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
             if *d > 120.0 { 65 } else { 45 },
             "me",
             format!("{} slow tool call{} (over 20s)", s.slow.len(), plural(s.slow.len())),
-            format!("Slowest: {} {:.0}s ({}).", name, d, summ),
+            format!("Slowest: {name} {d:.0}s ({summ})."),
             "I will run slow work in the background and add timeouts.",
         );
     }
     if s.compactions.len() >= 2 {
-        add(60, "you", format!("Compacted {} times", s.compactions.len()), "Session is too long. Each compact loses detail.".into(),
-            "Start a fresh session for the next task. Keep the handoff short.");
+        add(
+            60,
+            "you",
+            format!("Compacted {} times", s.compactions.len()),
+            "Session is too long. Each compact loses detail.".into(),
+            "Start a fresh session for the next task. Keep the handoff short.",
+        );
     }
     if s.bytes > 15 * 1024 * 1024 {
-        add(40, "you", format!("Transcript is {}", human(s.bytes as f64)), "Resume and startup get slow on huge sessions.".into(),
-            "Finish this task, then start a new session.");
+        add(
+            40,
+            "you",
+            format!("Transcript is {}", human(s.bytes as f64)),
+            "Resume and startup get slow on huge sessions.".into(),
+            "Finish this task, then start a new session.",
+        );
     }
     let cmd_total: usize = w.claude_md.iter().map(|(_, n)| *n).sum::<usize>() + w.rules.1;
     if cmd_total > 24000 {
-        add(if cmd_total > 48000 { 60 } else { 45 }, "you", format!("CLAUDE.md + rules = ~{} tokens", ktok(tok(cmd_total as i64))),
-            "Loaded on every turn, even when not needed.".into(), "Trim or move rarely used parts into skills.");
+        add(
+            if cmd_total > 48000 { 60 } else { 45 },
+            "you",
+            format!("CLAUDE.md + rules = ~{} tokens", ktok(tok(cmd_total as i64))),
+            "Loaded on every turn, even when not needed.".into(),
+            "Trim or move rarely used parts into skills.",
+        );
     }
     let ab = &s.attach_by_type;
-    let servers: HashSet<String> = s
-        .mcp_tools
-        .iter()
-        .filter_map(|n| MCP_SERVER.captures(n).map(|c| c[1].to_string()))
-        .collect();
+    let servers: HashSet<String> =
+        s.mcp_tools.iter().filter_map(|n| MCP_SERVER.captures(n).map(|c| c[1].to_string())).collect();
     let mcp_bytes = ab.get("deferred_tools_delta") + ab.get("mcp_instructions_delta");
     if s.mcp_tools.len() >= 100 || mcp_bytes > 60000 {
         add(
             65,
             "you",
-            format!("{} MCP servers, {} tools (~{} tokens injected)", servers.len(), s.mcp_tools.len(), ktok(tok(mcp_bytes))),
+            format!(
+                "{} MCP servers, {} tools (~{} tokens injected)",
+                servers.len(),
+                s.mcp_tools.len(),
+                ktok(tok(mcp_bytes))
+            ),
             "Tool names and server rules are sent on every session start and cache miss.".into(),
             "Disable MCP servers this project does not use.",
         );
     } else if w.mcp.len() >= 6 {
-        add(55, "you", format!("{} MCP servers connected", w.mcp.len()), "Each server adds tool schemas to every turn.".into(),
-            "Disable servers you do not use in this project.");
+        add(
+            55,
+            "you",
+            format!("{} MCP servers connected", w.mcp.len()),
+            "Each server adds tool schemas to every turn.".into(),
+            "Disable servers you do not use in this project.",
+        );
     }
     if ab.get("skill_listing") > 40000 {
-        add(60, "you", format!("Skill list injects ~{} tokens", ktok(tok(ab.get("skill_listing")))),
+        add(
+            60,
+            "you",
+            format!("Skill list injects ~{} tokens", ktok(tok(ab.get("skill_listing")))),
             "Every skill name and description is sent each session.".into(),
-            "Disable plugins with many skills. Remove skills you never use.");
+            "Disable plugins with many skills. Remove skills you never use.",
+        );
     }
     if ab.get("hook_additional_context") > 8000 {
-        add(45, "you", format!("Start hooks inject ~{} tokens", ktok(tok(ab.get("hook_additional_context")))),
-            "A SessionStart hook pastes big text into every session.".into(), "Shorten what the hook prints.");
+        add(
+            45,
+            "you",
+            format!("Start hooks inject ~{} tokens", ktok(tok(ab.get("hook_additional_context")))),
+            "A SessionStart hook pastes big text into every session.".into(),
+            "Shorten what the hook prints.",
+        );
     }
     if w.plugins_on.len() >= 8 {
-        add(45, "you", format!("{} plugins enabled", w.plugins_on.len()), "Each plugin adds skills, agents, and hooks.".into(),
-            "Turn off plugins you rarely use. It is reversible.");
+        add(
+            45,
+            "you",
+            format!("{} plugins enabled", w.plugins_on.len()),
+            "Each plugin adds skills, agents, and hooks.".into(),
+            "Turn off plugins you rarely use. It is reversible.",
+        );
     }
     let pre = w.hook("PreToolUse") + w.hook("PostToolUse");
     if pre >= 5 {
-        add(50, "you", format!("{} tool hooks run on every tool call", pre), "Each hook adds a process spawn before and after each tool.".into(),
-            "Check they are fast. Drop the ones you do not need.");
+        add(
+            50,
+            "you",
+            format!("{pre} tool hooks run on every tool call"),
+            "Each hook adds a process spawn before and after each tool.".into(),
+            "Check they are fast. Drop the ones you do not need.",
+        );
     }
     if let Some(e) = &w.effort_env
-        && ["high", "xhigh", "max"].contains(&e.as_str()) && s.tool_calls.get("Read") + s.tool_calls.get("Bash") > 0
+        && ["high", "xhigh", "max"].contains(&e.as_str())
+        && s.tool_calls.get("Read") + s.tool_calls.get("Bash") > 0
     {
-        add(35, "you", format!("Effort is {}", e), "High effort means long thinking before each step.".into(),
-            "Use /effort medium for simple work. Try /fast for quick tasks.");
+        add(
+            35,
+            "you",
+            format!("Effort is {e}"),
+            "High effort means long thinking before each step.".into(),
+            "Use /effort medium for simple work. Try /fast for quick tasks.",
+        );
     }
     if s.turns_assistant > 0 && s.think_ms / 1000.0 > 600.0 {
-        add(40, "you", format!("{:.0} min spent thinking", s.think_ms / 60000.0), "Long thinking slows every step.".into(),
-            "Lower effort for routine edits.");
+        add(
+            40,
+            "you",
+            format!("{:.0} min spent thinking", s.think_ms / 60000.0),
+            "Long thinking slows every step.".into(),
+            "Lower effort for routine edits.",
+        );
     }
     if s.errors >= 8 {
-        add(40, "me", format!("{} tool errors", s.errors), "Retry loops waste turns.".into(),
-            "I will stop, read the error once, and change the plan.");
+        add(
+            40,
+            "me",
+            format!("{} tool errors", s.errors),
+            "Retry loops waste turns.".into(),
+            "I will stop, read the error once, and change the plan.",
+        );
     }
     if let Some(load) = m.load.filter(|l| *l != 0.0)
         && load > m.cpus as f64 * 0.8
     {
-        let top = m.top.iter().map(|(c, _, n)| format!("{} {:.0}%", n, c)).collect::<Vec<_>>().join(", ");
-        add(50, "you", format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus), format!("Top: {}.", top),
-            "Quit the heavy app. Run ps:bag-mode to see more.");
+        let top = m.top.iter().map(|(c, _, n)| format!("{n} {c:.0}%")).collect::<Vec<_>>().join(", ");
+        add(
+            50,
+            "you",
+            format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus),
+            format!("Top: {top}."),
+            "Quit the heavy app. Run ps:bag-mode to see more.",
+        );
     }
     f.sort_by(|a, b| b.cmp(a));
     f
 }
 
 fn verdict(f: &[Finding]) -> &'static str {
-    let top = f.first().map(|x| x.score).unwrap_or(0);
+    let top = f.first().map_or(0, |x| x.score);
     if top >= 80 {
         "HIGH"
     } else if top >= 50 {
@@ -827,7 +790,7 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
         o.insert("verdict".into(), Value::from(verdict(f)));
         o.insert("context_tokens".into(), Value::from(s.ctx_now));
         o.insert("window".into(), Value::from(window));
-        o.insert("context_pct".into(), serde_json::Number::from_f64(pyround1(pct)).map(Value::Number).unwrap_or(Value::Null));
+        o.insert("context_pct".into(), serde_json::Number::from_f64(pyround1(pct)).map_or(Value::Null, Value::Number));
         let fs_: Vec<Value> = f
             .iter()
             .map(|x| {
@@ -850,7 +813,8 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
     let bar = format!("{}{}", "#".repeat(hashes.max(0) as usize), ".".repeat((20 - hashes).max(0) as usize));
     let mut age = String::new();
     if let (Some(a), Some(b)) = (s.first_ts, s.last_ts)
-        && a != 0.0 && b != 0.0
+        && a != 0.0
+        && b != 0.0
     {
         age = format!(", {:.1}h old", (b - a) / 3600.0);
     }
@@ -874,11 +838,23 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
         s.sidechain
     );
     if !s.tool_bytes.is_empty() {
-        let parts = s.tool_bytes.most_common(4).iter().map(|(n, b)| format!("{} {}", n, human(*b as f64))).collect::<Vec<_>>().join(", ");
+        let parts = s
+            .tool_bytes
+            .most_common(Some(4))
+            .iter()
+            .map(|(n, b)| format!("{} {}", n, human(*b as f64)))
+            .collect::<Vec<_>>()
+            .join(", ");
         out!("RESULTS  top tools by output: {}", parts);
     }
     if !s.attach_by_type.is_empty() {
-        let top = s.attach_by_type.most_common(4).iter().map(|(k, v)| format!("{} ~{}t", k, ktok(tok(*v)))).collect::<Vec<_>>().join(", ");
+        let top = s
+            .attach_by_type
+            .most_common(Some(4))
+            .iter()
+            .map(|(k, v)| format!("{} ~{}t", k, ktok(tok(*v))))
+            .collect::<Vec<_>>()
+            .join(", ");
         out!("STARTUP  injected: {}", top);
     }
     let cmd_total: usize = w.claude_md.iter().map(|(_, n)| *n).sum::<usize>() + w.rules.1;
@@ -927,7 +903,8 @@ struct Cli {
 
 fn main() {
     let a = Cli::parse();
-    let Some(path) = find_session(a.session.as_deref(), a.all) else {
+    let Some(path) = find_session(a.session.as_deref(), if a.all { Search::All } else { Search::ThisProjectThenAll })
+    else {
         eprintln!("No session transcript found under ~/.claude/projects.");
         std::process::exit(1);
     };
@@ -936,7 +913,7 @@ fn main() {
         Some(w) if w != 0 => w,
         _ => guess_window(&s),
     };
-    let w = static_weight(&s.cwd);
+    let w = static_weight(s.cwd.as_deref());
     let m = machine_load();
     let f = judge(&s, &w, &m, window);
     if a.brief {
@@ -963,14 +940,6 @@ mod tests {
     }
 
     #[test]
-    fn format_ties_round_to_even_like_python() {
-        assert_eq!(format!("{:.0}", 0.5), "0");
-        assert_eq!(format!("{:.0}", 1.5), "2");
-        assert_eq!(format!("{:.0}", 2.5), "2");
-        assert_eq!(format!("{:.1}", 0.25), "0.2");
-    }
-
-    #[test]
     fn timestamps_parse() {
         assert_eq!(parse_ts("1970-01-01T00:00:10Z"), Some(10.0));
         assert_eq!(parse_ts("1970-01-01T01:00:10+01:00"), Some(10.0));
@@ -979,18 +948,9 @@ mod tests {
     }
 
     #[test]
-    fn short_input_uses_python_str() {
+    fn short_input_collapses_space() {
         let v: Value = serde_json::from_str(r#"{"command": "ls   -la\n/tmp"}"#).unwrap();
         assert_eq!(short_input(&v), "ls -la /tmp");
-        let v: Value = serde_json::from_str(r#"{"file_path": ["a", 1, null]}"#).unwrap();
-        assert_eq!(short_input(&v), "['a', 1, None]");
-    }
-
-    #[test]
-    fn dirname_like_python() {
-        assert_eq!(dirname("/a/b"), "/a");
-        assert_eq!(dirname("/a"), "/");
-        assert_eq!(dirname("a"), "");
     }
 
     #[test]
@@ -1006,13 +966,5 @@ mod tests {
     fn split_none2_like_python() {
         assert_eq!(split_none2("  12.5   345 /usr/bin/x y"), Some(("12.5", "345", "/usr/bin/x y")));
         assert_eq!(split_none2("1 2"), None);
-    }
-
-    #[test]
-    fn indent_dump_matches_python() {
-        let v: Value = serde_json::from_str(r#"{"a": [], "b": [1, {"c": "é"}]}"#).unwrap();
-        let mut s = String::new();
-        dumps_indent(&v, 0, &mut s);
-        assert_eq!(s, "{\n  \"a\": [],\n  \"b\": [\n    1,\n    {\n      \"c\": \"\\u00e9\"\n    }\n  ]\n}");
     }
 }
