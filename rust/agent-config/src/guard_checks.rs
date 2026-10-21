@@ -2160,10 +2160,6 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
 
 // --- private words, shadow mode ------------------------------------------------------
 
-pub fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from).or_else(dirs::home_dir)
-}
-
 /// The output of a git command run with HOME set to `home` (in `dir` when given), or "".
 fn git_out(home: &Path, dir: Option<&Path>, args: &[&str]) -> String {
     let mut c = Command::new("git");
@@ -2221,24 +2217,19 @@ pub fn private_words_at(home: &Path, dir: Option<&Path>) -> Vec<String> {
 
 /// True when check `id` runs in shadow mode: it is in env `GUARD_SHADOW` (even an empty one wins)
 /// or else in the `GUARD_SHADOW` setting; a comma or space list.
-pub fn shadow(id: &str) -> bool {
-    let raw = match env::var("GUARD_SHADOW") {
-        Ok(v) => v,
-        Err(_) => home_dir().map(|h| crate::setting(&h, "GUARD_SHADOW")).unwrap_or_default(),
-    };
-    let id = id.to_uppercase();
-    raw.to_uppercase().split(|c: char| c.is_whitespace() || c == ',').any(|p| p == id)
+pub fn shadow(check: Check) -> bool {
+    let raw = env::var("GUARD_SHADOW").unwrap_or_else(|_| crate::setting(&crate::paths::home(), "GUARD_SHADOW"));
+    raw.split(|c: char| c.is_whitespace() || c == ',').any(|p| p.eq_ignore_ascii_case(check.id()))
 }
 
 /// Append one line to `${XDG_CACHE_HOME:-~/.cache}/dots-guard-shadow.log`: time, check id, what the
 /// check would have done, and a short summary. Never the matched text: callers pass the message.
-pub fn shadow_log(id: &str, v: &Verdict, summary: &str) {
+pub fn shadow_log(check: Check, v: &Verdict, summary: &str) {
     let dir = env::var_os("XDG_CACHE_HOME")
         .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|h| h.join(".cache")));
-    let Some(dir) = dir else { return };
+        .map_or_else(|| crate::paths::home().join(".cache"), PathBuf::from);
     let _ = fs::create_dir_all(&dir);
+    let id = check.id();
     let what = match v {
         Verdict::Allow => "allow",
         Verdict::Ask(_) => "ask",
@@ -2253,36 +2244,101 @@ pub fn shadow_log(id: &str, v: &Verdict, summary: &str) {
 
 // --- the gate: which checks run ------------------------------------------------------
 
-/// Every check: its id and the preset that owns it (`core` is always on). The ids match the `guard:`
-/// lists in `claude/presets/*/rules.md`; a test compares the two. The Claude guard, the Cursor adapter
-/// and the Opencode plugin (through the guard) all read this one list.
-pub const REGISTRY: &[(&str, &str)] = &[
-    ("G1", "workflow"),
-    ("G2", "workflow"),
-    ("G3", "workflow"),
-    ("G4", "workflow"),
-    ("G5", "workflow"),
-    ("G6", "workflow"),
-    ("G7", "workflow"),
-    ("G12", "workflow"),
-    ("G13", "workflow"),
-    ("H1", "workflow"),
-    ("W5", "workflow"),
-    ("G8", "pace"),
-    ("PACE", "pace"),
-    ("G9", "models"),
-    ("ROUTER", "models"),
-    ("G10", "ship-to-main"),
-    ("G11", "clock"),
-    ("G17", "no-ai-attribution"),
-    ("G14", "core"),
-    ("G15", "core"),
-    ("G16", "core"),
+/// One guard check. The ids match the `guard:` lists in `claude/presets/*/rules.md`; a test compares
+/// the two. The Claude guard, the Cursor adapter and the Opencode plugin (through the guard) all
+/// read [`REGISTRY`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    G1,
+    G2,
+    G3,
+    G4,
+    G5,
+    G6,
+    G7,
+    G12,
+    G13,
+    H1,
+    W5,
+    G8,
+    Pace,
+    G9,
+    Router,
+    G10,
+    G11,
+    G17,
+    G14,
+    G15,
+    G16,
+}
+
+impl Check {
+    /// The id as `GUARD_OFF` and the preset lists spell it.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::G1 => "G1",
+            Self::G2 => "G2",
+            Self::G3 => "G3",
+            Self::G4 => "G4",
+            Self::G5 => "G5",
+            Self::G6 => "G6",
+            Self::G7 => "G7",
+            Self::G12 => "G12",
+            Self::G13 => "G13",
+            Self::H1 => "H1",
+            Self::W5 => "W5",
+            Self::G8 => "G8",
+            Self::Pace => "PACE",
+            Self::G9 => "G9",
+            Self::Router => "ROUTER",
+            Self::G10 => "G10",
+            Self::G11 => "G11",
+            Self::G17 => "G17",
+            Self::G14 => "G14",
+            Self::G15 => "G15",
+            Self::G16 => "G16",
+        }
+    }
+
+    /// The check named `id`, in any case.
+    pub fn parse(id: &str) -> Option<Self> {
+        REGISTRY.iter().map(|(c, _)| *c).find(|c| c.id().eq_ignore_ascii_case(id))
+    }
+
+    /// The preset that owns the check (`core` is always on).
+    pub fn preset(self) -> &'static str {
+        REGISTRY.iter().find(|(c, _)| *c == self).map_or("core", |(_, p)| p)
+    }
+}
+
+/// Every check and the preset that owns it.
+pub const REGISTRY: &[(Check, &str)] = &[
+    (Check::G1, "workflow"),
+    (Check::G2, "workflow"),
+    (Check::G3, "workflow"),
+    (Check::G4, "workflow"),
+    (Check::G5, "workflow"),
+    (Check::G6, "workflow"),
+    (Check::G7, "workflow"),
+    (Check::G12, "workflow"),
+    (Check::G13, "workflow"),
+    (Check::H1, "workflow"),
+    (Check::W5, "workflow"),
+    (Check::G8, "pace"),
+    (Check::Pace, "pace"),
+    (Check::G9, "models"),
+    (Check::Router, "models"),
+    (Check::G10, "ship-to-main"),
+    (Check::G11, "clock"),
+    (Check::G17, "no-ai-attribution"),
+    (Check::G14, "core"),
+    (Check::G15, "core"),
+    (Check::G16, "core"),
 ];
 
 /// What the gate reads from the settings: the checks switched off and the presets that are on.
 pub struct Gate {
-    pub off: Vec<String>,
+    pub off: Vec<Check>,
     pub presets: Vec<String>,
 }
 
@@ -2297,12 +2353,7 @@ impl Gate {
     pub fn load(home: &Path) -> Self {
         std::panic::catch_unwind(|| {
             let raw = env::var("GUARD_OFF").unwrap_or_else(|_| crate::setting(home, "GUARD_OFF"));
-            let off = raw
-                .to_uppercase()
-                .split(|c: char| c.is_whitespace() || c == ',')
-                .filter(|p| !p.is_empty())
-                .map(String::from)
-                .collect();
+            let off = raw.split(|c: char| c.is_whitespace() || c == ',').filter_map(Check::parse).collect();
             let profile = crate::presets::profile(home);
             Self { off, presets: crate::presets::enabled_quiet(home, &profile) }
         })
@@ -2311,22 +2362,21 @@ impl Gate {
 
     /// True when check `id` runs: it is not in `GUARD_OFF` and its preset is on. `core` checks
     /// ignore the presets.
-    pub fn enabled(&self, id: &str) -> bool {
-        let id = id.to_uppercase();
-        if self.off.contains(&id) {
+    pub fn enabled(&self, check: Check) -> bool {
+        if self.off.contains(&check) {
             return false;
         }
-        match REGISTRY.iter().find(|(i, _)| *i == id) {
-            Some((_, preset)) if *preset != "core" => self.presets.iter().any(|p| p == preset),
-            _ => true,
+        match check.preset() {
+            "core" => true,
+            preset => self.presets.iter().any(|p| p == preset),
         }
     }
 }
 
 /// [`Gate::enabled`] for this process, with the gate read once from the user's home.
-pub fn check_enabled(id: &str) -> bool {
+pub fn check_enabled(check: Check) -> bool {
     static GATE: std::sync::OnceLock<Gate> = std::sync::OnceLock::new();
-    GATE.get_or_init(|| home_dir().map_or_else(Gate::all_on, |h| Gate::load(&h))).enabled(id)
+    GATE.get_or_init(|| Gate::load(&crate::paths::home())).enabled(check)
 }
 
 #[cfg(test)]
