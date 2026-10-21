@@ -14,6 +14,9 @@
 //! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
 //! already passed in this session, with the git work tree unchanged since, gets a note to skip it.
 
+// Every check shares the `GuardFn` signature, so one that cannot fail still returns `Res`.
+#![allow(clippy::unnecessary_wraps)]
+
 use agent_config::guard_checks::{self as gc, Check, expanduser, is_macos, realpath};
 use agent_config::paths;
 use agent_config::proj;
@@ -683,10 +686,7 @@ fn g7_heavy(data: &Value, _ctx: &Ctx) -> Res {
 }
 
 fn g2_polling(data: &Value, ctx: &Ctx) -> Res {
-    let tool = match tool_name(data) {
-        Some(t @ ("CronCreate" | "ScheduleWakeup" | "Skill")) => t,
-        _ => return Ok(None),
-    };
+    let Some(tool @ ("CronCreate" | "ScheduleWakeup" | "Skill")) = tool_name(data) else { return Ok(None) };
     let ti = obj_or_empty(get(data, "tool_input"))?;
     if tool == "Skill" && get(ti, "skill").as_str() != Some("loop") {
         return Ok(None);
@@ -1028,7 +1028,7 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
                 t.plan_done = get(inp, "items").is_array();
             }
         } else if !in_turn {
-            continue;
+            // before the turn starts: nothing to count
         } else if matches!(name, Some("Edit" | "Write" | "NotebookEdit")) {
             let fp = get(inp, "file_path");
             let p = if truthy(fp) { fp } else { get(inp, "notebook_path") };
@@ -2351,7 +2351,7 @@ mod tests {
         recs.push(result()); // last record has no usage
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
-        let text: String = recs.iter().map(|r| format!("{r}\n")).collect();
+        let text = recs.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
         fs::write(&path, text).unwrap();
         assert_eq!(context_size(&json!(path.to_string_lossy())), 250_000);
         assert_eq!(context_size(&json!(dir.path().join("nope.jsonl").to_string_lossy())), 0);

@@ -537,7 +537,7 @@ struct Msgs {
 impl Msgs {
     fn set(&mut self, k: String, ts: i64, w: f64) {
         if let Some(&i) = self.idx.get(&k) {
-            self.items[i] = (k, ts, w)
+            self.items[i] = (k, ts, w);
         } else {
             self.idx.insert(k.clone(), self.items.len());
             self.items.push((k, ts, w));
@@ -585,11 +585,12 @@ impl Ent {
     }
 
     fn write(&self, out: &mut String) {
+        use std::fmt::Write as _;
         out.push('{');
         if let Some(s) = self.size {
-            out.push_str(&format!("\"size\":{s},"));
+            let _ = write!(out, "\"size\":{s},");
         }
-        out.push_str(&format!("\"offset\":{},\"mtime\":", self.offset));
+        let _ = write!(out, "\"offset\":{},\"mtime\":", self.offset);
         match self.mtime.as_f64() {
             Some(f) if self.mtime.is_f64() => out.push_str(&py_float(f)),
             _ => out.push_str(&self.mtime.to_string()),
@@ -599,7 +600,7 @@ impl Ent {
             if i > 0 {
                 out.push(',');
             }
-            out.push_str(&format!("{}:[{},{}]", json_str(k), ts, py_float(*w)));
+            let _ = write!(out, "{}:[{},{}]", json_str(k), ts, py_float(*w));
         }
         out.push_str("},\"hits\":[");
         out.push_str(&self.hits.iter().map(ToString::to_string).collect::<Vec<_>>().join(","));
@@ -1582,7 +1583,8 @@ mod tests {
         let path = c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
         c.estimate(mon() + DAY, None);
         let mut text = fs::read_to_string(&path).unwrap();
-        text.push_str(&format!("{}\n", rec(mon() + 90, "m2")));
+        text.push_str(&rec(mon() + 90, "m2").to_string());
+        text.push('\n');
         fs::write(&path, text).unwrap();
         c.refresh(5.0, mon() + DAY);
         assert!(close(c.weight(), 2.0 * WEIGHT, 7));

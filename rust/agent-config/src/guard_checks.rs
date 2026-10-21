@@ -861,7 +861,7 @@ fn ps_leaks(args: &[String]) -> bool {
                 if "oOpCtuUgGsD".contains(c) {
                     let mut val: String = cs[k + 1..].iter().collect();
                     if val.is_empty() && i < n {
-                        val = args[i].clone();
+                        val.clone_from(&args[i]);
                         i += 1;
                     }
                     if c == 'o' || c == 'O' {
@@ -1118,7 +1118,7 @@ fn search_opts(fam: &str, args: &[String]) -> SearchOpts {
                 None => (a.as_str(), false, String::new()),
             };
             if !eq && long_val.contains(&key) && i < n {
-                val = args[i].clone();
+                val.clone_from(&args[i]);
                 i += 1;
             }
             search_long(fam, key, &val, &mut o);
@@ -1129,7 +1129,7 @@ fn search_opts(fam: &str, args: &[String]) -> SearchOpts {
                 if short_val.contains(c) {
                     let mut val: String = cs[k + 1..].iter().collect();
                     if val.is_empty() && i < n {
-                        val = args[i].clone();
+                        val.clone_from(&args[i]);
                         i += 1;
                     }
                     search_short(fam, c, Some(&val), &mut o);
@@ -1545,7 +1545,7 @@ fn parse_opts(args: &[String], short_val: &str, long_val: &[&str], abbr: bool) -
                 if short_val.contains(cs[k]) {
                     let mut val: String = cs[k + 1..].iter().collect();
                     if val.is_empty() && i < n {
-                        val = args[i].clone();
+                        val.clone_from(&args[i]);
                         i += 1;
                     }
                     opts.push((format!("-{}", cs[k]), val));
@@ -1954,7 +1954,9 @@ pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> 
         if MCP_SEND.is_match(tool) {
             let mut all = Vec::new();
             strings_of(input, &mut all);
-            all.iter().for_each(|s| scan_text(s, &words, &mut kinds));
+            for s in &all {
+                scan_text(s, &words, &mut kinds);
+            }
         }
     } else if tool == "Bash"
         && let Some(cmd) = command_of(input)
@@ -2012,7 +2014,9 @@ pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> 
             }
         }
         if sends {
-            heredoc_bodies(cmd).iter().for_each(|b| scan_text(b, &words, &mut kinds));
+            for b in &heredoc_bodies(cmd) {
+                scan_text(b, &words, &mut kinds);
+            }
             if has_substitution(cmd) {
                 add_kind(&mut kinds, "a body it cannot read (a shell expansion)".to_string());
             }
@@ -2144,7 +2148,9 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
         }
     }
     if targeted {
-        heredoc_bodies(cmd).iter().for_each(|b| scan_attribution(b, &mut kinds));
+        for b in &heredoc_bodies(cmd) {
+            scan_attribution(b, &mut kinds);
+        }
         if whole {
             scan_attribution(cmd, &mut kinds);
         }

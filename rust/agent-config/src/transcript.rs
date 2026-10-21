@@ -107,6 +107,7 @@ pub fn context_size(path: &Path) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     #[test]
     fn rev_lines_is_newest_first_and_lazy() {
@@ -114,7 +115,7 @@ mod tests {
         let p = dir.path().join("t.txt");
         let mut body = String::new();
         for i in 0..20000 {
-            body.push_str(&format!("line{i}\n\n"));
+            writeln!(body, "line{i}\n").unwrap();
         }
         fs::write(&p, body).unwrap();
         let mut it = rev_lines(&p).unwrap();

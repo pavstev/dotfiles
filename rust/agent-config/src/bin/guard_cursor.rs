@@ -73,10 +73,7 @@ fn prune_state(dir: &Path) {
         Ok(d) => d.as_secs(),
         Err(_) => return,
     };
-    let read_dir = match fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(_) => return,
-    };
+    let Ok(read_dir) = fs::read_dir(dir) else { return };
     let mut files = Vec::new();
     for entry in read_dir.flatten() {
         let path = entry.path();
@@ -170,9 +167,8 @@ fn default_app_db() -> PathBuf {
 }
 
 fn app_context(data: &Value) -> i64 {
-    let conv = match str_field(data, "parent_conversation_id").or_else(|| str_field(data, "conversation_id")) {
-        Some(s) => s,
-        None => return 0,
+    let Some(conv) = str_field(data, "parent_conversation_id").or_else(|| str_field(data, "conversation_id")) else {
+        return 0;
     };
     let path = match env::var("CURSOR_GUARD_APP_DB") {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
@@ -195,14 +191,8 @@ fn app_context(data: &Value) -> i64 {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn();
-    let mut child = match child {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
-    let mut stdout = match child.stdout.take() {
-        Some(s) => s,
-        None => return 0,
-    };
+    let Ok(mut child) = child else { return 0 };
+    let Some(mut stdout) = child.stdout.take() else { return 0 };
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stdout.read_to_end(&mut buf);
@@ -418,7 +408,6 @@ fn gated(check: gc::Check, f: impl FnOnce() -> gc::Verdict) -> gc::Verdict {
     }
     let v = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(gc::Verdict::Allow);
     match &v {
-        gc::Verdict::Allow => v,
         gc::Verdict::Ask(m) | gc::Verdict::Deny(m) if gc::shadow(check) => {
             gc::shadow_log(check, &v, m);
             gc::Verdict::Allow
@@ -493,10 +482,7 @@ fn main() {
 }
 
 fn run() -> i32 {
-    let cli = match Cli::try_parse() {
-        Ok(c) => c,
-        Err(_) => return 0,
-    };
+    let Ok(cli) = Cli::try_parse() else { return 0 };
     let mode = match cli.mode.as_deref() {
         Some(m) if ["prompt", "subagent", "compact", "response", "tool"].contains(&m) => m,
         _ => return 0,
