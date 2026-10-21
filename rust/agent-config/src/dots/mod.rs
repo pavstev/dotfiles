@@ -21,6 +21,7 @@ pub mod steps;
 pub mod uninstall;
 
 use crate::out::{self, info, ok, step, step_end, uptodate, verbose, warn};
+use clap::{Parser, Subcommand};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -47,9 +48,41 @@ fn agent_config(args: &[&str]) -> bool {
     crate::run_args(args) == 0
 }
 
-/// The `dots` command line: `dots [-v] [settings | doctor | uninstall]`. Returns the exit code.
+/// The `dots` command line. With no command it pulls, links and runs the steps.
+#[derive(Parser, Debug)]
+#[command(name = "dots", about = "The dotfiles setup: pull, link, provision.")]
+struct Cli {
+    /// print every line, not only the changes
+    #[arg(short, long, global = true)]
+    verbose: bool,
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+}
+
+/// The `dots` commands.
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// open the settings menu, then refresh the links and the generated config
+    #[command(alias = "private")]
+    Settings,
+    /// check the result and change nothing
+    Doctor,
+    /// take back the links and generated files
+    Uninstall {
+        /// skip the question
+        #[arg(short, long)]
+        yes: bool,
+    },
+}
+
+/// The `dots` command line: `dots [-v] [settings | doctor | uninstall [-y]]`. Returns the exit code.
 /// It pulls the repo (and restarts on new commits), links files, builds the Claude config and runs the steps.
 pub fn main() -> i32 {
+    let cli = Cli::parse();
+    if cli.verbose {
+        os::set_env("DOTFILES_VERBOSE", "1");
+        out::set_verbose(true);
+    }
     let started = std::time::Instant::now();
     let repo = repo();
     let r = repo.to_string_lossy().into_owned();
@@ -62,40 +95,20 @@ pub fn main() -> i32 {
     os::brew_env();
     os::tool_paths(); // mise, cargo and WinGet tools on PATH for every step
 
-    // `dots uninstall` takes the links and generated files back: no pull, no steps.
-    if env::args().nth(1).as_deref() == Some("uninstall") {
-        let rest: Vec<String> = env::args().skip(2).collect();
-        return uninstall::run(&repo, &rest);
+    match cli.cmd {
+        // `dots uninstall` takes the links and generated files back: no pull, no steps.
+        Some(Cmd::Uninstall { yes }) => return uninstall::run(&repo, yes),
+        // `dots doctor` only reads: no pull, no links, no steps.
+        Some(Cmd::Doctor) => return doctor::run(),
+        _ => {}
     }
-
-    // `dots doctor` only reads: no pull, no links, no steps.
-    if env::args().nth(1).as_deref() == Some("doctor") {
-        if env::args().len() > 2 {
-            eprintln!("usage: dots doctor");
-            return 2;
-        }
-        return doctor::run();
-    }
-
-    let mut ask_settings = false;
+    let ask_settings = matches!(cli.cmd, Some(Cmd::Settings));
     let mut own_steps = false;
-    for a in env::args().skip(1) {
-        match a.as_str() {
-            "-v" | "--verbose" => os::set_env("DOTFILES_VERBOSE", "1"),
-            "settings" | "private" => {
-                ask_settings = true;
-                // Only the Cursor step runs then, to pick up the new settings. Opencode needs
-                // no step: its config is written below on every run.
-                if env::var_os("DOTFILES_STEPS").is_none() {
-                    os::set_env("DOTFILES_STEPS", "60-cursor");
-                    own_steps = true;
-                }
-            }
-            _ => {
-                eprintln!("usage: dots [-v] [settings | doctor | uninstall]");
-                return 2;
-            }
-        }
+    // With `settings` only the Cursor step runs, to pick up the new settings. Opencode needs
+    // no step: its config is written below on every run.
+    if ask_settings && env::var_os("DOTFILES_STEPS").is_none() {
+        os::set_env("DOTFILES_STEPS", "60-cursor");
+        own_steps = true;
     }
 
     // Every warning also goes to this file (bash steps are child processes), so the last
@@ -112,6 +125,10 @@ pub fn main() -> i32 {
             .unwrap_or_default();
     }
     os::set_env("DOTFILES_WARN_FILE", &warn_file);
+    out::set_warn_file(Some(&warn_file).filter(|f| !f.is_empty()).map(PathBuf::from));
+    // Read verbose, color and the warn file now: from here on a ticker thread prints while the
+    // main thread may still set variables for child processes.
+    out::init();
 
     if pulled {
         ok("pulled the latest version"); // the run before this one printed the step
@@ -319,6 +336,7 @@ pub fn main() -> i32 {
         n
     };
     os::unset_env("DOTFILES_WARN_FILE");
+    out::set_warn_file(None);
     let took = out::duration(started.elapsed().as_secs());
     if nwarn > 0 {
         let w = if nwarn == 1 { "warning" } else { "warnings" };

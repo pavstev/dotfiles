@@ -41,17 +41,7 @@ pub fn undo(repo: &Path, home: &Path) {
 }
 
 /// `dots uninstall [-y]`. Asks first at a terminal; with no terminal it needs `-y`.
-pub fn run(repo: &Path, args: &[String]) -> i32 {
-    let mut yes = false;
-    for a in args {
-        match a.as_str() {
-            "-y" | "--yes" => yes = true,
-            _ => {
-                eprintln!("usage: dots uninstall [-y]");
-                return 2;
-            }
-        }
-    }
+pub fn run(repo: &Path, yes: bool) -> i32 {
     if !yes {
         if !os::at_terminal() {
             eprintln!("dots uninstall asks first and there is no terminal. Run it with -y to skip the question.");

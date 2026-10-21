@@ -282,7 +282,7 @@ pub fn resolve(tools: &[Tool], host: Host, env: &mut dyn Env, only: &[String]) -
                 continue;
             }
             if let Err(why) = env.install(host, src) {
-                tried.push(format!("{src}: {why}"))
+                tried.push(format!("{src}: {why}"));
             } else {
                 if t.cmds.iter().any(|c| env.has(c) && env.runs(c)) {
                     done = Some(src.to_string());
@@ -380,21 +380,7 @@ pub fn full_path() -> std::ffi::OsString {
 
 /// The first runnable file for `cmd` in `path`, or None.
 pub fn find_in_path(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
-    let exts: Vec<String> = if cfg!(windows) {
-        let pe = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        std::iter::once(String::new()).chain(pe.split(';').map(str::to_ascii_lowercase)).collect()
-    } else {
-        vec![String::new()]
-    };
-    for d in env::split_paths(path) {
-        for e in &exts {
-            let p = d.join(format!("{cmd}{e}"));
-            if crate::pycompat::is_executable(&p) {
-                return Some(p);
-            }
-        }
-    }
-    None
+    crate::dots::os::which_in(cmd, path)
 }
 
 /// The `Env` that checks PATH and runs the real installers.
@@ -415,7 +401,7 @@ impl RealEnv {
         c
     }
 
-    fn run(&self, mut c: Command) -> Result<(), String> {
+    fn run(mut c: Command) -> Result<(), String> {
         let out = c.stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| e.to_string())?;
         if out.status.success() {
             return Ok(());
@@ -425,7 +411,7 @@ impl RealEnv {
         Err(last.chars().take(160).collect())
     }
 
-    fn is_root(&self) -> bool {
+    fn is_root() -> bool {
         Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
     }
 }
@@ -445,16 +431,15 @@ impl Env for RealEnv {
         let Some(p) = find_in_path(cmd, &self.path) else { return false };
         // `cmd --version`: a spawn error (a glibc binary on Alpine has no loader) or exit 126/127 means
         // it cannot run here. Any other exit status means it started. A slow start counts as started.
-        let mut child = match Command::new(&p)
+        let Ok(mut child) = Command::new(&p)
             .arg("--version")
             .env("PATH", &self.path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => return false,
+        else {
+            return false;
         };
         let t0 = Instant::now();
         loop {
@@ -477,7 +462,7 @@ impl Env for RealEnv {
             Source::Apk(_) if !host.musl => Err("not Alpine".into()),
             Source::Apk(_) => {
                 need("apk")?;
-                if self.is_root() || self.has("sudo") { Ok(()) } else { Err("needs root".into()) }
+                if Self::is_root() || self.has("sudo") { Ok(()) } else { Err("needs root".into()) }
             }
             Source::Winget(_) | Source::Scoop(_) if host.os != Os::Windows => Err("not Windows".into()),
             Source::Winget(_) => need("winget"),
@@ -502,10 +487,10 @@ impl Env for RealEnv {
             Source::Mise(id) => {
                 let mut c = self.command("mise");
                 c.args(["--yes", "use", "-g", &format!("{id}@latest")]);
-                self.run(c)
+                Self::run(c)
             }
             Source::Apk(pkg) => {
-                let mut c = if self.is_root() {
+                let mut c = if Self::is_root() {
                     self.command("apk")
                 } else {
                     let mut s = self.command("sudo");
@@ -513,7 +498,7 @@ impl Env for RealEnv {
                     s
                 };
                 c.args(["add", "--no-cache", pkg]);
-                self.run(c)
+                Self::run(c)
             }
             Source::Winget(id) => {
                 let mut c = self.command("winget");
@@ -526,22 +511,22 @@ impl Env for RealEnv {
                     "--accept-source-agreements",
                     "--silent",
                 ]);
-                self.run(c)
+                Self::run(c)
             }
             Source::Scoop(pkg) => {
                 let mut c = self.command("scoop");
                 c.args(["install", pkg]);
-                self.run(c)
+                Self::run(c)
             }
             Source::Cargo(krate) => {
                 let mut c = self.command("cargo");
                 c.args(["install", "--locked", krate]);
-                self.run(c)
+                Self::run(c)
             }
             Source::Brew(f) => {
                 let mut c = self.command("brew");
                 c.args(["install", "--quiet", f]);
-                self.run(c)
+                Self::run(c)
             }
             Source::Sh(r) if r == "rustup" => {
                 if host.os == Os::Windows {
@@ -552,7 +537,7 @@ impl Env for RealEnv {
                     "-c",
                     "curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable",
                 ]);
-                self.run(c)
+                Self::run(c)
             }
             Source::Sh(r) => Err(format!("unknown recipe '{r}'")),
             Source::Boot(_) => Err("not installable here".into()),
@@ -563,7 +548,7 @@ impl Env for RealEnv {
         if let Source::Mise(id) = src {
             let mut c = self.command("mise");
             c.args(["--yes", "unuse", "-g", id]);
-            let _ = self.run(c);
+            let _ = Self::run(c);
         }
     }
 

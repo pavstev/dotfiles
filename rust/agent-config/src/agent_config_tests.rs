@@ -34,8 +34,8 @@ fn wr(p: &Path, text: &str) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(p, text).unwrap();
 }
-fn wj(p: &Path, v: Value) {
-    wr(p, &v.to_string());
+fn wj(p: &Path, v: impl Into<Value>) {
+    wr(p, &v.into().to_string());
 }
 fn rd(p: &Path) -> String {
     fs::read_to_string(p).unwrap()
@@ -76,7 +76,13 @@ fn m(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 /// Run `f`, return (result, stdout, stderr) of what the module printed.
 fn call<T>(f: impl FnOnce() -> T) -> (T, String, String) {
     let (r, lines) = out::capture(f);
-    let join = |err: bool| lines.iter().filter(|(_, e)| *e == err).map(|(l, _)| format!("{l}\n")).collect::<String>();
+    let join = |err: bool| {
+        lines.iter().filter(|(_, e)| *e == err).fold(String::new(), |mut s, (l, _)| {
+            s.push_str(l);
+            s.push('\n');
+            s
+        })
+    };
     (r, join(false), join(true))
 }
 
@@ -101,8 +107,8 @@ impl Fx {
         fs::create_dir_all(&home).unwrap();
         set_env("HOME", &home);
         set_env("DOTFILES_REPO", &repo);
-        set_env("DOTFILES_VERBOSE", "1"); // the tests read each line; the Quiet tests are in tests/agent_config.rs
-        set_env("NO_COLOR", "1");
+        out::set_verbose(true); // the tests read each line; the Quiet tests are in tests/agent_config.rs
+        out::set_color(false);
         for k in ["DOTFILES_PROFILE", "DOTFILES_MCP", "DOTFILES_PROJECTS", "DOTFILES_WARN_FILE"] {
             unset_env(k);
         }
@@ -112,7 +118,7 @@ impl Fx {
         let g = claude.join("hooks").join("rust-bin");
         wr(&claude.join("CLAUDE.md"), CLAUDE_MD_TEXT);
         wr(&g, "# fake guard\n");
-        assert_eq!(home_dir(), home); // never the real HOME
+        assert_eq!(paths::home(), home); // never the real HOME
         Self { _guard: guard, _dir: dir, tmp, home, repo, claude, cursor_src, guard: g }
     }
 
@@ -1012,8 +1018,8 @@ fn mcp_fx() -> Fx {
 fn mcp_path(fx: &Fx) -> PathBuf {
     fx.cdir().join("mcp.json")
 }
-fn ours(fx: &Fx, servers: Value) {
-    wj(&fx.cursor_src.join("mcp.json"), json!({"mcpServers": servers}));
+fn ours(fx: &Fx, servers: impl Into<Value>) {
+    wj(&fx.cursor_src.join("mcp.json"), json!({"mcpServers": servers.into()}));
 }
 
 #[test]
@@ -1109,7 +1115,7 @@ fn side_path(fx: &Fx) -> PathBuf {
     fx.cdir().join(MANAGED)
 }
 fn run_cfg(fx: &Fx) -> ((), String, String) {
-    call(|| cursor_cli_config(&fx.home))
+    call(|| cursor_cli_config(&fx.home).expect("cursor_cli_config"))
 }
 
 #[cfg(unix)]

@@ -10,13 +10,18 @@
 use std::env;
 use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+// The environment is read once, here, and never again. `dots` calls `init` before it starts the
+// "still working" ticker thread, so no thread of this module reads the environment while another
+// one writes it (`dots::os::set_env`).
 
 /// `THEME=plain` in the dotfiles settings: no color codes at all. Read once per process.
 fn plain_theme() -> bool {
     static PLAIN: OnceLock<bool> = OnceLock::new();
-    *PLAIN.get_or_init(|| crate::setting(&crate::home_dir(), "THEME") == "plain")
+    *PLAIN.get_or_init(|| crate::setting(&crate::paths::home(), "THEME") == "plain")
 }
 
 /// Colors print when NO_COLOR is unset, the theme is not plain and stdout is a terminal.
@@ -24,12 +29,40 @@ fn colors_on(no_color: bool, plain: bool, tty: bool) -> bool {
     !no_color && !plain && tty
 }
 
-/// True when this process prints color codes.
-pub fn color_enabled() -> bool {
-    if env::var("NO_COLOR").is_ok() {
-        return false;
+/// A yes/no switch that reads its source on the first call, and that a caller can set.
+struct Switch(AtomicU8);
+
+impl Switch {
+    const fn new() -> Self {
+        Self(AtomicU8::new(0))
     }
-    colors_on(false, plain_theme(), io::stdout().is_terminal())
+    /// The value; the first call stores what `read` says (0 means not read yet).
+    fn get(&self, read: impl FnOnce() -> bool) -> bool {
+        match self.0.load(Ordering::Relaxed) {
+            0 => {
+                let on = read();
+                self.set(on);
+                on
+            }
+            v => v == 2,
+        }
+    }
+    fn set(&self, on: bool) {
+        self.0.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+    }
+}
+
+static COLOR: Switch = Switch::new();
+static VERBOSE: Switch = Switch::new();
+
+/// True when this process prints color codes. Read once per process.
+pub fn color_enabled() -> bool {
+    COLOR.get(|| colors_on(env::var_os("NO_COLOR").is_some(), plain_theme(), io::stdout().is_terminal()))
+}
+
+/// Turns color on or off for this process (a test does not depend on its terminal).
+pub fn set_color(on: bool) {
+    COLOR.set(on);
 }
 fn c(code: &'static str) -> &'static str {
     if color_enabled() { code } else { "" }
@@ -59,9 +92,32 @@ pub fn z() -> &'static str {
     c("\x1b[0m")
 }
 
-/// True when `DOTFILES_VERBOSE` is set (`dots -v`): print every line, count nothing.
+/// True when `DOTFILES_VERBOSE` is set (`dots -v`): print every line, count nothing. The first
+/// call reads the variable; `set_verbose` overrides it.
 pub fn verbose() -> bool {
-    env::var("DOTFILES_VERBOSE").is_ok_and(|v| !v.is_empty() && v != "0")
+    VERBOSE.get(|| env::var("DOTFILES_VERBOSE").is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// Turns verbose output on or off for this process.
+pub fn set_verbose(on: bool) {
+    VERBOSE.set(on);
+}
+
+/// The file every warning is also appended to (`DOTFILES_WARN_FILE`), read once.
+fn warn_file() -> &'static Mutex<Option<PathBuf>> {
+    static FILE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+    FILE.get_or_init(|| Mutex::new(env::var_os("DOTFILES_WARN_FILE").filter(|v| !v.is_empty()).map(PathBuf::from)))
+}
+
+/// Sends every later warning to this file too (or to none). `dots` sets the same variable for its
+/// child processes; this is the copy its own warnings use.
+pub fn set_warn_file(path: Option<PathBuf>) {
+    *warn_file().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+}
+
+/// Reads verbose, color and the warn file now. Call it before starting a thread that prints.
+pub fn init() {
+    let _ = (verbose(), color_enabled(), warn_file());
 }
 
 struct Step {
@@ -175,23 +231,26 @@ pub fn info(msg: &str) {
     emit(&format!("{}»»{} {}", b(), z(), msg), false);
 }
 
-/// A success line (`✓`). A message that starts with "wrote ", "updated " or "built " counts as a written file.
+/// A success line (`✓`).
 pub fn ok(msg: &str) {
-    if msg.starts_with("wrote ") || msg.starts_with("updated ") || msg.starts_with("built ") {
-        WRITTEN.fetch_add(1, Ordering::Relaxed);
-    }
     head();
     emit(&format!("{}✓{} {}", g(), z(), msg), false);
 }
 
-/// A warning line on stderr. It is counted, and appended to `DOTFILES_WARN_FILE` when that is set.
+/// A success line for a file that was written. It also joins the written count of `summary`.
+pub fn wrote(msg: &str) {
+    WRITTEN.fetch_add(1, Ordering::Relaxed);
+    ok(msg);
+}
+
+/// A warning line on stderr. It is counted, and appended to the warn file when there is one.
 pub fn warn(msg: &str) {
     head();
     emit(&format!("{}!{}  {}", y(), z(), msg), true);
     WARNS.fetch_add(1, Ordering::Relaxed);
-    if let Ok(f) = env::var("DOTFILES_WARN_FILE")
-        && !f.is_empty()
-        && let Ok(mut fh) = OpenOptions::new().append(true).create(true).open(&f)
+    let file = warn_file().lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    if let Some(f) = file
+        && let Ok(mut fh) = OpenOptions::new().append(true).create(true).open(f)
     {
         let _ = writeln!(fh, "{msg}");
     }
