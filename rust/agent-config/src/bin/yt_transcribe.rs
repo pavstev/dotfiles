@@ -5,7 +5,7 @@
 //! Needs on PATH: `yt-dlp` always; `ffmpeg` and `whisper-cli` for the Whisper fallback;
 //! `curl` once, to fetch the Whisper model into the user cache folder.
 
-use agent_config::pycompat::{py_is_space, py_strip};
+use agent_config::pycompat::{py_is_space, py_repr_str as py_repr, py_strip};
 use clap::{ArgAction, ArgGroup, Parser};
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -96,43 +96,6 @@ fn unquote(s: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Python `repr()` of a str, as far as error messages need it.
-fn py_repr(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(q);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == q => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => {
-                let n = c as u32;
-                let hidden = c != ' '
-                    && (c.is_control()
-                        || py_is_space(c)
-                        || matches!(n, 0xad | 0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2064 | 0xfeff));
-                if !hidden {
-                    out.push(c);
-                } else if n <= 0xff {
-                    out.push_str(&format!("\\x{n:02x}"));
-                } else if n <= 0xffff {
-                    out.push_str(&format!("\\u{n:04x}"));
-                } else {
-                    out.push_str(&format!("\\U{n:08x}"));
-                }
-            }
-        }
-    }
-    out.push(q);
-    out
 }
 
 // ---------------------------------------------------------------------------

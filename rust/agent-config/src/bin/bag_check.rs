@@ -14,8 +14,10 @@
 #[path = "../quiet_out.rs"]
 mod quiet_out;
 
+use clap::Parser;
 use regex::Regex;
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
@@ -26,6 +28,25 @@ bag_check: is this Mac safe to put in a bag with Claude still running?
   bag_check --watch [N]    repeat the card every N seconds (default 60); the ETA counts down
 ETA formats: 45  45m  2h  1h30m. Always ends with one \"VERDICT:\" line.
 ";
+
+/// The flags. The last of `--throttle`, `--restore` and `--watch` wins, like the shell script.
+/// Help is printed from `USAGE` in `main`, so clap's own help flag is off.
+#[derive(Parser)]
+#[command(name = "bag_check", disable_help_flag = true, disable_version_flag = true)]
+struct Cli {
+    /// How long the session still needs: 45, 45m, 2h, 1h30m.
+    #[arg(long, value_name = "ETA")]
+    eta: Option<String>,
+    /// Drop dev servers and indexers to background priority.
+    #[arg(long, overrides_with_all = ["restore", "watch"])]
+    throttle: bool,
+    /// Undo `--throttle`.
+    #[arg(long, overrides_with_all = ["throttle", "watch"])]
+    restore: bool,
+    /// Repeat the card every N seconds (default 60).
+    #[arg(long, num_args = 0..=1, value_name = "N", overrides_with_all = ["throttle", "restore"])]
+    watch: Option<Option<String>>,
+}
 
 const MAXROWS: usize = 5; // heavy rows shown before "+N more"
 const BUFFER: i64 = 25; // % safety margin added to the ETA
@@ -41,16 +62,30 @@ fn out_of(program: &str, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
+fn regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("a fixed pattern")
+}
+
+static HOURS: LazyLock<Regex> = LazyLock::new(|| regex(r"[0-9]+h"));
+static DIGITS: LazyLock<Regex> = LazyLock::new(|| regex(r"[0-9]+"));
+static BATT_SOURCE: LazyLock<Regex> = LazyLock::new(|| regex(r"'[^']*'"));
+static BATT_PERCENT: LazyLock<Regex> = LazyLock::new(|| regex(r"[0-9]*%"));
+static BATT_REMAINING: LazyLock<Regex> = LazyLock::new(|| regex(r"([0-9]*):([0-9][0-9]) remaining"));
+static THROTTLE_COMM: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"next-server|workerd|vite|webpack|wrangler|mdworker|mds_stores"));
+static AGENT_COMM: LazyLock<Regex> = LazyLock::new(|| regex("claude.app/Contents/MacOS/claude"));
+static DEV_SERVER_COMM: LazyLock<Regex> = LazyLock::new(|| regex("next-server|workerd|vite|webpack"));
+static NODE_COMM: LazyLock<Regex> = LazyLock::new(|| regex("(^|/)node$"));
+
 /// "45" | "45m" | "2h" | "1h30m" -> minutes. Anything else counts as 0.
 fn parse_min(s: &str) -> i64 {
     let s = s.to_lowercase();
-    let h_re = Regex::new(r"[0-9]+h").unwrap();
     let (mut h, mut rest) = (0, s.clone());
-    if let Some(m) = h_re.find(&s) {
+    if let Some(m) = HOURS.find(&s) {
         h = m.as_str().trim_end_matches('h').parse::<i64>().unwrap_or(0);
         rest = format!("{}{}", &s[..m.start()], &s[m.end()..]);
     }
-    let m = Regex::new(r"[0-9]+").unwrap().find(&rest).and_then(|m| m.as_str().parse::<i64>().ok()).unwrap_or(0);
+    let m = DIGITS.find(&rest).and_then(|m| m.as_str().parse::<i64>().ok()).unwrap_or(0);
     h * 60 + m
 }
 
@@ -90,10 +125,9 @@ fn classify(cmd: &str) -> (String, &'static str) {
 
 /// Pids of things safe to throttle (dev servers and indexers).
 fn throttle_pids() -> Vec<String> {
-    let re = Regex::new(r"next-server|workerd|vite|webpack|wrangler|mdworker|mds_stores").unwrap();
     out_of("/bin/ps", &["-Ao", "pid,comm"])
         .lines()
-        .filter(|l| re.is_match(l))
+        .filter(|l| THROTTLE_COMM.is_match(l))
         .filter_map(|l| l.split_whitespace().next().map(str::to_string))
         .collect()
 }
@@ -122,13 +156,12 @@ impl Card {
 
         // --- power
         let b = out_of("pmset", &["-g", "batt"]);
-        let src = Regex::new(r"'[^']*'")
-            .unwrap()
+        let src = BATT_SOURCE
             .find(b.lines().next().unwrap_or(""))
             .map(|m| m.as_str().trim_matches('\'').replacen(" Power", "", 1))
             .unwrap_or_default();
-        let pct = Regex::new(r"[0-9]*%").unwrap().find(&b).map(|m| m.as_str().to_string()).unwrap_or_default();
-        let rem_min: Option<i64> = Regex::new(r"([0-9]*):([0-9][0-9]) remaining").unwrap().captures(&b).and_then(|c| {
+        let pct = BATT_PERCENT.find(&b).map(|m| m.as_str().to_string()).unwrap_or_default();
+        let rem_min: Option<i64> = BATT_REMAINING.captures(&b).and_then(|c| {
             let v = c[1].parse::<i64>().unwrap_or(0) * 60 + c[2].parse::<i64>().unwrap_or(0);
             (v != 0).then_some(v) // "0:00 remaining" = no estimate yet, not zero minutes
         });
@@ -211,13 +244,10 @@ impl Card {
 
         // --- counts
         let comms = out_of("/bin/ps", &["-Ao", "comm"]);
-        let count = |re: &str| {
-            let re = Regex::new(re).unwrap();
-            comms.lines().filter(|l| re.is_match(l)).count()
-        };
-        let ag = count("claude.app/Contents/MacOS/claude");
-        let ds = count("next-server|workerd|vite|webpack");
-        let nd = count("(^|/)node$");
+        let count = |re: &Regex| comms.lines().filter(|l| re.is_match(l)).count();
+        let ag = count(&AGENT_COMM);
+        let ds = count(&DEV_SERVER_COMM);
+        let nd = count(&NODE_COMM);
 
         // --- verdict text
         let (lname, lemoji, msg) = match lvl {
@@ -269,30 +299,9 @@ fn main() -> ExitCode {
     }
     let ncpu = num(&out_of("sysctl", &["-n", "hw.ncpu"]));
     let heavy = std::env::var("BAG_HEAVY_CPU").ok().filter(|v| !v.is_empty()).map_or(15.0, |v| num(&v)); // % of ONE core that counts as "heavy"
-    let (mut mode, mut interval, mut eta_min) = ("report", "60".to_string(), 0);
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--eta" => {
-                eta_min = parse_min(args.get(i + 1).map_or("", String::as_str));
-                i += 1;
-            }
-            "--throttle" => mode = "throttle",
-            "--restore" => mode = "restore",
-            "--watch" => {
-                mode = "watch";
-                if let Some(n) = args.get(i + 1).filter(|n| !n.is_empty() && !n.starts_with("--")) {
-                    interval = n.clone();
-                    i += 1;
-                }
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return ExitCode::from(2);
-            }
-        }
-        i += 1;
-    }
+    let cli = Cli::parse();
+    let eta_min = cli.eta.as_deref().map_or(0, parse_min);
+    let interval = cli.watch.as_ref().and_then(Option::as_deref).filter(|n| !n.is_empty()).unwrap_or("60");
     let card = Card { ncpu, heavy, eta_min, start: Instant::now() };
     let taskpolicy = |flag: &str, pid: &str| {
         Command::new("taskpolicy")
@@ -302,29 +311,29 @@ fn main() -> ExitCode {
             .status()
             .is_ok_and(|s| s.success())
     };
-    match mode {
-        "throttle" => {
-            for p in throttle_pids() {
-                if taskpolicy("-b", &p) {
-                    println!("throttled {p}");
-                }
-            }
-            card.report();
-        }
-        "restore" => {
-            for p in throttle_pids() {
-                if taskpolicy("-B", &p) {
-                    println!("restored {p}");
-                }
-            }
-        }
-        "watch" => loop {
+    if cli.watch.is_some() {
+        loop {
             let _ = Command::new("clear").status();
             print!("{}", out_of("date", &[]));
             card.report();
             std::thread::sleep(Duration::from_secs_f64(interval.parse::<f64>().unwrap_or(60.0).max(0.0)));
-        },
-        _ => card.report(),
+        }
+    }
+    if cli.throttle {
+        for p in throttle_pids() {
+            if taskpolicy("-b", &p) {
+                println!("throttled {p}");
+            }
+        }
+        card.report();
+    } else if cli.restore {
+        for p in throttle_pids() {
+            if taskpolicy("-B", &p) {
+                println!("restored {p}");
+            }
+        }
+    } else {
+        card.report();
     }
     ExitCode::SUCCESS
 }

@@ -16,6 +16,7 @@
 mod quiet_out;
 
 use agent_config::pycompat::py_repr_str;
+use clap::Parser;
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -349,6 +350,19 @@ fn run(paths: &[PathBuf], quiet: bool) -> i32 {
 
 const USAGE: &str = "usage: skill_check [-q] [skill name or folder | skills dir]...";
 
+#[derive(Parser)]
+#[command(name = "skill_check", disable_help_flag = true, disable_version_flag = true)]
+struct Cli {
+    /// Print the usage line.
+    #[arg(short = 'h', long = "help")]
+    help: bool,
+    /// Failures only.
+    #[arg(short = 'q')]
+    quiet: bool,
+    /// Skill names, skill folders or folders of skills.
+    targets: Vec<String>,
+}
+
 /// What one command-line target means: a skill folder, a folder of skills, or a skill name under
 /// the repo's claude/skills.
 fn resolve(arg: &str, skills_root: &Path) -> Vec<PathBuf> {
@@ -370,17 +384,11 @@ fn resolve(arg: &str, skills_root: &Path) -> Vec<PathBuf> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    let Cli { help, quiet, targets } = Cli::parse();
+    if help {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if let Some(bad) = args.iter().find(|a| a.starts_with('-') && *a != "-q") {
-        eprintln!("skill_check: unknown option {bad} (see --help)");
-        return ExitCode::from(2);
-    }
-    let quiet = args.iter().any(|a| a == "-q");
-    let targets: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     let root = agent_config::claude_dir().join("skills");
     let paths: Vec<PathBuf> = if targets.is_empty() {
         let found = list_skills(&root);

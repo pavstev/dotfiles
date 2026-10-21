@@ -23,12 +23,16 @@
 #[path = "../quiet_out.rs"]
 mod quiet_out;
 
-use agent_config::pycompat::{civil_from_days, is_executable};
+use agent_config::paths;
+use agent_config::pycompat::is_executable;
+use clap::Parser;
+use clap::error::{ContextKind, ErrorKind};
 use regex::Regex;
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::LazyLock;
 
 const USAGE: &str = "\
 mic_check: is this repo really done? Read-only (except `git fetch`).
@@ -44,19 +48,11 @@ Every line is tagged:
 Last line: VERDICT: CLEAN (exit 0) | NOT CLEAN (n mandatory) (exit 1)
 ";
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::home_dir)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
 fn leftovers_path() -> PathBuf {
     std::env::var_os("MIC_LEFTOVERS")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| home_dir().join(".claude").join("leftovers.md"))
+        .unwrap_or_else(|| paths::home().join(".claude").join("leftovers.md"))
 }
 
 /// Run `git -C dir args`: (success, stdout with trailing newlines cut).
@@ -89,17 +85,9 @@ fn on_path(name: &str) -> bool {
     std::env::split_paths(&paths).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
 }
 
-/// `date +%F` (local date). Falls back to the UTC date when `date` is not there.
+/// Today's local date, `YYYY-MM-DD`.
 fn today() -> String {
-    if let Ok(o) = Command::new("date").arg("+%F").stdin(Stdio::null()).output() {
-        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        if o.status.success() && s.len() == 10 {
-            return s;
-        }
-    }
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let (y, m, d) = civil_from_days(secs.div_euclid(86400));
-    format!("{y:04}-{m:02}-{d:02}")
+    jiff::Zoned::now().strftime("%F").to_string()
 }
 
 fn base_name(p: &Path) -> String {
@@ -131,6 +119,40 @@ fn note(text: &str, dir: &Path) -> i32 {
     0
 }
 
+fn regex(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("a fixed pattern")
+}
+
+/// Each name with the regex that finds it as a `package.json` script key.
+static PACKAGE_SCRIPTS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
+    ["typecheck", "lint", "test", "check", "build"].map(|t| (t, regex(&format!(r#""{t}"\s*:"#)))).into()
+});
+/// Each name with the regex that finds it as a `Makefile` target.
+static MAKE_TARGETS: LazyLock<Vec<(&str, Regex)>> =
+    LazyLock::new(|| ["check", "lint", "test", "verify"].map(|t| (t, regex(&format!(r"(?m)^{t}:")))).into());
+static MISE_TASKS: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\[tasks\.(check|lint|test)\]"));
+static SHA_LIKE: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9a-fA-F]{7,40}$"));
+static BAD_CI: LazyLock<Regex> = LazyLock::new(|| regex(r"^completed\|(failure|cancelled|timed_out|startup_failure)"));
+static SPACES: LazyLock<Regex> = LazyLock::new(|| regex(r"\s+"));
+
+/// The masking steps of `safe_args`, in order: pattern and replacement.
+static MASKS: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
+    let words = "(key|token|secret|passw|pwd|auth|credential|cookie|session)";
+    let steps = [
+        (r"(://)[^/@\s]+@".to_string(), "${1}***@"),
+        (format!(r"(?i)(--?[A-Za-z0-9_.-]*{words}[A-Za-z0-9_.-]*)(=|\s+)[^\s]+"), "${1}${3}***"),
+        (format!(r"(?i)([A-Za-z0-9_.-]*{words}[A-Za-z0-9_.-]*)=[^\s]+"), "${1}=***"),
+        (r"(?i)(bearer|basic)\s+[^\s]+".to_string(), "${1} ***"),
+        (
+            r"(crsr_|sk-|sk_|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[abprs]-|AKIA|AIza|ya29\.)[A-Za-z0-9_.-]+"
+                .to_string(),
+            "${1}***",
+        ),
+        (r"[A-Za-z0-9_+]{32,}".to_string(), "***"),
+    ];
+    steps.into_iter().map(|(pat, rep)| (regex(&pat), rep)).collect()
+});
+
 /// The verification commands this repo offers.
 fn checks_for(r: &Path) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -147,16 +169,16 @@ fn checks_for(r: &Path) -> Vec<String> {
             pm = "yarn";
         }
         let text = std::fs::read_to_string(r.join("package.json")).unwrap_or_default();
-        for t in ["typecheck", "lint", "test", "check", "build"] {
-            if Regex::new(&format!(r#""{t}"\s*:"#)).unwrap().is_match(&text) {
+        for (t, re) in PACKAGE_SCRIPTS.iter() {
+            if re.is_match(&text) {
                 out.push(format!("{pm} run {t}"));
             }
         }
     }
     if file("Makefile") {
         let text = std::fs::read_to_string(r.join("Makefile")).unwrap_or_default();
-        for t in ["check", "lint", "test", "verify"] {
-            if Regex::new(&format!(r"(?m)^{t}:")).unwrap().is_match(&text) {
+        for (t, re) in MAKE_TARGETS.iter() {
+            if re.is_match(&text) {
                 out.push(format!("make {t}"));
             }
         }
@@ -181,7 +203,7 @@ fn checks_for(r: &Path) -> Vec<String> {
     }
     if file("mise.toml") {
         let text = std::fs::read_to_string(r.join("mise.toml")).unwrap_or_default();
-        if Regex::new(r"(?m)^\[tasks\.(check|lint|test)\]").unwrap().is_match(&text) {
+        if MISE_TASKS.is_match(&text) {
             out.push("mise tasks ls  # then run check/lint/test".into());
         }
     }
@@ -227,25 +249,11 @@ fn workflows(root: &Path) -> bool {
 /// Mask what could be a key in a command line (a flag value, KEY=VALUE, a password in a URL).
 /// Over-masking is fine.
 fn safe_args(raw: &str) -> String {
-    let words = "(key|token|secret|passw|pwd|auth|credential|cookie|session)";
-    let s: String = raw.chars().map(|c| if c == '\n' || c == '\t' { ' ' } else { c }).collect();
-    let steps: [(String, &str); 6] = [
-        (r"(://)[^/@\s]+@".into(), "${1}***@"),
-        (format!(r"(?i)(--?[A-Za-z0-9_.-]*{words}[A-Za-z0-9_.-]*)(=|\s+)[^\s]+"), "${1}${3}***"),
-        (format!(r"(?i)([A-Za-z0-9_.-]*{words}[A-Za-z0-9_.-]*)=[^\s]+"), "${1}=***"),
-        (r"(?i)(bearer|basic)\s+[^\s]+".into(), "${1} ***"),
-        (
-            r"(crsr_|sk-|sk_|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[abprs]-|AKIA|AIza|ya29\.)[A-Za-z0-9_.-]+"
-                .into(),
-            "${1}***",
-        ),
-        (r"[A-Za-z0-9_+]{32,}".into(), "***"),
-    ];
-    let mut s = s;
-    for (pat, rep) in &steps {
-        s = Regex::new(pat).unwrap().replace_all(&s, *rep).into_owned();
+    let mut s: String = raw.chars().map(|c| if c == '\n' || c == '\t' { ' ' } else { c }).collect();
+    for (re, rep) in MASKS.iter() {
+        s = re.replace_all(&s, *rep).into_owned();
     }
-    Regex::new(r"\s+").unwrap().replace_all(&s, " ").trim_matches(' ').to_string()
+    SPACES.replace_all(&s, " ").trim_matches(' ').to_string()
 }
 
 /// "pid name: args" for one process, args masked and cut to 100 chars; nothing for mic_check itself.
@@ -484,7 +492,7 @@ impl Run {
     fn since_section(&self, root: &Path) {
         let g = |args: &[&str]| git_out(root, args);
         let since = self.since.as_str();
-        let sha_like = Regex::new(r"^[0-9a-fA-F]{7,40}$").unwrap().is_match(since);
+        let sha_like = SHA_LIKE.is_match(since);
         let mut base = String::new();
         if sha_like {
             // a sha: must be in this branch, never read as a date
@@ -541,9 +549,8 @@ impl Run {
             self.warn(&format!("no CI run found for {short} (not pushed yet, or CI not triggered)"));
             return;
         }
-        let bad_re = Regex::new(r"^completed\|(failure|cancelled|timed_out|startup_failure)").unwrap();
         let bad: BTreeSet<&str> =
-            runs.lines().filter(|l| bad_re.is_match(l)).filter_map(|l| l.split('|').nth(2)).collect();
+            runs.lines().filter(|l| BAD_CI.is_match(l)).filter_map(|l| l.split('|').nth(2)).collect();
         let pending = runs.lines().filter(|l| !l.starts_with("completed")).count();
         if !bad.is_empty() {
             let names: String = bad.iter().map(|n| format!("{n} ")).collect();
@@ -558,57 +565,65 @@ impl Run {
     }
 }
 
+/// The flags. Help is printed from `USAGE`, so clap's own help flag is off.
+#[derive(Parser)]
+#[command(name = "mic_check", disable_help_flag = true, disable_version_flag = true)]
+struct Cli {
+    /// Print the usage text.
+    #[arg(short = 'h', long = "help")]
+    help: bool,
+    /// Skip `git fetch`.
+    #[arg(long = "no-fetch")]
+    no_fetch: bool,
+    /// Also list this session's commits since a sha or a time.
+    #[arg(long, value_name = "SHA|TIME")]
+    since: Option<String>,
+    /// Append a leftover.
+    #[arg(long, value_name = "TEXT")]
+    note: Option<String>,
+    /// Print the leftovers file.
+    #[arg(long)]
+    leftovers: bool,
+    /// Repos to report on (default: the current repo).
+    repos: Vec<PathBuf>,
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut run = Run { fetch: true, since: String::new(), fixes: 0 };
-    let mut repos: Vec<PathBuf> = Vec::new();
-    let mut note_text: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--no-fetch" => run.fetch = false,
-            "--since" => {
-                i += 1;
-                match args.get(i) {
-                    Some(v) if !v.is_empty() => run.since = v.clone(),
-                    _ => {
-                        eprintln!("mic_check: --since needs a sha or time");
-                        return ExitCode::from(1);
-                    }
-                }
-            }
-            "--note" => {
-                i += 1;
-                match args.get(i) {
-                    Some(v) if !v.is_empty() => note_text = Some(v.clone()),
-                    _ => {
-                        eprintln!("mic_check: --note needs text");
-                        return ExitCode::from(1);
-                    }
-                }
-            }
-            "--leftovers" => {
-                let left = leftovers_path();
-                match std::fs::read_to_string(&left) {
-                    Ok(t) => print!("{t}"),
-                    Err(_) => println!("no leftovers file yet ({})", left.display()),
-                }
-                return ExitCode::SUCCESS;
-            }
-            "-h" | "--help" => {
-                print!("{USAGE}");
-                return ExitCode::SUCCESS;
-            }
-            other if other.starts_with('-') => {
-                eprintln!("mic_check: unknown option {other} (see --help)");
-                return ExitCode::from(2);
-            }
-            other => repos.push(PathBuf::from(other)),
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // A flag that needs a value and has none exits 1, other bad input 2.
+        Err(e) if e.kind() == ErrorKind::InvalidValue => {
+            let flag = e.get(ContextKind::InvalidArg).map(ToString::to_string).unwrap_or_default();
+            let need = if flag.contains("--since") { "--since needs a sha or time" } else { "--note needs text" };
+            eprintln!("mic_check: {need}");
+            return ExitCode::from(1);
         }
-        i += 1;
+        Err(e) => e.exit(),
+    };
+    if cli.since.as_deref() == Some("") {
+        eprintln!("mic_check: --since needs a sha or time");
+        return ExitCode::from(1);
     }
+    if cli.note.as_deref() == Some("") {
+        eprintln!("mic_check: --note needs text");
+        return ExitCode::from(1);
+    }
+    if cli.help {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if cli.leftovers {
+        let left = leftovers_path();
+        match std::fs::read_to_string(&left) {
+            Ok(t) => print!("{t}"),
+            Err(_) => println!("no leftovers file yet ({})", left.display()),
+        }
+        return ExitCode::SUCCESS;
+    }
+    let mut run = Run { fetch: !cli.no_fetch, since: cli.since.unwrap_or_default(), fixes: 0 };
+    let mut repos = cli.repos;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if let Some(text) = note_text {
+    if let Some(text) = cli.note {
         let dir = repos.first().cloned().unwrap_or(cwd);
         return ExitCode::from(note(&text, &dir) as u8);
     }
