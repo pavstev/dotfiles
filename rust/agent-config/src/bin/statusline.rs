@@ -10,6 +10,7 @@
 //! guard's Stop pass left a status file for the session (`agent_config::status_path`). `NO_COLOR` set (non-empty) or `THEME=plain` in the
 //! dotfiles settings prints the same text without escape codes.
 
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -49,9 +50,105 @@ fn int_text(v: Option<&Value>) -> Option<String> {
     Some(format!("{:.0}", n.round_ties_even()))
 }
 
-/// The parts of the session JSON that the line shows, read once.
-#[derive(Default)]
+/// A part of the input that is missing, or not the shape asked for, reads as empty. (The input
+/// comes from Claude Code; a field of another shape must not blank the whole line.)
+struct Soft<T>(Option<T>);
+
+impl<T> Default for Soft<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Soft<T> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self(T::deserialize(d).ok()))
+    }
+}
+
+impl<T: Default> Soft<T> {
+    fn get(self) -> T {
+        self.0.unwrap_or_default()
+    }
+}
+
+/// The session JSON, as far as the line uses it. Leaves stay `Value`: `jq` reads a string, a
+/// number or a numeric string alike, and the helpers above keep that.
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct Input {
+    cwd: Option<Value>,
+    session_id: Option<Value>,
+    workspace: Soft<Workspace>,
+    model: Soft<Model>,
+    context_window: Soft<ContextWindow>,
+    rate_limits: Soft<RateLimits>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Workspace {
+    current_dir: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Model {
+    display_name: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ContextWindow {
+    current_usage: Soft<Usage>,
+    total_input_tokens: Option<Value>,
+    used_percentage: Option<Value>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Usage {
+    input_tokens: Option<Value>,
+    cache_creation_input_tokens: Option<Value>,
+    cache_read_input_tokens: Option<Value>,
+}
+
+impl Usage {
+    /// The last call's input plus cache tokens, or `None` when none is given or one is not a number
+    /// (`jq` would fail on the addition).
+    fn tokens(&self) -> Option<f64> {
+        let mut sum = 0.0;
+        let mut any = false;
+        for v in [&self.input_tokens, &self.cache_creation_input_tokens, &self.cache_read_input_tokens] {
+            match v {
+                None => {}
+                Some(Value::Number(n)) => {
+                    sum += n.as_f64()?;
+                    any = true;
+                }
+                Some(_) => return None,
+            }
+        }
+        any.then_some(sum)
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct RateLimits {
+    five_hour: Soft<Window>,
+    seven_day: Soft<Window>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Window {
+    used_percentage: Option<Value>,
+}
+
+/// What the line shows, read from the input once.
+#[derive(Default)]
+struct View {
     /// `workspace.current_dir`, else `cwd`; empty when neither is set.
     cwd: String,
     model: String,
@@ -63,47 +160,27 @@ struct Input {
     session_id: String,
 }
 
-impl Input {
-    fn from_json(v: &Value) -> Self {
-        let text = |path: &[&str]| jq_str(at(v, path)).unwrap_or_default();
-        let cwd = Some(text(&["workspace", "current_dir"])).filter(|s| !s.is_empty()).unwrap_or_else(|| text(&["cwd"]));
-        Self {
-            cwd,
-            model: text(&["model", "display_name"]),
-            ctx_tokens: ctx_tokens(v),
-            ctx_percent: int_text(at(v, &["context_window", "used_percentage"])),
-            five_hour_percent: int_text(at(v, &["rate_limits", "five_hour", "used_percentage"])),
-            seven_day_percent: int_text(at(v, &["rate_limits", "seven_day", "used_percentage"])),
-            session_id: text(&["session_id"]),
-        }
-    }
-}
-
-/// The last call's input plus cache tokens (`total_input_tokens` is a session running total).
-fn ctx_tokens(input: &Value) -> Option<f64> {
-    let from_usage = at(input, &["context_window", "current_usage"]).and_then(|u| {
-        let u = u.as_object()?;
-        let mut sum = 0.0;
-        let mut any = false;
-        for key in ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] {
-            match u.get(key) {
-                None | Some(Value::Null) => {}
-                Some(Value::Number(n)) => {
-                    sum += n.as_f64()?;
-                    any = true;
-                }
-                Some(_) => return None, // jq would fail on the addition
-            }
-        }
-        any.then_some(sum)
-    });
-    match from_usage {
-        Some(t) if t != 0.0 => Some(t),
-        _ => match at(input, &["context_window", "total_input_tokens"]) {
+impl View {
+    fn from_json(doc: &Value) -> Self {
+        let input = Input::deserialize(doc).unwrap_or_default();
+        let (ctx, limits) = (input.context_window.get(), input.rate_limits.get());
+        // `total_input_tokens` is a session running total: only the fallback.
+        let usage = ctx.current_usage.get().tokens().filter(|t| *t != 0.0);
+        let total = match &ctx.total_input_tokens {
             Some(Value::Number(n)) => n.as_f64(),
             Some(Value::String(s)) => s.trim().parse().ok(),
             _ => None,
-        },
+        };
+        let cwd = jq_str(input.workspace.get().current_dir.as_ref()).filter(|s| !s.is_empty());
+        Self {
+            cwd: cwd.or_else(|| jq_str(input.cwd.as_ref())).unwrap_or_default(),
+            model: jq_str(input.model.get().display_name.as_ref()).unwrap_or_default(),
+            ctx_tokens: usage.or(total),
+            ctx_percent: int_text(ctx.used_percentage.as_ref()),
+            five_hour_percent: int_text(limits.five_hour.get().used_percentage.as_ref()),
+            seven_day_percent: int_text(limits.seven_day.get().used_percentage.as_ref()),
+            session_id: jq_str(input.session_id.as_ref()).unwrap_or_default(),
+        }
     }
 }
 
@@ -207,7 +284,7 @@ fn parse_head(head: &str) -> Option<String> {
 }
 
 /// Build the line. `branch` is looked up by the caller so tests can pass it in.
-fn render(input: &Input, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
+fn render(input: &View, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
     let cwd = if input.cwd.is_empty() { pwd } else { &input.cwd };
     let dir = basename(cwd);
     let branch = branch_of(cwd);
@@ -273,7 +350,7 @@ fn left_text(file: &str) -> Option<String> {
 
 /// The line segment for what is left in this session: written by the guard's Stop pass, so it
 /// only shows when the file for the input's `session_id` exists.
-fn left_segment(input: &Input, color: bool) -> Option<String> {
+fn left_segment(input: &View, color: bool) -> Option<String> {
     if input.session_id.is_empty() {
         return None;
     }
@@ -329,7 +406,7 @@ fn main() {
     let plain = agent_config::setting(&home_dir(), "THEME") == "plain";
     let pwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
     let color = !(no_color || plain);
-    let input = Input::from_json(&doc);
+    let input = View::from_json(&doc);
     let mut line = render(&input, &pwd, &git_branch, color);
     if let Some(left) = left_segment(&input, color) {
         line.push_str("  ");
@@ -373,10 +450,10 @@ mod tests {
                 "rate_limits": {"five_hour": {"used_percentage": 10.5}, "seven_day": {"used_percentage": 40}}}"#,
         )
         .unwrap();
-        let line = render(&Input::from_json(&doc), "/elsewhere", &|_| "main".into(), false);
+        let line = render(&View::from_json(&doc), "/elsewhere", &|_| "main".into(), false);
         assert_eq!(line, " app   main  Opus  ctx 2K 2%  5h 10% · 7d 40%");
         // no workspace and no cwd: the process folder
-        let line = render(&Input::default(), "/elsewhere", &|_| String::new(), false);
+        let line = render(&View::default(), "/elsewhere", &|_| String::new(), false);
         assert_eq!(line, " elsewhere");
     }
 
