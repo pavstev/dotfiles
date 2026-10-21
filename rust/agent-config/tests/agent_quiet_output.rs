@@ -5,6 +5,7 @@
 //! The skip and written counters and the verbose switch are process-wide. They live in a test file of
 //! their own, with a lock, so no other test spends the counts.
 use agent_config::out::{self, capture, header, ok, set_verbose, skip, wrote};
+use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
 static LOCK: Mutex<()> = Mutex::new(());
@@ -21,7 +22,10 @@ fn quiet() -> MutexGuard<'static, ()> {
 /// What `f` printed to stdout.
 fn call(f: impl FnOnce()) -> String {
     let ((), lines) = capture(f);
-    lines.iter().filter(|(_, err)| !err).map(|(l, _)| format!("{l}\n")).collect()
+    lines.iter().filter(|(_, err)| !err).fold(String::new(), |mut acc, (l, _)| {
+        let _ = writeln!(acc, "{l}");
+        acc
+    })
 }
 
 #[test]

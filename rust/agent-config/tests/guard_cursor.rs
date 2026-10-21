@@ -5,6 +5,7 @@ mod common;
 
 use common::run_bin;
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -27,10 +28,8 @@ fn assistant(total: i64) -> Value {
 }
 
 fn merge(mut base: Value, extra: Value) -> Value {
-    if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
-        for (k, v) in e {
-            b.insert(k.clone(), v.clone());
-        }
+    if let (Some(b), Value::Object(e)) = (base.as_object_mut(), extra) {
+        b.extend(e);
     }
     base
 }
@@ -56,8 +55,11 @@ impl T {
     /// A fake Cursor.app state.vscdb: {conversation_id: composerData value}. False when there is no
     /// `sqlite3` tool to build it with (the caller returns early). Never false on macOS.
     fn app_store(&mut self, rows: &[(&str, &str)]) -> bool {
-        if !have_sqlite() {
-            assert!(!cfg!(target_os = "macos"), "macOS ships sqlite3; these tests must not skip here");
+        let have = have_sqlite();
+        #[cfg(target_os = "macos")]
+        assert!(have, "macOS ships sqlite3; these tests must not skip here");
+        #[cfg(not(target_os = "macos"))]
+        if !have {
             eprintln!("skipped: no sqlite3 command line tool");
             return false;
         }
@@ -66,11 +68,12 @@ impl T {
             "CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);\n",
         );
         for (conv, value) in rows {
-            sql.push_str(&format!(
-                "INSERT INTO cursorDiskKV VALUES ('composerData:{}', '{}');\n",
+            let _ = writeln!(
+                sql,
+                "INSERT INTO cursorDiskKV VALUES ('composerData:{}', '{}');",
                 conv,
                 value.replace('\'', "''")
-            ));
+            );
         }
         let mut child = Command::new("sqlite3")
             .arg(&self.app_db)

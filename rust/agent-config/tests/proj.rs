@@ -43,7 +43,7 @@ fn with<'a>(names: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
     move |n| names.contains(&n)
 }
 
-fn lines(cmds: Vec<Cmd>) -> Vec<String> {
+fn lines(cmds: &[Cmd]) -> Vec<String> {
     cmds.iter().map(Cmd::line).collect()
 }
 
@@ -67,16 +67,16 @@ fn pnpm_with_prettier_and_eslint() {
     assert_eq!(p.root, root);
     assert_eq!(p.pm, Some("pnpm"));
     assert_eq!(p.tools(), ["prettier", "eslint"]);
-    assert_eq!(lines(p.check_fast()), ["pnpm run check:fast"]);
-    assert_eq!(lines(p.check_full()), ["pnpm run check"]);
-    assert_eq!(lines(p.fix()), ["pnpm run fix"]);
+    assert_eq!(lines(&p.check_fast()), ["pnpm run check:fast"]);
+    assert_eq!(lines(&p.check_full()), ["pnpm run check"]);
+    assert_eq!(lines(&p.fix()), ["pnpm run fix"]);
     // eslint fixes first, prettier has the last word
-    let fmt = lines(p.format_cmds(&[root.join("src/a.ts")]));
+    let fmt = lines(&p.format_cmds(&[root.join("src/a.ts")]));
     assert_eq!(fmt.len(), 2, "{fmt:?}");
     assert!(rel(&root, &fmt[0]).starts_with("node_modules/.bin/eslint --fix "), "{fmt:?}");
     assert!(rel(&root, &fmt[1]).starts_with("node_modules/.bin/prettier --write "), "{fmt:?}");
     // a Markdown file gets no lint autofix
-    let md = lines(p.format_cmds(&[root.join("README.md")]));
+    let md = lines(&p.format_cmds(&[root.join("README.md")]));
     assert_eq!(md.len(), 1);
     assert!(md[0].contains("prettier --write"));
 }
@@ -101,13 +101,13 @@ fn npm_with_biome_and_no_scripts() {
     let p = proj::detect_with(&root, &with(&[])).unwrap();
     assert_eq!(p.pm, Some("npm"));
     assert_eq!(p.tools(), ["biome"]);
-    let fmt = lines(p.format_cmds(&[root.join("x.ts")]));
+    let fmt = lines(&p.format_cmds(&[root.join("x.ts")]));
     assert!(
         rel(&root, &fmt[0]).starts_with("node_modules/.bin/biome check --write --no-errors-on-unmatched "),
         "{fmt:?}"
     );
     assert_eq!(
-        lines(p.check_full()).iter().map(|l| rel(&root, l)).collect::<Vec<_>>(),
+        lines(&p.check_full()).iter().map(|l| rel(&root, l)).collect::<Vec<_>>(),
         ["node_modules/.bin/biome check ."]
     );
 }
@@ -124,7 +124,7 @@ fn package_manager_from_lockfile() {
         let root = project(&[("package.json", r#"{"scripts": {"check": "x"}}"#), (lock, "")]);
         let p = proj::detect_with(&root, &with(&[])).unwrap();
         assert_eq!(p.pm, Some(pm), "{lock}");
-        assert_eq!(lines(p.check_full()), [format!("{pm} run check")]);
+        assert_eq!(lines(&p.check_full()), [format!("{pm} run check")]);
     }
 }
 
@@ -159,19 +159,19 @@ fn uv_with_ruff_and_ty() {
     ]);
     let p = proj::detect_with(&root, &with(&["uv"])).unwrap();
     assert_eq!(p.tools(), ["ruff", "ty", "uv"]);
-    let fmt = lines(p.format_cmds(&[root.join("pkg/m.py")]));
+    let fmt = lines(&p.format_cmds(&[root.join("pkg/m.py")]));
     assert_eq!(fmt.len(), 2, "{fmt:?}");
     // a hook never syncs
     assert!(fmt[0].starts_with("uv run --no-sync ruff check --fix --quiet --unfixable F401 "), "{fmt:?}");
     assert!(fmt[1].starts_with("uv run --no-sync ruff format --quiet "), "{fmt:?}");
-    assert_eq!(lines(p.check_full()), ["uv run ruff check .", "uv run ruff format --check .", "uv run ty check"]);
+    assert_eq!(lines(&p.check_full()), ["uv run ruff check .", "uv run ruff format --check .", "uv run ty check"]);
 }
 
 #[test]
 fn venv_tools_win_over_uv_and_missing_tools_give_nothing() {
     let root = project(&[("pyproject.toml", "[tool.ruff]\n"), ("uv.lock", ""), (".venv/bin/ruff", "#!/bin/sh\n")]);
     let p = proj::detect_with(&root, &with(&["uv"])).unwrap();
-    let fmt = lines(p.format_cmds(&[root.join("m.py")]));
+    let fmt = lines(&p.format_cmds(&[root.join("m.py")]));
     assert!(fmt[0].starts_with(&format!("{}/.venv/bin/ruff check --fix", root.display())), "{fmt:?}");
     let bare = project(&[("pyproject.toml", "[tool.ruff]\n")]);
     let p = proj::detect_with(&bare, &with(&[])).unwrap();
@@ -182,8 +182,8 @@ fn venv_tools_win_over_uv_and_missing_tools_give_nothing() {
 fn go_module() {
     let root = project(&[("go.mod", "module x\n"), (".golangci.yml", ""), ("main.go", "")]);
     let p = proj::detect_with(&root, &with(&["go", "gofmt", "golangci-lint"])).unwrap();
-    assert_eq!(lines(p.format_cmds(&[root.join("main.go")])), [format!("gofmt -w {}/main.go", root.display())]);
-    assert_eq!(lines(p.check_full()), ["go vet ./...", "golangci-lint run", "go test ./..."]);
+    assert_eq!(lines(&p.format_cmds(&[root.join("main.go")])), [format!("gofmt -w {}/main.go", root.display())]);
+    assert_eq!(lines(&p.check_full()), ["go vet ./...", "golangci-lint run", "go test ./..."]);
     // no go toolchain on PATH: nothing to run
     let p = proj::detect_with(&root, &with(&[])).unwrap();
     assert_eq!(p.format_cmds(&[root.join("main.go")]), [] as [Cmd; 0]);
@@ -198,16 +198,16 @@ fn cargo_project() {
     // rustfmt has no config to find: the project must say it uses it
     assert_eq!(p.format_cmds(&[plain.join("src/lib.rs")]), [] as [Cmd; 0]);
     assert_eq!(
-        lines(p.check_full()),
+        lines(&p.check_full()),
         ["cargo fmt --check", "cargo clippy --all-targets -- -D warnings", "cargo nextest run"]
     );
     let p = proj::detect_with(&plain, &with(&["cargo"])).unwrap();
-    assert_eq!(lines(p.check_full()).last().unwrap(), "cargo test");
+    assert_eq!(lines(&p.check_full()).last().unwrap(), "cargo test");
 
     let configured = project(&[("Cargo.toml", manifest), ("rustfmt.toml", ""), ("src/lib.rs", "")]);
     let p = proj::detect_with(&configured, &with(&["cargo", "rustfmt"])).unwrap();
     assert_eq!(
-        lines(p.format_cmds(&[configured.join("src/lib.rs")])),
+        lines(&p.format_cmds(&[configured.join("src/lib.rs")])),
         [format!("rustfmt --edition 2024 {}/src/lib.rs", configured.display())]
     );
     let ci = project(&[("Cargo.toml", manifest), (".github/workflows/ci.yml", "run: cargo fmt --check\n")]);
@@ -225,9 +225,9 @@ fn rust_project_is_not_a_python_project() {
 fn justfile_contract() {
     let root = project(&[("justfile", "set shell := [\"sh\"]\ncheck:\n  true\ncheck-fast:\n  true\n@fix:\n  true\n")]);
     let p = proj::detect_with(&root, &with(&["just"])).unwrap();
-    assert_eq!(lines(p.check_full()), ["just check"]);
-    assert_eq!(lines(p.check_fast()), ["just check-fast"]);
-    assert_eq!(lines(p.fix()), ["just fix"]);
+    assert_eq!(lines(&p.check_full()), ["just check"]);
+    assert_eq!(lines(&p.check_fast()), ["just check-fast"]);
+    assert_eq!(lines(&p.fix()), ["just fix"]);
     // without `just` on PATH the contract cannot run
     assert_eq!(proj::detect_with(&root, &with(&[])).unwrap().check_full(), [] as [Cmd; 0]);
 }
@@ -240,8 +240,8 @@ fn makefile_contract_and_package_json_goes_first() {
         ("pnpm-lock.yaml", ""),
     ]);
     let p = proj::detect_with(&root, &with(&["make"])).unwrap();
-    assert_eq!(lines(p.check_full()), ["pnpm run check"]);
-    assert_eq!(lines(p.check_fast()), ["make check-fast"]);
+    assert_eq!(lines(&p.check_full()), ["pnpm run check"]);
+    assert_eq!(lines(&p.check_fast()), ["make check-fast"]);
 }
 
 #[test]
@@ -279,7 +279,7 @@ fn fast_check_default_uses_the_changed_files() {
     assert!(p.check_fast().is_empty(), "nothing changed, nothing to check");
     fs::write(root.join("old.ts"), "2").unwrap();
     fs::write(root.join("new.css"), "").unwrap();
-    let fast = lines(p.check_fast()).iter().map(|l| rel(&root, l)).collect::<Vec<_>>();
+    let fast = lines(&p.check_fast()).iter().map(|l| rel(&root, l)).collect::<Vec<_>>();
     assert_eq!(fast.len(), 1, "{fast:?}");
     assert!(fast[0].starts_with("node_modules/.bin/prettier --check "), "{fast:?}");
     assert!(fast[0].contains("new.css") && fast[0].contains("old.ts"), "{fast:?}");

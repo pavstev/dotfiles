@@ -23,7 +23,7 @@ fn wr(p: &Path, text: &str) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(p, text).unwrap();
 }
-fn wj(p: &Path, v: Value) {
+fn wj(p: &Path, v: &Value) {
     wr(p, &v.to_string());
 }
 fn rd(p: &Path) -> String {
@@ -89,17 +89,17 @@ impl Fx {
     fn setting_file(&self, text: &str) {
         wr(&self.home.join(SETTINGS_REL), text);
     }
-    fn settings(&self, v: Value) {
+    fn settings(&self, v: &Value) {
         wj(&self.claude.join("settings.json"), v);
     }
     fn perms(&self, allow: &[&str], deny: &[&str]) {
-        self.settings(json!({"permissions": {"allow": allow, "deny": deny}}));
+        self.settings(&json!({"permissions": {"allow": allow, "deny": deny}}));
     }
     fn agent(&self, fname: &str, text: &str) {
         wr(&self.claude.join("agents").join(fname), text);
     }
-    fn mcp_source(&self, servers: Value) {
-        wj(&self.cursor_src.join("mcp.json"), json!({"mcpServers": servers}));
+    fn mcp_source(&self, servers: &Value) {
+        wj(&self.cursor_src.join("mcp.json"), &json!({"mcpServers": servers}));
     }
     /// Run `agent-config <args>`; the output is verbose, as the Python tests ran it.
     fn ac(&self, args: &[&str]) -> R {
@@ -130,7 +130,7 @@ fn s(v: &Value) -> &str {
 fn test_full_run_creates_everything_and_never_writes_claude_dir() {
     let fx = Fx::new("ac-cursor-full");
     fx.perms(&["Bash(ls:*)"], &[]);
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"docs": {"url": "u"}}));
     fx.agent("a.md", "---\nname: a\n---\nb\n");
     let (rc, _out, err) = fx.ac(&["cursor", "--profile", "shared"]);
     assert_eq!(rc, 0);
@@ -170,7 +170,7 @@ fn test_owner_rule_file_turns_private_when_the_text_is_unchanged() {
 #[test]
 fn test_owner_without_overlay_warns() {
     let fx = Fx::new("ac-cursor-no-overlay");
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"docs": {"url": "u"}}));
     let (rc, _, err) = fx.ac(&["cursor", "--profile", "owner"]);
     assert_eq!(rc, 0);
     assert!(err.contains("no owner-only rules"), "{err}");
@@ -358,7 +358,7 @@ fn test_skill_and_ask_allowed() {
 fn test_user_keys_win_ours_added() {
     let fx = Fx::new("ac-oc-cfg-user-keys");
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&oc_cfg(&fx), json!({"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}}));
+    wj(&oc_cfg(&fx), &json!({"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}}));
     run_oc(&fx);
     let p = rj(&oc_cfg(&fx))["permission"].clone();
     assert_eq!(p["bash"], json!({"npm *": "ask", "git status *": "allow"}));
@@ -368,7 +368,7 @@ fn test_user_keys_win_ours_added() {
 #[test]
 fn test_mcp_added_when_opt_in() {
     let fx = Fx::new("ac-oc-cfg-mcp");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "https://docs.mcp.cloudflare.com/mcp"}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "https://docs.mcp.cloudflare.com/mcp"}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     let m = rj(&oc_cfg(&fx))["mcp"].clone();
@@ -381,8 +381,8 @@ fn test_mcp_added_when_opt_in() {
 #[test]
 fn test_mcp_user_entry_wins() {
     let fx = Fx::new("ac-oc-cfg-mcp-user");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "ours"}}));
-    wj(&oc_cfg(&fx), json!({"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": false}}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "ours"}}));
+    wj(&oc_cfg(&fx), &json!({"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": false}}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     assert_eq!(rj(&oc_cfg(&fx))["mcp"]["cloudflare-docs"]["url"], "users");
@@ -391,7 +391,7 @@ fn test_mcp_user_entry_wins() {
 #[test]
 fn test_mcp_skipped_when_off() {
     let fx = Fx::new("ac-oc-cfg-mcp-off");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "u"}}));
     fx.setting_file("OPENCODE_MCP=\"off\"\n");
     run_oc(&fx);
     assert!(rj(&oc_cfg(&fx)).get("mcp").is_none());
@@ -400,7 +400,7 @@ fn test_mcp_skipped_when_off() {
 #[test]
 fn test_mcp_env_wins_over_setting() {
     let fx = Fx::new("ac-oc-cfg-mcp-env");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "u"}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     fx.ac_env(&["opencode", "--profile", "shared"], &[("DOTFILES_MCP", "off")]);
     assert!(rj(&oc_cfg(&fx)).get("mcp").is_none());
@@ -411,8 +411,8 @@ fn test_mcp_env_wins_over_setting() {
 #[test]
 fn test_mcp_merges_into_existing_mcp_block() {
     let fx = Fx::new("ac-oc-cfg-mcp-merge");
-    fx.mcp_source(json!({"cloudflare-docs": {"url": "ours"}}));
-    wj(&oc_cfg(&fx), json!({"mcp": {"existing": {"type": "remote", "url": "x"}}}));
+    fx.mcp_source(&json!({"cloudflare-docs": {"url": "ours"}}));
+    wj(&oc_cfg(&fx), &json!({"mcp": {"existing": {"type": "remote", "url": "x"}}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     let m = rj(&oc_cfg(&fx))["mcp"].clone();
@@ -486,7 +486,7 @@ fn test_a_rule_the_user_edited_is_not_taken_away() {
     run_oc(&fx);
     let mut data = rj(&oc_cfg(&fx));
     data["permission"]["bash"]["ls *"] = json!("ask"); // the user changed our rule
-    wj(&oc_cfg(&fx), data);
+    wj(&oc_cfg(&fx), &data);
     fx.perms(&[], &[]); // and the repo dropped it
     run_oc(&fx);
     assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"ls *": "ask"}));
@@ -496,7 +496,7 @@ fn test_a_rule_the_user_edited_is_not_taken_away() {
 fn test_a_rule_the_user_added_is_never_touched() {
     let fx = Fx::new("ac-oc-side-user-added");
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&oc_cfg(&fx), json!({"permission": {"bash": {"npm *": "ask"}}}));
+    wj(&oc_cfg(&fx), &json!({"permission": {"bash": {"npm *": "ask"}}}));
     run_oc(&fx);
     assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"npm *": "ask", "git status *": "allow"}));
     fx.perms(&[], &[]);
@@ -518,7 +518,7 @@ fn test_a_symlinked_config_is_never_claimed() {
     let fx = Fx::new("ac-oc-side-symlink");
     fx.perms(&["Bash(ls:*)"], &[]);
     let target = fx.tmp.join("mine.jsonc");
-    wj(&target, json!({"permission": {"bash": {"ls *": "allow"}}}));
+    wj(&target, &json!({"permission": {"bash": {"ls *": "allow"}}}));
     link(&target, &oc_cfg(&fx));
     let (rc, _, err) = run_oc(&fx);
     assert_eq!(rc, 0);
@@ -708,7 +708,7 @@ fn test_owner_profile_without_the_file_warns() {
 fn test_output_style_is_appended() {
     let fx = Fx::new("ac-oc-rules-style");
     wr(&fx.claude.join("output-styles").join("warm.md"), "---\nname: warm\n---\nShort lines.\n");
-    fx.settings(json!({"outputStyle": "warm"}));
+    fx.settings(&json!({"outputStyle": "warm"}));
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);
     let text = rd(&agents_md(&fx));
@@ -797,7 +797,7 @@ fn test_a_relative_path_is_skipped_with_a_warning() {
 fn test_full_run_creates_agents_and_config_and_never_writes_claude_dir() {
     let fx = Fx::new("ac-oc-full");
     fx.perms(&["Bash(ls:*)"], &[]);
-    fx.mcp_source(json!({"docs": {"url": "u"}}));
+    fx.mcp_source(&json!({"docs": {"url": "u"}}));
     fx.agent("a.md", "---\nname: a\n---\nb\n");
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     let (rc, _, err) = run_oc(&fx);
@@ -909,7 +909,7 @@ struct Cs {
 impl Cs {
     fn new(tag: &str) -> Self {
         let fx = Fx::new(tag);
-        fx.settings(base());
+        fx.settings(&base());
         let (live, layer, last) = (
             fx.home.join(".claude").join("settings.json"),
             fx.home.join(".config/dotfiles/claude-settings.json"),
@@ -937,7 +937,7 @@ fn test_first_build_writes_a_real_file() {
 #[test]
 fn test_layer_goes_on_top() {
     let cs = Cs::new("ac-cs-layer");
-    wj(&cs.layer, json!({"model": "sonnet", "permissions": {"allow": ["Bash(ls:*)"]}, "theme": null}));
+    wj(&cs.layer, &json!({"model": "sonnet", "permissions": {"allow": ["Bash(ls:*)"]}, "theme": null}));
     cs.build();
     let got = rj(&cs.live);
     assert_eq!(got["model"], "sonnet");
@@ -1005,7 +1005,7 @@ fn test_upstream_change_flows_through() {
     cs.build();
     let mut b = base();
     b["model"] = json!("haiku");
-    cs.fx.settings(b);
+    cs.fx.settings(&b);
     cs.build();
     assert_eq!(rj(&cs.live)["model"], "haiku");
     assert!(!cs.layer.exists());
@@ -1053,7 +1053,7 @@ fn test_removed_union_item_warns() {
 #[test]
 fn test_promote_moves_a_key_to_the_repo() {
     let cs = Cs::new("ac-cs-promote");
-    wj(&cs.layer, json!({"permissions": {"allow": ["WebFetch"]}, "statusLine": {"type": "command"}}));
+    wj(&cs.layer, &json!({"permissions": {"allow": ["WebFetch"]}, "statusLine": {"type": "command"}}));
     cs.build();
     let (code, out, _) = cs.fx.ac(&["claude-settings", "promote", "permissions.allow"]);
     assert_eq!(code, 0);
@@ -1100,7 +1100,7 @@ fn test_a_second_opencode_run_is_one_line() {
 #[test]
 fn test_one_failing_part_does_not_stop_the_others() {
     let fx = Fx::new("ac-cursor-failing-part");
-    wj(&fx.cdir().join("cli-config.json"), json!({"permissions": {"allow": "not a list"}}));
+    wj(&fx.cdir().join("cli-config.json"), &json!({"permissions": {"allow": "not a list"}}));
     let (rc, _, err) = fx.ac(&["cursor"]);
     assert_eq!(rc, 1, "{err}");
     assert!(err.contains("skipped a part"), "{err}");
@@ -1115,7 +1115,7 @@ fn test_an_older_generated_tui_is_replaced() {
     // the first layout put the palette inline, which the schema rejects
     wj(
         &tui_path(&fx),
-        json!({"theme": {"name": "copper", "background": "#2a2523"}, "_dotfiles": {"generated": true, "source": "claude/"}}),
+        &json!({"theme": {"name": "copper", "background": "#2a2523"}, "_dotfiles": {"generated": true, "source": "claude/"}}),
     );
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);

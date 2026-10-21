@@ -42,7 +42,7 @@ impl W {
         Self { repo, tmp: base.join("tmp"), sid: format!("w5-{}-{n}", std::process::id()) }
     }
 
-    fn run(&self, mode: &str, event: Value, env: &[(&str, &str)]) -> (i32, String, String) {
+    fn run(&self, mode: &str, event: &Value, env: &[(&str, &str)]) -> (i32, String, String) {
         let tmp = self.tmp.to_string_lossy().into_owned();
         let home = self.tmp.join("home").to_string_lossy().into_owned();
         let mut e = vec![("TMPDIR", tmp.as_str()), ("HOME", home.as_str())];
@@ -62,7 +62,7 @@ impl W {
     }
 
     fn pre_in(&self, cmd: &str, cwd: &Path, env: &[(&str, &str)]) -> Option<String> {
-        let (code, out, err) = self.run("pretool", self.event(cmd, cwd), env);
+        let (code, out, err) = self.run("pretool", &self.event(cmd, cwd), env);
         assert_eq!((code, err.as_str()), (0, ""), "W5 never denies: {out}");
         if out.trim().is_empty() {
             return None;
@@ -81,7 +81,7 @@ impl W {
         let mut ev = self.event(cmd, cwd);
         ev["hook_event_name"] = json!("PostToolUse");
         ev["tool_response"] = response;
-        let (code, _, _) = self.run("posttool", ev, &[]);
+        let (code, _, _) = self.run("posttool", &ev, &[]);
         assert_eq!(code, 0);
     }
 }
@@ -122,7 +122,7 @@ fn a_failed_run_does_not_count() {
     let mut ev = w.event("pnpm check", &w.repo);
     ev["hook_event_name"] = json!("PostToolUseFailure");
     ev["error"] = json!("Exit code 1");
-    w.run("posttoolfailure", ev, &[]);
+    w.run("posttoolfailure", &ev, &[]);
     assert!(w.pre("pnpm check").is_none());
     // an interrupted run does not count either
     w.passed_in("pnpm check", &w.repo, json!({"stdout": "", "stderr": "", "interrupted": true}));
@@ -164,7 +164,7 @@ fn another_session_has_its_own_table() {
     w.passed("pnpm check");
     let mut ev = w.event("pnpm check", &w.repo);
     ev["session_id"] = json!(format!("{}-other", w.sid));
-    let (code, out, _) = w.run("pretool", ev, &[]);
+    let (code, out, _) = w.run("pretool", &ev, &[]);
     assert_eq!(code, 0);
     assert!(!out.contains("W5"), "{out}");
 }

@@ -54,24 +54,6 @@ struct_field_names = "allow"
 items_after_statements = "allow"
 unreadable_literal = "allow"
 struct_excessive_bools = "allow" # flag structs of the command lines
-# Temporary: hand fixes, done area by area in the beauty pass. Then this block goes.
-format_push_string = "allow"
-needless_pass_by_value = "allow"
-manual_let_else = "allow"
-unnecessary_wraps = "allow"
-format_collect = "allow"
-case_sensitive_file_extension_comparisons = "allow"
-unused_self = "allow"
-assigning_clones = "allow"
-semicolon_if_nothing_returned = "allow"
-needless_for_each = "allow"
-default_trait_access = "allow"
-ref_option = "allow"
-map_unwrap_or = "allow"
-used_underscore_binding = "allow"
-needless_continue = "allow"
-assertions_on_constants = "allow"
-match_same_arms = "allow"
 
 # Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
 # after a pull about 4 times slower, with the same start-up time. Keep the default

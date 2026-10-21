@@ -2,6 +2,7 @@
 //! `guard_checks` in process. Pure helpers are tested in `src/bin/guard.rs` and `src/guard_checks.rs`.
 mod common;
 
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
@@ -31,18 +32,18 @@ fn now_secs() -> f64 {
 
 /// Python's `dict(base, **extra)`: keys of `extra` replace those of `base`.
 fn merge(mut base: Value, extra: Value) -> Value {
-    if let (Some(b), Some(e)) = (base.as_object_mut(), extra.as_object()) {
-        for (k, v) in e {
-            b.insert(k.clone(), v.clone());
-        }
+    if let (Some(b), Value::Object(e)) = (base.as_object_mut(), extra) {
+        b.extend(e);
     }
     base
 }
 
 fn assistant_b(total: i64, blocks: Value) -> Value {
-    json!({"type": "assistant", "message": {"role": "assistant", "content": blocks, "usage": {
+    let mut rec = json!({"type": "assistant", "message": {"role": "assistant", "content": null, "usage": {
         "input_tokens": 10, "cache_creation_input_tokens": total - 10 - 500,
-        "cache_read_input_tokens": 500, "output_tokens": 5}}})
+        "cache_read_input_tokens": 500, "output_tokens": 5}}});
+    rec["message"]["content"] = blocks;
+    rec
 }
 
 fn assistant(total: i64) -> Value {
@@ -63,7 +64,36 @@ fn ask_block(tid: &str, q: &str) -> Value {
 }
 
 fn user_rec(content: Value) -> Value {
-    json!({"type": "user", "message": {"role": "user", "content": content}})
+    let mut rec = json!({"type": "user", "message": {"role": "user", "content": null}});
+    rec["message"]["content"] = content;
+    rec
+}
+
+fn say(text: &str) -> Value {
+    assistant_b(1000, json!([{"type": "text", "text": text}]))
+}
+
+fn agent_data(sid: &str, extra_ti: Value) -> Value {
+    let base = json!({"subagent_type": "worker", "model": "sonnet", "effort": "high", "prompt": BRIEF});
+    json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Agent",
+        "tool_input": merge(base, extra_ti)})
+}
+
+fn stop_data(sid: &str, extra: Value) -> Value {
+    merge(json!({"hook_event_name": "SubagentStop", "session_id": sid, "last_assistant_message": "done"}), extra)
+}
+
+fn failure_data(sid: &str, tid: Value, extra: Value) -> Value {
+    let mut rec = json!({"hook_event_name": "PostToolUseFailure", "session_id": sid, "tool_name": "Agent",
+        "tool_use_id": null, "tool_input": {}, "error": "boom"});
+    rec["tool_use_id"] = tid;
+    merge(rec, extra)
+}
+
+fn write_file(repo: &str, name: &str, text: &str) -> String {
+    let p = format!("{repo}/{name}");
+    fs::write(&p, text).unwrap();
+    p
 }
 
 /// A stand-in for the pace module: the binary reads the statusline cache first, so a fake pace is a
@@ -157,20 +187,20 @@ impl G {
         self.dir.join(rel).to_string_lossy().into_owned()
     }
 
-    fn write(&self, path: &str, text: &str) {
+    fn write(path: &str, text: &str) {
         if let Some(p) = Path::new(path).parent() {
             fs::create_dir_all(p).unwrap();
         }
         fs::write(path, text).unwrap();
     }
 
-    fn lines(&self, path: &str, recs: &[Value]) {
+    fn lines(path: &str, recs: &[Value]) {
         let mut text = String::new();
         for r in recs {
             text.push_str(&r.to_string());
             text.push('\n');
         }
-        self.write(path, &text);
+        Self::write(path, &text);
     }
 
     fn transcript(&self, recs: &[Value]) -> String {
@@ -179,7 +209,7 @@ impl G {
 
     fn transcript_named(&self, recs: &[Value], name: &str) -> String {
         let path = self.join(name);
-        self.lines(&path, recs);
+        Self::lines(&path, recs);
         path
     }
 
@@ -348,7 +378,7 @@ impl G {
             recs.push(user_rec(json!(p)));
         }
         recs.push(assistant(1000));
-        self.lines(&self.join(&format!("main/subagents/agent-{agent_id}.jsonl")), &recs);
+        Self::lines(&self.join(&format!("main/subagents/agent-{agent_id}.jsonl")), &recs);
         main
     }
 
@@ -367,12 +397,14 @@ impl G {
         }
         data = merge(data, extra);
         if mode == "pretool" {
-            data = merge(
-                data,
-                json!({"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback", "tool_input": {"message": msg}}),
-            );
+            let mut ev = json!({"hook_event_name": "PreToolUse", "tool_name": "SubagentHandback",
+                "tool_input": {"message": null}});
+            ev["tool_input"]["message"] = msg;
+            data = merge(data, ev);
         } else {
-            data = merge(data, json!({"hook_event_name": "SubagentStop", "last_assistant_message": msg}));
+            let mut ev = json!({"hook_event_name": "SubagentStop", "last_assistant_message": null});
+            ev["last_assistant_message"] = msg;
+            data = merge(data, ev);
         }
         self.run(mode, &data)
     }
@@ -404,16 +436,12 @@ impl G {
         )
     }
 
-    fn say(&self, text: &str) -> Value {
-        assistant_b(1000, json!([{"type": "text", "text": text}]))
-    }
-
     fn good_reply_text(&self) -> String {
         format!("Done. [2026-10-14-x.md](.agents/handoffs/2026-10-14-x.md)\n```\nRead {} and do it.\n```", self.ho)
     }
 
     fn good_reply(&self) -> Value {
-        self.say(&self.good_reply_text())
+        say(&self.good_reply_text())
     }
 
     fn stop_run(&self, recs: &[Value], extra: Value) -> R {
@@ -438,40 +466,22 @@ impl G {
     }
 
     // --- concurrency cap ---
-    fn agent_data(&self, sid: &str, extra_ti: Value) -> Value {
-        let base = json!({"subagent_type": "worker", "model": "sonnet", "effort": "high", "prompt": BRIEF});
-        json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Agent",
-            "tool_input": merge(base, extra_ti)})
-    }
-
     fn agent(&self, sid: &str) -> R {
-        self.run("pretool", &self.agent_data(sid, json!({})))
-    }
-
-    fn stop_data(&self, sid: &str, extra: Value) -> Value {
-        merge(json!({"hook_event_name": "SubagentStop", "session_id": sid, "last_assistant_message": "done"}), extra)
+        self.run("pretool", &agent_data(sid, json!({})))
     }
 
     fn subagent_stop(&self, sid: &str) -> R {
-        self.run("subagentstop", &self.stop_data(sid, json!({})))
-    }
-
-    fn failure_data(&self, sid: &str, tid: Value, extra: Value) -> Value {
-        merge(
-            json!({"hook_event_name": "PostToolUseFailure", "session_id": sid, "tool_name": "Agent",
-                "tool_use_id": tid, "tool_input": {}, "error": "boom"}),
-            extra,
-        )
+        self.run("subagentstop", &stop_data(sid, json!({})))
     }
 
     fn spawn_with_id(&self, sid: &str, tid: &str) -> R {
-        let mut d = self.agent_data(sid, json!({}));
+        let mut d = agent_data(sid, json!({}));
         d["tool_use_id"] = json!(tid);
         self.run("pretool", &d)
     }
 
     fn failure(&self, sid: &str, tid: Value) -> R {
-        self.run("posttoolfailure", &self.failure_data(sid, tid, json!({})))
+        self.run("posttoolfailure", &failure_data(sid, tid, json!({})))
     }
 
     fn state_dir(&self) -> PathBuf {
@@ -479,8 +489,8 @@ impl G {
     }
 }
 
-fn assert_routed(out: &Option<Value>, ti: &Value, model: &str, effort: Option<&str>) {
-    let out = out.as_ref().expect("a routed call");
+fn assert_routed(out: Option<&Value>, ti: &Value, model: &str, effort: Option<&str>) {
+    let out = out.expect("a routed call");
     assert_eq!(out["hookEventName"], "PreToolUse");
     assert_eq!(out["permissionDecision"], "allow");
     assert_ne!(out["additionalContext"].as_str().unwrap_or(""), "");
@@ -523,7 +533,7 @@ fn test_router_table() {
     // opus rows get opus at high, whatever the caller asked for
     for (model, effort) in [(Some("sonnet"), Some("high")), (Some("sonnet"), Some("low")), (Some("haiku"), None)] {
         let (ti, out) = g.route("Plan", model, effort);
-        assert_routed(&out, &ti, "opus", Some("high"));
+        assert_routed(out.as_ref(), &ti, "opus", Some("high"));
     }
     let (ti, out) = g.route_full(
         "code-reviewer",
@@ -534,7 +544,7 @@ fn test_router_table() {
         None,
         json!({}),
     );
-    assert_routed(&out, &ti, "opus", Some("high"));
+    assert_routed(out.as_ref(), &ti, "opus", Some("high"));
     let (ti, out) = g.route_full(
         "code-reviewer",
         Some("sonnet"),
@@ -544,15 +554,15 @@ fn test_router_table() {
         None,
         json!({}),
     );
-    assert_routed(&out, &ti, "opus", Some("high"));
+    assert_routed(out.as_ref(), &ti, "opus", Some("high"));
     for kind in ["Explore", "claude-code-guide", "statusline-setup"] {
         let (ti, out) = g.route(kind, Some("sonnet"), Some("high"));
-        assert_routed(&out, &ti, "haiku", None);
+        assert_routed(out.as_ref(), &ti, "haiku", None);
     }
     let (ti, out) = g.route("researcher", None, None);
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     let (ti, out) = g.route("task-implementer", Some("sonnet"), Some("xhigh"));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
 }
 
 #[test]
@@ -568,11 +578,11 @@ fn test_router_review_cases() {
     ];
     for (kind, desc, prompt) in cases {
         let (ti, out) = g.route_full(kind, Some("opus"), Some("high"), desc, &prompt, None, json!({}));
-        assert_routed(&out, &ti, "sonnet", Some("high"));
+        assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     }
     let (ti, out) =
         g.route_full("worker", Some("opus"), Some("high"), "final review of the branch", BRIEF, None, json!({}));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     // "final review" deep in an implementer brief is not a review call
     let (ti, out) = g.route_full(
         "task-implementer",
@@ -583,7 +593,7 @@ fn test_router_review_cases() {
         None,
         json!({}),
     );
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
 }
 
 #[test]
@@ -591,26 +601,26 @@ fn test_router_never_raises_cost() {
     let g = G::new();
     // a caller's cheaper model and low/medium effort stay
     let (ti, out) = g.route("worker", Some("haiku"), Some("low"));
-    assert_routed(&out, &ti, "haiku", None); // haiku takes no effort
+    assert_routed(out.as_ref(), &ti, "haiku", None); // haiku takes no effort
     let (_, out) = g.route("worker", Some("sonnet"), Some("low"));
     assert!(out.is_none());
     let (_, out) = g.route("worker", Some("claude-sonnet-4-5"), Some("medium"));
     assert!(out.is_none());
     let (ti, out) = g.route("task-implementer", None, Some("medium"));
-    assert_routed(&out, &ti, "sonnet", Some("medium"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("medium"));
     let (ti, out) = g.route("worker", Some("haiku"), Some("high"));
-    assert_routed(&out, &ti, "haiku", None);
+    assert_routed(out.as_ref(), &ti, "haiku", None);
     let (ti, out) = g.route("worker", Some("opus"), Some("max"));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     let (ti, out) = g.route("worker", Some("fable"), Some("xhigh"));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     let (ti, out) = g.route("worker", Some("sonnet"), Some("max"));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     let (ti, out) = g.route("worker", Some("some-unknown-model"), Some("low"));
-    assert_routed(&out, &ti, "sonnet", Some("low"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("low"));
     // lookups never go above haiku
     let (ti, out) = g.route("Explore", Some("opus"), Some("medium"));
-    assert_routed(&out, &ti, "haiku", None);
+    assert_routed(out.as_ref(), &ti, "haiku", None);
 }
 
 #[test]
@@ -643,16 +653,16 @@ fn test_router_pace_ahead_downgrades_opus() {
     let g = G::new();
     let pace = Some(fake_pace("ahead", 60.0, 50.0));
     let (ti, out) = g.route_full("Plan", Some("opus"), Some("high"), "Do it", BRIEF, pace, json!({}));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     assert!(out.unwrap()["additionalContext"].as_str().unwrap().contains("ahead"));
     let (ti, out) = g.route_full("code-reviewer", Some("opus"), Some("high"), "Final review", BRIEF, pace, json!({}));
-    assert_routed(&out, &ti, "sonnet", Some("high"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     let (ti, out) = g.route_full("Explore", Some("sonnet"), Some("high"), "Do it", BRIEF, pace, json!({}));
-    assert_routed(&out, &ti, "haiku", None);
+    assert_routed(out.as_ref(), &ti, "haiku", None);
     // at ok the same Plan call is opus
     let (ti, out) =
         g.route_full("Plan", Some("sonnet"), Some("high"), "Do it", BRIEF, Some(pace_default("ok")), json!({}));
-    assert_routed(&out, &ti, "opus", Some("high"));
+    assert_routed(out.as_ref(), &ti, "opus", Some("high"));
 }
 
 #[test]
@@ -706,9 +716,9 @@ fn test_w4_budget() {
             "type": "queued_command", "commandMode": "task-notification",
             "prompt": format!("<task-notification> <task-id>{tid}</task-id>"),
             "usage": {"totalTokens": 800_000}}});
-        text.push_str(&format!("{rec}\n"));
+        let _ = writeln!(text, "{rec}");
     }
-    g.write(&path, &text);
+    G::write(&path, &text);
     assert_warn(&g.spawn(&path, "new"), "1600K subagent tokens");
     // the current call already written to the transcript is not counted twice
     assert_warn(&g.spawn(&g.spawn_session(16, 0), "a15"), "spawned 15 agents");
@@ -1025,7 +1035,7 @@ fn test_g5_cap_from_prompt() {
 fn test_g5_counter_write_fails_allows() {
     let g = G::new();
     let bad = g.join("not-a-dir");
-    g.write(&bad, "x");
+    G::write(&bad, "x");
     let data =
         json!({"session_id": "s", "hook_event_name": "SubagentStop", "last_assistant_message": "x".repeat(5000)});
     for _ in 0..3 {
@@ -1115,7 +1125,7 @@ fn test_g5_transcript_path_variants() {
 fn test_g5_prompt_as_text_blocks_and_first_user_record_only() {
     let g = G::new();
     let main = g.transcript_named(&[human("go")], "m2.jsonl");
-    g.lines(
+    G::lines(
         &g.join("m2/subagents/agent-t1.jsonl"),
         &[
             user_rec(json!([{"type": "tool_result", "tool_use_id": "x", "content": "y"}])),
@@ -1133,7 +1143,7 @@ fn test_g5_prompt_read_from_start_limited_to_200_lines() {
     let main = g.transcript_named(&[human("go")], "m3.jsonl");
     let mut recs: Vec<Value> = (0..200).map(|_| assistant(1000)).collect();
     recs.push(user_rec(json!("Hand back at most 300 chars.")));
-    g.lines(&g.join("m3/subagents/agent-l1.jsonl"), &recs);
+    G::lines(&g.join("m3/subagents/agent-l1.jsonl"), &recs);
     let d = json!({"session_id": "s", "agent_id": "l1", "transcript_path": main, "last_assistant_message": "x".repeat(600)});
     assert_allow(&g.run("subagentstop", &d)); // prompt past line 200 ignored: default cap 4000
 }
@@ -1168,8 +1178,8 @@ fn test_g6_stop_needs_link_and_block() {
     let g = G::new();
     let base = vec![human("hand off"), g.write_ho("w1", None), tool_result("w1")];
     let with = |r: Value| cat(&[&base, &[r]]);
-    assert_deny(&g.stop_run(&with(g.say("The hand-off is written.")), json!({})), &format!("Read {}", g.ho));
-    assert_deny(&g.stop_run(&with(g.say(&format!("Read {} and do it.", g.ho))), json!({})), "file link");
+    assert_deny(&g.stop_run(&with(say("The hand-off is written.")), json!({})), &format!("Read {}", g.ho));
+    assert_deny(&g.stop_run(&with(say(&format!("Read {} and do it.", g.ho))), json!({})), "file link");
     assert_allow(&g.stop_run(&with(g.good_reply()), json!({})));
     // last_assistant_message counts when the transcript is not flushed yet
     assert_allow(&g.stop_run(&base, json!({"last_assistant_message": g.good_reply_text()})));
@@ -1178,13 +1188,13 @@ fn test_g6_stop_needs_link_and_block() {
 #[test]
 fn test_g6_stop_one_deny_and_scope() {
     let g = G::new();
-    let base = vec![human("hand off"), g.write_ho("w1", None), tool_result("w1"), g.say("written")];
+    let base = vec![human("hand off"), g.write_ho("w1", None), tool_result("w1"), say("written")];
     assert_allow(&g.stop_run(&base, json!({"stop_hook_active": true})));
-    assert_allow(&g.stop_run(&[human("x"), g.say("no hand-off here")], json!({})));
+    assert_allow(&g.stop_run(&[human("x"), say("no hand-off here")], json!({})));
     // written in an earlier turn: the user already got it
-    assert_allow(&g.stop_run(&cat(&[&base, &[human("thanks"), g.say("ok")]]), json!({})));
+    assert_allow(&g.stop_run(&cat(&[&base, &[human("thanks"), say("ok")]]), json!({})));
     // a Write elsewhere is not a hand-off
-    assert_allow(&g.stop_run(&[human("x"), g.write_ho("w1", Some("/repo/notes.md")), g.say("ok")], json!({})));
+    assert_allow(&g.stop_run(&[human("x"), g.write_ho("w1", Some("/repo/notes.md")), say("ok")], json!({})));
 }
 
 #[test]
@@ -1194,7 +1204,7 @@ fn test_g6_archive_same_turn_denied() {
     assert_deny(&g.archive(&base, "self"), "Do not archive yet");
     assert_allow(&g.archive(&cat(&[&base, &[human("ok, archive")]]), "self"));
     assert_allow(&g.archive(&base, "other-session"));
-    assert_allow(&g.archive(&[human("archive this"), g.say("done")], "self"));
+    assert_allow(&g.archive(&[human("archive this"), say("done")], "self"));
 }
 
 #[test]
@@ -1315,7 +1325,7 @@ fn test_cap_failed_spawn_frees_its_own_slot() {
 fn test_cap_failure_ignores_other_tools_and_bad_input() {
     let g = G::new();
     assert_allow(&g.spawn_with_id("f2", "a"));
-    assert_allow(&g.run("posttoolfailure", &g.failure_data("f2", json!("a"), json!({"tool_name": "Bash"}))));
+    assert_allow(&g.run("posttoolfailure", &failure_data("f2", json!("a"), json!({"tool_name": "Bash"}))));
     assert_allow(&g.run_raw("posttoolfailure", "not json"));
     for _ in 0..2 {
         assert_allow(&g.spawn_with_id("f2", "b"));
@@ -1347,7 +1357,7 @@ fn test_cap_other_denies_do_not_take_a_slot() {
     let g = G::new();
     for _ in 0..5 {
         // no deadline: denied by G1 before the cap
-        assert_deny(&g.run("pretool", &g.agent_data("c4", json!({"prompt": "build"}))), "a deadline");
+        assert_deny(&g.run("pretool", &agent_data("c4", json!({"prompt": "build"}))), "a deadline");
     }
     for _ in 0..3 {
         assert_allow(&g.agent("c4"));
@@ -1360,7 +1370,7 @@ fn test_cap_stop_with_denied_handback_keeps_the_slot() {
     for _ in 0..3 {
         g.agent("c5");
     }
-    let big = g.stop_data("c5", json!({"last_assistant_message": "x".repeat(5000)}));
+    let big = stop_data("c5", json!({"last_assistant_message": "x".repeat(5000)}));
     assert_deny(&g.run("subagentstop", &big), "");
     assert_deny(&g.agent("c5"), "cap is 3");
 }
@@ -1369,7 +1379,7 @@ fn test_cap_stop_with_denied_handback_keeps_the_slot() {
 fn test_cap_entries_older_than_90_minutes_are_dropped() {
     let g = G::new();
     let old = now_secs() - 91.0 * 60.0;
-    g.write(&g.state_dir().join("c6.json").to_string_lossy(), &json!({"spawns": [old, old, old]}).to_string());
+    G::write(&g.state_dir().join("c6.json").to_string_lossy(), &json!({"spawns": [old, old, old]}).to_string());
     for _ in 0..3 {
         assert_allow(&g.agent("c6"));
     }
@@ -1380,22 +1390,22 @@ fn test_cap_entries_older_than_90_minutes_are_dropped() {
 fn test_cap_by_pace() {
     let g = G::new();
     let ahead = Some(fake_pace("ahead", 60.0, 50.0));
-    assert_allow(&g.inproc("pretool", &g.agent_data("p1", json!({})), ahead));
-    let res = g.inproc("pretool", &g.agent_data("p1", json!({})), ahead);
+    assert_allow(&g.inproc("pretool", &agent_data("p1", json!({})), ahead));
+    let res = g.inproc("pretool", &agent_data("p1", json!({})), ahead);
     assert_deny(&res, "1 helper");
     for text in ["cap is 1", "60%", "50%"] {
         assert!(res.2.contains(text), "{res:?}"); // the pace numbers
     }
     let crit = Some(fake_pace("critical", 90.0, 100.0));
-    let res = g.inproc("pretool", &g.agent_data("p2", json!({})), crit);
+    let res = g.inproc("pretool", &agent_data("p2", json!({})), crit);
     assert_deny(&res, "cap is 0");
     assert!(res.2.contains("90%"), "{res:?}");
     for state in ["ok", "unknown"] {
         let sid = format!("p3{state}");
         for _ in 0..3 {
-            assert_allow(&g.inproc("pretool", &g.agent_data(&sid, json!({})), Some(pace_default(state))));
+            assert_allow(&g.inproc("pretool", &agent_data(&sid, json!({})), Some(pace_default(state))));
         }
-        assert_deny(&g.inproc("pretool", &g.agent_data(&sid, json!({})), Some(pace_default(state))), "cap is 3");
+        assert_deny(&g.inproc("pretool", &agent_data(&sid, json!({})), Some(pace_default(state))), "cap is 3");
     }
 }
 
@@ -1403,7 +1413,7 @@ fn test_cap_by_pace() {
 fn test_cap_pace_crash_is_unknown() {
     let g = G::new();
     // a pace read that fails: here an unreadable statusline cache
-    g.write(&g.join("cache/claude-pace.json"), "{not json");
+    G::write(&g.join("cache/claude-pace.json"), "{not json");
     for _ in 0..3 {
         assert_allow(&g.agent("p5"));
     }
@@ -1426,8 +1436,8 @@ fn test_cap_parallel_calls_race_safely() {
 fn test_cap_state_dir_unwritable_fails_open() {
     let g = G::new();
     let bad = g.join("not-a-dir");
-    g.write(&bad, "x");
-    let data = g.agent_data("c9", json!({}));
+    G::write(&bad, "x");
+    let data = agent_data("c9", json!({}));
     for _ in 0..5 {
         let res = g.run_with("pretool", &data, &[("TMPDIR", &bad)]);
         assert_eq!(res, (0, String::new(), String::new()));
@@ -1662,7 +1672,7 @@ fn test_pace_note_sessions_independent_and_joined_with_nudge() {
 fn test_pace_note_fail_open() {
     let g = G::new();
     // a pace read that fails: an unreadable statusline cache
-    g.write(&g.join("cache/claude-pace.json"), "{not json");
+    G::write(&g.join("cache/claude-pace.json"), "{not json");
     let path = g.transcript_named(&[human("hi"), assistant(1000)], "n5.jsonl");
     let data =
         json!({"hook_event_name": "UserPromptSubmit", "session_id": "n5", "transcript_path": path, "prompt": "go"});
@@ -1694,7 +1704,9 @@ fn human_at(ago_s: i64, text: &str) -> Value {
 }
 
 fn tu(name: &str, tool_input: Value, tid: &str) -> Value {
-    assistant_b(1000, json!([{"type": "tool_use", "id": tid, "name": name, "input": tool_input}]))
+    let mut block = json!({"type": "tool_use", "id": tid, "name": name, "input": null});
+    block["input"] = tool_input;
+    assistant_b(1000, json!([block]))
 }
 
 // G6 fix: a hand-off that is gone from disk is not owed to the user
@@ -1702,10 +1714,10 @@ fn tu(name: &str, tool_input: Value, tid: &str) -> Value {
 fn test_g6_deleted_handoff_is_skipped() {
     let g = G::new();
     let gone = g.join("handoffs/gone.md");
-    let base = vec![human("hand off"), g.write_ho("w1", Some(&gone)), tool_result("w1"), g.say("written")];
+    let base = vec![human("hand off"), g.write_ho("w1", Some(&gone)), tool_result("w1"), say("written")];
     assert_allow(&g.stop_run(&base, json!({})));
     assert_allow(&g.archive(&base, "self"));
-    g.write(&gone, "# Task");
+    G::write(&gone, "# Task");
     assert_deny(&g.stop_run(&base, json!({})), &format!("Read {gone}"));
     assert_deny(&g.archive(&base, "self"), "Do not archive yet");
 }
@@ -1735,7 +1747,7 @@ impl G {
         let work = work.to_string_lossy().into_owned();
         self.git(&work, &["init", "-q"]);
         self.git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-        self.write_file(&work, "base.txt", "base");
+        write_file(&work, "base.txt", "base");
         self.git(&work, &["add", "-A"]);
         self.git(&work, &["commit", "-q", "-m", "base"]);
         if upstream {
@@ -1749,12 +1761,6 @@ impl G {
         work
     }
 
-    fn write_file(&self, repo: &str, name: &str, text: &str) -> String {
-        let p = format!("{repo}/{name}");
-        fs::write(&p, text).unwrap();
-        p
-    }
-
     fn g10(&self, recs: &[Value], repo: &str, extra: Value) -> R {
         // a fresh session per call, so the once-per-repo-state rule does not hide a repeat
         let base = json!({"cwd": repo, "session_id": format!("g10-{}", next_sid())});
@@ -1766,8 +1772,8 @@ impl G {
 fn test_g10_fires_once_per_repo_state() {
     let g = G::new();
     let repo = g.make_repo(true);
-    let p = g.write_file(&repo, "new.txt", "x");
-    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), g.say("done")];
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), say("done")];
     let same = json!({"session_id": "once"});
     assert_deny(
         &g.g10(&recs, &repo, same.clone()),
@@ -1779,12 +1785,12 @@ fn test_g10_fires_once_per_repo_state() {
     // another session still hears it
     assert_deny(&g.g10(&recs, &repo, json!({"session_id": "other"})), "G10");
     // a changed count fires again
-    let q = g.write_file(&repo, "second.txt", "y");
+    let q = write_file(&repo, "second.txt", "y");
     let more = [
         human("build"),
         tu("Write", json!({"file_path": p}), "u1"),
         tu("Write", json!({"file_path": q}), "u2"),
-        g.say("done"),
+        say("done"),
     ];
     assert_deny(&g.g10(&more, &repo, same.clone()), "2 uncommitted file(s)");
     assert_allow(&g.g10(&more, &repo, same.clone()));
@@ -1793,8 +1799,8 @@ fn test_g10_fires_once_per_repo_state() {
     g.git(&repo, &["commit", "-q", "-m", "all"]);
     g.git(&repo, &["push", "-q"]);
     assert_allow(&g.g10(&more, &repo, same.clone()));
-    let r = g.write_file(&repo, "third.txt", "z");
-    let third = [human("build"), tu("Write", json!({"file_path": r}), "u1"), g.say("done")];
+    let r = write_file(&repo, "third.txt", "z");
+    let third = [human("build"), tu("Write", json!({"file_path": r}), "u1"), say("done")];
     assert_deny(&g.g10(&third, &repo, same.clone()), "1 uncommitted file(s)");
     assert_allow(&g.g10(&third, &repo, same));
 }
@@ -1803,8 +1809,8 @@ fn test_g10_fires_once_per_repo_state() {
 fn test_g10_dirty_file_touched_this_turn() {
     let g = G::new();
     let repo = g.make_repo(true);
-    let p = g.write_file(&repo, "new.txt", "x");
-    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), g.say("done")];
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), say("done")];
     let res = g.g10(&recs, &repo, json!({}));
     assert_deny(&res, "G10: this turn left work in work: 1 uncommitted file(s), 0 unpushed commit(s).");
     assert!(
@@ -1813,9 +1819,9 @@ fn test_g10_dirty_file_touched_this_turn() {
     );
     assert!(!res.2.contains("Rule "), "{res:?}");
     // Edit and NotebookEdit count as well
-    let q = g.write_file(&repo, "base.txt", "changed");
+    let q = write_file(&repo, "base.txt", "changed");
     assert_deny(&g.g10(&[human("x"), tu("Edit", json!({"file_path": q}), "u1")], &repo, json!({})), "1 uncommitted");
-    let n = g.write_file(&repo, "nb.ipynb", "{}");
+    let n = write_file(&repo, "nb.ipynb", "{}");
     assert_deny(
         &g.g10(&[human("x"), tu("NotebookEdit", json!({"notebook_path": n}), "u1")], &repo, json!({})),
         "1 uncommitted",
@@ -1826,18 +1832,18 @@ fn test_g10_dirty_file_touched_this_turn() {
 fn test_g10_untouched_files_stay_quiet() {
     let g = G::new();
     let repo = g.make_repo(true);
-    g.write_file(&repo, "other.txt", "x"); // dirty, but the session never wrote it
-    let p = g.write_file(&repo, "mine.txt", "x");
+    write_file(&repo, "other.txt", "x"); // dirty, but the session never wrote it
+    let p = write_file(&repo, "mine.txt", "x");
     g.git(&repo, &["add", "mine.txt"]);
     g.git(&repo, &["commit", "-q", "-m", "mine"]);
     g.git(&repo, &["push", "-q"]);
-    assert_allow(&g.g10(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), g.say("ok")], &repo, json!({})));
+    assert_allow(&g.g10(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), say("ok")], &repo, json!({})));
     // touched in an earlier turn only
-    let d = g.write_file(&repo, "old.txt", "x");
-    let recs = [human("a"), tu("Write", json!({"file_path": d}), "u1"), human("b"), g.say("chat")];
+    let d = write_file(&repo, "old.txt", "x");
+    let recs = [human("a"), tu("Write", json!({"file_path": d}), "u1"), human("b"), say("chat")];
     assert_allow(&g.g10(&recs, &repo, json!({})));
     // a file outside the repo is not in its status
-    let outside = g.write_file(&g.d(), "elsewhere.txt", "x");
+    let outside = write_file(&g.d(), "elsewhere.txt", "x");
     assert_allow(&g.g10(&[human("x"), tu("Write", json!({"file_path": outside}), "u1")], &repo, json!({})));
 }
 
@@ -1845,24 +1851,24 @@ fn test_g10_untouched_files_stay_quiet() {
 fn test_g10_unpushed_needs_a_commit_this_turn() {
     let g = G::new();
     let repo = g.make_repo(true);
-    let p = g.write_file(&repo, "a.txt", "x");
+    let p = write_file(&repo, "a.txt", "x");
     g.git(&repo, &["add", "-A"]);
     g.git(&repo, &["commit", "-q", "-m", "a"]);
     let commit = tu("Bash", json!({"command": "git commit -m \"a\""}), "u1");
     let res =
-        g.g10(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), commit.clone(), g.say("ok")], &repo, json!({}));
+        g.g10(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), commit.clone(), say("ok")], &repo, json!({}));
     assert_deny(&res, "0 uncommitted file(s), 1 unpushed commit(s).");
     // an unpushed commit from an earlier turn is not this turn's work
-    assert_allow(&g.g10(&[human("x"), commit, human("y"), g.say("chat")], &repo, json!({})));
-    assert_allow(&g.g10(&[human("x"), g.say("chat")], &repo, json!({})));
+    assert_allow(&g.g10(&[human("x"), commit, human("y"), say("chat")], &repo, json!({})));
+    assert_allow(&g.g10(&[human("x"), say("chat")], &repo, json!({})));
 }
 
 #[test]
 fn test_g10_user_said_not_to_push() {
     let g = G::new();
     let repo = g.make_repo(true);
-    let p = g.write_file(&repo, "new.txt", "x");
-    let work = vec![tu("Write", json!({"file_path": p}), "u1"), g.say("done")];
+    let p = write_file(&repo, "new.txt", "x");
+    let work = vec![tu("Write", json!({"file_path": p}), "u1"), say("done")];
     for phrase in ["do not push", "Don't push please", "NO PUSH", "keep it local only", "don't commit", "Do Not Commit"]
     {
         let recs = cat(&[&[human(&format!("first. {phrase}")), human("more")], &work]);
@@ -1878,8 +1884,8 @@ fn test_g10_user_said_not_to_push() {
 fn test_g10_no_upstream_and_git_failures_are_quiet() {
     let g = G::new();
     let repo = g.make_repo(false);
-    let p = g.write_file(&repo, "new.txt", "x");
-    let recs = [human("x"), tu("Write", json!({"file_path": p}), "u1"), g.say("done")];
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [human("x"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
     // no upstream: unpushed counts as 0, but a dirty file of this turn still fires
     assert_deny(
         &g.g10(&recs, &repo, json!({})),
@@ -1889,7 +1895,7 @@ fn test_g10_no_upstream_and_git_failures_are_quiet() {
     g.git(&repo, &["commit", "-q", "-m", "new"]);
     assert_allow(&g.g10(&recs, &repo, json!({}))); // clean, and nothing to compare with
     let commit = tu("Bash", json!({"command": "git commit -m \"new\""}), "u1");
-    assert_allow(&g.g10(&[human("x"), commit, g.say("done")], &repo, json!({})));
+    assert_allow(&g.g10(&[human("x"), commit, say("done")], &repo, json!({})));
     let plain = g.join("plain");
     fs::create_dir_all(&plain).unwrap();
     assert_allow(&g.g10(&recs, &plain, json!({}))); // not a repo
@@ -1901,8 +1907,8 @@ fn test_g10_no_upstream_and_git_failures_are_quiet() {
 fn test_g10_fails_open_when_git_cannot_start() {
     let g = G::new();
     let repo = g.make_repo(true);
-    let p = g.write_file(&repo, "new.txt", "x");
-    let path = g.transcript(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), g.say("done")]);
+    let p = write_file(&repo, "new.txt", "x");
+    let path = g.transcript(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), say("done")]);
     let data = json!({"transcript_path": path, "cwd": repo});
     assert_ne!(g.run("stop", &data).2, ""); // sanity: fires with a working git
     // a git that cannot start: an empty PATH
@@ -1915,8 +1921,8 @@ fn test_g10_fails_open_when_git_cannot_start() {
 fn test_g10_switches() {
     let g = G::new();
     let repo = g.make_repo(true);
-    let p = g.write_file(&repo, "new.txt", "x");
-    let recs = [human("x"), tu("Write", json!({"file_path": p}), "u1"), g.say("done")];
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [human("x"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
     assert_deny(&g.g10(&recs, &repo, json!({})), "G10");
     assert_allow(&g.g10(&recs, &repo, json!({"stop_hook_active": true})));
     assert_allow(&g.stop_msg(&recs, json!({"cwd": repo}), &[("GUARD_OFF", "G10")]));
@@ -1932,15 +1938,15 @@ fn test_g10_switches() {
 #[test]
 fn test_g11_long_turn_without_a_clock() {
     let g = G::new();
-    let res = g.stop_run(&[human_at(12 * 60 + 10, "go"), g.say("All done.")], json!({}));
+    let res = g.stop_run(&[human_at(12 * 60 + 10, "go"), say("All done.")], json!({}));
     assert_deny(
         &res,
         "G11: this turn ran 12 min. The clock preset asks: give the clock as a local time (HH:MM) and one estimate with a range.",
     );
     assert!(!res.2.contains("Rule "), "{res:?}");
     assert!(!res.2.contains("Asia/") && !res.2.contains("Europe/"), "{res:?}"); // no zone set, none named
-    assert_allow(&g.stop_run(&[human_at(5 * 60, "go"), g.say("All done.")], json!({})));
-    assert_allow(&g.stop_run(&[human("no stamp"), g.say("All done.")], json!({})));
+    assert_allow(&g.stop_run(&[human_at(5 * 60, "go"), say("All done.")], json!({})));
+    assert_allow(&g.stop_run(&[human("no stamp"), say("All done.")], json!({})));
 }
 
 #[test]
@@ -1950,28 +1956,28 @@ fn test_g11_a_clock_or_duration_in_the_reply_is_enough() {
     for reply in
         ["Done at 14:05.", "That took 20 min.", "About 2 hours left.", "Roughly 1 h more.", "Estimate: 15-30 minutes."]
     {
-        assert_allow(&g.stop_run(&cat(&[&base, &[g.say(reply)]]), json!({})));
+        assert_allow(&g.stop_run(&cat(&[&base, &[say(reply)]]), json!({})));
         assert_allow(&g.stop_run(&base, json!({"last_assistant_message": reply})));
     }
     assert_deny(
-        &g.stop_run(&cat(&[&base, &[g.say("Done at 14:05.")]]), json!({"last_assistant_message": "Done."})),
+        &g.stop_run(&cat(&[&base, &[say("Done at 14:05.")]]), json!({"last_assistant_message": "Done."})),
         "G11",
     );
-    assert_deny(&g.stop_run(&cat(&[&base, &[g.say("Version 3 is out, 5 files changed.")]]), json!({})), "G11");
+    assert_deny(&g.stop_run(&cat(&[&base, &[say("Version 3 is out, 5 files changed.")]]), json!({})), "G11");
 }
 
 #[test]
 fn test_g11_switches_and_missing_transcript() {
     let g = G::new();
-    let recs = [human_at(15 * 60, "go"), g.say("Done.")];
+    let recs = [human_at(15 * 60, "go"), say("Done.")];
     assert_allow(&g.stop_run(&recs, json!({"stop_hook_active": true})));
     assert_allow(&g.stop_msg(&recs, json!({}), &[("GUARD_OFF", "G11")]));
     assert_allow(&g.stop_run(&recs, json!({"agent_id": "a1"})));
     assert_allow(&g.run("stop", &json!({"hook_event_name": "Stop", "transcript_path": g.join("missing.jsonl")})));
     // the turn start is the LAST human prompt, not an earlier one
-    assert_allow(&g.stop_run(&[human_at(60 * 60, "go"), g.say("a"), human_at(60, "go"), g.say("b")], json!({})));
+    assert_allow(&g.stop_run(&[human_at(60 * 60, "go"), say("a"), human_at(60, "go"), say("b")], json!({})));
     // a tool_result is not a prompt
-    assert_deny(&g.stop_run(&[human_at(15 * 60, "go"), tool_result("t1"), g.say("b")], json!({})), "G11");
+    assert_deny(&g.stop_run(&[human_at(15 * 60, "go"), tool_result("t1"), say("b")], json!({})), "G11");
 }
 
 // G12 open steps check
@@ -1992,7 +1998,7 @@ fn test_g12_open_steps_fire() {
         plan(
             json!({"items": items(&[("Read brief", "in_progress"), ("Build", "pending"), ("Test", "pending"), ("Ship", "pending")])}),
         ),
-        g.say("Working on it."),
+        say("Working on it."),
     ];
     assert_deny(
         &g.stop_run(&recs, json!({})),
@@ -2007,7 +2013,7 @@ fn test_g12_replays_advance_done_and_start() {
     let base =
         vec![human("go"), plan(json!({"items": items(&[("A", "in_progress"), ("B", "pending"), ("C", "pending")])}))];
     let run = |tail: Vec<Value>| g.stop_run(&cat(&[&base, &tail]), json!({}));
-    let x = || g.say("x");
+    let x = || say("x");
     assert_deny(&run(vec![plan(json!({"advance": true})), x()]), "steps (B, C)");
     assert_allow(&run(vec![
         plan(json!({"advance": true})),
@@ -2034,9 +2040,9 @@ fn test_g12_list_from_an_earlier_turn_still_counts() {
     let recs = [
         human("go"),
         plan(json!({"items": items(&[("A", "in_progress"), ("B", "pending")])})),
-        g.say("part"),
+        say("part"),
         human("continue"),
-        g.say("hm"),
+        say("hm"),
     ];
     assert_deny(&g.stop_run(&recs, json!({})), "steps (A, B)");
 }
@@ -2046,52 +2052,52 @@ fn test_g12_stays_quiet_when_asked_wrapped_or_questioned() {
     let g = G::new();
     let lst = || plan(json!({"items": items(&[("A", "in_progress"), ("B", "pending")])}));
     assert_allow(&g.stop_run(
-        &[human("go"), lst(), tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"), g.say("Waiting.")],
+        &[human("go"), lst(), tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"), say("Waiting.")],
         json!({}),
     ));
     assert_allow(&g.stop_run(
-        &[human("go"), lst(), tu("mcp__ccd_turn__wrap_up", json!({"recap": "r"}), "w1"), g.say("Done.")],
+        &[human("go"), lst(), tu("mcp__ccd_turn__wrap_up", json!({"recap": "r"}), "w1"), say("Done.")],
         json!({}),
     ));
-    assert_allow(&g.stop_run(&[human("go"), lst(), g.say("Done A. B is left. Shall I go on?")], json!({})));
-    assert_allow(&g.stop_run(&[human("go"), lst(), g.say("x")], json!({"last_assistant_message": "Shall I go on?  "})));
+    assert_allow(&g.stop_run(&[human("go"), lst(), say("Done A. B is left. Shall I go on?")], json!({})));
+    assert_allow(&g.stop_run(&[human("go"), lst(), say("x")], json!({"last_assistant_message": "Shall I go on?  "})));
     // a wrap_up after the last update_plan closes every step, also from an earlier turn
     let wrapped = vec![
         human("go"),
         lst(),
         tu("mcp__ccd_turn__wrap_up", json!({"recap": "r"}), "w1"),
-        g.say("ok"),
+        say("ok"),
         human("thanks"),
-        g.say("welcome"),
+        say("welcome"),
     ];
     assert_allow(&g.stop_run(&wrapped, json!({})));
     // but a later update_plan reopens the list
-    let reopen = cat(&[&wrapped, &[plan(json!({"items": items(&[("C", "pending")])})), g.say("x")]]);
+    let reopen = cat(&[&wrapped, &[plan(json!({"items": items(&[("C", "pending")])})), say("x")]]);
     assert_deny(&g.stop_run(&reopen, json!({})), "steps (C)");
     // an AskUserQuestion from an earlier turn does not count
-    let old = [human("go"), tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"), lst(), human("ok"), g.say("x")];
+    let old = [human("go"), tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"), lst(), human("ok"), say("x")];
     assert_deny(&g.stop_run(&old, json!({})), "G12");
-    assert_allow(&g.stop_run(&[human("go"), g.say("no plan at all")], json!({})));
+    assert_allow(&g.stop_run(&[human("go"), say("no plan at all")], json!({})));
 }
 
 #[test]
 fn test_g12_quiet_while_a_helper_slot_is_live() {
     let g = G::new();
-    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), g.say("x")];
+    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
     assert_deny(&g.stop_run(&recs, json!({})), "G12"); // no slot: reminder
     let state = g.state_dir().join("s.json").to_string_lossy().into_owned();
-    g.write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
     assert_allow(&g.stop_run(&recs, json!({}))); // live slot: a helper still runs
-    g.write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 10.0 * 5400.0}]}).to_string());
+    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 10.0 * 5400.0}]}).to_string());
     assert_deny(&g.stop_run(&recs, json!({})), "G12"); // expired slot does not count
-    g.write(&state, "not json {{{");
+    G::write(&state, "not json {{{");
     assert_deny(&g.stop_run(&recs, json!({})), "G12"); // broken state file = no slot
 }
 
 #[test]
 fn test_g12_switches_and_missing_transcript() {
     let g = G::new();
-    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), g.say("x")];
+    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
     assert_deny(&g.stop_run(&recs, json!({})), "G12");
     assert_allow(&g.stop_run(&recs, json!({"stop_hook_active": true})));
     assert_allow(&g.stop_msg(&recs, json!({}), &[("GUARD_OFF", "G12")]));
@@ -2114,7 +2120,7 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
     let open = [
         human("go"),
         plan(json!({"items": items(&[("Done one", "completed"), ("Run tests", "in_progress"), ("Ship", "pending")])})),
-        g.say("Working on it."),
+        say("Working on it."),
     ];
     assert_deny(&g.stop_run(&open, json!({})), "G12");
     assert_eq!(fs::read_to_string(&file).unwrap(), "2\tRun tests\n");
@@ -2123,7 +2129,7 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
         human("go"),
         plan(json!({"items": items(&[("Run tests", "in_progress"), ("Ship", "pending")])})),
         plan(json!({"done": [1, 2]})),
-        g.say("Done."),
+        say("Done."),
     ];
     assert_allow(&g.stop_run(&fewer, json!({"stop_hook_active": true})));
     assert!(!file.exists(), "nothing is open: the file is gone");
@@ -2132,7 +2138,7 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
         human("go"),
         plan(json!({"items": items(&[("A", "pending"), ("B", "pending")])})),
         tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"),
-        g.say("Waiting."),
+        say("Waiting."),
     ];
     assert_allow(&g.stop_run(&asked, json!({})));
     assert_eq!(fs::read_to_string(&file).unwrap(), "2\tA\n");
@@ -2146,10 +2152,10 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
 fn test_stop_status_ignores_helpers_and_missing_plans() {
     let g = G::new();
     let file = status_file(&g, "s");
-    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), g.say("x")];
+    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
     assert_allow(&g.stop_run(&recs, json!({"agent_id": "a1"})));
     assert!(!file.exists(), "a helper's Stop never writes the main session's file");
-    assert_allow(&g.stop_run(&[human("go"), g.say("no plan")], json!({})));
+    assert_allow(&g.stop_run(&[human("go"), say("no plan")], json!({})));
     assert!(!file.exists());
 }
 
@@ -2157,12 +2163,12 @@ fn test_stop_status_ignores_helpers_and_missing_plans() {
 fn test_stop_checks_run_in_order_and_only_one_fires() {
     let g = G::new();
     let repo = g.make_repo(true);
-    let p = g.write_file(&repo, "new.txt", "x");
+    let p = write_file(&repo, "new.txt", "x");
     let mut recs = vec![
         human_at(15 * 60, "go"),
         plan(json!({"items": items(&[("A", "pending")])})),
         tu("Write", json!({"file_path": p}), "u1"),
-        g.say("x"),
+        say("x"),
     ];
     assert_deny(&g.g10(&recs, &repo, json!({})), "G10"); // G10 first
     assert_deny(&g.stop_run(&recs, json!({})), "G11"); // then G11
@@ -2353,7 +2359,9 @@ impl G {
         platform: Option<&str>,
         extra: Value,
     ) -> Option<String> {
-        let data = merge(json!({"tool_name": tool, "tool_input": ti}), extra);
+        let mut data = json!({"tool_name": tool, "tool_input": null});
+        data["tool_input"] = ti;
+        let data = merge(data, extra);
         let mut e: Vec<(&str, &str)> = Vec::new();
         if let Some(p) = platform {
             e.push(("GUARD_PLATFORM", p));
@@ -2401,7 +2409,7 @@ fn test_g15_read_tool() {
     let zsh = g.join(".config/zsh");
     fs::create_dir_all(&zsh).unwrap();
     let target = format!("{zsh}/local.zsh");
-    g.write(&target, "export KEY=1\n");
+    G::write(&target, "export KEY=1\n");
     let link = g.join("link.zsh");
     symlink(&target, &link);
     for path in ["~/.config/zsh/local.zsh", target.as_str(), link.as_str(), &format!("{zsh}/../zsh/local.zsh")] {
@@ -2898,7 +2906,7 @@ fn test_g13_main_thread_only_and_off_switch() {
     let recs = cat(&[&[human("hi")], &calls(1, 8)]);
     assert_allow(&g.post_env(&recs, Some(8), json!({"agent_id": "a1"}), &[]));
     let path = g.join("x/subagents/agent-a1.jsonl");
-    g.lines(&path, &recs);
+    G::lines(&path, &recs);
     let data = json!({"tool_name": "Bash", "tool_use_id": "u8", "transcript_path": path});
     assert_allow(&g.run("posttool", &data));
     let res = g.post_env(&recs, Some(8), json!({}), &[("GUARD_OFF", "G13")]);
@@ -2914,7 +2922,7 @@ fn test_g13_fail_open() {
     assert_allow(&g.run("posttool", &json!({"tool_name": "Bash"})));
     assert_allow(&g.run("posttool", &json!({"tool_name": "Bash", "transcript_path": "/no/such"})));
     let path = g.join("bad.jsonl");
-    g.write(&path, &"garbage\n{not json\n".repeat(5));
+    G::write(&path, &"garbage\n{not json\n".repeat(5));
     assert_allow(&g.run("posttool", &json!({"tool_name": "Bash", "transcript_path": path})));
     assert_allow(&g.post_env(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8), json!({"transcript_path": 5}), &[]));
     // The Python test also called guard.posttool directly and mocked reverse_lines; here the same
@@ -2954,7 +2962,7 @@ impl G {
     /// The settings file: the pace fixtures' plan and week, then `text` (the last line of a name wins).
     fn set(&self, text: &str) {
         let base = "PLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\n";
-        self.write(&self.join(".config/dotfiles/settings"), &format!("{base}{text}"));
+        Self::write(&self.join(".config/dotfiles/settings"), &format!("{base}{text}"));
     }
 
     /// Every preset on except `off`, as a PRESETS setting.
@@ -2979,26 +2987,26 @@ impl G {
             }
             "G5" => self.handback(&"x".repeat(9000)),
             "G6" => {
-                let recs = [human("hand off"), self.write_ho("w1", None), tool_result("w1"), self.say("written")];
+                let recs = [human("hand off"), self.write_ho("w1", None), tool_result("w1"), say("written")];
                 self.archive(&recs, "self")
             }
             "G7" => self.pre("Agent", merge(ok_agent(), json!({"subagent_type": "general-purpose"}))),
             "G8" => {
                 let t = now_secs();
                 let slots: Vec<Value> = (0..3).map(|i| json!({"id": format!("a{i}"), "t": t - 5.0})).collect();
-                self.write(&self.state_dir().join("s8.json").to_string_lossy(), &json!({"spawns": slots}).to_string());
+                Self::write(&self.state_dir().join("s8.json").to_string_lossy(), &json!({"spawns": slots}).to_string());
                 self.agent("s8")
             }
             "G9" => self.skill("superpowers:writing-plans", S::new()),
             "G10" => {
                 let repo = self.make_repo(true);
-                let p = self.write_file(&repo, "new.txt", "x");
-                let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), self.say("done")];
+                let p = write_file(&repo, "new.txt", "x");
+                let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
                 self.g10(&recs, &repo, json!({}))
             }
-            "G11" => self.stop_run(&[human_at(12 * 60, "go"), self.say("All done.")], json!({})),
+            "G11" => self.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({})),
             "G12" => {
-                let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), self.say("x")];
+                let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
                 self.stop_run(&recs, json!({}))
             }
             "G13" => self.post(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8)),
@@ -3091,7 +3099,7 @@ fn a_broken_settings_file_leaves_every_check_on() {
 fn clock_names_timezone() {
     let g = G::new();
     g.set("TIMEZONE=\"Asia/Tokyo\"\n");
-    let res = g.stop_run(&[human_at(12 * 60, "go"), g.say("All done.")], json!({}));
+    let res = g.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({}));
     assert_deny(&res, "local time (HH:MM) in Asia/Tokyo");
 }
 
@@ -3100,7 +3108,7 @@ fn clock_bad_timezone_falls_back_to_the_system_zone() {
     let g = G::new();
     for bad in ["Mars/Olympus_Mons", "not a zone", "../../etc/passwd"] {
         g.set(&format!("TIMEZONE=\"{bad}\"\n"));
-        let res = g.stop_run(&[human_at(12 * 60, "go"), g.say("All done.")], json!({}));
+        let res = g.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({}));
         assert_deny(&res, "local time (HH:MM) and one estimate");
         assert!(!res.2.contains(bad), "{res:?}");
     }
@@ -3171,8 +3179,9 @@ impl G {
     }
 
     fn pre_mcp(&self, tool: &str, input: Value) -> R {
-        let data = json!({"hook_event_name": "PreToolUse", "session_id": format!("s{}", next_sid()),
-            "tool_name": tool, "tool_input": input, "cwd": self.d()});
+        let mut data = json!({"hook_event_name": "PreToolUse", "session_id": format!("s{}", next_sid()),
+            "tool_name": tool, "tool_input": null, "cwd": self.d()});
+        data["tool_input"] = input;
         self.run("pretool", &data)
     }
 
@@ -3597,8 +3606,8 @@ fn g17_inline_trailer_denied() {
 fn g17_message_file_denied() {
     let g = G::new();
     let a = attr_line();
-    g.write(&g.join("msg.txt"), &format!("subject\n\n{a}\n"));
-    g.write(&g.join("clean.txt"), "subject only\n");
+    G::write(&g.join("msg.txt"), &format!("subject\n\n{a}\n"));
+    G::write(&g.join("clean.txt"), "subject only\n");
     assert_deny(&g.g17("git commit -F msg.txt", &[]), "G17");
     assert_deny(&g.g17("git commit --file=msg.txt", &[]), "G17");
     assert_deny(&g.g17("git commit --file msg.txt", &[]), "G17");
@@ -3619,7 +3628,7 @@ fn g17_message_file_denied() {
 fn g17_gh_body_denied() {
     let g = G::new();
     let (a, gen_) = (attr_line(), attr_generated());
-    g.write(&g.join("body.md"), &format!("text\n{gen_}\n"));
+    G::write(&g.join("body.md"), &format!("text\n{gen_}\n"));
     for cmd in [
         format!("gh pr create --title t --body \"{gen_}\""),
         format!("gh pr create --body \"x\n{a}\""),

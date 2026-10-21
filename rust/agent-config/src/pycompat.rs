@@ -4,6 +4,7 @@
 //! scripts.
 
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -198,7 +199,7 @@ pub fn json_str(out: &mut String, s: &str) {
             c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
                 let mut buf = [0u16; 2];
                 for u in c.encode_utf16(&mut buf) {
-                    out.push_str(&format!("\\u{u:04x}"));
+                    let _ = write!(out, "\\u{u:04x}");
                 }
             }
             c => out.push(c),
@@ -232,7 +233,9 @@ pub fn py_repr_str(s: &str) -> String {
                 o.push('\\');
                 o.push(c);
             }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => o.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                let _ = write!(o, "\\x{:02x}", c as u32);
+            }
             c => o.push(c),
         }
     }
@@ -319,11 +322,11 @@ pub fn repr_str(s: &str) -> String {
             c => {
                 let u = c as u32;
                 if u < 0x100 {
-                    out.push_str(&format!("\\x{u:02x}"));
+                    let _ = write!(out, "\\x{u:02x}");
                 } else if u < 0x10000 {
-                    out.push_str(&format!("\\u{u:04x}"));
+                    let _ = write!(out, "\\u{u:04x}");
                 } else {
-                    out.push_str(&format!("\\U{u:08x}"));
+                    let _ = write!(out, "\\U{u:08x}");
                 }
             }
         }
