@@ -9,7 +9,7 @@ allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check *) Bash(
 
 Finish the job. Prove it is finished. Then leave the stage.
 
-Done means: nothing mandatory left, everything committed and pushed, no conflicts, checks green, no stray tasks. Optional ideas go to ONE leftovers file. Then archive when all of that is true and the session is not pinned. No need to ask.
+Done means: nothing mandatory left, everything committed and pushed, no conflicts, checks green, no stray tasks. Optional ideas go to the project's leftovers list. Then archive when all of that is true and the session is not pinned. No need to ask.
 
 ## Steps
 
@@ -74,7 +74,7 @@ Done: <path, URL or sha>: <what I did, max 5 lines>
 Checks: <which ran>: passed / failed
 Git: <repo>: committed, pushed, <short sha> on main, CI green / no CI / skipped
 Tasks: <n> stopped, <n> still running (why)
-Leftovers: <n> saved in ~/.claude/leftovers.md
+Leftovers: <n> saved in <repo>/.agents/leftovers.jsonl
 You do: <exact steps for anything only the user can do, or "nothing">
 Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side session>)
 ```
@@ -116,4 +116,4 @@ Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side s
 
 ## Options
 
-`--no-fetch` skip the network. `--since <sha|time>` list this session's commits. `--note "text" [repo]` save a leftover for that repo. `--leftovers` show the file. `MIC_LEFTOVERS=<path>` use another file.
+`--no-fetch` skip the network. `--since <sha|time>` list this session's commits. `--note "text" [repo]` save a leftover for that repo. `--leftovers` show the list. `leftovers list` shows the open ones, `leftovers done <id>` closes one.

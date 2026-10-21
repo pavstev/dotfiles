@@ -64,6 +64,24 @@ tool decides what it ignores (`.prettierignore`), and a tool that fails changes 
 a budget of 8 s for all commands (`PROJ_FORMAT_BUDGET_MS`); a slow tool is killed. The Python hooks
 never sync an environment (`uv run --no-sync`).
 
+## leftovers
+
+Each project keeps its own optional work in `<main checkout>/.agents/leftovers.jsonl`. A call from a
+worktree writes to the main checkout. The first `add` puts `.agents/` into the project's `.gitignore`
+(the user commits that line). Only the `leftovers` bin (`rust/agent-config/src/leftovers.rs`,
+`src/bin/leftovers.rs`; tests: `cargo test --test leftovers`) writes the file. It is an append-only
+log of JSON lines, `{"v":1,"op":"add"|"done"|"drop","id":"<8 hex>","at":"<RFC 3339 UTC>",...}`, and
+the state is the fold of the events in order. Never edit the file by hand. Nothing is loaded at session
+start: ask for the list.
+
+```bash
+~/.claude/hooks/rust-bin leftovers add "text" [--tag T] [--repo PATH]
+~/.claude/hooks/rust-bin leftovers list [--all] [--json]   # open items; also: done ID, drop ID, count, path, compact
+~/.claude/hooks/rust-bin leftovers import                  # split the old ~/.claude/leftovers.md into the projects
+```
+
+`mic_check --note` and `--leftovers` use the same store.
+
 ## guard
 
 The `guard` Rust bin (`rust/agent-config/src/bin/guard.rs`; fail-open: any error exits 0 silently)
