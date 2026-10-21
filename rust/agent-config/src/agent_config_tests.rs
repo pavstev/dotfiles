@@ -12,7 +12,8 @@ use std::sync::{Mutex, MutexGuard};
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-const CLAUDE_MD_TEXT: &str = "# Global\n\nintro line\n\n## Environment\n\n- one\n- two\n\n## Working rules\n\n1. a\n2. b\n";
+const CLAUDE_MD_TEXT: &str =
+    "# Global\n\nintro line\n\n## Environment\n\n- one\n- two\n\n## Working rules\n\n1. a\n2. b\n";
 const OWNER_TEXT: &str = "## Off-limits\n\n- never do the secret thing\n";
 
 // Only the tests of this file write the environment, and each holds LOCK, so two writers never
@@ -44,14 +45,17 @@ fn rj(p: &Path) -> Value {
 }
 /// Names in a folder, sorted.
 fn names(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let mut v: Vec<String> =
+        fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     v.sort();
     v
 }
 /// How many `<file>.bak-*` backups are in `dir`.
 fn baks(dir: &Path, file: &str) -> usize {
     match fs::read_dir(dir) {
-        Ok(rd) => rd.filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(&format!("{file}.bak-"))).count(),
+        Ok(rd) => rd
+            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(&format!("{file}.bak-")))
+            .count(),
         Err(_) => 0,
     }
 }
@@ -689,7 +693,10 @@ fn test_cursor_agents_converts_frontmatter() {
     fx.agent("rev.md", "---\nname: reviewer\ndescription: reviews\nmodel: sonnet\ntools: Read, Grep\n---\n\nBody\n");
     call(|| cursor_agents(&fx.home));
     let out = rd(&fx.cdir().join("agents").join("reviewer.md"));
-    assert!(out.starts_with("---\nname: reviewer\ndescription: reviews\nmodel: inherit\nreadonly: true\n---\n"), "{out}");
+    assert!(
+        out.starts_with("---\nname: reviewer\ndescription: reviews\nmodel: inherit\nreadonly: true\n---\n"),
+        "{out}"
+    );
     assert!(out.contains(MARK));
     assert!(!out.contains("sonnet"));
     assert!(out.ends_with("Body\n"));
@@ -752,7 +759,11 @@ fn test_backup_made_before_change() {
     let p = fx.cdir().join("x.json");
     wj(&p, json!({"a": 1}));
     let ((), out, _) = call(|| save_json(&p, &json!({"a": 1}), &json!({"a": 2}), false));
-    let bak: Vec<_> = fs::read_dir(fx.cdir()).unwrap().map(|e| e.unwrap().path()).filter(|p| p.to_string_lossy().contains("x.json.bak-")).collect();
+    let bak: Vec<_> = fs::read_dir(fx.cdir())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains("x.json.bak-"))
+        .collect();
     assert_eq!(bak.len(), 1);
     assert_eq!(rj(&bak[0]), json!({"a": 1}));
     assert_eq!(rj(&p), json!({"a": 2}));
@@ -882,7 +893,12 @@ fn test_our_entry_keeps_its_place_between_user_entries() {
     data["hooks"]["preCompact"] = Value::Array(list);
     wj(&hooks_path(&fx), data);
     call(|| cursor_hooks(&fx.home));
-    let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["preCompact"].as_array().unwrap().iter().map(|e| e["command"].as_str().unwrap().to_string()).collect();
+    let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["preCompact"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["command"].as_str().unwrap().to_string())
+        .collect();
     assert_eq!(cmds[0], "echo a");
     assert!(cmds[1].contains(GUARD_TAG));
     assert_eq!(cmds[2], "echo b");
@@ -904,11 +920,19 @@ fn test_old_python_entries_are_replaced_by_the_rust_launcher() {
     let fx = Fx::new();
     let mine = json!({"command": "echo mine"});
     let moved = json!({"command": "python3 /old/home/cursor/hooks/guard_cursor.py prompt"}); // a moved repo
-    let old_cmd = format!("test -r '{0}/cursor/hooks/guard_cursor.py' || exit 0; python3 '{0}/cursor/hooks/guard_cursor.py' prompt", fx.repo.display());
+    let old_cmd = format!(
+        "test -r '{0}/cursor/hooks/guard_cursor.py' || exit 0; python3 '{0}/cursor/hooks/guard_cursor.py' prompt",
+        fx.repo.display()
+    );
     let old = json!({"command": old_cmd, "timeout": 10});
     wj(&hooks_path(&fx), json!({"version": 1, "hooks": {"beforeSubmitPrompt": [mine, moved, old]}}));
     call(|| cursor_hooks(&fx.home));
-    let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["beforeSubmitPrompt"].as_array().unwrap().iter().map(|e| e["command"].as_str().unwrap().to_string()).collect();
+    let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["beforeSubmitPrompt"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["command"].as_str().unwrap().to_string())
+        .collect();
     assert_eq!(cmds.len(), 2, "{cmds:?}");
     assert_eq!(cmds[0], "echo mine");
     assert!(cmds[1].ends_with(&format!("sh {} --hook guard_cursor prompt", fx.guard.display())), "{cmds:?}");
@@ -1104,10 +1128,13 @@ fn test_defaults_on_empty_home() {
 #[test]
 fn test_user_values_win_but_attribution_is_forced_off() {
     let fx = Fx::new();
-    wj(&cfg_path(&fx), json!({
-        "version": 7, "editor": {"vimMode": true}, "model": {"id": "x"},
-        "attribution": {"attributeCommitsToAgent": true, "attributePRsToAgent": true, "keep": "me"},
-    }));
+    wj(
+        &cfg_path(&fx),
+        json!({
+            "version": 7, "editor": {"vimMode": true}, "model": {"id": "x"},
+            "attribution": {"attributeCommitsToAgent": true, "attributePRsToAgent": true, "keep": "me"},
+        }),
+    );
     run_cfg(&fx);
     let data = rj(&cfg_path(&fx));
     assert_eq!(data["version"], 7);
@@ -1265,7 +1292,10 @@ fn test_statusline_added_only_when_launcher_exists() {
     assert!(rj(&cfg_path(&fx)).get("statusLine").is_none());
     wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["statusLine"], json!({"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline", "padding": 0}));
+    assert_eq!(
+        rj(&cfg_path(&fx))["statusLine"],
+        json!({"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline", "padding": 0})
+    );
 }
 
 #[test]

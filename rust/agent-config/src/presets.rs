@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Every preset folder, sorted. Fragments merge in this order.
-pub const ALL: [&str; 7] = ["clock", "models", "no-ai-attribution", "pace", "plain-writing", "ship-to-main", "workflow"];
+pub const ALL: [&str; 7] =
+    ["clock", "models", "no-ai-attribution", "pace", "plain-writing", "ship-to-main", "workflow"];
 
 /// The preset that a new shared install leaves off: a push to a work repo's main can hurt.
 const OFF_FOR_SHARED: &str = "ship-to-main";
@@ -21,8 +22,12 @@ const OFF_FOR_SHARED: &str = "ship-to-main";
 /// rules exist, else `shared`. Read only (`dots` saves the `owner` guess itself).
 pub fn profile(home: &Path) -> String {
     let mut p = std::env::var("DOTFILES_PROFILE").unwrap_or_default();
-    if p.is_empty() { p = crate::setting(home, "PROFILE"); }
-    if p.is_empty() && home.join(".config/dotfiles/owner.md").is_file() { p = "owner".into(); }
+    if p.is_empty() {
+        p = crate::setting(home, "PROFILE");
+    }
+    if p.is_empty() && home.join(".config/dotfiles/owner.md").is_file() {
+        p = "owner".into();
+    }
     if p == "owner" || p == "shared" { p } else { "shared".into() }
 }
 
@@ -33,9 +38,15 @@ fn parse(home: &Path, profile: &str) -> (Vec<String>, Vec<String>) {
     let default = |p: &str| -> Vec<String> {
         ALL.iter().filter(|n| p == "owner" || **n != OFF_FOR_SHARED).map(|n| n.to_string()).collect()
     };
-    if words.is_empty() { return (default(profile), Vec::new()); }
-    if words == ["none"] { return (Vec::new(), Vec::new()); }
-    if words.contains(&"all") { return (ALL.iter().map(|n| n.to_string()).collect(), Vec::new()); }
+    if words.is_empty() {
+        return (default(profile), Vec::new());
+    }
+    if words == ["none"] {
+        return (Vec::new(), Vec::new());
+    }
+    if words.contains(&"all") {
+        return (ALL.iter().map(|n| n.to_string()).collect(), Vec::new());
+    }
     let want: BTreeSet<&str> = words.iter().copied().collect();
     let on = ALL.iter().filter(|n| want.contains(**n)).map(|n| n.to_string()).collect();
     let unknown = words.iter().filter(|w| !ALL.contains(w)).map(|w| w.to_string()).collect();
@@ -49,15 +60,23 @@ pub fn enabled(home: &Path, profile: &str) -> Vec<String> {
     static WARNED: AtomicBool = AtomicBool::new(false);
     let (on, unknown) = parse(home, profile);
     if !unknown.is_empty() && !WARNED.swap(true, Ordering::Relaxed) {
-        warn(&format!("PRESETS names no preset called {}, so it is left out. Presets: {}", unknown.join(", "), ALL.join(" ")));
+        warn(&format!(
+            "PRESETS names no preset called {}, so it is left out. Presets: {}",
+            unknown.join(", "),
+            ALL.join(" ")
+        ));
     }
     on
 }
 
 /// Like `enabled`, with no warning: for the guard, which must stay quiet.
-pub fn enabled_quiet(home: &Path, profile: &str) -> Vec<String> { parse(home, profile).0 }
+pub fn enabled_quiet(home: &Path, profile: &str) -> Vec<String> {
+    parse(home, profile).0
+}
 
-fn dir(repo: &Path, name: &str) -> PathBuf { repo.join("claude").join("presets").join(name) }
+fn dir(repo: &Path, name: &str) -> PathBuf {
+    repo.join("claude").join("presets").join(name)
+}
 
 /// The rules of the named presets without their front matter, one blank line apart. A preset with
 /// no `rules.md` adds nothing.
@@ -67,7 +86,9 @@ pub fn rules_text(repo: &Path, names: &[String]) -> String {
         let Ok(text) = fs::read_to_string(dir(repo, n).join("rules.md")) else { continue };
         let (_, body) = crate::split_frontmatter(&text);
         let body = body.trim();
-        if !body.is_empty() { parts.push(body.to_string()); }
+        if !body.is_empty() {
+            parts.push(body.to_string());
+        }
     }
     parts.join("\n\n")
 }
@@ -101,9 +122,15 @@ pub fn link_all(repo: &Path, home: &Path, names: &[String]) {
     for n in names {
         let src = dir(repo, n).join("rules.md");
         let dst = rules.join(format!("preset-{n}.md"));
-        if !src.is_file() { continue; }
+        if !src.is_file() {
+            continue;
+        }
         if crate::dots::os::exists_or_link(&dst) && !ours(&dst, &presets) {
-            warn(&format!("{} is not a link of ours, so the {} preset is not linked. Move it away to use the preset.", crate::tilde(&dst), n));
+            warn(&format!(
+                "{} is not a link of ours, so the {} preset is not linked. Move it away to use the preset.",
+                crate::tilde(&dst),
+                n
+            ));
             continue;
         }
         crate::dots::link::link_item(&src, &dst, true);
@@ -112,13 +139,23 @@ pub fn link_all(repo: &Path, home: &Path, names: &[String]) {
     for e in entries.filter_map(|e| e.ok()) {
         let file = e.file_name().to_string_lossy().into_owned();
         let Some(name) = file.strip_prefix("preset-").and_then(|r| r.strip_suffix(".md")) else { continue };
-        if names.iter().any(|n| n == name) || !ours(&e.path(), &presets) { continue; }
-        if fs::remove_file(e.path()).is_ok() { ok(&format!("removed the {} preset link", name)); }
+        if names.iter().any(|n| n == name) || !ours(&e.path(), &presets) {
+            continue;
+        }
+        if fs::remove_file(e.path()).is_ok() {
+            ok(&format!("removed the {} preset link", name));
+        }
     }
 }
 
 /// One line for a menu or a note: the presets that are on.
 pub fn summary(home: &Path, profile: &str) -> String {
     let on = enabled_quiet(home, profile);
-    if on.len() == ALL.len() { "all".into() } else if on.is_empty() { "none".into() } else { on.join(" ") }
+    if on.len() == ALL.len() {
+        "all".into()
+    } else if on.is_empty() {
+        "none".into()
+    } else {
+        on.join(" ")
+    }
 }

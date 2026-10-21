@@ -83,11 +83,8 @@ fn pnpm_with_prettier_and_eslint() {
 
 #[test]
 fn installed_but_unconfigured_prettier_is_left_alone() {
-    let root = project(&[
-        ("package.json", "{}"),
-        ("package-lock.json", ""),
-        ("node_modules/.bin/prettier", "#!/bin/sh\n"),
-    ]);
+    let root =
+        project(&[("package.json", "{}"), ("package-lock.json", ""), ("node_modules/.bin/prettier", "#!/bin/sh\n")]);
     let p = proj::detect_with(&root, &with(&[])).unwrap();
     assert!(p.tools().is_empty());
     assert!(p.format_cmds(&[root.join("a.ts")]).is_empty());
@@ -105,13 +102,25 @@ fn npm_with_biome_and_no_scripts() {
     assert_eq!(p.pm, Some("npm"));
     assert_eq!(p.tools(), ["biome"]);
     let fmt = lines(p.format_cmds(&[root.join("x.ts")]));
-    assert!(rel(&root, &fmt[0]).starts_with("node_modules/.bin/biome check --write --no-errors-on-unmatched "), "{fmt:?}");
-    assert_eq!(lines(p.check_full()).iter().map(|l| rel(&root, l)).collect::<Vec<_>>(), ["node_modules/.bin/biome check ."]);
+    assert!(
+        rel(&root, &fmt[0]).starts_with("node_modules/.bin/biome check --write --no-errors-on-unmatched "),
+        "{fmt:?}"
+    );
+    assert_eq!(
+        lines(p.check_full()).iter().map(|l| rel(&root, l)).collect::<Vec<_>>(),
+        ["node_modules/.bin/biome check ."]
+    );
 }
 
 #[test]
 fn package_manager_from_lockfile() {
-    for (lock, pm) in [("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lock", "bun"), ("bun.lockb", "bun"), ("package-lock.json", "npm")] {
+    for (lock, pm) in [
+        ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"),
+        ("bun.lock", "bun"),
+        ("bun.lockb", "bun"),
+        ("package-lock.json", "npm"),
+    ] {
         let root = project(&[("package.json", r#"{"scripts": {"check": "x"}}"#), (lock, "")]);
         let p = proj::detect_with(&root, &with(&[])).unwrap();
         assert_eq!(p.pm, Some(pm), "{lock}");
@@ -291,7 +300,8 @@ fn detect_cli_prints_json() {
 
 /// A fake tool: logs its arguments in `calls.log` (in the project root, where it runs) and writes
 /// `formatted` into its last argument.
-const FAKE: &str = "#!/bin/sh\nfor a; do last=$a; done\necho \"$0 $@\" >> calls.log\nprintf 'formatted\\n' > \"$last\"\n";
+const FAKE: &str =
+    "#!/bin/sh\nfor a; do last=$a; done\necho \"$0 $@\" >> calls.log\nprintf 'formatted\\n' > \"$last\"\n";
 
 fn hook_json(root: &Path, file: &str) -> String {
     serde_json::json!({"tool_name": "Edit", "cwd": root, "tool_input": {"file_path": file}}).to_string()
@@ -310,7 +320,8 @@ fn prettier_project(tool: &str) -> PathBuf {
 #[test]
 fn hook_formats_the_edited_file_silently() {
     let root = prettier_project(FAKE);
-    let (code, out, err) = run_bin(PROJ, &["format"], &hook_json(&root, root.join("src/a.ts").to_str().unwrap()), &[], None);
+    let (code, out, err) =
+        run_bin(PROJ, &["format"], &hook_json(&root, root.join("src/a.ts").to_str().unwrap()), &[], None);
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
     assert_eq!(fs::read_to_string(root.join("src/a.ts")).unwrap(), "formatted\n");
     let log = fs::read_to_string(root.join("calls.log")).unwrap();
@@ -329,7 +340,8 @@ fn hook_takes_a_path_relative_to_cwd() {
 #[test]
 fn hook_with_a_missing_tool_exits_0_and_changes_nothing() {
     let root = project(&[("package.json", "{}"), (".prettierrc", "{}"), ("src/a.ts", "x  =  1\n")]);
-    let (code, out, err) = run_bin(PROJ, &["format"], &hook_json(&root, root.join("src/a.ts").to_str().unwrap()), &[], None);
+    let (code, out, err) =
+        run_bin(PROJ, &["format"], &hook_json(&root, root.join("src/a.ts").to_str().unwrap()), &[], None);
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
     assert_eq!(fs::read_to_string(root.join("src/a.ts")).unwrap(), "x  =  1\n");
 }
@@ -361,7 +373,8 @@ fn hook_skips_dependency_folders() {
 #[test]
 fn hook_exits_0_when_the_tool_fails_as_it_does_for_an_ignored_file() {
     let root = prettier_project("#!/bin/sh\necho oops >&2\nexit 2\n");
-    let (code, out, err) = run_bin(PROJ, &["format"], &hook_json(&root, root.join("src/a.ts").to_str().unwrap()), &[], None);
+    let (code, out, err) =
+        run_bin(PROJ, &["format"], &hook_json(&root, root.join("src/a.ts").to_str().unwrap()), &[], None);
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""));
     assert_eq!(fs::read_to_string(root.join("src/a.ts")).unwrap(), "const a   =   1\n");
 }
@@ -395,6 +408,7 @@ fn hook_runs_eslint_then_prettier_with_a_shared_budget() {
     ]);
     run_bin(PROJ, &["format"], &hook_json(&root, root.join("a.ts").to_str().unwrap()), &[], None);
     let log = fs::read_to_string(root.join("calls.log")).unwrap();
-    let tools: Vec<&str> = log.lines().map(|l| l.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("")).collect();
+    let tools: Vec<&str> =
+        log.lines().map(|l| l.split_whitespace().next().unwrap_or("").rsplit('/').next().unwrap_or("")).collect();
     assert_eq!(tools, ["eslint", "prettier"], "{log}");
 }

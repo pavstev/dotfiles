@@ -56,8 +56,15 @@ fn fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::Pat
             "beforeSubmitPrompt": [{"command": "sh x --hook guard_cursor prompt"}]}})
         .to_string(),
     );
-    wr(&home.join(".cursor/mcp.json"), &json!({"mcpServers": {"docs": {"url": "https://example.test/mcp"}, "mine": {"url": "https://mine.test"}}}).to_string());
-    wr(&home.join(".cursor/cli-config.json"), &json!({"permissions": {"allow": ["Shell(ls)", "Shell(mine)"], "deny": []}}).to_string());
+    wr(
+        &home.join(".cursor/mcp.json"),
+        &json!({"mcpServers": {"docs": {"url": "https://example.test/mcp"}, "mine": {"url": "https://mine.test"}}})
+            .to_string(),
+    );
+    wr(
+        &home.join(".cursor/cli-config.json"),
+        &json!({"permissions": {"allow": ["Shell(ls)", "Shell(mine)"], "deny": []}}).to_string(),
+    );
     wr(&home.join(".cursor/.dotfiles-managed.json"), &json!({"allow": ["Shell(ls)"], "deny": []}).to_string());
     // Opencode
     let oc = home.join(".config/opencode");
@@ -75,9 +82,18 @@ fn removes_ours_and_keeps_the_users() {
     let (code, _out, err) = dots(&home, &repo, &["uninstall", "-y"]);
     assert_eq!(code, 0, "stderr: {err}");
     // links and generated files are gone
-    for gone in [".config/gh/config.yml", ".claude/agents", ".claude/skills/ps_x", ".claude/rules/preset-clock.md",
-                 ".cursor/rules/claude-global.mdc", ".cursor/agents/a.md", ".cursor/.dotfiles-managed.json",
-                 ".config/opencode/AGENTS.md", ".config/opencode/agents/a.md", ".config/opencode/.dotfiles-managed.json"] {
+    for gone in [
+        ".config/gh/config.yml",
+        ".claude/agents",
+        ".claude/skills/ps_x",
+        ".claude/rules/preset-clock.md",
+        ".cursor/rules/claude-global.mdc",
+        ".cursor/agents/a.md",
+        ".cursor/.dotfiles-managed.json",
+        ".config/opencode/AGENTS.md",
+        ".config/opencode/agents/a.md",
+        ".config/opencode/.dotfiles-managed.json",
+    ] {
         assert!(!home.join(gone).exists() && home.join(gone).symlink_metadata().is_err(), "{gone} should be gone");
     }
     // what is the user's stays
@@ -90,7 +106,10 @@ fn removes_ours_and_keeps_the_users() {
     assert!(hooks["hooks"].get("beforeSubmitPrompt").is_none());
     assert_eq!(json_at(&home.join(".cursor/mcp.json"))["mcpServers"], json!({"mine": {"url": "https://mine.test"}}));
     assert_eq!(json_at(&home.join(".cursor/cli-config.json"))["permissions"]["allow"], json!(["Shell(mine)"]));
-    assert_eq!(json_at(&home.join(".config/opencode/opencode.jsonc"))["permission"], json!({"bash": {"mine *": "allow"}}));
+    assert_eq!(
+        json_at(&home.join(".config/opencode/opencode.jsonc"))["permission"],
+        json!({"bash": {"mine *": "allow"}})
+    );
     assert!(json_at(&home.join(".config/opencode/opencode.jsonc")).get("mcp").is_none());
     assert_eq!(json_at(&home.join(".config/opencode/tui.json")), json!({"other": 1}));
     // the repo itself stays, and a second run changes nothing and still succeeds

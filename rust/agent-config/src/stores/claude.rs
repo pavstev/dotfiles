@@ -94,7 +94,11 @@ pub fn project_name(home: &str, folder: &str) -> String {
     if p.starts_with("-private-") {
         return "tmp".into();
     }
-    let p = if let Some(r) = p.strip_prefix(&format!("{hm}-")) { r.to_string() } else { p.trim_start_matches('-').to_string() };
+    let p = if let Some(r) = p.strip_prefix(&format!("{hm}-")) {
+        r.to_string()
+    } else {
+        p.trim_start_matches('-').to_string()
+    };
     let r = WORK_PFX.replace(&p, "").into_owned();
     if r.is_empty() { "?".into() } else { r }
 }
@@ -189,7 +193,10 @@ fn line_docs(o: &Value, time: i64, c: &FileCtx, names: &mut HashMap<String, Stri
                 }
                 return;
             }
-            if truthy(val(o, "isMeta")) || truthy(val(o, "isCompactSummary")) || (truthy(val(o, "isSidechain")) && !c.is_sub) {
+            if truthy(val(o, "isMeta"))
+                || truthy(val(o, "isCompactSummary"))
+                || (truthy(val(o, "isSidechain")) && !c.is_sub)
+            {
                 return;
             }
             let t = text_of(content);

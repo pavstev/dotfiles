@@ -10,7 +10,8 @@ use std::process::{Command, Stdio};
 /// java is the macOS stub.
 pub fn home_of(dir: &Path) -> Option<PathBuf> {
     let java = if os::is_windows() { "java.exe" } else { "java" };
-    [dir.join("libexec/openjdk.jdk/Contents/Home"), dir.join("Contents/Home"), dir.to_path_buf()].into_iter()
+    [dir.join("libexec/openjdk.jdk/Contents/Home"), dir.join("Contents/Home"), dir.to_path_buf()]
+        .into_iter()
         .find(|d| d != Path::new("/usr") && os::is_executable(&d.join("bin").join(java)))
 }
 
@@ -18,16 +19,24 @@ pub fn home_of(dir: &Path) -> Option<PathBuf> {
 /// the same Java.
 pub fn real(home: &Path) -> PathBuf {
     let java = home.join("bin").join("java");
-    fs::canonicalize(&java).ok()
+    fs::canonicalize(&java)
+        .ok()
         .and_then(|j| j.parent().and_then(|p| p.parent()).map(Path::to_path_buf))
         .unwrap_or_else(|| home.to_path_buf())
 }
 
 /// The entries of `dir` whose names start with `prefix`, sorted.
 fn glob(dir: &Path, prefix: &str) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(dir).into_iter().flatten().flatten()
-        .filter(|e| { let n = e.file_name().to_string_lossy().into_owned(); n.starts_with(prefix) && !n.starts_with('.') })
-        .map(|e| e.path()).collect();
+    let mut v: Vec<PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.starts_with(prefix) && !n.starts_with('.')
+        })
+        .map(|e| e.path())
+        .collect();
     v.sort();
     v
 }
@@ -41,11 +50,19 @@ fn candidates() -> Vec<PathBuf> {
     let h = os::home();
     let mut v = Vec::new();
     let jh = Path::new("/usr/libexec/java_home");
-    if os::is_executable(jh) && let Ok(o) = Command::new(jh).arg("-V").stdout(Stdio::null()).output() {
+    if os::is_executable(jh)
+        && let Ok(o) = Command::new(jh).arg("-V").stdout(Stdio::null()).output()
+    {
         // "    21.0.5 (arm64) "Eclipse Adoptium" - "OpenJDK 21.0.5" /Library/Java/.../Home"
         for line in String::from_utf8_lossy(&o.stderr).lines() {
-            if !line.starts_with([' ', '\t']) { continue; }
-            if let Some(i) = line.rfind([' ', '\t']) && line[i + 1..].starts_with('/') { v.push(PathBuf::from(&line[i + 1..])); }
+            if !line.starts_with([' ', '\t']) {
+                continue;
+            }
+            if let Some(i) = line.rfind([' ', '\t'])
+                && line[i + 1..].starts_with('/')
+            {
+                v.push(PathBuf::from(&line[i + 1..]));
+            }
         }
     }
     v.extend(glob(Path::new("/Library/Java/JavaVirtualMachines"), ""));
@@ -58,12 +75,16 @@ fn candidates() -> Vec<PathBuf> {
     v.extend(glob(&env_or("JENV_ROOT", h.join(".jenv")).join("versions"), ""));
     let gradle = glob(&h.join(".gradle/jdks"), "");
     v.extend(gradle.iter().cloned());
-    for g in &gradle { v.extend(glob(g, "")); }
+    for g in &gradle {
+        v.extend(glob(g, ""));
+    }
     v.extend(glob(&h.join(".jbang/cache/jdks"), ""));
     v.extend(glob(Path::new("/usr/lib/jvm"), ""));
     v.push(h.join(".local/share/JetBrains/Toolbox/apps/android-studio/jbr"));
     v.push(PathBuf::from("/Applications/Android Studio.app/Contents/jbr"));
-    if let Some(j) = std::env::var_os("JAVA_HOME").filter(|j| !j.is_empty()) { v.push(PathBuf::from(j)); }
+    if let Some(j) = std::env::var_os("JAVA_HOME").filter(|j| !j.is_empty()) {
+        v.push(PathBuf::from(j));
+    }
     v
 }
 
@@ -75,7 +96,9 @@ pub fn homes() -> Vec<PathBuf> {
     for d in candidates() {
         let Some(h) = home_of(&d) else { continue };
         let r = real(&h);
-        if seen.contains(&r) { continue; }
+        if seen.contains(&r) {
+            continue;
+        }
         seen.push(r);
         out.push(h);
     }
@@ -85,12 +108,19 @@ pub fn homes() -> Vec<PathBuf> {
 /// (major, version, vendor), from the release file, else from `java -version`.
 pub fn info(home: &Path) -> (u32, String, String) {
     let rel = fs::read_to_string(home.join("release")).unwrap_or_default();
-    let field = |k: &str| rel.lines().find_map(|l| l.strip_prefix(&format!("{}=\"", k)).and_then(|r| r.strip_suffix('"')).map(String::from));
+    let field = |k: &str| {
+        rel.lines()
+            .find_map(|l| l.strip_prefix(&format!("{}=\"", k)).and_then(|r| r.strip_suffix('"')).map(String::from))
+    };
     let mut v = field("JAVA_VERSION").unwrap_or_default();
     let vendor = field("IMPLEMENTOR").unwrap_or_default();
-    if v.is_empty() && let Ok(o) = Command::new(home.join("bin").join("java")).arg("-version").output() {
+    if v.is_empty()
+        && let Ok(o) = Command::new(home.join("bin").join("java")).arg("-version").output()
+    {
         let text = String::from_utf8_lossy(&o.stderr).into_owned();
-        if let Some(first) = text.lines().next() && let Some(i) = first.find("version \"") {
+        if let Some(first) = text.lines().next()
+            && let Some(i) = first.find("version \"")
+        {
             let rest = &first[i + 9..];
             v = rest.split('"').next().unwrap_or("").to_string();
         }
@@ -112,17 +142,29 @@ pub fn where_from(home: &Path) -> String {
     let s = home.to_string_lossy().into_owned();
     let h = os::home().to_string_lossy().into_owned();
     let has = |p: &str| s.contains(p);
-    if has("/Cellar/openjdk") || has("/opt/openjdk") { "Homebrew".into() }
-    else if s.starts_with(&format!("{}/Library/Java/", h)) { "~/Library/Java".into() }
-    else if s.starts_with("/Library/Java/") { "/Library/Java".into() }
-    else if has("/mise/installs/") { "mise".into() }
-    else if has("/.sdkman/") || has("/candidates/java/") { "SDKMAN".into() }
-    else if has("/.asdf/") { "asdf".into() }
-    else if has("/.jenv/") { "jenv".into() }
-    else if has("/.gradle/jdks/") { "Gradle".into() }
-    else if has("/.jbang/") { "jbang".into() }
-    else if has("/Android Studio") { "Android Studio".into() }
-    else { s }
+    if has("/Cellar/openjdk") || has("/opt/openjdk") {
+        "Homebrew".into()
+    } else if s.starts_with(&format!("{}/Library/Java/", h)) {
+        "~/Library/Java".into()
+    } else if s.starts_with("/Library/Java/") {
+        "/Library/Java".into()
+    } else if has("/mise/installs/") {
+        "mise".into()
+    } else if has("/.sdkman/") || has("/candidates/java/") {
+        "SDKMAN".into()
+    } else if has("/.asdf/") {
+        "asdf".into()
+    } else if has("/.jenv/") {
+        "jenv".into()
+    } else if has("/.gradle/jdks/") {
+        "Gradle".into()
+    } else if has("/.jbang/") {
+        "jbang".into()
+    } else if has("/Android Studio") {
+        "Android Studio".into()
+    } else {
+        s
+    }
 }
 
 /// "21.0.5 · Eclipse Adoptium · /Library/Java".
@@ -133,7 +175,9 @@ pub fn label(home: &Path) -> String {
 }
 
 /// Long-term-support versions: 8, 11, 17, 21, 25, ...
-pub fn is_lts(major: u32) -> bool { major == 8 || major == 11 || (major >= 17 && (major - 17).is_multiple_of(4)) }
+pub fn is_lts(major: u32) -> bool {
+    major == 8 || major == 11 || (major >= 17 && (major - 17).is_multiple_of(4))
+}
 
 /// A sort key: LTS first, then the newest.
 pub fn rank_key(v: &str) -> (bool, u64) {
@@ -146,7 +190,13 @@ pub fn rank_key(v: &str) -> (bool, u64) {
 
 /// The Java homes, best first. Equal keys keep their order.
 pub fn ranked() -> Vec<PathBuf> {
-    let mut v: Vec<(bool, u64, PathBuf)> = homes().into_iter().map(|h| { let (l, k) = rank_key(&info(&h).1); (l, k, h) }).collect();
+    let mut v: Vec<(bool, u64, PathBuf)> = homes()
+        .into_iter()
+        .map(|h| {
+            let (l, k) = rank_key(&info(&h).1);
+            (l, k, h)
+        })
+        .collect();
     v.sort_by_key(|t| std::cmp::Reverse((t.0, t.1)));
     v.into_iter().map(|t| t.2).collect()
 }
@@ -159,10 +209,18 @@ pub fn clean_path(p: &str) -> String {
         p = p[1..p.len() - 1].to_string();
     }
     p = p.replace("\\ ", " ");
-    if p == "~" || p.starts_with("~/") { p = format!("{}{}", os::home().display(), &p[1..]); }
-    while p.ends_with('/') && p != "/" { p.pop(); }
-    if let Some(s) = p.strip_suffix("/bin/java") { p = s.to_string(); }
-    if let Some(s) = p.strip_suffix("/bin") { p = s.to_string(); }
+    if p == "~" || p.starts_with("~/") {
+        p = format!("{}{}", os::home().display(), &p[1..]);
+    }
+    while p.ends_with('/') && p != "/" {
+        p.pop();
+    }
+    if let Some(s) = p.strip_suffix("/bin/java") {
+        p = s.to_string();
+    }
+    if let Some(s) = p.strip_suffix("/bin") {
+        p = s.to_string();
+    }
     p
 }
 

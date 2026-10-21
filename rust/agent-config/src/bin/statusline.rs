@@ -107,13 +107,8 @@ fn git_branch(cwd: &str) -> String {
 }
 
 /// Env vars that change how git finds the repo. With one set, only git itself can answer.
-const GIT_ENV: [&str; 5] = [
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_COMMON_DIR",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-];
+const GIT_ENV: [&str; 5] =
+    ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"];
 
 /// The branch without a git process, or `None` when git must answer.
 fn fast_branch(cwd: &str) -> Option<String> {
@@ -305,9 +300,7 @@ fn main() {
     let _ = std::io::stdin().read_to_end(&mut raw);
     let input: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     if let Some(json) = pace_json(&input, now) {
         let _ = write_atomic(&cache_dir().join("claude-pace.json"), &format!("{json}\n"));
     }
@@ -388,14 +381,15 @@ mod tests {
         fs::write(gitdir_file.path().join(".git"), "nonsense\n").unwrap();
         let no_head = tempfile::tempdir().unwrap();
         fs::create_dir(no_head.path().join(".git")).unwrap();
-        let (invalid, unknown, main) = (repo("ref: refs/heads/.invalid\n"), repo("garbage\n"), repo("ref: refs/heads/main\n"));
+        let (invalid, unknown, main) =
+            (repo("ref: refs/heads/.invalid\n"), repo("garbage\n"), repo("ref: refs/heads/main\n"));
         let plain = tempfile::tempdir().unwrap();
         let dirs = [
             gitdir_file.path().to_path_buf(),
             no_head.path().to_path_buf(),
             invalid.path().to_path_buf(),
             unknown.path().to_path_buf(),
-            main.path().join(".git"), // the cwd is inside the git dir
+            main.path().join(".git"),  // the cwd is inside the git dir
             plain.path().join("nope"), // a missing cwd
         ];
         for dir in dirs {

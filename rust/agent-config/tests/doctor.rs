@@ -96,8 +96,14 @@ fn fixture(tag: &str) -> Fx {
         &c.join("settings.json"),
         r#"{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "test -r ~/.claude/hooks/rust-bin || exit 0; sh ~/.claude/hooks/rust-bin --hook guard pretool"}]}]}, "statusLine": {"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline"}}"#,
     );
-    wr(&c.join("presets/workflow/rules.md"), "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n");
-    wr(&c.join("presets/clock/rules.md"), "---\nname: clock\ndescription: d\nguard: [G11]\n---\n# Clock\n\nclock line\n");
+    wr(
+        &c.join("presets/workflow/rules.md"),
+        "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n",
+    );
+    wr(
+        &c.join("presets/clock/rules.md"),
+        "---\nname: clock\ndescription: d\nguard: [G11]\n---\n# Clock\n\nclock line\n",
+    );
     fs::create_dir_all(fx.home.join(".claude")).unwrap();
     for d in ["agents", "hooks", "output-styles", "CLAUDE.md"] {
         symlink(&c.join(d), &fx.home.join(".claude").join(d));

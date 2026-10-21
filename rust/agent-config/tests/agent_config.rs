@@ -33,7 +33,8 @@ fn rj(p: &Path) -> Value {
     serde_json::from_str(&rd(p)).unwrap()
 }
 fn names(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> = fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let mut v: Vec<String> =
+        fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     v.sort();
     v
 }
@@ -222,13 +223,18 @@ fn test_readonly_agent_gets_edit_deny() {
     fx.agent("cr.md", "---\nname: code-reviewer\ndescription: reviews\ntools: Read, Grep, Glob, Bash\ndisallowedTools: Write, Edit, NotebookEdit, Agent\n---\n\nBody\n");
     let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0);
-    assert!(rd(&fx.odir().join("agents").join("code-reviewer.md")).contains("permission:\n  edit: deny\n  skill: allow"));
+    assert!(
+        rd(&fx.odir().join("agents").join("code-reviewer.md")).contains("permission:\n  edit: deny\n  skill: allow")
+    );
 }
 
 #[test]
 fn test_write_capable_agent_does_not_deny_edit() {
     let fx = Fx::new("ac-oc-agents-write");
-    fx.agent("ti.md", "---\nname: task-implementer\ndescription: builds\ntools: Read, Edit, Write, Bash, Grep, Glob\n---\n\nBody\n");
+    fx.agent(
+        "ti.md",
+        "---\nname: task-implementer\ndescription: builds\ntools: Read, Edit, Write, Bash, Grep, Glob\n---\n\nBody\n",
+    );
     let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0);
     assert!(!rd(&fx.odir().join("agents").join("task-implementer.md")).contains("edit: deny"));
@@ -366,7 +372,10 @@ fn test_mcp_added_when_opt_in() {
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     let m = rj(&oc_cfg(&fx))["mcp"].clone();
-    assert_eq!(m["cloudflare-docs"], json!({"type": "remote", "url": "https://docs.mcp.cloudflare.com/mcp", "enabled": true}));
+    assert_eq!(
+        m["cloudflare-docs"],
+        json!({"type": "remote", "url": "https://docs.mcp.cloudflare.com/mcp", "enabled": true})
+    );
 }
 
 #[test]
@@ -522,19 +531,56 @@ fn test_a_symlinked_config_is_never_claimed() {
 /// The key set the Opencode theme loader reads, read out of the shipped themes in opencode 2.0.25.
 /// A missing key aborts the whole theme ("Failed to load theme").
 const SHIPPED_KEYS: &[&str] = &[
-    "primary", "secondary", "accent", "error", "warning", "success", "info",
-    "text", "textMuted", "background", "backgroundPanel", "backgroundElement",
-    "border", "borderActive", "borderSubtle",
-    "diffAdded", "diffRemoved", "diffContext", "diffHunkHeader",
-    "diffHighlightAdded", "diffHighlightRemoved",
-    "diffAddedBg", "diffRemovedBg", "diffContextBg", "diffLineNumber",
-    "diffAddedLineNumberBg", "diffRemovedLineNumberBg",
-    "markdownText", "markdownHeading", "markdownLink", "markdownLinkText", "markdownCode",
-    "markdownBlockQuote", "markdownEmph", "markdownStrong", "markdownHorizontalRule",
-    "markdownListItem", "markdownListEnumeration", "markdownImage", "markdownImageText",
+    "primary",
+    "secondary",
+    "accent",
+    "error",
+    "warning",
+    "success",
+    "info",
+    "text",
+    "textMuted",
+    "background",
+    "backgroundPanel",
+    "backgroundElement",
+    "border",
+    "borderActive",
+    "borderSubtle",
+    "diffAdded",
+    "diffRemoved",
+    "diffContext",
+    "diffHunkHeader",
+    "diffHighlightAdded",
+    "diffHighlightRemoved",
+    "diffAddedBg",
+    "diffRemovedBg",
+    "diffContextBg",
+    "diffLineNumber",
+    "diffAddedLineNumberBg",
+    "diffRemovedLineNumberBg",
+    "markdownText",
+    "markdownHeading",
+    "markdownLink",
+    "markdownLinkText",
+    "markdownCode",
+    "markdownBlockQuote",
+    "markdownEmph",
+    "markdownStrong",
+    "markdownHorizontalRule",
+    "markdownListItem",
+    "markdownListEnumeration",
+    "markdownImage",
+    "markdownImageText",
     "markdownCodeBlock",
-    "syntaxComment", "syntaxKeyword", "syntaxFunction", "syntaxVariable", "syntaxString",
-    "syntaxNumber", "syntaxType", "syntaxOperator", "syntaxPunctuation",
+    "syntaxComment",
+    "syntaxKeyword",
+    "syntaxFunction",
+    "syntaxVariable",
+    "syntaxString",
+    "syntaxNumber",
+    "syntaxType",
+    "syntaxOperator",
+    "syntaxPunctuation",
 ];
 
 fn theme_path(fx: &Fx) -> PathBuf {
@@ -825,7 +871,8 @@ fn test_copy_without_a_clipboard_tool_prints_the_rules_and_fails() {
     let fx = Fx::new("ac-ur-no-clip");
     let empty = fx.tmp.join("empty-bin");
     fs::create_dir_all(&empty).unwrap();
-    let (rc, out, _) = fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", empty.to_str().unwrap())]);
+    let (rc, out, _) =
+        fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", empty.to_str().unwrap())]);
     assert_eq!(rc, 1);
     assert!(out.contains("## "), "{out}");
     assert!(!fx.home.join(USER_RULES_MARK).exists());
@@ -941,7 +988,8 @@ fn test_layout_only_rewrite_is_no_drift() {
     let cs = Cs::new("ac-cs-layout");
     cs.build();
     // Claude's layout: 4-space indent, keys sorted
-    let sorted: std::collections::BTreeMap<String, Value> = rj(&cs.live).as_object().unwrap().clone().into_iter().collect();
+    let sorted: std::collections::BTreeMap<String, Value> =
+        rj(&cs.live).as_object().unwrap().clone().into_iter().collect();
     let mut buf = Vec::new();
     let fmt = serde_json::ser::PrettyFormatter::with_indent(b"    ");
     serde::Serialize::serialize(&sorted, &mut serde_json::Serializer::with_formatter(&mut buf, fmt)).unwrap();
@@ -1009,7 +1057,10 @@ fn test_promote_moves_a_key_to_the_repo() {
     cs.build();
     let (code, out, _) = cs.fx.ac(&["claude-settings", "promote", "permissions.allow"]);
     assert_eq!(code, 0);
-    assert_eq!(rj(&cs.fx.claude.join("settings.json"))["permissions"]["allow"], json!(["Bash(git status:*)", "WebFetch"]));
+    assert_eq!(
+        rj(&cs.fx.claude.join("settings.json"))["permissions"]["allow"],
+        json!(["Bash(git status:*)", "WebFetch"])
+    );
     assert_eq!(rj(&cs.layer), json!({"statusLine": {"type": "command"}}));
     assert!(out.contains("Commit it to share it"), "{out}");
     assert_eq!(rj(&cs.live)["permissions"]["allow"], json!(["Bash(git status:*)", "WebFetch"]));

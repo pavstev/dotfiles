@@ -5,4 +5,6 @@
 
 use std::path::Path;
 
-pub fn step(_repo: &Path) { crate::tools_cli::run(Vec::new()); }
+pub fn step(_repo: &Path) {
+    crate::tools_cli::run(Vec::new());
+}

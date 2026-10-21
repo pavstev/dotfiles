@@ -3,11 +3,7 @@
 
 use std::process::Command;
 
-const TARGETS: [&str; 3] = [
-    "aarch64-apple-darwin",
-    "x86_64-unknown-linux-gnu",
-    "x86_64-pc-windows-gnu",
-];
+const TARGETS: [&str; 3] = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"];
 
 #[test]
 fn no_c_build_on_any_target() {
@@ -15,24 +11,10 @@ fn no_c_build_on_any_target() {
     for target in TARGETS {
         let out = Command::new(&cargo)
             .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args([
-                "tree",
-                "--target",
-                target,
-                "-e",
-                "normal,build",
-                "--prefix",
-                "none",
-                "--format",
-                "{p}",
-            ])
+            .args(["tree", "--target", target, "-e", "normal,build", "--prefix", "none", "--format", "{p}"])
             .output()
             .expect("run cargo tree");
-        assert!(
-            out.status.success(),
-            "cargo tree failed for {target}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        assert!(out.status.success(), "cargo tree failed for {target}: {}", String::from_utf8_lossy(&out.stderr));
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines() {
             for bad in ["cc ", "cmake ", "bindgen "] {

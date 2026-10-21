@@ -11,10 +11,8 @@ use agent_config::pycompat::{Item, classify_arg, py_strip, repr_str};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 
-const KINDS: &[&str] = &[
-    "decision", "login", "no-tool", "optional", "payment", "refused", "secret", "task", "value",
-    "work",
-];
+const KINDS: &[&str] =
+    &["decision", "login", "no-tool", "optional", "payment", "refused", "secret", "task", "value", "work"];
 const RISKS: &[&str] = &["delete", "deploy", "paid", "prod-config", "push"];
 const USER_ONLY: &[&str] = &["login", "no-tool", "payment", "refused", "secret"];
 const CAP: usize = 4;
@@ -91,11 +89,7 @@ fn float_repr(f: f64) -> String {
     let decpt = exp + 1;
     let n = digits.len() as i32;
     let body = if !(-3..=16).contains(&decpt) {
-        let m = if n > 1 {
-            format!("{}.{}", &digits[..1], &digits[1..])
-        } else {
-            digits.clone()
-        };
+        let m = if n > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits.clone() };
         let x = decpt - 1;
         format!("{}e{}{:02}", m, if x < 0 { '-' } else { '+' }, x.abs())
     } else if decpt <= 0 {
@@ -119,10 +113,7 @@ fn py_repr(v: &Py) -> String {
         Py::List(l) => format!("[{}]", l.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
         Py::Dict(d) => format!(
             "{{{}}}",
-            d.iter()
-                .map(|(k, v)| format!("{}: {}", repr_str(k), py_repr(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
+            d.iter().map(|(k, v)| format!("{}: {}", repr_str(k), py_repr(v))).collect::<Vec<_>>().join(", ")
         ),
     }
 }
@@ -135,10 +126,7 @@ fn py_str(v: &Py) -> String {
 }
 
 fn str_list_repr(items: &[&str]) -> String {
-    format!(
-        "[{}]",
-        items.iter().map(|s| repr_str(s)).collect::<Vec<_>>().join(", ")
-    )
+    format!("[{}]", items.iter().map(|s| repr_str(s)).collect::<Vec<_>>().join(", "))
 }
 
 fn json_escape(s: &str) -> String {
@@ -182,10 +170,7 @@ fn dumps(v: &Py, level: usize) -> String {
         Py::List(l) if l.is_empty() => "[]".into(),
         Py::List(l) => format!(
             "[\n{}\n{}]",
-            l.iter()
-                .map(|x| format!("{}{}", pad, dumps(x, level + 1)))
-                .collect::<Vec<_>>()
-                .join(",\n"),
+            l.iter().map(|x| format!("{}{}", pad, dumps(x, level + 1))).collect::<Vec<_>>().join(",\n"),
             end
         ),
         Py::Dict(d) if d.is_empty() => "{}".into(),
@@ -358,11 +343,7 @@ impl Reader {
                 None => return Err(JErr { msg: "Invalid \\uXXXX escape", pos: u }),
             };
             i = u + 5;
-            if (0xD800..=0xDBFF).contains(&code)
-                && i + 6 < n
-                && self.s[i] == '\\'
-                && self.s[i + 1] == 'u'
-            {
+            if (0xD800..=0xDBFF).contains(&code) && i + 6 < n && self.s[i] == '\\' && self.s[i + 1] == 'u' {
                 match self.hex4(i + 2) {
                     None => return Err(JErr { msg: "Invalid \\uXXXX escape", pos: i + 1 }),
                     Some(lo) if (0xDC00..=0xDFFF).contains(&lo) => {
@@ -383,10 +364,7 @@ impl Reader {
         if i >= n || self.s[i] != '}' {
             loop {
                 if i >= n || self.s[i] != '"' {
-                    return Err(JErr {
-                        msg: "Expecting property name enclosed in double quotes",
-                        pos: i,
-                    });
+                    return Err(JErr { msg: "Expecting property name enclosed in double quotes", pos: i });
                 }
                 let (key, e) = self.string(i + 1)?;
                 i = self.ws(e);
@@ -476,10 +454,7 @@ fn decode_text(bytes: &[u8], universal_newlines: bool) -> Result<String, String>
                         "invalid continuation byte"
                     },
                 ),
-                Some(n) => (
-                    format!("bytes in position {}-{}", p, p + n - 1),
-                    "invalid continuation byte",
-                ),
+                Some(n) => (format!("bytes in position {}-{}", p, p + n - 1), "invalid continuation byte"),
                 None => {
                     let last = bytes.len() - 1;
                     if last == p {
@@ -588,12 +563,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
         let kind = match kind_v.as_str() {
             Some(k) if KINDS.contains(&k) => k.to_string(),
             _ => {
-                return bad(format!(
-                    "{}: kind {} not in {}",
-                    rid,
-                    py_repr(&kind_v),
-                    str_list_repr(KINDS)
-                ));
+                return bad(format!("{}: kind {} not in {}", rid, py_repr(&kind_v), str_list_repr(KINDS)));
             }
         };
         let mut has_risk = false;
@@ -603,12 +573,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
             match rv.as_str() {
                 Some(s) if RISKS.contains(&s) => has_risk = true,
                 _ => {
-                    return bad(format!(
-                        "{}: risk {} not in {}",
-                        rid,
-                        py_repr(rv),
-                        str_list_repr(RISKS)
-                    ));
+                    return bad(format!("{}: risk {} not in {}", rid, py_repr(rv), str_list_repr(RISKS)));
                 }
             }
         }
@@ -626,10 +591,7 @@ fn validate(rows: &Py) -> Result<(Vec<Row>, Vec<String>), String> {
                 None => String::new(),
             };
             if py_strip(&tried).is_empty() {
-                return bad(format!(
-                    "{}: no-tool needs 'tried': name the tool you tried first",
-                    rid
-                ));
+                return bad(format!("{}: no-tool needs 'tried': name the tool you tried first", rid));
             }
         }
         let mut after: Vec<String> = Vec::new();
@@ -785,15 +747,10 @@ fn route(rows_py: &Py, kill: bool, cap: usize) -> Result<Res, String> {
         out.insert(r.id.clone(), "DEFAULT");
     }
     let do_ids: Vec<String> = rows.iter().filter(|r| out[&r.id] == "DO").map(|r| r.id.clone()).collect();
-    let waits_on_do = rows
-        .iter()
-        .any(|r| out[&r.id] == "WAIT" && r.after.iter().any(|d| out[d] == "DO"));
+    let waits_on_do = rows.iter().any(|r| out[&r.id] == "WAIT" && r.after.iter().any(|d| out[d] == "DO"));
     let then = if !asked.is_empty() || waits_on_do { "rerun" } else { "mic-drop" };
     Ok(Res {
-        routes: rows
-            .iter()
-            .map(|r| (r.id.clone(), out[&r.id].to_string(), r.text.clone()))
-            .collect(),
+        routes: rows.iter().map(|r| (r.id.clone(), out[&r.id].to_string(), r.text.clone())).collect(),
         do_ids,
         ask: asked.iter().map(|r| r.id.clone()).collect(),
         default: defaulted.iter().map(|r| r.id.clone()).collect(),
@@ -805,11 +762,7 @@ fn route(rows_py: &Py, kill: bool, cap: usize) -> Result<Res, String> {
 
 fn pad_to(s: &str, width: usize) -> String {
     let n = s.chars().count();
-    if n >= width {
-        s.to_string()
-    } else {
-        format!("{}{}", s, " ".repeat(width - n))
-    }
+    if n >= width { s.to_string() } else { format!("{}{}", s, " ".repeat(width - n)) }
 }
 
 fn render(res: &Res) -> String {
@@ -1014,8 +967,7 @@ fn parse_args(argv: &[String]) -> Result<Args, ArgExit> {
                         return Err(ArgExit::Error("argument --cap: expected one argument".into()));
                     }
                 };
-                args.cap = positive_int(&value)
-                    .map_err(|m| ArgExit::Error(format!("argument --cap: {}", m)))?;
+                args.cap = positive_int(&value).map_err(|m| ArgExit::Error(format!("argument --cap: {}", m)))?;
             }
         }
     }
@@ -1040,18 +992,11 @@ fn run(argv: &[String], stdin: &mut dyn Read) -> Outcome {
         Ok(a) => a,
         Err(ArgExit::Help) => return Outcome { code: 0, stdout: HELP.into(), stderr: String::new() },
         Err(ArgExit::Error(m)) => {
-            return Outcome {
-                code: 2,
-                stdout: String::new(),
-                stderr: format!("{}{}: error: {}\n", USAGE, PROG, m),
-            };
+            return Outcome { code: 2, stdout: String::new(), stderr: format!("{}{}: error: {}\n", USAGE, PROG, m) };
         }
     };
-    let bad_input = |m: String| Outcome {
-        code: 2,
-        stdout: format!("route.py: bad input: {}\n", m),
-        stderr: String::new(),
-    };
+    let bad_input =
+        |m: String| Outcome { code: 2, stdout: format!("route.py: bad input: {}\n", m), stderr: String::new() };
     let (bytes, from_file) = match a.file.as_deref() {
         Some(path) if !path.is_empty() => match std::fs::read(path) {
             Ok(b) => (b, true),
@@ -1080,10 +1025,7 @@ fn run(argv: &[String], stdin: &mut dyn Read) -> Outcome {
 }
 
 fn main() {
-    let argv: Vec<String> = std::env::args_os()
-        .skip(1)
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+    let argv: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
     let o = run(&argv, &mut std::io::stdin());
     let _ = std::io::stdout().write_all(o.stdout.as_bytes());
     let _ = std::io::stderr().write_all(o.stderr.as_bytes());
@@ -1285,7 +1227,10 @@ mod tests {
             (r#"[{"id": "ok", "kind": "work", "text": "t"}, 5]"#, "row 2: not an object"),
             (r#"[{"id": 5, "kind": "work", "text": "t"}]"#, "row 1: id must be a string"),
             (r#"[{"id": ["a"], "kind": "work", "text": "t"}]"#, "row 1: id must be a string"),
-            (r#"[{"id": "x", "kind": "work", "text": "t"}, {"id": "x", "kind": "work", "text": "u"}]"#, "row 2: duplicate id x"),
+            (
+                r#"[{"id": "x", "kind": "work", "text": "t"}, {"id": "x", "kind": "work", "text": "u"}]"#,
+                "row 2: duplicate id x",
+            ),
             (r#"[{"id": "x", "kind": "work", "text": "t", "after": ["x"]}]"#, "x: waits on itself"),
             (r#"[{"id": "x", "kind": "work", "text": "t", "after": ["zz"]}]"#, "x: after names unknown id zz"),
             (r#"[{"kind": "work", "text": "t", "after": ["gone"]}]"#, "r1: after names unknown id gone"), // the default id
@@ -1300,13 +1245,29 @@ mod tests {
         let res = route(&p(r#"[{"id": "x", "kind": "work", "text": ""}]"#), false, CAP).unwrap();
         assert!(res.routes.is_empty());
         assert_eq!(res.dropped, ["dropped row x: no text"]);
-        let res = route(&p(r#"[{"id": "a", "kind": "work", "text": "t", "after": ["b"]}, {"id": "b"}]"#), false, CAP).unwrap();
+        let res = route(&p(r#"[{"id": "a", "kind": "work", "text": "t", "after": ["b"]}, {"id": "b"}]"#), false, CAP)
+            .unwrap();
         assert_eq!(r(&res, "a"), "DO");
     }
 
     #[test]
     fn test_json_errors() {
-        for src in ["", "[", "{", "{\"a\"", "{\"a\":1", "[1,]", "\"abc", "\"a\\x\"", "\"\\u12\"", "\"a\tb\"", "01", "[1] x", "\u{feff}[]", "[\n1\n,\n]"] {
+        for src in [
+            "",
+            "[",
+            "{",
+            "{\"a\"",
+            "{\"a\":1",
+            "[1,]",
+            "\"abc",
+            "\"a\\x\"",
+            "\"\\u12\"",
+            "\"a\tb\"",
+            "01",
+            "[1] x",
+            "\u{feff}[]",
+            "[\n1\n,\n]",
+        ] {
             assert!(json_loads(src).is_err(), "{src:?}");
         }
         assert_eq!(p("\"\\ud83d\\ude00\""), Py::Str("\u{1F600}".into()));
@@ -1359,7 +1320,11 @@ mod tests {
     fn test_cli_json_lists_the_dropped_rows() {
         let o = cli(&["--json"], r#"[{"id":"a","kind":"work","text":"x"},{"id":"b"}]"#);
         assert_eq!(o.code, 0);
-        assert!(o.stdout.ends_with("  \"then\": \"mic-drop\",\n  \"dropped\": [\n    \"dropped row b: no text\"\n  ]\n}\n"), "{}", o.stdout);
+        assert!(
+            o.stdout.ends_with("  \"then\": \"mic-drop\",\n  \"dropped\": [\n    \"dropped row b: no text\"\n  ]\n}\n"),
+            "{}",
+            o.stdout
+        );
         let o = cli(&[], r#"[{"id":"a","kind":"work","text":"x"},{"id":"b"}]"#);
         assert!(o.stdout.starts_with("DO      a    x\ndropped row b: no text\n\nNEXT 1"), "{}", o.stdout);
     }
@@ -1407,5 +1372,4 @@ mod tests {
             assert!(o.stderr.starts_with(USAGE), "{bad:?}: {}", o.stderr);
         }
     }
-
 }

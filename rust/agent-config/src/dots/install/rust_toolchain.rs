@@ -7,15 +7,22 @@ use crate::out::{self, info, ok_if_changed, skip, warn};
 use std::path::Path;
 
 /// The rustup settings file names a default toolchain (a line that starts with it).
-fn has_default_toolchain(settings: &str) -> bool { settings.lines().any(|l| l.starts_with("default_toolchain")) }
+fn has_default_toolchain(settings: &str) -> bool {
+    settings.lines().any(|l| l.starts_with("default_toolchain"))
+}
 
 /// Homebrew's rustup also reads its own fallback settings file, so it can show a toolchain
 /// while ~/.rustup has no default. A rustup-init copy in ~/.cargo/bin then finds none and
 /// every cargo call fails. So the toolchain counts as set only when the user settings name
 /// a default too.
 fn toolchain_set() -> bool {
-    if !quiet("rustup", &["show", "active-toolchain"]) { return false; }
-    let home = std::env::var_os("RUSTUP_HOME").filter(|v| !v.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(|| os::home().join(".rustup"));
+    if !quiet("rustup", &["show", "active-toolchain"]) {
+        return false;
+    }
+    let home = std::env::var_os("RUSTUP_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| os::home().join(".rustup"));
     std::fs::read_to_string(home.join("settings.toml")).map(|t| has_default_toolchain(&t)).unwrap_or(false)
 }
 

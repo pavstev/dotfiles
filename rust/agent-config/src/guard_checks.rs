@@ -22,8 +22,10 @@ const SECRET_FILE: &str = "~/.config/zsh/local.zsh";
 
 const MSG_G14: &str = "G14: bare sed -i on macOS eats the script as the backup suffix. Give a suffix: `sed -i '' 's/a/b/' f` (or `-i.bak`). Or use the Edit tool.";
 const MSG_G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
-const MSG_G15_PS: &str = "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
-const MSG_G15_PGREP: &str = "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
+const MSG_G15_PS: &str =
+    "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
+const MSG_G15_PGREP: &str =
+    "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
 const MSG_G15_PROCS: &str = "G15: procs prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, then `ps -o pid=,etime=,ucomm= -p <pid>`.";
 
 /// The G15 message for a search that can reach local.zsh: the exact exclude flag of the tool used.
@@ -84,9 +86,7 @@ pub fn expanduser(p: &str) -> String {
     if i != 1 {
         return p.to_string(); // ~user form: left as is
     }
-    let home = env::var("HOME")
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
+    let home = env::var("HOME").ok().or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
     let Some(home) = home else { return p.to_string() };
     let home = home.trim_end_matches('/');
     let out = format!("{}{}", home, &p[i..]);
@@ -145,7 +145,13 @@ fn normpath(p: &str) -> String {
     if p.is_empty() {
         return ".".to_string();
     }
-    let initial = if p.starts_with("//") && !p.starts_with("///") { 2 } else if p.starts_with('/') { 1 } else { 0 };
+    let initial = if p.starts_with("//") && !p.starts_with("///") {
+        2
+    } else if p.starts_with('/') {
+        1
+    } else {
+        0
+    };
     let mut out: Vec<&str> = Vec::new();
     for c in p.split('/') {
         if c.is_empty() || c == "." {
@@ -609,7 +615,10 @@ fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<St
         }
         if matches!(name.as_str(), "bash" | "sh" | "zsh" | "dash" | "ksh") {
             for (k, t) in toks.iter().enumerate().skip(1) {
-                let is_c = t.len() >= 2 && t.starts_with('-') && t.ends_with('c') && t[1..].chars().all(|c| c.is_ascii_alphabetic());
+                let is_c = t.len() >= 2
+                    && t.starts_with('-')
+                    && t.ends_with('c')
+                    && t[1..].chars().all(|c| c.is_ascii_alphabetic());
                 if is_c && k + 1 < toks.len() {
                     out.extend(walk_full(&toks[k + 1], cwd.clone(), depth + 1, unparsed));
                     break;
@@ -652,7 +661,8 @@ fn command_of(input: &Value) -> Option<&str> {
 /// True when the word after a bare `-i` is an explicit BSD backup suffix: empty (`''`) or a
 /// dot-word such as `.bak`. Anything else is the script, which BSD sed would eat as the suffix.
 fn is_bsd_suffix(word: &str) -> bool {
-    word.is_empty() || (word.starts_with('.') && word.len() > 1 && !word.contains(|c: char| c.is_whitespace() || c == '/'))
+    word.is_empty()
+        || (word.starts_with('.') && word.len() > 1 && !word.contains(|c: char| c.is_whitespace() || c == '/'))
 }
 
 /// True when sed's arguments hold a BSD-unsafe in-place flag: -i, -ni, -Ei, --in-place[=SUFFIX]
@@ -735,10 +745,7 @@ fn is_redirect(t: &str) -> bool {
 }
 
 fn cat_file(args: &[String]) -> Option<String> {
-    args.iter()
-        .take_while(|t| !is_redirect(t))
-        .find(|t| !t.starts_with('-'))
-        .cloned()
+    args.iter().take_while(|t| !is_redirect(t)).find(|t| !t.starts_with('-')).cloned()
 }
 
 /// `sed -n SCRIPT FILE` (or `-n -e SCRIPT FILE`): the file. No `-n` or an in-place edit: None.
@@ -779,16 +786,27 @@ fn sed_n_file(args: &[String]) -> Option<String> {
 // --- G15 secret reads ----------------------------------------------------------
 
 const SECRET_READERS: &[&str] = &[
-    "cat", "bat", "batcat", "less", "more", "most", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack",
-    "sed", "gsed", "awk", "gawk", "mawk", "cut", "strings", "xxd", "hexdump", "od", "nl", "tac", "rev", "sort",
-    "uniq", "paste", "fold", "column", "cp", "mv", "scp", "rsync", "open", "code", "cursor", "vim", "vi", "nvim",
-    "nano", "view", "pbcopy", "base64", "jq", "yq", "diff", "cmp", "ln", "install",
+    "cat", "bat", "batcat", "less", "more", "most", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack", "sed",
+    "gsed", "awk", "gawk", "mawk", "cut", "strings", "xxd", "hexdump", "od", "nl", "tac", "rev", "sort", "uniq",
+    "paste", "fold", "column", "cp", "mv", "scp", "rsync", "open", "code", "cursor", "vim", "vi", "nvim", "nano",
+    "view", "pbcopy", "base64", "jq", "yq", "diff", "cmp", "ln", "install",
 ];
 const SECRET_SEARCHERS: &[&str] = &["rg", "grep", "egrep", "fgrep", "ag", "ack"];
 const ARGS_FIELDS: &[&str] = &["args", "command", "cmd", "command_line", "cmdline"];
 const PS_VALUE_LONG: &[&str] = &[
-    "--format", "--pid", "--ppid", "--sid", "--tty", "--user", "--group", "--sort", "--cols", "--columns", "--width",
-    "--lines", "--rows",
+    "--format",
+    "--pid",
+    "--ppid",
+    "--sid",
+    "--tty",
+    "--user",
+    "--group",
+    "--sort",
+    "--cols",
+    "--columns",
+    "--width",
+    "--lines",
+    "--rows",
 ];
 
 type Target = (String, String);
@@ -876,7 +894,11 @@ fn ps_leaks(args: &[String]) -> bool {
             return true;
         }
     }
-    if flags.get(&'w').copied().unwrap_or(0) >= 2 || flags.contains_key(&'f') || bare.contains(&'e') || bare.contains(&'u') {
+    if flags.get(&'w').copied().unwrap_or(0) >= 2
+        || flags.contains_key(&'f')
+        || bare.contains(&'e')
+        || bare.contains(&'u')
+    {
         return true;
     }
     if fmt.is_empty() && "eAaxd".chars().any(|c| flags.contains_key(&c)) {
@@ -920,34 +942,93 @@ fn search_val(fam: &str) -> (&'static str, &'static [&'static str]) {
         "grep" => (
             "efmABCdD",
             &[
-                "--regexp", "--file", "--max-count", "--after-context", "--before-context", "--context",
-                "--directories", "--devices", "--include", "--exclude", "--exclude-dir", "--exclude-from",
-                "--label", "--binary-files", "--group-separator",
+                "--regexp",
+                "--file",
+                "--max-count",
+                "--after-context",
+                "--before-context",
+                "--context",
+                "--directories",
+                "--devices",
+                "--include",
+                "--exclude",
+                "--exclude-dir",
+                "--exclude-from",
+                "--label",
+                "--binary-files",
+                "--group-separator",
             ],
         ),
         "rg" => (
             "efgmABCdjMrtTE",
             &[
-                "--regexp", "--file", "--glob", "--iglob", "--max-count", "--after-context", "--before-context",
-                "--context", "--max-depth", "--maxdepth", "--threads", "--max-columns", "--replace", "--type",
-                "--type-not", "--type-add", "--type-clear", "--ignore-file", "--encoding", "--colors", "--color",
-                "--sort", "--sortr", "--path-separator", "--pre", "--pre-glob", "--engine", "--dfa-size-limit",
-                "--regex-size-limit", "--max-filesize", "--context-separator", "--field-context-separator",
-                "--field-match-separator", "--hostname-bin", "--hyperlink-format",
+                "--regexp",
+                "--file",
+                "--glob",
+                "--iglob",
+                "--max-count",
+                "--after-context",
+                "--before-context",
+                "--context",
+                "--max-depth",
+                "--maxdepth",
+                "--threads",
+                "--max-columns",
+                "--replace",
+                "--type",
+                "--type-not",
+                "--type-add",
+                "--type-clear",
+                "--ignore-file",
+                "--encoding",
+                "--colors",
+                "--color",
+                "--sort",
+                "--sortr",
+                "--path-separator",
+                "--pre",
+                "--pre-glob",
+                "--engine",
+                "--dfa-size-limit",
+                "--regex-size-limit",
+                "--max-filesize",
+                "--context-separator",
+                "--field-context-separator",
+                "--field-match-separator",
+                "--hostname-bin",
+                "--hyperlink-format",
             ],
         ),
         "ag" => (
             "ABCGgmpW",
             &[
-                "--ignore", "--ignore-dir", "--depth", "--file-search-regex", "--path-to-ignore", "--pager",
-                "--after", "--before", "--context", "--max-count", "--width", "--workers",
+                "--ignore",
+                "--ignore-dir",
+                "--depth",
+                "--file-search-regex",
+                "--path-to-ignore",
+                "--pager",
+                "--after",
+                "--before",
+                "--context",
+                "--max-count",
+                "--width",
+                "--workers",
             ],
         ),
         _ => (
             "ABCmgt",
             &[
-                "--ignore-dir", "--noignore-dir", "--ignore-file", "--type", "--after-context", "--before-context",
-                "--context", "--max-count", "--output", "--pager",
+                "--ignore-dir",
+                "--noignore-dir",
+                "--ignore-file",
+                "--type",
+                "--after-context",
+                "--before-context",
+                "--context",
+                "--max-count",
+                "--output",
+                "--pager",
             ],
         ),
     }
@@ -1004,7 +1085,10 @@ fn search_long(fam: &str, key: &str, val: &str, o: &mut SearchOpts) {
             o.pat = true;
         } else if key == "--glob" || key == "--iglob" {
             o.globs.push(val.to_string());
-        } else if key == "--hidden" || key == "--unrestricted" || (key.starts_with("--no-ignore") && key != "--no-ignore-messages") {
+        } else if key == "--hidden"
+            || key == "--unrestricted"
+            || (key.starts_with("--no-ignore") && key != "--no-ignore-messages")
+        {
             o.unres = true;
         }
     } else if fam == "ag" {
@@ -1483,11 +1567,41 @@ fn parse_opts(args: &[String], short_val: &str, long_val: &[&str], abbr: bool) -
 
 const CURL_SHORT_VAL: &str = "AbcCdeEFHKmoPQrtTuUwxXyYz";
 const CURL_LONG_VAL: &[&str] = &[
-    "--data", "--data-raw", "--data-binary", "--data-ascii", "--data-urlencode", "--json", "--form",
-    "--form-string", "--upload-file", "--header", "--user", "--user-agent", "--output", "--request", "--url",
-    "--proxy", "--cookie", "--cookie-jar", "--referer", "--cacert", "--cert", "--key", "--max-time",
-    "--connect-timeout", "--retry", "--write-out", "--config", "--range", "--resolve", "--url-query",
-    "--oauth2-bearer", "--proxy-user", "--time-cond", "--variable", "--expand-data",
+    "--data",
+    "--data-raw",
+    "--data-binary",
+    "--data-ascii",
+    "--data-urlencode",
+    "--json",
+    "--form",
+    "--form-string",
+    "--upload-file",
+    "--header",
+    "--user",
+    "--user-agent",
+    "--output",
+    "--request",
+    "--url",
+    "--proxy",
+    "--cookie",
+    "--cookie-jar",
+    "--referer",
+    "--cacert",
+    "--cert",
+    "--key",
+    "--max-time",
+    "--connect-timeout",
+    "--retry",
+    "--write-out",
+    "--config",
+    "--range",
+    "--resolve",
+    "--url-query",
+    "--oauth2-bearer",
+    "--proxy-user",
+    "--time-cond",
+    "--variable",
+    "--expand-data",
 ];
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1573,9 +1687,23 @@ fn curl_payload(args: &[String]) -> Option<Payload> {
 
 const WGET_SHORT_VAL: &str = "OoaetTwPUiBQlIARXD";
 const WGET_LONG_VAL: &[&str] = &[
-    "--post-data", "--post-file", "--body-data", "--body-file", "--header", "--user-agent", "--output-document",
-    "--output-file", "--method", "--referer", "--load-cookies", "--save-cookies", "--directory-prefix",
-    "--http-user", "--http-password", "--user", "--password",
+    "--post-data",
+    "--post-file",
+    "--body-data",
+    "--body-file",
+    "--header",
+    "--user-agent",
+    "--output-document",
+    "--output-file",
+    "--method",
+    "--referer",
+    "--load-cookies",
+    "--save-cookies",
+    "--directory-prefix",
+    "--http-user",
+    "--http-password",
+    "--user",
+    "--password",
 ];
 
 fn wget_payload(args: &[String]) -> Option<Payload> {
@@ -1604,7 +1732,18 @@ fn gh_api_payload(args: &[String]) -> Option<Payload> {
     let o = parse_opts(
         args,
         "XfFHqtp",
-        &["--method", "--raw-field", "--field", "--header", "--input", "--jq", "--template", "--hostname", "--cache", "--preview"],
+        &[
+            "--method",
+            "--raw-field",
+            "--field",
+            "--header",
+            "--input",
+            "--jq",
+            "--template",
+            "--hostname",
+            "--cache",
+            "--preview",
+        ],
         false,
     );
     let mut p = Payload::default();
@@ -1663,11 +1802,38 @@ fn gh_text_payload(group: &str, verb: &str, args: &[String]) -> Payload {
         args,
         short,
         &[
-            "--assignee", "--base", "--body", "--body-file", "--head", "--label", "--milestone", "--project",
-            "--repo", "--reviewer", "--template", "--title", "--notes", "--notes-file", "--comment", "--reason",
-            "--target", "--discussion-category", "--add-assignee", "--add-label", "--remove-label",
-            "--add-reviewer", "--add-project", "--subject", "--match-head-commit", "--description",
-            "--homepage", "--color", "--field", "--raw-field", "--ref", "--category",
+            "--assignee",
+            "--base",
+            "--body",
+            "--body-file",
+            "--head",
+            "--label",
+            "--milestone",
+            "--project",
+            "--repo",
+            "--reviewer",
+            "--template",
+            "--title",
+            "--notes",
+            "--notes-file",
+            "--comment",
+            "--reason",
+            "--target",
+            "--discussion-category",
+            "--add-assignee",
+            "--add-label",
+            "--remove-label",
+            "--add-reviewer",
+            "--add-project",
+            "--subject",
+            "--match-head-commit",
+            "--description",
+            "--homepage",
+            "--color",
+            "--field",
+            "--raw-field",
+            "--ref",
+            "--category",
         ],
         false,
     );
@@ -1918,8 +2084,19 @@ fn git_message(c: &Cmd, base: &str) -> Option<(Payload, PathBuf)> {
         rest,
         "mFCct",
         &[
-            "--message", "--file", "--trailer", "--author", "--date", "--template", "--reuse-message",
-            "--reedit-message", "--fixup", "--squash", "--cleanup", "--strategy", "--strategy-option",
+            "--message",
+            "--file",
+            "--trailer",
+            "--author",
+            "--date",
+            "--template",
+            "--reuse-message",
+            "--reedit-message",
+            "--fixup",
+            "--squash",
+            "--cleanup",
+            "--strategy",
+            "--strategy-option",
         ],
         false,
     );
@@ -1953,11 +2130,11 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
         let name = name.strip_suffix(".exe").unwrap_or(name);
         let found = match name {
             "git" => git_message(&c, &base),
-            "gh" => gh_split(&c.toks[1..])
-                .filter(|(group, _, _)| G17_GH_GROUPS.contains(group))
-                .map(|(group, verb, rest)| {
+            "gh" => gh_split(&c.toks[1..]).filter(|(group, _, _)| G17_GH_GROUPS.contains(group)).map(
+                |(group, verb, rest)| {
                     (gh_text_payload(group, verb, rest), PathBuf::from(c.cwd.as_deref().unwrap_or(&base)))
-                }),
+                },
+            ),
             _ => None,
         };
         let Some((p, dir)) = found else { continue };
@@ -2228,5 +2405,4 @@ mod tests {
         assert!(has_substitution("gh pr create --body \"$(cat <<'EOF'\nx\nEOF\n)\" $(date)"));
         assert!(!has_substitution("gh pr create --body \\$(x)"));
     }
-
 }

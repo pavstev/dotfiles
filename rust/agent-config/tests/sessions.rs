@@ -45,7 +45,8 @@ fn user_line(t: i64, text: &str) -> String {
 }
 
 fn assistant_line(t: i64, text: &str) -> String {
-    json!({"type":"assistant","timestamp":iso_utc(t),"message":{"id":"m","content":[{"type":"text","text":text}]}}).to_string()
+    json!({"type":"assistant","timestamp":iso_utc(t),"message":{"id":"m","content":[{"type":"text","text":text}]}})
+        .to_string()
 }
 
 fn write_lines(path: &Path, lines: &[String]) {
@@ -71,10 +72,7 @@ fn fixtures(home: &Path) {
     let long = format!("{} flaky vitest {}", "padding words here ".repeat(30), "more padding text ".repeat(30));
     write_lines(
         &transcript(home, "-work-demo", SID_A),
-        &[
-            user_line(T_OCT, "why is the flaky vitest suite failing, common problem"),
-            assistant_line(T_OCT + 5, &long),
-        ],
+        &[user_line(T_OCT, "why is the flaky vitest suite failing, common problem"), assistant_line(T_OCT + 5, &long)],
     );
     title_record(home, SID_A, "Fix flaky vitest");
     write_lines(

@@ -24,9 +24,26 @@ use std::sync::LazyLock;
 /// Frontmatter keys Claude Code documents. Anything else is ignored by Claude Code, so it is
 /// almost always a typo.
 const KNOWN_KEYS: [&str; 20] = [
-    "name", "description", "when_to_use", "argument-hint", "arguments", "disable-model-invocation",
-    "user-invocable", "allowed-tools", "disallowed-tools", "model", "effort", "context", "agent",
-    "background", "hooks", "paths", "shell", "metadata", "license", "compatibility",
+    "name",
+    "description",
+    "when_to_use",
+    "argument-hint",
+    "arguments",
+    "disable-model-invocation",
+    "user-invocable",
+    "allowed-tools",
+    "disallowed-tools",
+    "model",
+    "effort",
+    "context",
+    "agent",
+    "background",
+    "hooks",
+    "paths",
+    "shell",
+    "metadata",
+    "license",
+    "compatibility",
 ];
 const NAME_PATTERN: &str = r"^(ps:)?[a-z0-9]+(-[a-z0-9]+)*$"; // spec regex + our ps: prefix
 const MAX_NAME: usize = 64;
@@ -152,7 +169,8 @@ fn read_text(path: &Path) -> Result<String, std::io::Error> {
 
 fn check_skill(path: &Path) -> Report {
     let shown = path.to_string_lossy();
-    let name = Path::new(shown.trim_end_matches('/')).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+    let name =
+        Path::new(shown.trim_end_matches('/')).file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
     let name = name.as_str();
     let mut r = Report { skill: name.to_string(), fails: vec![], warns: vec![] };
     let skill_md = path.join("SKILL.md");
@@ -253,7 +271,8 @@ fn check_skill(path: &Path) -> Report {
         if !path.join(rel).exists() {
             r.fails.push(format!("${{CLAUDE_SKILL_DIR}}/{rel} does not exist"));
         }
-        let before: String = body[..whole.start()].chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
+        let before: String =
+            body[..whole.start()].chars().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect();
         let prev = before.split_whitespace().last().map_or("", |w| w.trim_matches('`'));
         if rel.starts_with("scripts/") && !INTERPRETERS.contains(&prev) {
             r.warns.push(format!("run scripts through an interpreter (bash/python3 …): {rel}"));
@@ -286,7 +305,8 @@ fn check_skill(path: &Path) -> Report {
 /// The skill folders inside `root`: sorted, no `_*` or `.*` folders, each with a SKILL.md.
 fn list_skills(root: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(root) else { return vec![] };
-    let mut names: Vec<String> = rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let mut names: Vec<String> =
+        rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     names.sort();
     names
         .into_iter()
@@ -366,7 +386,10 @@ fn main() -> ExitCode {
         let found = list_skills(&root);
         if found.is_empty() {
             // an empty list would pass silently: that is a miss, not a clean tree
-            eprintln!("skill_check: no skills found in {}. Run it inside the dotfiles repo or set DOTFILES_REPO.", root.display());
+            eprintln!(
+                "skill_check: no skills found in {}. Run it inside the dotfiles repo or set DOTFILES_REPO.",
+                root.display()
+            );
             return ExitCode::from(1);
         }
         found

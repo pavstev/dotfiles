@@ -11,10 +11,14 @@ const SUDO_LOCAL: &str = "/etc/pam.d/sudo_local";
 /// What goes into sudo_local.
 const BODY: &str = "# sudo_local: local config file which survives system update and is included by /etc/pam.d/sudo\nauth       sufficient     pam_tid.so\n";
 
-fn has_pam_tid(text: &str) -> bool { text.contains("pam_tid") }
+fn has_pam_tid(text: &str) -> bool {
+    text.contains("pam_tid")
+}
 
 pub fn step(_repo: &Path) {
-    if !only_macos("Touch ID for sudo") { return; }
+    if !only_macos("Touch ID for sudo") {
+        return;
+    }
     out::step("Touch ID for sudo");
     if std::fs::read_to_string(SUDO_LOCAL).map(|t| has_pam_tid(&t)).unwrap_or(false) {
         skip("Touch ID for sudo");

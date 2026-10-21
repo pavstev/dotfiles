@@ -24,7 +24,9 @@ static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// True the first time `name` fails in this process.
 fn first_failure(name: &str) -> bool {
     let mut w = WARNED.lock().unwrap_or_else(|e| e.into_inner());
-    if w.iter().any(|n| n == name) { return false; }
+    if w.iter().any(|n| n == name) {
+        return false;
+    }
     w.push(name.to_string());
     true
 }
@@ -35,8 +37,12 @@ fn color() -> bool {
 fn c(code: &str, s: &str) -> String {
     if color() { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() }
 }
-fn green(s: &str) -> String { c("38;5;108", s) }
-fn dim(s: &str) -> String { c("38;5;245", s) }
+fn green(s: &str) -> String {
+    c("38;5;108", s)
+}
+fn dim(s: &str) -> String {
+    c("38;5;245", s)
+}
 
 fn list_path(arg: Option<PathBuf>) -> Option<PathBuf> {
     if arg.is_some() {
@@ -55,16 +61,28 @@ fn list_path(arg: Option<PathBuf>) -> Option<PathBuf> {
 /// tools, so it comes first and needs nothing else (no Homebrew, no cargo).
 fn ensure_mise() -> bool {
     let have = || RealEnv::new().has("mise");
-    if have() { return true; }
+    if have() {
+        return true;
+    }
     let quiet = |mut c: Command| c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
     if cfg!(windows) {
         if !RealEnv::new().has("winget") {
-            out::warn("mise is missing and winget was not found. Install mise: https://mise.jdx.dev/installing-mise.html");
+            out::warn(
+                "mise is missing and winget was not found. Install mise: https://mise.jdx.dev/installing-mise.html",
+            );
             return false;
         }
         out::info("installing mise (WinGet)");
         let mut cmd = Command::new("winget");
-        cmd.args(["install", "--id", "jdx.mise", "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"]);
+        cmd.args([
+            "install",
+            "--id",
+            "jdx.mise",
+            "-e",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--silent",
+        ]);
         quiet(cmd);
     } else {
         if !RealEnv::new().has("curl") {
@@ -187,7 +205,9 @@ pub fn run(args: Vec<String>) -> u8 {
                 println!("{} {} installed {}", green("✓"), n, dim(&format!("({src})")));
             }
             Outcome::Failed(n, tried) => {
-                if !first_failure(n) { continue; }
+                if !first_failure(n) {
+                    continue;
+                }
                 failed += 1;
                 let why = if tried.is_empty() { "no source fits this machine".to_string() } else { tried.join("; ") };
                 out::warn(&format!("{n} did not install: {why}"));
@@ -201,10 +221,20 @@ pub fn run(args: Vec<String>) -> u8 {
             println!("{} Tools: {} up to date", dim("•"), present);
         }
     } else if installed > 0 {
-        println!("{} Tools: {} installed, {} up to date{}", green("✓"), installed, present, if failed > 0 { format!(", {failed} failed") } else { String::new() });
+        println!(
+            "{} Tools: {} installed, {} up to date{}",
+            green("✓"),
+            installed,
+            present,
+            if failed > 0 { format!(", {failed} failed") } else { String::new() }
+        );
     }
     if failed > 0 {
-        out::warn(&format!("{} {} missing. Fix the error above, then run dots again.", failed, if failed == 1 { "tool is" } else { "tools are" }));
+        out::warn(&format!(
+            "{} {} missing. Fix the error above, then run dots again.",
+            failed,
+            if failed == 1 { "tool is" } else { "tools are" }
+        ));
     }
     0
 }

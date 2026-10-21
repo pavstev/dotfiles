@@ -139,9 +139,8 @@ fn py_repr(s: &str) -> String {
 // ids: pull the 11-character video ID out of any YouTube link form (pure, no network)
 // ---------------------------------------------------------------------------
 
-static URL_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:https?:)?//[^\s<>"'`]+|(?:[\w-]+\.)+[a-z]{2,}/[^\s<>"'`]*"#).unwrap()
-});
+static URL_IN_TEXT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)(?:https?:)?//[^\s<>"'`]+|(?:[\w-]+\.)+[a-z]{2,}/[^\s<>"'`]*"#).unwrap());
 static PCT_3F: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)%3F").unwrap());
 
 const YT_DOMAINS: [&str; 3] = ["youtube.com", "youtube-nocookie.com", "youtubekids.com"];
@@ -195,11 +194,8 @@ struct Parsed {
 
 /// `urllib.parse.urlparse` plus `.hostname`. None where Python raises ValueError.
 fn urlparse(url: &str) -> Option<Parsed> {
-    let url: String = url
-        .trim_start_matches(|c: char| c <= ' ')
-        .chars()
-        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
-        .collect();
+    let url: String =
+        url.trim_start_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\r' | '\n')).collect();
     let mut rest: &str = &url;
     let mut scheme = String::new();
     if let Some(i) = rest.find(':') {
@@ -306,7 +302,8 @@ fn from_url(value: &str, depth: u32) -> Option<String> {
         frag = f; // old "#!/watch?v=ID" style
     }
     if frag.starts_with('/') || frag.contains("v=") {
-        let tail = if frag.starts_with('/') { frag.to_string() } else { format!("/watch?{}", frag.trim_start_matches('?')) };
+        let tail =
+            if frag.starts_with('/') { frag.to_string() } else { format!("/watch?{}", frag.trim_start_matches('?')) };
         if let Some(inner) = from_url(&format!("//{host}{tail}"), depth + 1) {
             return Some(inner);
         }
@@ -500,7 +497,14 @@ fn map_ytdlp_error(stderr: &str) -> Option<&'static str> {
         Some(MSG_AGE)
     } else if has(&["not a bot", "http error 429", "too many requests", "blocked"]) {
         Some(MSG_BLOCKED)
-    } else if has(&["video unavailable", "this video is not available", "has been removed", "terminated", "does not exist", "is unavailable"]) {
+    } else if has(&[
+        "video unavailable",
+        "this video is not available",
+        "has been removed",
+        "terminated",
+        "does not exist",
+        "is unavailable",
+    ]) {
         Some(MSG_UNAVAILABLE)
     } else if has(&["sign in"]) {
         Some(MSG_SIGNIN)
@@ -819,7 +823,8 @@ const FETCH_USAGE: &str = "usage: yt_transcribe fetch <youtube url>";
 
 /// `~/.cache/yt-learn`: the cache of `fetch` (HOME first, like the shell script it replaced).
 fn fetch_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir);
+    let home =
+        std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir);
     home.unwrap_or_else(|| PathBuf::from(".")).join(".cache").join("yt-learn")
 }
 
@@ -827,7 +832,8 @@ fn fetch_dir() -> PathBuf {
 /// A cached, non-empty file is returned at once with no network.
 fn fetch(url: &str) -> i32 {
     fetch_with(url, &fetch_dir(), &|id| {
-        transcribe_with(id, &[], "base", false, false, &from_captions, &from_whisper).and_then(|t| render(&t, "markdown"))
+        transcribe_with(id, &[], "base", false, false, &from_captions, &from_whisper)
+            .and_then(|t| render(&t, "markdown"))
     })
 }
 
@@ -929,7 +935,9 @@ mod tests {
             format!("https://www.youtube.com/attribution_link?a=x&u=%2Fwatch%3Fv%3D{v}%26feature%3Dshare"),
             format!("https://www.youtube.com/redirect?q=https%3A%2F%2Fyoutu.be%2F{v}&event=x"),
             format!("https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}&format=json"),
-            format!("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}"),
+            format!(
+                "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}"
+            ),
             format!("<https://youtu.be/{v}>"),
             format!("\"https://youtu.be/{v}\""),
             format!("watch this: https://youtu.be/{v}, it is great."),
@@ -1116,14 +1124,23 @@ mod tests {
         let e = need_tool_any(&["whisper-cli", "whisper-cpp"], "the Whisper fallback", &nothing).unwrap_err();
         assert!(e.contains("whisper-cli") && e.contains("whisper"), "{e}");
         let some = |n: &str| -> Option<PathBuf> { (n == "whisper-cpp").then(|| PathBuf::from("/x/whisper-cpp")) };
-        assert_eq!(need_tool_any(&["whisper-cli", "whisper-cpp"], "w", &some).unwrap(), PathBuf::from("/x/whisper-cpp"));
+        assert_eq!(
+            need_tool_any(&["whisper-cli", "whisper-cpp"], "w", &some).unwrap(),
+            PathBuf::from("/x/whisper-cpp")
+        );
     }
 
     #[test]
     fn ytdlp_errors_map_to_user_messages() {
-        assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Private video. Sign in if you've been granted access"), Some(MSG_UNPLAYABLE));
+        assert_eq!(
+            map_ytdlp_error("ERROR: [youtube] x: Private video. Sign in if you've been granted access"),
+            Some(MSG_UNPLAYABLE)
+        );
         assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Video unavailable"), Some(MSG_UNAVAILABLE));
-        assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate"), Some(MSG_AGE));
+        assert_eq!(
+            map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate"),
+            Some(MSG_AGE)
+        );
         assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm you're not a bot"), Some(MSG_BLOCKED));
         assert_eq!(map_ytdlp_error("ERROR: unable to download: HTTP Error 429: Too Many Requests"), Some(MSG_BLOCKED));
         assert_eq!(map_ytdlp_error("ERROR: Sign in required"), Some(MSG_SIGNIN));

@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -57,11 +57,7 @@ fn conv_key(data: &Value, mode: &str) -> String {
     let re = Regex::new(r"[^A-Za-z0-9_.-]").unwrap();
     let replaced = re.replace_all(raw_str, "_");
     let key: String = replaced.chars().take(128).collect();
-    if key.trim_matches('.').is_empty() {
-        "unknown".to_string()
-    } else {
-        key
-    }
+    if key.trim_matches('.').is_empty() { "unknown".to_string() } else { key }
 }
 
 fn read_state(key: &str) -> BTreeMap<String, Value> {
@@ -111,10 +107,7 @@ fn prune_state(dir: &Path) {
 fn write_state(key: &str, mut st: BTreeMap<String, Value>) {
     let d = state_dir();
     let _ = fs::create_dir_all(&d);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     st.insert("updated".to_string(), Value::from(now));
     let tmp = d.join(format!(".{}.{}.tmp", key, std::process::id()));
     let target = d.join(format!("{}.json", key));
@@ -139,11 +132,7 @@ fn to_int(v: Option<&Value>) -> i64 {
         }
         Some(Value::String(s)) => {
             let s = s.trim();
-            if s.chars().all(|c| c.is_ascii_digit()) {
-                s.parse::<i64>().unwrap_or(0)
-            } else {
-                0
-            }
+            if s.chars().all(|c| c.is_ascii_digit()) { s.parse::<i64>().unwrap_or(0) } else { 0 }
         }
         _ => 0,
     }
@@ -177,9 +166,7 @@ fn default_app_db() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("/"))
             .join("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
     } else {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/"))
-            .join(".config/Cursor/User/globalStorage/state.vscdb")
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join(".config/Cursor/User/globalStorage/state.vscdb")
     }
 }
 
@@ -196,16 +183,9 @@ fn app_context(data: &Value) -> i64 {
         return 0;
     }
     // A path starting with "-" must not be read as an option.
-    let path = if path.is_relative() {
-        PathBuf::from(".").join(&path)
-    } else {
-        path
-    };
+    let path = if path.is_relative() { PathBuf::from(".").join(&path) } else { path };
     let escaped_conv = conv.replace('\'', "''").replace('\0', "");
-    let query = format!(
-        "SELECT value FROM cursorDiskKV WHERE key = 'composerData:{}' LIMIT 1;",
-        escaped_conv
-    );
+    let query = format!("SELECT value FROM cursorDiskKV WHERE key = 'composerData:{}' LIMIT 1;", escaped_conv);
     // Read-only, no rc file (-init /dev/null), fixed output mode, 1 s busy timeout.
     let child = Command::new("sqlite3")
         .args(["-readonly", "-batch", "-noheader", "-list", "-nullvalue", ""])
@@ -283,25 +263,16 @@ fn estimate(data: &Value, st: &BTreeMap<String, Value>) -> i64 {
 fn mode_prompt(data: &Value, key: &str) {
     let mut st = read_state(key);
     let size = estimate(data, &st);
-    let count = if size >= NUDGE_CONTEXT {
-        to_int(st.get("prompts")) + 1
-    } else {
-        0
-    };
+    let count = if size >= NUDGE_CONTEXT { to_int(st.get("prompts")) + 1 } else { 0 };
     st.insert("prompts".to_string(), Value::from(count));
     write_state(key, st);
 
     let mut out = serde_json::json!({"continue": true});
     if count >= 1 && (count - 1) % NUDGE_EVERY == 0 {
-        let msg = format!(
-            "Context is about {}K. Run /ps:handoff and continue in a fresh session.",
-            size / 1000
-        );
+        let msg = format!("Context is about {}K. Run /ps:handoff and continue in a fresh session.", size / 1000);
         out["user_message"] = Value::String(msg.clone());
-        out["additional_context"] = Value::String(format!(
-            "Start your reply by telling the user, in one line: {}",
-            msg
-        ));
+        out["additional_context"] =
+            Value::String(format!("Start your reply by telling the user, in one line: {}", msg));
     }
     emit_out(&serde_json::to_string(&out).unwrap_or_default());
 }
@@ -406,7 +377,13 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
             other => other.clone(),
         };
         let server = str_field(data, "mcp_server_name").unwrap_or("cursor");
-        return Some(ToolCall { tool: format!("mcp__{server}__{name}"), cwd: cwd_of(&input), input, can_ask: true, read_event: false });
+        return Some(ToolCall {
+            tool: format!("mcp__{server}__{name}"),
+            cwd: cwd_of(&input),
+            input,
+            can_ask: true,
+            read_event: false,
+        });
     }
     if is_shell {
         let input = serde_json::json!({"command": str_field(data, "command")?});
@@ -426,7 +403,8 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
     };
     let mut input = data.get("tool_input").cloned().filter(|v| v.is_object())?;
     // Claude names the key `file_path` for Read; Cursor may name it `path`.
-    if tool == "Read" && input.get("file_path").is_none()
+    if tool == "Read"
+        && input.get("file_path").is_none()
         && let Some(p) = input.get("path").cloned()
     {
         input["file_path"] = p;

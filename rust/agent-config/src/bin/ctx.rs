@@ -85,7 +85,11 @@ fn refusal_reply(file: &str, r: &Refusal) -> Reply {
 }
 
 fn no_scanner(ext: &str) -> String {
-    if ext.is_empty() { "no scanner for this file type; use Read".into() } else { format!("no scanner for .{ext}; use Read") }
+    if ext.is_empty() {
+        "no scanner for this file type; use Read".into()
+    } else {
+        format!("no scanner for .{ext}; use Read")
+    }
 }
 
 /// `outer.inner` style path of every symbol.

@@ -44,9 +44,15 @@ fn clone_plugin(zc: &Path, url: &str, name: &str) {
 /// the installer reads $REPO as its GitHub slug (ohmyzsh/ohmyzsh), and the clone would 404.
 fn install_omz() -> bool {
     let Some(script) = curl_text(&["-fsSL", INSTALLER]).filter(|s| !s.is_empty()) else { return false };
-    Command::new("sh").args(["-c", &script, "", "--unattended"])
-        .env("RUNZSH", "no").env("CHSH", "no").env("KEEP_ZSHRC", "yes").env("REPO", "")
-        .status().map(|s| s.success()).unwrap_or(false)
+    Command::new("sh")
+        .args(["-c", &script, "", "--unattended"])
+        .env("RUNZSH", "no")
+        .env("CHSH", "no")
+        .env("KEEP_ZSHRC", "yes")
+        .env("REPO", "")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 pub fn step(_repo: &Path) {
@@ -70,7 +76,9 @@ pub fn step(_repo: &Path) {
     }
     let zc = custom_dir(std::env::var("ZSH_CUSTOM").ok(), &home);
     let _ = std::fs::create_dir_all(zc.join("plugins"));
-    for (url, name) in PLUGINS { clone_plugin(&zc, url, name); }
+    for (url, name) in PLUGINS {
+        clone_plugin(&zc, url, name);
+    }
     ok_if_changed("Oh My Zsh + plugins ready");
 }
 

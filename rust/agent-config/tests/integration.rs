@@ -22,7 +22,8 @@ fn cursor_smoke() {
         .env("HOME", &home)
         .env("DOTFILES_REPO", &repo)
         .env("NO_COLOR", "1")
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let rule = fs::read_to_string(home.join(".cursor/rules/claude-global.mdc")).unwrap();
     for w in NOTE_WORDS {
@@ -40,9 +41,12 @@ fn opencode_smoke() {
     fs::write(repo.join("claude/CLAUDE.md"), "# H\n").unwrap();
     fs::write(repo.join("claude/settings.json"), "{}\n").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_agent-config"))
-        .args(["opencode","--profile","shared"])
-        .env("HOME",&home).env("DOTFILES_REPO",&repo).env("NO_COLOR","1")
-        .output().unwrap();
+        .args(["opencode", "--profile", "shared"])
+        .env("HOME", &home)
+        .env("DOTFILES_REPO", &repo)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(home.join(".config/opencode/tui.json").exists());
     let _ = fs::remove_dir_all(&tmp);
@@ -55,9 +59,12 @@ fn user_rules_print() {
     fs::create_dir_all(repo.join("claude")).unwrap();
     fs::write(repo.join("claude/CLAUDE.md"), "# H\n").unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_agent-config"))
-        .args(["user-rules","--profile","shared"])
-        .env("HOME",&home).env("DOTFILES_REPO",&repo).env("NO_COLOR","1")
-        .output().unwrap();
+        .args(["user-rules", "--profile", "shared"])
+        .env("HOME", &home)
+        .env("DOTFILES_REPO", &repo)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
     assert!(out.status.success());
     assert!(!out.stdout.is_empty());
     let text = String::from_utf8_lossy(&out.stdout);

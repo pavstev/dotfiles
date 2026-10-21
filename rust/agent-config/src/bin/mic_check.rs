@@ -61,14 +61,7 @@ fn leftovers_path() -> PathBuf {
 
 /// Run `git -C dir args`: (success, stdout with trailing newlines cut).
 fn git(dir: &Path, args: &[&str]) -> (bool, String) {
-    match Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-    {
+    match Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output() {
         Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string()),
         Err(_) => (false, String::new()),
     }
@@ -125,7 +118,11 @@ fn note(text: &str, dir: &Path) -> i32 {
         let _ = std::fs::write(&left, "# Leftovers\n\nOptional fixes saved by ps:mic-drop. Delete a line when done.\n");
     }
     let line = format!("- [ ] {} · **{}** · {}\n", today(), name, text);
-    let res = std::fs::OpenOptions::new().append(true).create(true).open(&left).and_then(|mut f| f.write_all(line.as_bytes()));
+    let res = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&left)
+        .and_then(|mut f| f.write_all(line.as_bytes()));
     if let Err(e) = res {
         eprintln!("mic_check: cannot write {}: {e}", left.display());
         return 1;
@@ -238,7 +235,8 @@ fn safe_args(raw: &str) -> String {
         (format!(r"(?i)([A-Za-z0-9_.-]*{words}[A-Za-z0-9_.-]*)=[^\s]+"), "${1}=***"),
         (r"(?i)(bearer|basic)\s+[^\s]+".into(), "${1} ***"),
         (
-            r"(crsr_|sk-|sk_|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[abprs]-|AKIA|AIza|ya29\.)[A-Za-z0-9_.-]+".into(),
+            r"(crsr_|sk-|sk_|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|xox[abprs]-|AKIA|AIza|ya29\.)[A-Za-z0-9_.-]+"
+                .into(),
             "${1}***",
         ),
         (r"[A-Za-z0-9_+]{32,}".into(), "***"),
@@ -315,7 +313,12 @@ impl Run {
             main = m.to_string();
         }
         if main.is_empty() {
-            main = if git_ok(&root, &["show-ref", "--verify", "--quiet", "refs/remotes/origin/main"]) { "main" } else { "master" }.into();
+            main = if git_ok(&root, &["show-ref", "--verify", "--quiet", "refs/remotes/origin/main"]) {
+                "main"
+            } else {
+                "master"
+            }
+            .into();
         }
 
         // 1. Merge / rebase in progress, conflicts
@@ -341,8 +344,11 @@ impl Run {
             let names: String = lines_of(&unmerged).iter().take(5).map(|n| format!("{n} ")).collect();
             self.fix(&format!("{conflicts} file(s) with merge conflicts: {names}"));
         }
-        let markers: String =
-            lines_of(&g(&["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>) "])).iter().take(3).map(|n| format!("{n} ")).collect();
+        let markers: String = lines_of(&g(&["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>) "]))
+            .iter()
+            .take(3)
+            .map(|n| format!("{n} "))
+            .collect();
         if !markers.is_empty() {
             self.fix(&format!("conflict markers in files: {markers}"));
         }
@@ -431,7 +437,11 @@ impl Run {
         let wt = g(&["worktree", "list"]);
         let w = count_lines(&wt);
         if w > 1 {
-            let paths: String = lines_of(&wt).iter().skip(1).map(|l| format!("{} ", l.split_whitespace().next().unwrap_or(""))).collect();
+            let paths: String = lines_of(&wt)
+                .iter()
+                .skip(1)
+                .map(|l| format!("{} ", l.split_whitespace().next().unwrap_or("")))
+                .collect();
             self.warn(&format!("{} extra worktree(s): {paths}", w - 1));
         }
 
@@ -532,7 +542,8 @@ impl Run {
             return;
         }
         let bad_re = Regex::new(r"^completed\|(failure|cancelled|timed_out|startup_failure)").unwrap();
-        let bad: BTreeSet<&str> = runs.lines().filter(|l| bad_re.is_match(l)).filter_map(|l| l.split('|').nth(2)).collect();
+        let bad: BTreeSet<&str> =
+            runs.lines().filter(|l| bad_re.is_match(l)).filter_map(|l| l.split('|').nth(2)).collect();
         let pending = runs.lines().filter(|l| !l.starts_with("completed")).count();
         if !bad.is_empty() {
             let names: String = bad.iter().map(|n| format!("{n} ")).collect();

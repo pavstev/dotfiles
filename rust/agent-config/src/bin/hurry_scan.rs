@@ -226,7 +226,8 @@ fn find_session(arg: Option<&str>, use_all: bool) -> Option<PathBuf> {
     }
     if !use_all {
         let enc = NON_ALNUM.replace_all(&cwd_string(), "-").into_owned();
-        let mine: Vec<PathBuf> = list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
+        let mine: Vec<PathBuf> =
+            list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
         if !mine.is_empty() {
             return newest(mine);
         }
@@ -397,7 +398,8 @@ fn scan_transcript(path: &Path) -> Transcript {
                 s.model = Some(m.to_string());
             }
             let u = get(msg, "usage");
-            let ctx = num(get(u, "input_tokens")) as i64 + num(get(u, "cache_read_input_tokens")) as i64
+            let ctx = num(get(u, "input_tokens")) as i64
+                + num(get(u, "cache_read_input_tokens")) as i64
                 + num(get(u, "cache_creation_input_tokens")) as i64;
             if ctx != 0 && !truthy(get(&o, "isSidechain")) {
                 s.ctx_now = ctx;
@@ -600,11 +602,8 @@ unsafe extern "C" {
 }
 
 fn machine_load() -> Load {
-    let mut out = Load {
-        load: None,
-        cpus: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
-        top: vec![],
-    };
+    let mut out =
+        Load { load: None, cpus: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1), top: vec![] };
     #[cfg(unix)]
     {
         let mut l = [0f64; 3];
@@ -675,11 +674,21 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
     };
     let pct = if window != 0 { 100.0 * s.ctx_now as f64 / window as f64 } else { 0.0 };
     if pct >= 75.0 {
-        add(100, "you", format!("Context is {:.0}% full", pct), "Every turn re-reads the whole history. Replies get slow and fuzzy.".into(),
-            "Run /compact now. Or /clear and paste a short handoff.");
+        add(
+            100,
+            "you",
+            format!("Context is {:.0}% full", pct),
+            "Every turn re-reads the whole history. Replies get slow and fuzzy.".into(),
+            "Run /compact now. Or /clear and paste a short handoff.",
+        );
     } else if pct >= 50.0 {
-        add(70, "you", format!("Context is {:.0}% full", pct), "Each turn costs more as the history grows.".into(),
-            "Run /compact at the next calm moment.");
+        add(
+            70,
+            "you",
+            format!("Context is {:.0}% full", pct),
+            "Each turn costs more as the history grows.".into(),
+            "Run /compact at the next calm moment.",
+        );
     }
     let big: Vec<&(usize, String, String)> = s.results.iter().filter(|r| r.0 >= 20000).collect();
     if !big.is_empty() {
@@ -693,14 +702,8 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
             "I will use offset/limit, rg, head, and subagents for big output.",
         );
     }
-    let rereads: Vec<(String, i64)> = s
-        .reads
-        .keys
-        .iter()
-        .zip(&s.reads.vals)
-        .filter(|(_, n)| **n >= 3)
-        .map(|(p, n)| (p.clone(), *n))
-        .collect();
+    let rereads: Vec<(String, i64)> =
+        s.reads.keys.iter().zip(&s.reads.vals).filter(|(_, n)| **n >= 3).map(|(p, n)| (p.clone(), *n)).collect();
     if !rereads.is_empty() {
         // max(rereads, key=count): first of the maximal
         let mut best = &rereads[0];
@@ -728,75 +731,137 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         );
     }
     if s.compactions.len() >= 2 {
-        add(60, "you", format!("Compacted {} times", s.compactions.len()), "Session is too long. Each compact loses detail.".into(),
-            "Start a fresh session for the next task. Keep the handoff short.");
+        add(
+            60,
+            "you",
+            format!("Compacted {} times", s.compactions.len()),
+            "Session is too long. Each compact loses detail.".into(),
+            "Start a fresh session for the next task. Keep the handoff short.",
+        );
     }
     if s.bytes > 15 * 1024 * 1024 {
-        add(40, "you", format!("Transcript is {}", human(s.bytes as f64)), "Resume and startup get slow on huge sessions.".into(),
-            "Finish this task, then start a new session.");
+        add(
+            40,
+            "you",
+            format!("Transcript is {}", human(s.bytes as f64)),
+            "Resume and startup get slow on huge sessions.".into(),
+            "Finish this task, then start a new session.",
+        );
     }
     let cmd_total: usize = w.claude_md.iter().map(|(_, n)| *n).sum::<usize>() + w.rules.1;
     if cmd_total > 24000 {
-        add(if cmd_total > 48000 { 60 } else { 45 }, "you", format!("CLAUDE.md + rules = ~{} tokens", ktok(tok(cmd_total as i64))),
-            "Loaded on every turn, even when not needed.".into(), "Trim or move rarely used parts into skills.");
+        add(
+            if cmd_total > 48000 { 60 } else { 45 },
+            "you",
+            format!("CLAUDE.md + rules = ~{} tokens", ktok(tok(cmd_total as i64))),
+            "Loaded on every turn, even when not needed.".into(),
+            "Trim or move rarely used parts into skills.",
+        );
     }
     let ab = &s.attach_by_type;
-    let servers: HashSet<String> = s
-        .mcp_tools
-        .iter()
-        .filter_map(|n| MCP_SERVER.captures(n).map(|c| c[1].to_string()))
-        .collect();
+    let servers: HashSet<String> =
+        s.mcp_tools.iter().filter_map(|n| MCP_SERVER.captures(n).map(|c| c[1].to_string())).collect();
     let mcp_bytes = ab.get("deferred_tools_delta") + ab.get("mcp_instructions_delta");
     if s.mcp_tools.len() >= 100 || mcp_bytes > 60000 {
         add(
             65,
             "you",
-            format!("{} MCP servers, {} tools (~{} tokens injected)", servers.len(), s.mcp_tools.len(), ktok(tok(mcp_bytes))),
+            format!(
+                "{} MCP servers, {} tools (~{} tokens injected)",
+                servers.len(),
+                s.mcp_tools.len(),
+                ktok(tok(mcp_bytes))
+            ),
             "Tool names and server rules are sent on every session start and cache miss.".into(),
             "Disable MCP servers this project does not use.",
         );
     } else if w.mcp.len() >= 6 {
-        add(55, "you", format!("{} MCP servers connected", w.mcp.len()), "Each server adds tool schemas to every turn.".into(),
-            "Disable servers you do not use in this project.");
+        add(
+            55,
+            "you",
+            format!("{} MCP servers connected", w.mcp.len()),
+            "Each server adds tool schemas to every turn.".into(),
+            "Disable servers you do not use in this project.",
+        );
     }
     if ab.get("skill_listing") > 40000 {
-        add(60, "you", format!("Skill list injects ~{} tokens", ktok(tok(ab.get("skill_listing")))),
+        add(
+            60,
+            "you",
+            format!("Skill list injects ~{} tokens", ktok(tok(ab.get("skill_listing")))),
             "Every skill name and description is sent each session.".into(),
-            "Disable plugins with many skills. Remove skills you never use.");
+            "Disable plugins with many skills. Remove skills you never use.",
+        );
     }
     if ab.get("hook_additional_context") > 8000 {
-        add(45, "you", format!("Start hooks inject ~{} tokens", ktok(tok(ab.get("hook_additional_context")))),
-            "A SessionStart hook pastes big text into every session.".into(), "Shorten what the hook prints.");
+        add(
+            45,
+            "you",
+            format!("Start hooks inject ~{} tokens", ktok(tok(ab.get("hook_additional_context")))),
+            "A SessionStart hook pastes big text into every session.".into(),
+            "Shorten what the hook prints.",
+        );
     }
     if w.plugins_on.len() >= 8 {
-        add(45, "you", format!("{} plugins enabled", w.plugins_on.len()), "Each plugin adds skills, agents, and hooks.".into(),
-            "Turn off plugins you rarely use. It is reversible.");
+        add(
+            45,
+            "you",
+            format!("{} plugins enabled", w.plugins_on.len()),
+            "Each plugin adds skills, agents, and hooks.".into(),
+            "Turn off plugins you rarely use. It is reversible.",
+        );
     }
     let pre = w.hook("PreToolUse") + w.hook("PostToolUse");
     if pre >= 5 {
-        add(50, "you", format!("{} tool hooks run on every tool call", pre), "Each hook adds a process spawn before and after each tool.".into(),
-            "Check they are fast. Drop the ones you do not need.");
+        add(
+            50,
+            "you",
+            format!("{} tool hooks run on every tool call", pre),
+            "Each hook adds a process spawn before and after each tool.".into(),
+            "Check they are fast. Drop the ones you do not need.",
+        );
     }
     if let Some(e) = &w.effort_env
-        && ["high", "xhigh", "max"].contains(&e.as_str()) && s.tool_calls.get("Read") + s.tool_calls.get("Bash") > 0
+        && ["high", "xhigh", "max"].contains(&e.as_str())
+        && s.tool_calls.get("Read") + s.tool_calls.get("Bash") > 0
     {
-        add(35, "you", format!("Effort is {}", e), "High effort means long thinking before each step.".into(),
-            "Use /effort medium for simple work. Try /fast for quick tasks.");
+        add(
+            35,
+            "you",
+            format!("Effort is {}", e),
+            "High effort means long thinking before each step.".into(),
+            "Use /effort medium for simple work. Try /fast for quick tasks.",
+        );
     }
     if s.turns_assistant > 0 && s.think_ms / 1000.0 > 600.0 {
-        add(40, "you", format!("{:.0} min spent thinking", s.think_ms / 60000.0), "Long thinking slows every step.".into(),
-            "Lower effort for routine edits.");
+        add(
+            40,
+            "you",
+            format!("{:.0} min spent thinking", s.think_ms / 60000.0),
+            "Long thinking slows every step.".into(),
+            "Lower effort for routine edits.",
+        );
     }
     if s.errors >= 8 {
-        add(40, "me", format!("{} tool errors", s.errors), "Retry loops waste turns.".into(),
-            "I will stop, read the error once, and change the plan.");
+        add(
+            40,
+            "me",
+            format!("{} tool errors", s.errors),
+            "Retry loops waste turns.".into(),
+            "I will stop, read the error once, and change the plan.",
+        );
     }
     if let Some(load) = m.load.filter(|l| *l != 0.0)
         && load > m.cpus as f64 * 0.8
     {
         let top = m.top.iter().map(|(c, _, n)| format!("{} {:.0}%", n, c)).collect::<Vec<_>>().join(", ");
-        add(50, "you", format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus), format!("Top: {}.", top),
-            "Quit the heavy app. Run ps:bag-mode to see more.");
+        add(
+            50,
+            "you",
+            format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus),
+            format!("Top: {}.", top),
+            "Quit the heavy app. Run ps:bag-mode to see more.",
+        );
     }
     f.sort_by(|a, b| b.cmp(a));
     f
@@ -826,7 +891,10 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
         o.insert("verdict".into(), Value::from(verdict(f)));
         o.insert("context_tokens".into(), Value::from(s.ctx_now));
         o.insert("window".into(), Value::from(window));
-        o.insert("context_pct".into(), serde_json::Number::from_f64(pyround1(pct)).map(Value::Number).unwrap_or(Value::Null));
+        o.insert(
+            "context_pct".into(),
+            serde_json::Number::from_f64(pyround1(pct)).map(Value::Number).unwrap_or(Value::Null),
+        );
         let fs_: Vec<Value> = f
             .iter()
             .map(|x| {
@@ -849,7 +917,8 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
     let bar = format!("{}{}", "#".repeat(hashes.max(0) as usize), ".".repeat((20 - hashes).max(0) as usize));
     let mut age = String::new();
     if let (Some(a), Some(b)) = (s.first_ts, s.last_ts)
-        && a != 0.0 && b != 0.0
+        && a != 0.0
+        && b != 0.0
     {
         age = format!(", {:.1}h old", (b - a) / 3600.0);
     }
@@ -873,11 +942,23 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
         s.sidechain
     );
     if !s.tool_bytes.is_empty() {
-        let parts = s.tool_bytes.most_common(4).iter().map(|(n, b)| format!("{} {}", n, human(*b as f64))).collect::<Vec<_>>().join(", ");
+        let parts = s
+            .tool_bytes
+            .most_common(4)
+            .iter()
+            .map(|(n, b)| format!("{} {}", n, human(*b as f64)))
+            .collect::<Vec<_>>()
+            .join(", ");
         out!("RESULTS  top tools by output: {}", parts);
     }
     if !s.attach_by_type.is_empty() {
-        let top = s.attach_by_type.most_common(4).iter().map(|(k, v)| format!("{} ~{}t", k, ktok(tok(*v)))).collect::<Vec<_>>().join(", ");
+        let top = s
+            .attach_by_type
+            .most_common(4)
+            .iter()
+            .map(|(k, v)| format!("{} ~{}t", k, ktok(tok(*v))))
+            .collect::<Vec<_>>()
+            .join(", ");
         out!("STARTUP  injected: {}", top);
     }
     let cmd_total: usize = w.claude_md.iter().map(|(_, n)| *n).sum::<usize>() + w.rules.1;
@@ -989,5 +1070,4 @@ mod tests {
         assert_eq!(split_none2("  12.5   345 /usr/bin/x y"), Some(("12.5", "345", "/usr/bin/x y")));
         assert_eq!(split_none2("1 2"), None);
     }
-
 }

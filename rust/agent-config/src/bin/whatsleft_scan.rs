@@ -6,7 +6,8 @@
 
 use agent_config::guard_checks::expanduser;
 use agent_config::pycompat::{
-    basename, civil_from_days, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str, truthy,
+    basename, civil_from_days, dirname, fname, json_str, list_dir, mtime, parse_ts, py_float, py_splitlines, py_str,
+    truthy,
 };
 use clap::Parser;
 use regex::Regex;
@@ -54,10 +55,7 @@ rx!(
     r"(?i)\bTODO:|\bFIXME\b|\bfollow[- ]?ups?\b|\bnext steps?\b|\bnot (?:\w+ )?yet\b|\bskipped\b|\bstill (?:need|needs|have|has) to\b|\byou(?:'ll| will)? (?:need|have|must|should) to\b|\bleft to do\b|\b(?:I|we) (?:could not|couldn't|can't|cannot|did not|didn't)\b|\bblocked (?:by|on)\b|\bwaiting (?:for|on)\b|\b(?:is|are|was|were|still) (?:failing|broken|pending|missing)\b"
 );
 rx!(LATER, r"(?i)\blater\b");
-rx!(
-    MARKER,
-    r"(?:#|//|/\*|<!--|--|;|^\s*\*)\s*(?:TODO|FIXME|XXX|HACK)\b|\b(?:TODO|FIXME|XXX|HACK)\b(?:\([^)]*\))?:"
-);
+rx!(MARKER, r"(?:#|//|/\*|<!--|--|;|^\s*\*)\s*(?:TODO|FIXME|XXX|HACK)\b|\b(?:TODO|FIXME|XXX|HACK)\b(?:\([^)]*\))?:");
 rx!(DENIED, r"(?i)doesn't want to proceed|was denied|permission .{0,40}denied|rejected by the user");
 rx!(
     BG_RESULT,
@@ -96,10 +94,7 @@ rx!(SYS_REMINDER, r"(?s)<system-reminder>.*?</system-reminder>");
 rx!(PASTED, r"(?s)<pasted_content[^>]*>.*?</pasted_content>");
 rx!(CMD_NAME, r"<command-name>([^<]*)</command-name>");
 rx!(CMD_ARGS, r"<command-args>([^<]*)</command-args>");
-rx!(
-    ASK_SKIP,
-    r"^\s*(<(task-notification|local-command|bash-|command-message)|\[Request interrupted)"
-);
+rx!(ASK_SKIP, r"^\s*(<(task-notification|local-command|bash-|command-message)|\[Request interrupted)");
 rx!(FENCE, r"(?s)```.*?```");
 rx!(TASK_NUM, r"#?(\d+)");
 rx!(CRON_ID, r"\b(?:id|ID|job)[:\s]+([\w-]+)");
@@ -308,7 +303,14 @@ fn local_fields(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
     if r.is_null() {
         return utc_fields(secs);
     }
-    (tm.tm_year as i64 + 1900, tm.tm_mon as i64 + 1, tm.tm_mday as i64, tm.tm_hour as i64, tm.tm_min as i64, tm.tm_sec as i64)
+    (
+        tm.tm_year as i64 + 1900,
+        tm.tm_mon as i64 + 1,
+        tm.tm_mday as i64,
+        tm.tm_hour as i64,
+        tm.tm_min as i64,
+        tm.tm_sec as i64,
+    )
 }
 
 #[cfg(not(all(unix, target_pointer_width = "64")))]
@@ -359,7 +361,11 @@ fn local_hm(ts: f64) -> String {
 
 fn run(args: &[&str], cwd: Option<&str>, timeout: u64) -> (i32, String) {
     let mut cmd = Command::new(args[0]);
-    cmd.args(&args[1..]).env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(&args[1..])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
@@ -412,7 +418,8 @@ fn session_hits(prefix: &str, exact: bool) -> Vec<PathBuf> {
     for d in list_dir(&projects_dir()) {
         for f in list_dir(&d) {
             let n = fname(&f);
-            let ok = if exact { n == format!("{}.jsonl", prefix) } else { n.starts_with(prefix) && n.ends_with(".jsonl") };
+            let ok =
+                if exact { n == format!("{}.jsonl", prefix) } else { n.starts_with(prefix) && n.ends_with(".jsonl") };
             if ok {
                 hits.push(f);
             }
@@ -439,7 +446,8 @@ fn find_session(arg: Option<&str>) -> Option<PathBuf> {
         return Some(h);
     }
     let enc = NON_ALNUM.replace_all(&cwd_string(), "-").into_owned();
-    let mine: Vec<PathBuf> = list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
+    let mine: Vec<PathBuf> =
+        list_dir(&projects_dir().join(enc)).into_iter().filter(|p| fname(p).ends_with(".jsonl")).collect();
     let mut best: Option<(f64, PathBuf)> = None;
     for p in mine {
         let m = mtime(&p).unwrap_or(0.0);
@@ -564,7 +572,10 @@ fn read_session(path: &Path) -> Session {
                 for n in NOTICE.captures_iter(txt) {
                     s.notices.insert(
                         n["tool"].to_string(),
-                        (n["status"].to_string(), n.name("summary").map(|m| m.as_str().to_string()).unwrap_or_default()),
+                        (
+                            n["status"].to_string(),
+                            n.name("summary").map(|m| m.as_str().to_string()).unwrap_or_default(),
+                        ),
                     );
                 }
             }
@@ -633,7 +644,13 @@ fn read_session(path: &Path) -> Session {
                     }
                     s.uses.insert(
                         id.clone(),
-                        Use { name: name.clone(), inp: inp.clone(), ts, cwd: get(&obj, "cwd").as_str().map(|c| c.to_string()), idx: s.order.len() },
+                        Use {
+                            name: name.clone(),
+                            inp: inp.clone(),
+                            ts,
+                            cwd: get(&obj, "cwd").as_str().map(|c| c.to_string()),
+                            idx: s.order.len(),
+                        },
                     );
                     s.order.push(id);
                     if name == "TodoWrite" {
@@ -737,7 +754,13 @@ fn section_todos(s: &Session) {
             let c = first_truthy(t, &["content", "activeForm"]);
             let c = if truthy(c) { py_str(c) } else { "?".to_string() };
             let st = match get(t, "status") {
-                Value::Null => if t.get("status").is_some() { "None".to_string() } else { "?".to_string() },
+                Value::Null => {
+                    if t.get("status").is_some() {
+                        "None".to_string()
+                    } else {
+                        "?".to_string()
+                    }
+                }
                 v => py_str(v),
             };
             items.push((c, st));
@@ -783,10 +806,14 @@ fn background_tasks(s: &Session) -> Vec<Bg> {
         let u = &s.uses[uid];
         let res = s.result(uid).1;
         let m = BG_RESULT.captures(res);
-        let mut task_id = m.as_ref().map(|m| m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default()).unwrap_or_default();
+        let mut task_id = m
+            .as_ref()
+            .map(|m| m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default())
+            .unwrap_or_default();
         let is_bg = m.is_some()
             || res.trim_start().starts_with("Async agent launched")
-            || (get(&u.inp, "run_in_background") == &Value::Bool(true) && ["Bash", "Agent", "Monitor"].contains(&u.name.as_str()));
+            || (get(&u.inp, "run_in_background") == &Value::Bool(true)
+                && ["Bash", "Agent", "Monitor"].contains(&u.name.as_str()));
         if !is_bg {
             continue;
         }
@@ -849,7 +876,8 @@ fn advise(t: &mut Bg) -> (bool, String) {
         return (false, "server, stop it when work ends".into());
     }
     if let Some(q) = quiet
-        && q >= 20.0 && run >= 20.0
+        && q >= 20.0
+        && run >= 20.0
     {
         return (false, format!("quiet for {}m, read its output before stopping", q as i64));
     }
@@ -882,14 +910,26 @@ fn section_background(s: &Session) {
             None => "no file".to_string(),
             Some(a) => format!("{}m ago", a as i64),
         };
-        pl!("  TASK  {} | {} | {} | {}m | {} | {}: {}", t.id, kind, what, t.run_min as i64, last, if stop { "STOP" } else { "KEEP" }, why);
+        pl!(
+            "  TASK  {} | {} | {} | {}m | {} | {}: {}",
+            t.id,
+            kind,
+            what,
+            t.run_min as i64,
+            last,
+            if stop { "STOP" } else { "KEEP" },
+            why
+        );
     }
     if stops > 0 {
         line("ME", &format!("stop {} dead task(s) marked STOP above (TaskStop)", stops));
     }
     for t in &rows {
         if t.status == "failed" {
-            line("CHECK", &format!("failed: {} — {} — still needed?", describe(&t.name, &t.inp), short(&t.summary, 90)));
+            line(
+                "CHECK",
+                &format!("failed: {} — {} — still needed?", describe(&t.name, &t.inp), short(&t.summary, 90)),
+            );
         }
     }
     for (_, what) in &s.crons {
@@ -1240,7 +1280,8 @@ fn check_freshness(s: &Session, root: &str) {
         }
         let cmd = or_blank(get(&u.inp, "command"));
         let bare = strip_heredocs(&cmd);
-        let here = u.name == "Bash" && (in_repo(u.cwd.as_deref().unwrap_or(""), root) || expanduser_text(&bare).contains(root));
+        let here = u.name == "Bash"
+            && (in_repo(u.cwd.as_deref().unwrap_or(""), root) || expanduser_text(&bare).contains(root));
         if here && IN_PLACE_EDIT.is_match(&bare) {
             last_edit = Some(u.idx);
         }
@@ -1254,10 +1295,13 @@ fn check_freshness(s: &Session, root: &str) {
         None => line("ME", "files edited, but no test/lint/check ran in this repo this session"),
         Some(lc) if lc < le => line("ME", "files edited after the last check run — run the checks again"),
         _ if state == "failed" => line("ME", "the last check run failed — fix it, then run it again"),
-        _ if state == "running" => line("ME", "the last check is still running: wait for its notice, then read its exit line"),
-        _ if state.starts_with("hidden: ") => {
-            line("ME", &format!("the last check's exit code is hidden ({}): read its log or run it again without it", &state[8..]))
+        _ if state == "running" => {
+            line("ME", "the last check is still running: wait for its notice, then read its exit line")
         }
+        _ if state.starts_with("hidden: ") => line(
+            "ME",
+            &format!("the last check's exit code is hidden ({}): read its log or run it again without it", &state[8..]),
+        ),
         _ => line("OK", "a check ran after the last edit, and it passed"),
     }
 }
@@ -1272,7 +1316,10 @@ fn new_markers(root: &str, since: Option<f64>) -> Vec<String> {
     let mut cmds: Vec<Vec<String>> = vec![vec!["git".into(), "diff".into(), "HEAD".into(), "-U0".into()]];
     if let Some(st) = since.filter(|s| *s != 0.0) {
         cmds.push(
-            ["git", "log", &format!("--since={}", local_iso(st)), "-p", "-U0", "--format="].iter().map(|s| s.to_string()).collect(),
+            ["git", "log", &format!("--since={}", local_iso(st)), "-p", "-U0", "--format="]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         );
     }
     for args in cmds {
@@ -1335,7 +1382,13 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     let main = main0.replacen("origin/", "", 1);
     let main = if main.is_empty() { "main".to_string() } else { main };
 
-    for (marker, what) in [("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")] {
+    for (marker, what) in [
+        ("MERGE_HEAD", "merge"),
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+    ] {
         if !gd.is_empty() && Path::new(&gd).join(marker).exists() {
             line("ME", &format!("a {} is half done — finish it", what));
             break;
@@ -1403,17 +1456,32 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     if ci && !branch.is_empty() && workflow_files(root) {
         let (_, head) = g(&["rev-parse", "HEAD"], 20);
         let (rc, runs) = run(
-            &["gh", "run", "list", "--commit", &head, "--json", "name,status,conclusion", "-q", r#".[] | "\(.status)|\(.conclusion)|\(.name)""#],
+            &[
+                "gh",
+                "run",
+                "list",
+                "--commit",
+                &head,
+                "--json",
+                "name,status,conclusion",
+                "-q",
+                r#".[] | "\(.status)|\(.conclusion)|\(.name)""#,
+            ],
             Some(root),
             20,
         );
         if rc != 0 {
             line("CHECK", "could not read CI (gh missing or not logged in)");
         } else if !runs.is_empty() {
-            let rows: Vec<Vec<String>> = py_splitlines(&runs).iter().map(|r| r.splitn(3, '|').map(|x| x.to_string()).collect()).collect();
+            let rows: Vec<Vec<String>> =
+                py_splitlines(&runs).iter().map(|r| r.splitn(3, '|').map(|x| x.to_string()).collect()).collect();
             let mut bad: Vec<String> = rows
                 .iter()
-                .filter(|r| r.len() >= 3 && r[0] == "completed" && ["failure", "cancelled", "timed_out", "startup_failure"].contains(&r[1].as_str()))
+                .filter(|r| {
+                    r.len() >= 3
+                        && r[0] == "completed"
+                        && ["failure", "cancelled", "timed_out", "startup_failure"].contains(&r[1].as_str())
+                })
                 .map(|r| r[2].clone())
                 .collect();
             bad.sort();
@@ -1438,13 +1506,15 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
 }
 
 fn leftovers_path() -> String {
-    std::env::var("MIC_LEFTOVERS").unwrap_or_else(|_| Path::new(&home()).join(".claude").join("leftovers.md").to_string_lossy().into_owned())
+    std::env::var("MIC_LEFTOVERS")
+        .unwrap_or_else(|_| Path::new(&home()).join(".claude").join("leftovers.md").to_string_lossy().into_owned())
 }
 
 fn section_leftovers(roots: &[String]) {
     let lp = leftovers_path();
     let Some(text) = read_text(Path::new(&lp)) else { return };
-    let rows: Vec<String> = text.split_inclusive('\n').filter(|l| l.starts_with("- [ ]")).map(|l| l.trim().to_string()).collect();
+    let rows: Vec<String> =
+        text.split_inclusive('\n').filter(|l| l.starts_with("- [ ]")).map(|l| l.trim().to_string()).collect();
     let names: HashSet<String> = roots.iter().map(|r| basename(r)).collect();
     let mine: Vec<&String> = rows.iter().filter(|r| names.iter().any(|n| r.contains(&format!("**{}**", n)))).collect();
     if mine.is_empty() {
@@ -1533,7 +1603,15 @@ fn main() {
     let total = me + you + check;
     let later_s = if later > 0 { format!(" · LATER {}", later) } else { String::new() };
     let head = if total > 0 { format!("{} open", total) } else { "NOTHING OPEN FOUND".to_string() };
-    pl!("VERDICT: {} — ME {} · YOU {} · CHECK {}{} (+ {} asks to cross-check)", head, me, you, check, later_s, s.asks.len());
+    pl!(
+        "VERDICT: {} — ME {} · YOU {} · CHECK {}{} (+ {} asks to cross-check)",
+        head,
+        me,
+        you,
+        check,
+        later_s,
+        s.asks.len()
+    );
 }
 
 #[cfg(test)]

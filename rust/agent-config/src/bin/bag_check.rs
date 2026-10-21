@@ -138,7 +138,8 @@ impl Card {
             bump(2, "Amphetamine is OFF - the Mac will sleep");
             "❌ OFF - the Mac will sleep".to_string()
         };
-        let mut pw = format!("{} on {}", if pct.is_empty() { "?" } else { &pct }, if src.is_empty() { "?" } else { &src });
+        let mut pw =
+            format!("{} on {}", if pct.is_empty() { "?" } else { &pct }, if src.is_empty() { "?" } else { &src });
         if src == "Battery"
             && let Some(r) = rem_min
         {
@@ -230,7 +231,11 @@ impl Card {
         println!("| Check | Status |\n|---|---|");
         println!("| 🔋 Power | {pw} |");
         println!("| ☕ Amphetamine | {amph} |");
-        println!("| 🔥 Load | {l1} / {} cores · {} memory free |", self.ncpu, if memfree.is_empty() { "?" } else { &memfree });
+        println!(
+            "| 🔥 Load | {l1} / {} cores · {} memory free |",
+            self.ncpu,
+            if memfree.is_empty() { "?" } else { &memfree }
+        );
         println!("| ⏱ ETA | {eta_line} |");
         println!("| 🤖 Running | {ag} agents · {ds} dev servers · {nd} node |");
         println!("\n### 🏋 Heavy tasks ({n})\n");

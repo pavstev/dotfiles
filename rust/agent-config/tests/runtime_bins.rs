@@ -83,7 +83,8 @@ fn statusline_writes_pace_cache() {
     assert_eq!(v["seven_day"], serde_json::json!({"used_percentage": 41.2, "resets_at": 1790500000}));
     assert!(text.contains(r#""five_hour":{"used_percentage":23.5,"resets_at":1790000000}"#), "compact: {text}");
     // written through a temp file: nothing else is left in the cache folder
-    let left: Vec<String> = fs::read_dir(&cache).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let left: Vec<String> =
+        fs::read_dir(&cache).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(left, ["claude-pace.json"]);
 }
 
@@ -132,7 +133,8 @@ fn statusline_context_turns_copper_at_300k() {
     assert!(a.contains("\u{1b}[38;2;168;162;158mctx 299K"), "{a:?}");
     assert!(b.contains(copper), "{b:?}");
     // the session total is the fallback when the last call's usage is absent or zero
-    let (_, c, _) = run_bin(STATUSLINE, &[], r#"{"context_window":{"total_input_tokens":4500}}"#, &[], Some(Path::new("/")));
+    let (_, c, _) =
+        run_bin(STATUSLINE, &[], r#"{"context_window":{"total_input_tokens":4500}}"#, &[], Some(Path::new("/")));
     assert!(c.contains("ctx 4K"), "{c:?}");
 }
 
@@ -264,7 +266,8 @@ fn skill_check_cases() {
         ("ps:badname", good.replace("ps:good", "ps:Bad_Name"), vec![], 1),
         (
             "ps:hardpath",
-            good.replace("ps:good", "ps:hardpath").replace("${CLAUDE_SKILL_DIR}/scripts/go.sh", "~/.claude/skills/ps_hardpath/scripts/go.sh"),
+            good.replace("ps:good", "ps:hardpath")
+                .replace("${CLAUDE_SKILL_DIR}/scripts/go.sh", "~/.claude/skills/ps_hardpath/scripts/go.sh"),
             vec![],
             1,
         ),
@@ -272,7 +275,10 @@ fn skill_check_cases() {
         ("ps:junk", good.replace("ps:good", "ps:junk"), vec![".ruff_cache"], 1),
         (
             "ps:firstperson",
-            good.replace("ps:good", "ps:firstperson").replace("Use when the user asks for a demo: a short recipe. Third person.", "I can help you with demos when asked."),
+            good.replace("ps:good", "ps:firstperson").replace(
+                "Use when the user asks for a demo: a short recipe. Third person.",
+                "I can help you with demos when asked.",
+            ),
             vec![],
             1,
         ),
@@ -388,7 +394,12 @@ fn mic_check_clean_with_an_upstream_and_a_check_command() {
     let (code, out, err) = run_bin(MIC_CHECK, &[], "", &[("HOME", s(&home))], Some(&repo));
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("  OK    in sync with origin/main ("), "{out}");
-    assert!(out.contains("  RUN   verification checks for this repo:\n          cargo clippy --all-targets && cargo nextest run\n"), "{out}");
+    assert!(
+        out.contains(
+            "  RUN   verification checks for this repo:\n          cargo clippy --all-targets && cargo nextest run\n"
+        ),
+        "{out}"
+    );
     assert!(out.ends_with("VERDICT: CLEAN\n"), "{out}");
 }
 
@@ -400,14 +411,22 @@ fn mic_check_since_note_and_leftovers() {
     let left = home.join("left.md");
     let env = [("HOME", s(&home)), ("MIC_LEFTOVERS", s(&left))];
     let (_, out, _) = run_bin(MIC_CHECK, &["--no-fetch", "--since", &second], "", &env, Some(&repo));
-    assert!(out.contains(&format!("  OK    2 session commit(s) on top of base {first} (squash: git reset --soft {first})\n")), "{out}");
+    assert!(
+        out.contains(&format!(
+            "  OK    2 session commit(s) on top of base {first} (squash: git reset --soft {first})\n"
+        )),
+        "{out}"
+    );
     // newest first, each line indented ten spaces: "<sha> <author>  <subject>"
     let sha = |rev: &str| git(&repo, &["rev-parse", "--short", rev]);
     let want = format!("          {} Tester  commit 2\n          {} Tester  commit 1\n", sha("HEAD"), sha("HEAD~1"));
     assert!(out.contains(&want), "{out}");
     // a sha that is not an ancestor
     let (_, out, _) = run_bin(MIC_CHECK, &["--no-fetch", "--since", "deadbeef"], "", &env, Some(&repo));
-    assert!(out.contains("  WARN  --since deadbeef is not an ancestor of HEAD here: no squash range for this repo\n"), "{out}");
+    assert!(
+        out.contains("  WARN  --since deadbeef is not an ancestor of HEAD here: no squash range for this repo\n"),
+        "{out}"
+    );
     // --leftovers before and after a note
     let (code, out, _) = run_bin(MIC_CHECK, &["--leftovers"], "", &env, None);
     assert_eq!(code, 0);
@@ -415,7 +434,10 @@ fn mic_check_since_note_and_leftovers() {
     let (code, out, _) = run_bin(MIC_CHECK, &["--note", "tidy later"], "", &env, Some(&repo));
     assert_eq!((code, out), (0, format!("saved to {}\n", left.display())));
     let text = fs::read_to_string(&left).unwrap();
-    assert!(text.starts_with("# Leftovers\n\nOptional fixes saved by ps:mic-drop. Delete a line when done.\n- [ ] "), "{text}");
+    assert!(
+        text.starts_with("# Leftovers\n\nOptional fixes saved by ps:mic-drop. Delete a line when done.\n- [ ] "),
+        "{text}"
+    );
     assert!(text.ends_with(" · **demo-repo** · tidy later\n"), "{text}");
     let (_, out, _) = run_bin(MIC_CHECK, &["--no-fetch"], "", &env, Some(&repo));
     assert!(out.contains(&format!("leftovers file: {} (1 open)\n", left.display())), "{out}");
@@ -430,7 +452,13 @@ fn mic_check_skips_a_folder_that_is_not_a_repo() {
     let home = temp_home("mic-norepo");
     let plain = home.join("plain");
     fs::create_dir_all(&plain).unwrap();
-    let (code, out, _) = run_bin(MIC_CHECK, &["--no-fetch", s(&plain)], "", &[("HOME", s(&home)), ("GIT_CEILING_DIRECTORIES", s(&home))], None);
+    let (code, out, _) = run_bin(
+        MIC_CHECK,
+        &["--no-fetch", s(&plain)],
+        "",
+        &[("HOME", s(&home)), ("GIT_CEILING_DIRECTORIES", s(&home))],
+        None,
+    );
     assert_eq!(code, 0, "{out}");
     assert!(out.contains(&format!("== {} ==\n  WARN  not a git repo — skipped\n", plain.display())), "{out}");
     assert!(out.ends_with("VERDICT: CLEAN\n"), "{out}");

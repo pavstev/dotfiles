@@ -9,10 +9,14 @@ use crate::out::{self, info, note, skip};
 use std::path::Path;
 
 /// The shell (7th field) of a `getent passwd` line.
-fn shell_of(passwd_line: &str) -> String { passwd_line.trim_end().split(':').nth(6).unwrap_or("").to_string() }
+fn shell_of(passwd_line: &str) -> String {
+    passwd_line.trim_end().split(':').nth(6).unwrap_or("").to_string()
+}
 
 pub fn step(repo: &Path) {
-    if !os::is_linux() { return; }
+    if !os::is_linux() {
+        return;
+    }
     os::brew_env();
     out::step("Linux extras");
 

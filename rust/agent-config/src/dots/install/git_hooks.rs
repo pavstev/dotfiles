@@ -34,7 +34,9 @@ mod tests {
     use super::*;
     use std::process::Command;
 
-    fn lines(f: impl FnOnce()) -> String { out::capture(f).1.into_iter().map(|(l, _)| l).collect::<Vec<_>>().join("\n") }
+    fn lines(f: impl FnOnce()) -> String {
+        out::capture(f).1.into_iter().map(|(l, _)| l).collect::<Vec<_>>().join("\n")
+    }
 
     #[test]
     fn wires_the_hooks_once_in_a_temp_repo() {

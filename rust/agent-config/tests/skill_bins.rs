@@ -88,7 +88,8 @@ impl Transcript {
     }
 
     fn bash_bg(&mut self, cmd: &str, bg_id: &str) -> String {
-        let res = format!("Command running in background with ID: {bg_id}. Output is being written to: /x/{bg_id}.output");
+        let res =
+            format!("Command running in background with ID: {bg_id}. Output is being written to: /x/{bg_id}.output");
         self.tool("Bash", json!({"command": cmd, "run_in_background": true}), &res, false, None)
     }
 
@@ -328,7 +329,11 @@ fn session(home: &Path, sid: &str, day: &str, spawns: &[(Option<&str>, i64)]) {
     fs::write(folder.join(format!("{sid}.jsonl")), body).unwrap();
     for (i, (kind, ctx)) in spawns.iter().enumerate() {
         let base = folder.join(sid).join("subagents").join(format!("agent-{sid}{i}"));
-        fs::write(format!("{}.jsonl", base.display()), format!("{}\n", usage_rec(&t, *ctx, &format!("{sid}-s{i}"), None))).unwrap();
+        fs::write(
+            format!("{}.jsonl", base.display()),
+            format!("{}\n", usage_rec(&t, *ctx, &format!("{sid}-s{i}"), None)),
+        )
+        .unwrap();
         let meta = json!({"agentType": kind.unwrap_or("general-purpose"), "model": "sonnet"});
         fs::write(format!("{}.meta.json", base.display()), meta.to_string()).unwrap();
     }

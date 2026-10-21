@@ -11,7 +11,9 @@ fn extensions_dir(xdg: Option<String>, home: &Path) -> PathBuf {
     match xdg {
         Some(x) if !x.is_empty() => PathBuf::from(x),
         _ => home.join(".local").join("share"),
-    }.join("gh").join("extensions")
+    }
+    .join("gh")
+    .join("extensions")
 }
 
 pub fn step(_repo: &Path) {

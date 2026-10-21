@@ -338,7 +338,20 @@ fn regex_ok(p: &Prev) -> bool {
         Some('>') => p.c2 == Some('='),
         Some(c) if is_ident(c) => matches!(
             p.word.as_str(),
-            "return" | "typeof" | "case" | "do" | "else" | "in" | "of" | "void" | "delete" | "throw" | "new" | "yield" | "await" | "instanceof"
+            "return"
+                | "typeof"
+                | "case"
+                | "do"
+                | "else"
+                | "in"
+                | "of"
+                | "void"
+                | "delete"
+                | "throw"
+                | "new"
+                | "yield"
+                | "await"
+                | "instanceof"
         ),
         _ => false,
     }
@@ -672,7 +685,18 @@ fn cand(kind: &'static str, name: String) -> Option<Cand> {
 
 const TS_PREFIX: [&str; 5] = ["export", "default", "declare", "abstract", "async"];
 const TS_MODS: [&str; 12] = [
-    "public", "private", "protected", "static", "async", "readonly", "override", "abstract", "get", "set", "declare", "accessor",
+    "public",
+    "private",
+    "protected",
+    "static",
+    "async",
+    "readonly",
+    "override",
+    "abstract",
+    "get",
+    "set",
+    "declare",
+    "accessor",
 ];
 
 fn ts_method(s: &[char], start: usize) -> Option<Cand> {
@@ -695,7 +719,10 @@ fn ts_method(s: &[char], start: usize) -> Option<Cand> {
             k = skip_ws(s, k + 1);
         }
         if matches!(s.get(k).copied(), Some('(' | '<')) {
-            if matches!(name.as_str(), "if" | "for" | "while" | "switch" | "catch" | "return" | "with" | "super" | "function") {
+            if matches!(
+                name.as_str(),
+                "if" | "for" | "while" | "switch" | "catch" | "return" | "with" | "super" | "function"
+            ) {
                 return None;
             }
             return cand("method", name);
@@ -868,7 +895,18 @@ fn detect_go(s: &[char], col: usize) -> Option<Cand> {
 }
 
 const JAVA_MODS: [&str; 12] = [
-    "public", "protected", "private", "static", "final", "abstract", "sealed", "strictfp", "synchronized", "native", "default", "transient",
+    "public",
+    "protected",
+    "private",
+    "static",
+    "final",
+    "abstract",
+    "sealed",
+    "strictfp",
+    "synchronized",
+    "native",
+    "default",
+    "transient",
 ];
 
 fn detect_java(s: &[char], col: usize, host: Option<&str>) -> Option<Cand> {
@@ -907,7 +945,23 @@ fn java_method(s: &[char], start: usize, host: &str) -> Option<Cand> {
     let first = word(s, start).0;
     if matches!(
         first.as_str(),
-        "return" | "new" | "if" | "else" | "for" | "while" | "switch" | "catch" | "try" | "throw" | "synchronized" | "do" | "case" | "assert" | "super" | "this" | "yield"
+        "return"
+            | "new"
+            | "if"
+            | "else"
+            | "for"
+            | "while"
+            | "switch"
+            | "catch"
+            | "try"
+            | "throw"
+            | "synchronized"
+            | "do"
+            | "case"
+            | "assert"
+            | "super"
+            | "this"
+            | "yield"
     ) {
         return None;
     }
@@ -933,7 +987,8 @@ fn detect_css(doc: &Doc, ln: usize, col: usize) -> Option<Cand> {
     if m.get(col) == Some(&'}') {
         return None;
     }
-    let brace_at = |line: &[char], from: usize| (from..line.len()).find(|&p| line[p] == '{' && !(p > 0 && line[p - 1] == '#'));
+    let brace_at =
+        |line: &[char], from: usize| (from..line.len()).find(|&p| line[p] == '{' && !(p > 0 && line[p - 1] == '#'));
     if let Some(p) = brace_at(m, col) {
         let prelude: String = o[col..p].iter().collect();
         let prelude = prelude.trim();
@@ -1230,7 +1285,13 @@ fn scan_brace(lang: Lang, text: &str) -> Vec<Symbol> {
             start = start.max(symbols[pi].start - 1);
             last = last.min(symbols[pi].end - 1);
         }
-        symbols.push(Symbol { kind: c.kind.to_string(), name: c.name, start: start + 1, end: last + 1, depth: stack.len() });
+        symbols.push(Symbol {
+            kind: c.kind.to_string(),
+            name: c.name,
+            start: start + 1,
+            end: last + 1,
+            depth: stack.len(),
+        });
         stack.push((symbols.len() - 1, brace_at[ln]));
     }
     symbols
@@ -1483,7 +1544,13 @@ fn scan_markdown(text: &str) -> Vec<Symbol> {
         while stack.last().is_some_and(|&si| symbols[si].end < ln + 1) {
             stack.pop();
         }
-        symbols.push(Symbol { kind: format!("h{level}"), name: name.clone(), start: ln + 1, end: end + 1, depth: stack.len() });
+        symbols.push(Symbol {
+            kind: format!("h{level}"),
+            name: name.clone(),
+            start: ln + 1,
+            end: end + 1,
+            depth: stack.len(),
+        });
         stack.push(symbols.len() - 1);
     }
     symbols

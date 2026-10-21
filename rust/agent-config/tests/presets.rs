@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 const AC: &str = env!("CARGO_BIN_EXE_agent-config");
 
-
 fn claude_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("claude")
 }
@@ -125,7 +124,15 @@ fn no_personal_words() {
 fn base_settings_neutral() {
     let text = fs::read_to_string(claude_dir().join("settings.json")).unwrap();
     let base: Value = serde_json::from_str(&text).unwrap();
-    for key in ["model", "outputStyle", "enabledPlugins", "extraKnownMarketplaces", "skillOverrides", "attribution", "includeCoAuthoredBy"] {
+    for key in [
+        "model",
+        "outputStyle",
+        "enabledPlugins",
+        "extraKnownMarketplaces",
+        "skillOverrides",
+        "attribution",
+        "includeCoAuthoredBy",
+    ] {
         assert!(base.get(key).is_none(), "base settings still has {key}");
     }
     assert!(base.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL").is_none());
@@ -244,8 +251,14 @@ fn px(tag: &str) -> Fx {
     wr(&c.join("CLAUDE.md"), "# Core\n\ncore line\n");
     wr(&c.join("hooks/rust-bin"), "# fake launcher\n");
     wr(&c.join("output-styles/ELI5.md"), "---\nname: ELI5\n---\nExplain it simply.\n");
-    wr(&c.join("presets/workflow/rules.md"), "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n");
-    wr(&c.join("presets/plain-writing/rules.md"), "---\nname: plain-writing\ndescription: d\nguard: []\n---\n# Plain\n\nplain line\n");
+    wr(
+        &c.join("presets/workflow/rules.md"),
+        "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n",
+    );
+    wr(
+        &c.join("presets/plain-writing/rules.md"),
+        "---\nname: plain-writing\ndescription: d\nguard: []\n---\n# Plain\n\nplain line\n",
+    );
     wr(&c.join("presets/plain-writing/settings.json"), r#"{"outputStyle": "ELI5"}"#);
     fx
 }
@@ -260,7 +273,11 @@ fn real_repo() -> PathBuf {
 
 fn preset_links(home: &Path) -> Vec<String> {
     let mut v: Vec<String> = match fs::read_dir(home.join(".claude/rules")) {
-        Ok(d) => d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("preset-")).collect(),
+        Ok(d) => d
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("preset-"))
+            .collect(),
         Err(_) => Vec::new(),
     };
     v.sort();
@@ -312,7 +329,13 @@ fn foreign_preset_file_untouched() {
     link_enabled(&home, "owner"); // clock on
     assert_eq!(fs::read_to_string(&mine).unwrap(), "my own rule\n");
     assert!(!mine.symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(home.join(".claude/rules").read_dir().unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains(".bak-")));
+    assert!(
+        home.join(".claude/rules").read_dir().unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".bak-"))
+    );
     assert_eq!(preset_links(&home).len(), 7); // six links and the regular file
     let _ = fs::remove_dir_all(&home);
 }
@@ -366,7 +389,8 @@ fn co_author_switch_follows_the_no_ai_attribution_preset() {
     let (h, r) = (home.to_str().unwrap().to_string(), real_repo().to_str().unwrap().to_string());
     let build = |settings: &str| -> Value {
         wr(&home.join(".config/dotfiles/settings"), settings);
-        let (code, out, err) = run_bin(AC, &["claude-settings", "build"], "", &[("HOME", &h), ("DOTFILES_REPO", &r)], None);
+        let (code, out, err) =
+            run_bin(AC, &["claude-settings", "build"], "", &[("HOME", &h), ("DOTFILES_REPO", &r)], None);
         assert_eq!(code, 0, "{out}{err}");
         rj(&home.join(".claude/settings.json"))
     };

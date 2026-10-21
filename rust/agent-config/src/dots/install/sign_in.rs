@@ -59,38 +59,53 @@ pub fn step(_repo: &Path) {
     os::brew_env();
     let _restore = PathGuard(std::env::var_os("PATH"));
     let local_bin = os::home().join(".local").join("bin");
-    if local_bin.is_dir() { // claude, agent
+    if local_bin.is_dir() {
+        // claude, agent
         let mut parts = vec![local_bin];
         parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
-        if let Ok(joined) = std::env::join_paths(parts) { os::set_env("PATH", joined); }
+        if let Ok(joined) = std::env::join_paths(parts) {
+            os::set_env("PATH", joined);
+        }
     }
 
     out::step("Sign in");
     let list = pending(&os::have, &probe_real);
     if list.is_empty() {
-        if verbose() { skip("sign-ins"); }
+        if verbose() {
+            skip("sign-ins");
+        }
         return;
     }
     let first_run = std::env::var("DOTFILES_FIRST_RUN").map(|v| !v.is_empty()).unwrap_or(false);
     if !first_run || !os::at_terminal() {
-        for (_, c) in &list { info(&format!("not signed in yet, run: {}", c)); }
+        for (_, c) in &list {
+            info(&format!("not signed in yet, run: {}", c));
+        }
         return;
     }
 
     let labels: Vec<&str> = list.iter().map(|(l, _)| *l).collect();
     let yes = format!("\u{2705} Yes, sign in to: {}", labels.join(", "));
     let later = "\u{23ED}\u{FE0F}  Later (dots shows the commands)".to_string();
-    let answer = ask::one("\u{1F511} Sign in now? A browser opens for each one.", &[yes.clone(), later]).unwrap_or_default();
+    let answer =
+        ask::one("\u{1F511} Sign in now? A browser opens for each one.", &[yes.clone(), later]).unwrap_or_default();
     if answer != yes {
-        for (_, c) in &list { info(&format!("later, run: {}", c)); }
+        for (_, c) in &list {
+            info(&format!("later, run: {}", c));
+        }
         return;
     }
     for (label, cmd) in &list {
         info(&format!("{}: {}", label, cmd));
         let words: Vec<&str> = cmd.split_whitespace().collect();
-        if !run(words[0], &words[1..]) { warn(&format!("{} did not finish. Run it again later.", cmd)); }
-        if os::is_macos() && *cmd == "agent login" && Path::new("/Applications/Cursor.app").is_dir()
-            && run("open", &["-a", "Cursor"]) {
+        if !run(words[0], &words[1..]) {
+            warn(&format!("{} did not finish. Run it again later.", cmd));
+        }
+        if os::is_macos()
+            && *cmd == "agent login"
+            && Path::new("/Applications/Cursor.app").is_dir()
+            && run("open", &["-a", "Cursor"])
+        {
             info("sign in inside the Cursor app too");
         }
     }
@@ -101,7 +116,13 @@ mod tests {
     use super::*;
 
     fn fake(logged: &'static [(&'static str, bool, &'static str)]) -> impl Fn(&str, &[&str]) -> (bool, String) {
-        move |p, _| logged.iter().find(|(n, _, _)| *n == p).map(|(_, ok, out)| (*ok, out.to_string())).unwrap_or((false, String::new()))
+        move |p, _| {
+            logged
+                .iter()
+                .find(|(n, _, _)| *n == p)
+                .map(|(_, ok, out)| (*ok, out.to_string()))
+                .unwrap_or((false, String::new()))
+        }
     }
 
     #[test]
@@ -129,5 +150,4 @@ mod tests {
         let claude_out = pending(&|c| c == "claude", &fake(&[("claude", true, "{\"loggedIn\": false}")]));
         assert_eq!(claude_out[0].1, "claude auth login");
     }
-
 }

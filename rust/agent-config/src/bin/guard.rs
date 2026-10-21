@@ -62,8 +62,10 @@ const H1_MAX: i64 = 3;
 const PLAN_TOOL: &str = "mcp__ccd_turn__update_plan";
 const WRAP_TOOL: &str = "mcp__ccd_turn__wrap_up";
 
-const MSG_SCRATCH: &str = "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.";
-const MSG_POLL: &str = "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
+const MSG_SCRATCH: &str =
+    "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.";
+const MSG_POLL: &str =
+    "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
 const MSG_ASK: &str = "guard: an earlier AskUserQuestion in this turn has no answer yet. Wait for it, then ask again. Put all questions of one round in one call.";
 const MSG_HEAVY_TAIL: &str = "subagent loads every tool and skill (about 60K tokens; `worker` starts near 15-20K). Use `worker` (edits, commands), `researcher` (web), `Explore` (search), `task-implementer` (one plan task) or `Plan` (planning).";
 const MSG_PLAN_GATE: &str = "guard: plans run on Opus only in plan mode (opusplan). Call EnterPlanMode first, then save the plan file after you approve it (autopilot: send a `Plan` helper instead).";
@@ -79,8 +81,7 @@ static CAP_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-static CAP_NUM: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)(\d[\d,]*) ?(?:chars|characters)\b").unwrap());
+static CAP_NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(\d[\d,]*) ?(?:chars|characters)\b").unwrap());
 static CAP_HANDBACK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)hand[ -]?backs?\b").unwrap());
 static CAP_STRONG: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)final message|reply|response|respond|output").unwrap());
@@ -90,9 +91,8 @@ static CAP_BOUND: LazyLock<Regex> = LazyLock::new(|| {
 });
 static SENTENCE_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\s|\n").unwrap());
 static PANEL_ANGLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:panel|angle|re-?review)\b").unwrap());
-static FINAL_REVIEW: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bfinal\b.{0,30}\breview|\bwhole[- ]branch\b|\bbranch[- ]review\b").unwrap()
-});
+static FINAL_REVIEW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bfinal\b.{0,30}\breview|\bwhole[- ]branch\b|\bbranch[- ]review\b").unwrap());
 static HANDOFF_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/handoffs/[^/]+\.md\n?\z").unwrap());
 static LINK_TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\]\(([^)\s]+)\)").unwrap());
 static TASK_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<task-id>([^<]+)</task-id>").unwrap());
@@ -103,9 +103,8 @@ static MINUTE_PART: LazyLock<Regex> =
 static NO_PUSH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)do not push|don['’]t push|no push|local only|don['’]t commit|do not commit").unwrap()
 });
-static CLOCK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:min(?:ute)?s?|h|hrs?|hours?)\b").unwrap()
-});
+static CLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:min(?:ute)?s?|h|hrs?|hours?)\b").unwrap());
 static ISO_TS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\A(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?(Z|[+-]\d\d:?\d\d)?\z").unwrap()
 });
@@ -190,9 +189,7 @@ fn hook_output(event: &str, context: &str) -> String {
 }
 
 fn sanitize_key(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '_' })
-        .collect()
+    s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '_' }).collect()
 }
 
 /// `json.dumps(v)` with ensure_ascii and the default ", " and ": " separators.
@@ -555,9 +552,7 @@ fn loop_interval_seconds(args: &str) -> Option<i64> {
     while let Some(rel) = s[from..].find("every ") {
         let idx = from + rel;
         let boundary = s[..idx].chars().next_back().map(|c| !(c.is_alphanumeric() || c == '_')).unwrap_or(true);
-        if boundary
-            && let Some(v) = loop_chain(s, idx + 6)
-        {
+        if boundary && let Some(v) = loop_chain(s, idx + 6) {
             return Some(v);
         }
         from = idx + 1;
@@ -579,7 +574,7 @@ fn pace_status() -> PaceSt {
     if !check_enabled("PACE") {
         return PaceSt { state: "unknown".into(), used: None, budget: None }; // no pace: caps stay at the base
     }
-    let st =std::panic::catch_unwind(|| pace::status(None)).ok();
+    let st = std::panic::catch_unwind(|| pace::status(None)).ok();
     match st {
         Some(s) if matches!(s.state.as_str(), "ok" | "unknown" | "ahead" | "critical") => {
             PaceSt { state: s.state, used: s.used, budget: Some(s.budget) }
@@ -728,9 +723,7 @@ fn g2_polling(data: &Value, ctx: &Ctx) -> Res {
             _ => false,
         }
     } else {
-        loop_interval_seconds(&py_str_or_empty(get(ti, "args")))
-            .map(|s| s < MIN_INTERVAL_MIN * 60)
-            .unwrap_or(false)
+        loop_interval_seconds(&py_str_or_empty(get(ti, "args"))).map(|s| s < MIN_INTERVAL_MIN * 60).unwrap_or(false)
     };
     Ok(if bad { Some(MSG_POLL.to_string()) } else { None })
 }
@@ -1030,7 +1023,8 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
         let btype = get(b, "type").as_str();
         if btype == Some("text") {
             if let Some(text) = get(b, "text").as_str()
-                && in_turn && t.last_text.is_none()
+                && in_turn
+                && t.last_text.is_none()
             {
                 t.last_text = Some(text.to_string());
             }
@@ -1126,7 +1120,8 @@ fn apply_plan(steps: &mut Vec<(String, String)>, inp: &Value) {
     fn mark(steps: &mut [(String, String)], n: &Value, status: &str) {
         if let Value::Number(num) = n
             && let Some(i) = num.as_i64()
-            && i >= 1 && (i as usize) <= steps.len()
+            && i >= 1
+            && (i as usize) <= steps.len()
         {
             steps[i as usize - 1].1 = status.to_string();
         }
@@ -1337,7 +1332,8 @@ fn g6_stop(data: &Value) -> Res {
         text = format!("{}\n{}", text, last);
     }
     if let Some(fp) = fp
-        && Path::new(&fp).exists() && !handoff_given(&fp, &text)
+        && Path::new(&fp).exists()
+        && !handoff_given(&fp, &text)
     {
         let name = basename(&fp).to_string();
         return Ok(Some(format!(
@@ -1556,7 +1552,8 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
                 }
             }
         }
-        if has(line, b"\"totalTokens\"") && has(line, b"\"toolUseResult\"")
+        if has(line, b"\"totalTokens\"")
+            && has(line, b"\"toolUseResult\"")
             && let Some(rec) = loads(line)
         {
             let tur = get(&rec, "toolUseResult");
@@ -1564,7 +1561,8 @@ fn session_spawns(path: &Path) -> Result<(usize, i64), Fail> {
                 tokens += num(get(tur, "totalTokens")) as i64;
             }
         }
-        if has(line, b"\"totalTokens\"") && has(line, b"task-notification")
+        if has(line, b"\"totalTokens\"")
+            && has(line, b"task-notification")
             && let Some(rec) = loads(line)
         {
             let att = get(&rec, "attachment");
@@ -1738,7 +1736,8 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Result<usize, Fail> {
                     if active {
                         n += 1;
                     }
-                } else if btype == Some("text") && active
+                } else if btype == Some("text")
+                    && active
                     && let Some(text) = get(b, "text").as_str()
                     && WORDS.is_match(text)
                 {
@@ -1861,7 +1860,8 @@ fn session_model(path: Option<&str>) -> Option<String> {
             continue;
         }
         if let Some(m) = get(get(&rec, "message"), "model").as_str()
-            && !m.is_empty() && !m.starts_with('<')
+            && !m.is_empty()
+            && !m.starts_with('<')
         {
             return Some(m.to_lowercase()); // skip "<synthetic>"
         }
@@ -2008,9 +2008,18 @@ fn pretool(data: &Value, ctx: &Ctx) -> Res {
     // g8_cap records the spawn it allows, so it runs after every other deny
     // each check runs only when its id is enabled (G14 and G15 also test their own id)
     let guards: [(&str, GuardFn); 12] = [
-        ("G3", g3_pretool), ("G7", g7_heavy), ("G1", g1_agent), ("G2", g2_polling), ("G4", g4_ask),
-        ("G5", g5_handback), ("G6", g6_archive), ("G9", g9_plan_gate), ("G14", g14_sed),
-        ("G15", g15_secrets), ("G17", g17_attr), ("G8", g8_cap),
+        ("G3", g3_pretool),
+        ("G7", g7_heavy),
+        ("G1", g1_agent),
+        ("G2", g2_polling),
+        ("G4", g4_ask),
+        ("G5", g5_handback),
+        ("G6", g6_archive),
+        ("G9", g9_plan_gate),
+        ("G14", g14_sed),
+        ("G15", g15_secrets),
+        ("G17", g17_attr),
+        ("G8", g8_cap),
     ];
     for (id, g) in guards {
         if !check_enabled(id) {
@@ -2065,7 +2074,11 @@ fn h1_hint(data: &Value) -> Option<String> {
         n < H1_MAX
     })
     .ok()?;
-    show.then(|| format!("Tip: ~/.claude/hooks/rust-bin ctx outline {file}, then ~/.claude/hooks/rust-bin ctx read {file} <symbol>"))
+    show.then(|| {
+        format!(
+            "Tip: ~/.claude/hooks/rust-bin ctx outline {file}, then ~/.claude/hooks/rust-bin ctx read {file} <symbol>"
+        )
+    })
 }
 
 /// Router and warnings for an allowed call: a JSON line for stdout, or None. The line holds
@@ -2257,10 +2270,7 @@ mod tests {
             ("Hand back at most 4,000 chars. The summary field holds 300 chars.", Some(4000)),
             ("Deadline: answer within 8 minutes. Stay \u{2264} 4,000 chars.", Some(4000)),
             ("Keep it under 2,500 characters. Pad the file to 900 chars.", Some(2500)),
-            (
-                "Reply in 2,000 chars. Final message under 1500 characters. Then hand back 800 chars.",
-                Some(800),
-            ),
+            ("Reply in 2,000 chars. Final message under 1500 characters. Then hand back 800 chars.", Some(800)),
             ("Hand back 50 chars.", None),
             ("Write a description of at most 160 characters for the page.", None),
         ];
@@ -2314,11 +2324,8 @@ mod tests {
             }
         }
         // core checks have no preset folder
-        let mut from_registry: Vec<(String, String)> = gc::REGISTRY
-            .iter()
-            .filter(|(_, p)| *p != "core")
-            .map(|(i, p)| (i.to_string(), p.to_string()))
-            .collect();
+        let mut from_registry: Vec<(String, String)> =
+            gc::REGISTRY.iter().filter(|(_, p)| *p != "core").map(|(i, p)| (i.to_string(), p.to_string())).collect();
         from_files.sort();
         from_registry.sort();
         assert_eq!(from_files, from_registry);
@@ -2359,8 +2366,10 @@ mod tests {
                 "usage": {"input_tokens": 10, "cache_creation_input_tokens": total - 10 - 500,
                     "cache_read_input_tokens": 500, "output_tokens": 5}}})
         };
-        let result = || json!({"type": "user", "message": {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "x"}]}});
+        let result = || {
+            json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "x"}]}})
+        };
         let mut recs = vec![json!({"type": "user", "message": {"role": "user", "content": "hi"}})];
         for _ in 0..3000 {
             recs.push(assistant(120_000));

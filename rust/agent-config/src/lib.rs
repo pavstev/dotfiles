@@ -28,16 +28,27 @@ const WRITE_TOOLS: [&str; 5] = ["Write", "Edit", "MultiEdit", "NotebookEdit", "B
 
 static DRY: AtomicBool = AtomicBool::new(false);
 /// True when this run is a dry run: writers report what they would do and change nothing.
-pub fn dry() -> bool { DRY.load(Ordering::Relaxed) }
+pub fn dry() -> bool {
+    DRY.load(Ordering::Relaxed)
+}
 /// Turns the dry run on or off for the whole process.
-pub fn set_dry(v: bool) { DRY.store(v, Ordering::Relaxed); }
+pub fn set_dry(v: bool) {
+    DRY.store(v, Ordering::Relaxed);
+}
 
-fn home_dir() -> PathBuf { env::var("HOME").map(PathBuf::from).ok().filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from(".")) }
+fn home_dir() -> PathBuf {
+    env::var("HOME")
+        .map(PathBuf::from)
+        .ok()
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
 
-pub mod out;
 pub mod codeview;
 pub mod dots;
 pub mod guard_checks;
+pub mod out;
 pub mod presets;
 pub mod proj;
 pub mod pycompat;
@@ -47,41 +58,62 @@ pub mod tools_cli;
 pub mod tools_core;
 pub mod transcript;
 pub mod undo;
-pub use out::{color_enabled, verbose, ok, info, skip, header, summary, warn};
 #[allow(unused_imports)]
-use out::{g, y, d, b, z};
+use out::{b, d, g, y, z};
+pub use out::{color_enabled, header, info, ok, skip, summary, verbose, warn};
 
 /// The path with the home folder shown as `~`, for messages.
 pub fn tilde(p: &Path) -> String {
     let home = home_dir();
     let s = p.display().to_string();
     let h = home.display().to_string();
-    if s == h { return "~".to_string(); }
-    if s.starts_with(&format!("{}/", h)) { return format!("~{}", &s[h.len()..]); }
+    if s == h {
+        return "~".to_string();
+    }
+    if s.starts_with(&format!("{}/", h)) {
+        return format!("~{}", &s[h.len()..]);
+    }
     s
 }
 
 /// The dotfiles repo: `DOTFILES_REPO`, else the repo around `scripts/`, else the nearest parent of
 /// the current folder that has `claude/` and `scripts/`.
 pub fn repo_root() -> PathBuf {
-    if let Ok(v) = env::var("DOTFILES_REPO") && !v.is_empty() { return PathBuf::from(v); }
+    if let Ok(v) = env::var("DOTFILES_REPO")
+        && !v.is_empty()
+    {
+        return PathBuf::from(v);
+    }
     if let Ok(exe) = env::current_exe()
         && let Some(parent) = exe.parent()
-            && parent.file_name().and_then(|s| s.to_str()) == Some("scripts")
-                && let Some(r) = parent.parent() { return r.to_path_buf(); }
+        && parent.file_name().and_then(|s| s.to_str()) == Some("scripts")
+        && let Some(r) = parent.parent()
+    {
+        return r.to_path_buf();
+    }
     let mut cur = env::current_dir().unwrap_or_default();
     loop {
-        if cur.join("claude").is_dir() && cur.join("scripts").is_dir() { return cur; }
-        if !cur.pop() { break; }
+        if cur.join("claude").is_dir() && cur.join("scripts").is_dir() {
+            return cur;
+        }
+        if !cur.pop() {
+            break;
+        }
     }
     PathBuf::from(".")
 }
 /// The `claude/` folder of the repo, the source of all generated config.
-pub fn claude_dir() -> PathBuf { repo_root().join("claude") }
+pub fn claude_dir() -> PathBuf {
+    repo_root().join("claude")
+}
 /// The `cursor/` folder of the repo (Cursor-only sources such as `mcp.json`).
-pub fn cursor_src_dir() -> PathBuf { repo_root().join("cursor") }
+pub fn cursor_src_dir() -> PathBuf {
+    repo_root().join("cursor")
+}
 /// The launcher that Cursor's hooks run: `rust-bin --hook guard_cursor <mode>`.
-pub fn guard_path() -> PathBuf { claude_dir().join("hooks").join("rust-bin") }
+pub fn guard_path() -> PathBuf {
+    claude_dir().join("hooks").join("rust-bin")
+}
 
 /// The "what is left" file of a session: `<cache dir>/dots/status/<session>.txt`, one line
 /// `<n>\t<first open step>`. The guard's Stop pass writes it; the statusline reads it. Only
@@ -91,27 +123,32 @@ pub fn status_path(session: &str) -> PathBuf {
     if name.is_empty() {
         name.push('_');
     }
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from(".cache"))
-        .join("dots")
-        .join("status")
-        .join(format!("{name}.txt"))
+    dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache")).join("dots").join("status").join(format!("{name}.txt"))
 }
 
 /// The file as text, or `None` when it cannot be read.
-pub fn read_text(p: &Path) -> Option<String> { fs::read_to_string(p).ok() }
+pub fn read_text(p: &Path) -> Option<String> {
+    fs::read_to_string(p).ok()
+}
 
 /// True when the path itself is a symlink (a link to a missing target counts).
-pub fn is_symlink(p: &Path) -> bool { p.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false) }
+pub fn is_symlink(p: &Path) -> bool {
+    p.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(false)
+}
 
 /// The value without one pair of matching quotes, with JSON escapes read for double quotes.
 pub fn unquote(v: &str) -> String {
     let bytes = v.as_bytes();
-    if v.len() >= 2 && bytes[0] == bytes[v.len()-1] && (bytes[0] == b'"' || bytes[0] == b'\'') {
+    if v.len() >= 2 && bytes[0] == bytes[v.len() - 1] && (bytes[0] == b'"' || bytes[0] == b'\'') {
         if bytes[0] == b'"'
-            && let Ok(s) = serde_json::from_str::<String>(v) { return s; }
-        let inner = &v[1..v.len()-1];
-        if bytes[0] == b'\'' { return inner.replace("''", "'"); }
+            && let Ok(s) = serde_json::from_str::<String>(v)
+        {
+            return s;
+        }
+        let inner = &v[1..v.len() - 1];
+        if bytes[0] == b'\'' {
+            return inner.replace("''", "'");
+        }
         return inner.to_string();
     }
     v.to_string()
@@ -122,7 +159,10 @@ pub fn unquote(v: &str) -> String {
 pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let norm = text.replace("\r\n", "\n");
     let re = Regex::new(r"(?s)^---\n(.*?)\n---\n?(.*)$").unwrap();
-    let caps = match re.captures(&norm) { Some(c) => c, None => return (BTreeMap::new(), text.to_string()) };
+    let caps = match re.captures(&norm) {
+        Some(c) => c,
+        None => return (BTreeMap::new(), text.to_string()),
+    };
     let meta_text = caps.get(1).unwrap().as_str();
     let body = caps.get(2).unwrap().as_str().to_string();
     let mut meta: BTreeMap<String, String> = BTreeMap::new();
@@ -131,8 +171,14 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let mut items: Vec<String> = Vec::new();
     let mut block: Vec<String> = Vec::new();
 
-    let flush = |key: &mut Option<String>, style: &mut Option<char>, items: &mut Vec<String>, block: &mut Vec<String>, meta: &mut BTreeMap<String, String>| {
-        if key.is_none() { return; }
+    let flush = |key: &mut Option<String>,
+                 style: &mut Option<char>,
+                 items: &mut Vec<String>,
+                 block: &mut Vec<String>,
+                 meta: &mut BTreeMap<String, String>| {
+        if key.is_none() {
+            return;
+        }
         let k = key.clone().unwrap();
         if !items.is_empty() {
             meta.insert(k, items.join(", "));
@@ -150,7 +196,9 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let lm_re = Regex::new(r"^\s*-\s+(.*)$").unwrap();
 
     for line in meta_text.split('\n') {
-        if line.trim_start().starts_with('#') && style.is_none() { continue; }
+        if line.trim_start().starts_with('#') && style.is_none() {
+            continue;
+        }
         if let Some(km) = km_re.captures(line) {
             flush(&mut key, &mut style, &mut items, &mut block, &mut meta);
             key = Some(km.get(1).unwrap().as_str().to_string());
@@ -163,11 +211,15 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
                 style = None;
                 let u = unquote(&value);
                 meta.insert(key.clone().unwrap(), u.clone());
-                if !value.is_empty() { block = vec![u]; }
+                if !value.is_empty() {
+                    block = vec![u];
+                }
             }
             continue;
         }
-        if key.is_none() { continue; }
+        if key.is_none() {
+            continue;
+        }
         if let Some(lm) = lm_re.captures(line) {
             let k = key.clone().unwrap();
             if style.is_none() && meta.get(&k) == Some(&String::new()) {
@@ -202,7 +254,9 @@ pub fn rules_text(home: &Path, profile: &str) -> String {
     let mut text = read_text(&claude_dir().join("CLAUDE.md")).unwrap_or_default();
     let on = presets::enabled(home, profile);
     let extra = presets::rules_text(&repo_root(), &on);
-    if !extra.is_empty() { text = format!("{}\n\n{}\n", text.trim_end_matches('\n'), extra); }
+    if !extra.is_empty() {
+        text = format!("{}\n\n{}\n", text.trim_end_matches('\n'), extra);
+    }
     if let Some(overlay) = owner_overlay(home, profile) {
         format!("{}\n\n{}", text.trim_end_matches('\n'), read_text(&overlay).unwrap_or_default())
     } else {
@@ -212,8 +266,12 @@ pub fn rules_text(home: &Path, profile: &str) -> String {
 
 /// The text as a YAML value, double-quoted only when plain YAML would misread it.
 pub fn yaml_str(v: &str) -> String {
-    if v.contains('\n') || v.contains(": ") || v.contains(" #") || (!v.is_empty() && v.trim() != v)
-        || v.chars().next().map(|c| "!&*?|>%@`'\"[]{},#-".contains(c)).unwrap_or(false) {
+    if v.contains('\n')
+        || v.contains(": ")
+        || v.contains(" #")
+        || (!v.is_empty() && v.trim() != v)
+        || v.chars().next().map(|c| "!&*?|>%@`'\"[]{},#-".contains(c)).unwrap_or(false)
+    {
         serde_json::to_string(v).unwrap_or_default()
     } else {
         v.to_string()
@@ -241,15 +299,18 @@ pub fn sha(text: &str) -> String {
 /// One value from `~/.config/dotfiles/settings` (the last line of that name wins), or an empty string.
 pub fn setting(home: &Path, name: &str) -> String {
     let p = home.join(SETTINGS);
-    let data = match fs::read(&p) { Ok(d) => d, Err(_) => return String::new() };
+    let data = match fs::read(&p) {
+        Ok(d) => d,
+        Err(_) => return String::new(),
+    };
     let text = String::from_utf8_lossy(&data);
     let mut value = String::new();
     for line in text.split('\n') {
         if line.starts_with(&format!("{}=", name)) {
-            let v = &line[name.len()+1..];
+            let v = &line[name.len() + 1..];
             value = v.trim_end().to_string();
             if value.starts_with('"') && value.ends_with('"') && value.len() >= 2 {
-                value = value[1..value.len()-1].to_string();
+                value = value[1..value.len() - 1].to_string();
             }
         }
     }
@@ -268,7 +329,11 @@ pub fn user_rules_text(home: &Path, profile: &str) -> String {
 /// The settings Claude runs with: the built `~/.claude/settings.json`, else what a build would write
 /// (repo base, enabled presets' fragments, private layer), so Cursor and Opencode work without Claude.
 pub fn built_settings(home: &Path) -> Value {
-    if home.join(LIVE_REL).is_file() && let Some(v) = load_json(&home.join(LIVE_REL)) { return v; }
+    if home.join(LIVE_REL).is_file()
+        && let Some(v) = load_json(&home.join(LIVE_REL))
+    {
+        return v;
+    }
     let base = load_json(&claude_dir().join("settings.json")).unwrap_or(serde_json::json!({}));
     let layer = load_json(&home.join(LAYER_REL)).unwrap_or(serde_json::json!({}));
     merge(&with_presets(home, &base), &layer)
@@ -282,12 +347,18 @@ pub fn with_presets(home: &Path, base: &Value) -> Value {
 
 /// The active output style as (name, file, body), or `None` when the style is `default` or not found.
 pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
-    let style_name = built_settings(home)
-        .get("outputStyle").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let name = match style_name { Some(s) if s.to_lowercase() != "default" => s, _ => return None };
+    let style_name = built_settings(home).get("outputStyle").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let name = match style_name {
+        Some(s) if s.to_lowercase() != "default" => s,
+        _ => return None,
+    };
     let dir = claude_dir().join("output-styles");
     let entries = fs::read_dir(&dir).ok()?;
-    let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md")).collect();
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+        .collect();
     files.sort();
     for f in files {
         let (meta, body) = split_frontmatter(&fs::read_to_string(&f).unwrap_or_default());
@@ -320,7 +391,9 @@ pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> Result<(), St
         if let Some(m) = mode {
             perms.set_mode(m);
         } else if path.exists() {
-            if let Ok(md) = fs::metadata(path) { perms = md.permissions(); }
+            if let Ok(md) = fs::metadata(path) {
+                perms = md.permissions();
+            }
         } else {
             perms.set_mode(0o644);
         }
@@ -343,10 +416,24 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
         && let Some(old) = read_text(path)
         && old == text
     {
-        let same_mode = mode.map(|m| fs::metadata(path).map(|md| {
-            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; md.permissions().mode() & 0o777 == m }
-            #[cfg(not(unix))] { let _ = (m, md); true }
-        }).unwrap_or(false)).unwrap_or(true);
+        let same_mode = mode
+            .map(|m| {
+                fs::metadata(path)
+                    .map(|md| {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            md.permissions().mode() & 0o777 == m
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            let _ = (m, md);
+                            true
+                        }
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true);
         if mode.is_none() || same_mode {
             skip(&tilde(path));
             return;
@@ -356,7 +443,11 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
         info(&format!("would write {}", tilde(path)));
         return;
     }
-    if let Err(e) = atomic_write(path, text, mode) { warn(&e); } else { ok(&format!("wrote {}", tilde(path))); }
+    if let Err(e) = atomic_write(path, text, mode) {
+        warn(&e);
+    } else {
+        ok(&format!("wrote {}", tilde(path)));
+    }
 }
 
 /// Deletes a generated file (one with the `generated-by` marker, not a link) and says why.
@@ -376,7 +467,9 @@ pub fn remove_generated(path: &Path, why: &str) {
 /// A JSON object from the file; an empty object when the file is missing, `None` when it is not
 /// valid JSON or not an object.
 pub fn load_json(path: &Path) -> Option<Value> {
-    if !path.exists() { return Some(serde_json::json!({})); }
+    if !path.exists() {
+        return Some(serde_json::json!({}));
+    }
     let data = fs::read_to_string(path).ok()?;
     let v: Value = serde_json::from_str(&data).ok()?;
     if v.is_object() { Some(v) } else { None }
@@ -399,10 +492,26 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
     }
     if path.exists() {
         let bak = path.with_file_name(format!("{}.bak-{}", path.file_name().unwrap().to_str().unwrap(), unix_ts()));
-        let _ = atomic_write(&bak, &fs::read_to_string(path).unwrap_or_default(), Some(fs::metadata(path).map(|m| {
-            #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; m.permissions().mode() & 0o777 }
-            #[cfg(not(unix))] { let _ = m; 0o644 }
-        }).unwrap_or(0o644)));
+        let _ = atomic_write(
+            &bak,
+            &fs::read_to_string(path).unwrap_or_default(),
+            Some(
+                fs::metadata(path)
+                    .map(|m| {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            m.permissions().mode() & 0o777
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            let _ = m;
+                            0o644
+                        }
+                    })
+                    .unwrap_or(0o644),
+            ),
+        );
     }
     let mode = if private { Some(0o600) } else { None };
     if let Err(e) = atomic_write(path, &(serde_json::to_string_pretty(new).unwrap_or_default() + "\n"), mode) {
@@ -412,7 +521,9 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
     }
 }
 
-fn unix_ts() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
+fn unix_ts() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
 
 // MCP
 /// True when Cursor MCP servers are on (`DOTFILES_MCP`, else the `CURSOR_MCP` setting).
@@ -435,7 +546,9 @@ pub fn cursor_rules(home: &Path, profile: &str) {
     let rules = home.join(".cursor").join("rules");
     let mark = home.join(USER_RULES_MARK);
     if mark.exists() {
-        for f in ["claude-global.mdc", "claude-output-style.mdc"] { remove_generated(&rules.join(f), "the rules are in Cursor User Rules"); }
+        for f in ["claude-global.mdc", "claude-output-style.mdc"] {
+            remove_generated(&rules.join(f), "the rules are in Cursor User Rules");
+        }
         if read_text(&mark).unwrap_or_default().trim() == sha(&user_rules_text(home, profile)) {
             skip("Cursor User Rules (pasted in Cursor Settings)");
         } else {
@@ -445,15 +558,27 @@ pub fn cursor_rules(home: &Path, profile: &str) {
     }
     let overlay = owner_overlay(home, profile);
     let (_srcs, desc, mode): (Vec<&str>, String, Option<u32>) = if overlay.is_some() {
-        (vec!["claude/CLAUDE.md", "~/.config/dotfiles/owner.md"], "Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules".to_string(), Some(0o600))
+        (
+            vec!["claude/CLAUDE.md", "~/.config/dotfiles/owner.md"],
+            "Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules".to_string(),
+            Some(0o600),
+        )
     } else {
-        if profile == "owner" { warn("no ~/.config/dotfiles/owner.md, so the Cursor rule has no owner-only rules. Add them with: dots settings"); }
+        if profile == "owner" {
+            warn(
+                "no ~/.config/dotfiles/owner.md, so the Cursor rule has no owner-only rules. Add them with: dots settings",
+            );
+        }
         (vec!["claude/CLAUDE.md"], "Global rules from the dotfiles repo (claude/CLAUDE.md)".to_string(), None)
     };
     let _ = desc;
     let mut src_labels: Vec<&str> = vec!["claude/CLAUDE.md"];
-    if has_preset_rules(home, profile) { src_labels.push("claude/presets"); }
-    if overlay.is_some() { src_labels.push("~/.config/dotfiles/owner.md"); }
+    if has_preset_rules(home, profile) {
+        src_labels.push("claude/presets");
+    }
+    if overlay.is_some() {
+        src_labels.push("~/.config/dotfiles/owner.md");
+    }
     let body = format!("{}{}{}", stamp(&src_labels), CURSOR_NOTE, rules_text(home, profile));
     write_generated(&rules.join("claude-global.mdc"), &mdc(&desc, &body), mode);
 
@@ -467,7 +592,11 @@ pub fn cursor_rules(home: &Path, profile: &str) {
     let (name, style_file, sbody) = style.unwrap();
     let stampstr = stamp(&[&format!("claude/output-styles/{}", style_file.file_name().unwrap().to_str().unwrap())]);
     // can't easily have &str into slice with formatted; use Vec<String> not accepted. Adjust: stamp takes &[&str]. Use local static? We'll call a variant manually.
-    let stamp_line = format!("<!-- {} (scripts/agent-config) from claude/output-styles/{}. Edit that file, then run dots. -->\n\n", MARK, style_file.file_name().unwrap().to_str().unwrap());
+    let stamp_line = format!(
+        "<!-- {} (scripts/agent-config) from claude/output-styles/{}. Edit that file, then run dots. -->\n\n",
+        MARK,
+        style_file.file_name().unwrap().to_str().unwrap()
+    );
     let _ = stampstr;
     let body = format!("{}# Reply style: {}\n\n{}", stamp_line, name, sbody);
     write_generated(&target, &mdc(&format!("Reply style \"{}\" (Claude outputStyle)", name), &body), None);
@@ -479,21 +608,42 @@ pub fn cursor_agents(home: &Path) {
     let mut wanted: BTreeSet<String> = BTreeSet::new();
     let agents_dir = claude_dir().join("agents");
     if let Ok(entries) = fs::read_dir(&agents_dir) {
-        let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md")).collect();
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
         files.sort();
         for src in files {
-            if src.file_name().and_then(|s| s.to_str()) == Some("README.md") { continue; }
+            if src.file_name().and_then(|s| s.to_str()) == Some("README.md") {
+                continue;
+            }
             let raw = fs::read_to_string(&src).unwrap_or_default();
             let (meta, body) = split_frontmatter(&raw);
-            let name = meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap().to_str().unwrap().to_string());
+            let name =
+                meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap().to_str().unwrap().to_string());
             let mut lines = vec![format!("name: {}", name)];
-            if let Some(desc) = meta.get("description") { lines.push(format!("description: {}", yaml_str(desc))); }
+            if let Some(desc) = meta.get("description") {
+                lines.push(format!("description: {}", yaml_str(desc)));
+            }
             lines.push("model: inherit".to_string());
-            let tools: BTreeSet<String> = meta.get("tools").unwrap_or(&String::new()).split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
+            let tools: BTreeSet<String> = meta
+                .get("tools")
+                .unwrap_or(&String::new())
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
             let has_write = tools.iter().any(|t| WRITE_TOOLS.contains(&t.as_str()));
-            if !tools.is_empty() && !has_write { lines.push("readonly: true".to_string()); }
+            if !tools.is_empty() && !has_write {
+                lines.push("readonly: true".to_string());
+            }
             // stamp needs &[&str], dynamic not possible. Use manual stamp:
-            let stamp_line = format!("<!-- {} (scripts/agent-config) from claude/agents/{}. Edit that file, then run dots. -->\n\n", MARK, src.file_name().unwrap().to_str().unwrap());
+            let stamp_line = format!(
+                "<!-- {} (scripts/agent-config) from claude/agents/{}. Edit that file, then run dots. -->\n\n",
+                MARK,
+                src.file_name().unwrap().to_str().unwrap()
+            );
             let text = format!("---\n{}\n---\n{}{}", lines.join("\n"), stamp_line, body.trim_start());
             let out = dst.join(format!("{}.md", name));
             wanted.insert(out.file_name().unwrap().to_str().unwrap().to_string());
@@ -501,11 +651,18 @@ pub fn cursor_agents(home: &Path) {
         }
     }
     if dst.is_dir() {
-        let mut fslist: Vec<PathBuf> = fs::read_dir(&dst).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md")).collect();
+        let mut fslist: Vec<PathBuf> = fs::read_dir(&dst)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
         fslist.sort();
         for f in fslist {
             let fname = f.file_name().unwrap().to_str().unwrap().to_string();
-            if !wanted.contains(&fname) { remove_generated(&f, "its source is gone"); }
+            if !wanted.contains(&fname) {
+                remove_generated(&f, "its source is gone");
+            }
         }
     }
 }
@@ -515,29 +672,55 @@ pub fn cursor_agents(home: &Path) {
 // the non-empty guard path, and the result only lands in hooks.json, which is rebuilt every run.
 // The Python tool is gone, so nothing compares against it.
 fn shlex_quote(s: &str) -> String {
-    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b".,/:=_-@%+".contains(&b)) { s.to_string() } else { format!("'{}'", s.replace('\'', "'\\''")) }
+    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b".,/:=_-@%+".contains(&b)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
 }
 
 /// Puts the guard hook entries into `~/.cursor/hooks.json`, replacing our old ones and keeping the user's.
 pub fn cursor_hooks(home: &Path) {
     let path = home.join(".cursor").join("hooks.json");
     let old = load_json(&path);
-    if old.is_none() { if path.exists() { warn(&format!("{} is not valid JSON, left untouched", tilde(&path))); } return; }
+    if old.is_none() {
+        if path.exists() {
+            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+        }
+        return;
+    }
     let old = old.unwrap();
     let mut new = old.clone();
     new.as_object_mut().unwrap().entry("version".to_string()).or_insert(serde_json::json!(1));
     let hooks = new.as_object_mut().unwrap().entry("hooks".to_string()).or_insert(serde_json::json!({}));
-    if !hooks.is_object() { warn(&format!("{} has a non-object `hooks`, left untouched", tilde(&path))); return; }
+    if !hooks.is_object() {
+        warn(&format!("{} has a non-object `hooks`, left untouched", tilde(&path)));
+        return;
+    }
     // drop our entries
     let mut slots: BTreeMap<String, usize> = BTreeMap::new();
     if let Some(hobj) = hooks.as_object_mut() {
         let keys: Vec<String> = hobj.keys().cloned().collect();
         for event in keys {
             let entries = hobj.get(&event).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let ours: Vec<usize> = entries.iter().enumerate().filter(|(_, e)| e.get("command").and_then(|c| c.as_str()).map(|s| s.contains("guard_cursor")).unwrap_or(false)).map(|(i, _)| i).collect();
-            if !ours.is_empty() { slots.insert(event.clone(), ours[0]); }
-            let filtered: Vec<Value> = entries.into_iter().enumerate().filter(|(i, _)| !ours.contains(i)).map(|(_, e)| e).collect();
-            if filtered.is_empty() { hobj.remove(&event); } else { hobj.insert(event, Value::Array(filtered)); }
+            let ours: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    e.get("command").and_then(|c| c.as_str()).map(|s| s.contains("guard_cursor")).unwrap_or(false)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            if !ours.is_empty() {
+                slots.insert(event.clone(), ours[0]);
+            }
+            let filtered: Vec<Value> =
+                entries.into_iter().enumerate().filter(|(i, _)| !ours.contains(i)).map(|(_, e)| e).collect();
+            if filtered.is_empty() {
+                hobj.remove(&event);
+            } else {
+                hobj.insert(event, Value::Array(filtered));
+            }
         }
     }
     let q = shlex_quote(guard_path().to_str().unwrap_or(""));
@@ -562,14 +745,20 @@ pub fn cursor_hooks(home: &Path) {
         let mut placed: BTreeMap<&str, usize> = BTreeMap::new();
         for (event, mode, matcher) in hook_events {
             let mut entry = serde_json::json!({"command": format!("test -r {} || exit 0; sh {} --hook guard_cursor {}", q, q, mode), "timeout": 10});
-            if let Some(m) = matcher { entry.as_object_mut().unwrap().insert("matcher".to_string(), Value::String(m.to_string())); }
+            if let Some(m) = matcher {
+                entry.as_object_mut().unwrap().insert("matcher".to_string(), Value::String(m.to_string()));
+            }
             let hooks = new.get_mut("hooks").unwrap().as_object_mut().unwrap();
             let entries = hooks.entry(event.to_string()).or_insert(serde_json::json!([])).as_array_mut().unwrap();
             // an event can hold several of our entries: each goes after the ones placed before it
             let done = placed.entry(event).or_insert(0);
             let idx = slots.get(event).map(|s| s + *done).unwrap_or(entries.len());
             *done += 1;
-            if idx <= entries.len() { entries.insert(idx, entry); } else { entries.push(entry); }
+            if idx <= entries.len() {
+                entries.insert(idx, entry);
+            } else {
+                entries.push(entry);
+            }
         }
     }
     save_json(&path, &old, &new, false);
@@ -581,17 +770,28 @@ pub fn cursor_mcp(home: &Path) {
         info("MCP servers from cursor/mcp.json are opt-in: turn on Cursor MCP in dots settings");
         return;
     }
-    let ours = load_json(&cursor_src_dir().join("mcp.json")).unwrap_or(serde_json::json!({})).get("mcpServers").cloned().unwrap_or(serde_json::json!({}));
+    let ours = load_json(&cursor_src_dir().join("mcp.json"))
+        .unwrap_or(serde_json::json!({}))
+        .get("mcpServers")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
     let path = home.join(".cursor").join("mcp.json");
     let old = load_json(&path);
-    if old.is_none() { if path.exists() { warn(&format!("{} is not valid JSON, left untouched", tilde(&path))); } return; }
+    if old.is_none() {
+        if path.exists() {
+            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+        }
+        return;
+    }
     let old = old.unwrap();
     let mut new = old.clone();
     let servers = new.as_object_mut().unwrap().entry("mcpServers".to_string()).or_insert(serde_json::json!({}));
     if let Some(servers) = servers.as_object_mut()
         && let Some(omap) = ours.as_object()
     {
-        for (name, cfg) in omap { servers.entry(name.clone()).or_insert(cfg.clone()); }
+        for (name, cfg) in omap {
+            servers.entry(name.clone()).or_insert(cfg.clone());
+        }
     }
     save_json(&path, &old, &new, false);
 }
@@ -606,17 +806,25 @@ pub fn translate_permission(rule: &str, kind: &str) -> Option<String> {
         let re2 = Regex::new(r"(:\*|\s\*)$").unwrap();
         if re2.is_match(arg) {
             let cmd = re2.replace(arg, "").trim().to_string();
-            if !cmd.is_empty() && !cmd.contains('*') { return Some(format!("Shell({})", cmd)); } else { return None; }
+            if !cmd.is_empty() && !cmd.contains('*') {
+                return Some(format!("Shell({})", cmd));
+            } else {
+                return None;
+            }
         }
         let trimmed = arg.trim();
         let (exe, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
         let rest = rest.trim();
-        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') { return Some(format!("Shell({}:{})", exe, rest)); }
+        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') {
+            return Some(format!("Shell({}:{})", exe, rest));
+        }
         return None;
     }
     if tool == "Read" || tool == "Edit" || tool == "Write" {
         let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
-        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") { path = format!("**/{}", path); }
+        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
+            path = format!("**/{}", path);
+        }
         let readwrite = if tool == "Read" { "Read" } else { "Write" };
         return Some(format!("{}({})", readwrite, path));
     }
@@ -631,7 +839,12 @@ pub fn translate_permission(rule: &str, kind: &str) -> Option<String> {
 pub fn cursor_cli_config(home: &Path) {
     let path = home.join(".cursor").join("cli-config.json");
     let old = load_json(&path);
-    if old.is_none() { if path.exists() { warn(&format!("{} is not valid JSON, left untouched", tilde(&path))); } return; }
+    if old.is_none() {
+        if path.exists() {
+            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+        }
+        return;
+    }
     let old = old.unwrap();
     let mut new = old.clone();
     new.as_object_mut().unwrap().entry("version".to_string()).or_insert(serde_json::json!(1));
@@ -647,33 +860,63 @@ pub fn cursor_cli_config(home: &Path) {
     let mut added: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let new_perms = new_mut.get_mut("permissions").unwrap();
     for kind in ["allow", "deny"] {
-        let have = new_perms.as_object_mut().unwrap().entry(kind.to_string()).or_insert(serde_json::json!([])).as_array_mut()
+        let have = new_perms
+            .as_object_mut()
+            .unwrap()
+            .entry(kind.to_string())
+            .or_insert(serde_json::json!([]))
+            .as_array_mut()
             .unwrap_or_else(|| panic!("TypeError: permissions.{} in cli-config.json is not a list", kind));
         let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let want: Vec<String> = rules.iter().filter_map(|r| r.as_str()).filter_map(|r| translate_permission(r, kind)).collect();
-        let prev: BTreeSet<String> = managed.get(kind).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+        let want: Vec<String> =
+            rules.iter().filter_map(|r| r.as_str()).filter_map(|r| translate_permission(r, kind)).collect();
+        let prev: BTreeSet<String> = managed
+            .get(kind)
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default();
         let mut have_vec: Vec<String> = have.iter().filter_map(|x| x.as_str().map(String::from)).collect();
         have_vec.retain(|r| want.contains(r) || !prev.contains(r));
-        for m in &want { if !have_vec.contains(m) { have_vec.push(m.clone()); } }
+        for m in &want {
+            if !have_vec.contains(m) {
+                have_vec.push(m.clone());
+            }
+        }
         *have = have_vec.clone().into_iter().map(Value::String).collect();
         added.insert(kind.to_string(), want);
     }
     // attribution
-    let attr = new_mut.as_object_mut().unwrap().entry("attribution".to_string()).or_insert(serde_json::json!({})).as_object_mut().unwrap();
+    let attr = new_mut
+        .as_object_mut()
+        .unwrap()
+        .entry("attribution".to_string())
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .unwrap();
     attr.insert("attributeCommitsToAgent".to_string(), Value::Bool(false));
     attr.insert("attributePRsToAgent".to_string(), Value::Bool(false));
     // statusLine: the Rust `statusline` bin, through the launcher (same as claude/settings.json)
     let launcher = home.join(".claude").join("hooks").join("rust-bin");
     // Older runs wrote `~/.claude/statusline.sh` (gone) and then ran the launcher through bash (slower
     // to start than sh): replace those two, keep any other command.
-    let old_statusline = new_mut.get("statusLine").is_some_and(|s| s.get("command").and_then(|c| c.as_str()).is_some_and(|c| c.contains("statusline.sh") || c == "bash ~/.claude/hooks/rust-bin statusline"));
-    if (new_mut.get("statusLine").is_none() || old_statusline) && launcher.exists() { new_mut.as_object_mut().unwrap().insert("statusLine".to_string(), serde_json::json!({"type":"command","command": "sh ~/.claude/hooks/rust-bin statusline","padding":0})); }
+    let old_statusline = new_mut.get("statusLine").is_some_and(|s| {
+        s.get("command")
+            .and_then(|c| c.as_str())
+            .is_some_and(|c| c.contains("statusline.sh") || c == "bash ~/.claude/hooks/rust-bin statusline")
+    });
+    if (new_mut.get("statusLine").is_none() || old_statusline) && launcher.exists() {
+        new_mut.as_object_mut().unwrap().insert(
+            "statusLine".to_string(),
+            serde_json::json!({"type":"command","command": "sh ~/.claude/hooks/rust-bin statusline","padding":0}),
+        );
+    }
     let old_clone = old.clone();
     save_json(&path, &old_clone, &new_mut, true);
     // sidecar
     if !dry()
         && let Some(after) = load_json(&path)
-        && after == new_mut && managed != serde_json::to_value(&added).ok().unwrap_or(Value::Null)
+        && after == new_mut
+        && managed != serde_json::to_value(&added).ok().unwrap_or(Value::Null)
     {
         let _ = atomic_write(&side, &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"), None);
     }
@@ -686,18 +929,41 @@ pub fn opencode_agents(home: &Path) {
     let mut wanted: BTreeSet<String> = BTreeSet::new();
     let agents_dir = claude_dir().join("agents");
     if let Ok(entries) = fs::read_dir(&agents_dir) {
-        let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md")).collect();
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
         files.sort();
         for src in files {
-            if src.file_name().and_then(|s| s.to_str()) == Some("README.md") { continue; }
+            if src.file_name().and_then(|s| s.to_str()) == Some("README.md") {
+                continue;
+            }
             let raw = fs::read_to_string(&src).unwrap_or_default();
             let (meta, body) = split_frontmatter(&raw);
-            let name = meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap().to_str().unwrap().to_string());
+            let name =
+                meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap().to_str().unwrap().to_string());
             let mut lines: Vec<String> = Vec::new();
-            if let Some(desc) = meta.get("description") { lines.push(format!("description: {}", yaml_str(desc))); }
+            if let Some(desc) = meta.get("description") {
+                lines.push(format!("description: {}", yaml_str(desc)));
+            }
             lines.push("mode: subagent".to_string());
-            let tools: BTreeSet<String> = meta.get("tools").unwrap_or(&String::new()).split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-            let write_tools = tools.intersection(&BTreeSet::from(["Write".to_string(),"Edit".to_string(),"MultiEdit".to_string(),"NotebookEdit".to_string()])).count() > 0;
+            let tools: BTreeSet<String> = meta
+                .get("tools")
+                .unwrap_or(&String::new())
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let write_tools = tools
+                .intersection(&BTreeSet::from([
+                    "Write".to_string(),
+                    "Edit".to_string(),
+                    "MultiEdit".to_string(),
+                    "NotebookEdit".to_string(),
+                ]))
+                .count()
+                > 0;
             if !write_tools {
                 lines.push("permission:".to_string());
                 lines.push("  edit: deny".to_string());
@@ -706,7 +972,11 @@ pub fn opencode_agents(home: &Path) {
                 lines.push("permission:".to_string());
                 lines.push("  skill: allow".to_string());
             }
-            let stamp_line = format!("<!-- {} (scripts/agent-config) from claude/agents/{}. Edit that file, then run dots. -->\n\n", MARK, src.file_name().unwrap().to_str().unwrap());
+            let stamp_line = format!(
+                "<!-- {} (scripts/agent-config) from claude/agents/{}. Edit that file, then run dots. -->\n\n",
+                MARK,
+                src.file_name().unwrap().to_str().unwrap()
+            );
             let text = format!("---\n{}\n---\n{}{}", lines.join("\n"), stamp_line, body.trim_start());
             let out = dst.join(format!("{}.md", name));
             wanted.insert(out.file_name().unwrap().to_str().unwrap().to_string());
@@ -714,11 +984,18 @@ pub fn opencode_agents(home: &Path) {
         }
     }
     if dst.is_dir() {
-        let mut fslist: Vec<PathBuf> = fs::read_dir(&dst).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md")).collect();
+        let mut fslist: Vec<PathBuf> = fs::read_dir(&dst)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
         fslist.sort();
         for f in fslist {
             let fname = f.file_name().unwrap().to_str().unwrap().to_string();
-            if !wanted.contains(&fname) { remove_generated(&f, "its source is gone"); }
+            if !wanted.contains(&fname) {
+                remove_generated(&f, "its source is gone");
+            }
         }
     }
 }
@@ -740,7 +1017,8 @@ pub fn opencode_plugin(home: &Path) {
     // a JSON string is a valid TypeScript string literal
     let literal = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
     let sh = plugin_sh(dots::os::is_windows(), dots::os::which("sh"));
-    let text = OPENCODE_PLUGIN.replace("__RUST_BIN__", &literal(&guard.to_string_lossy())).replace("__SH__", &literal(&sh));
+    let text =
+        OPENCODE_PLUGIN.replace("__RUST_BIN__", &literal(&guard.to_string_lossy())).replace("__SH__", &literal(&sh));
     write_generated(&path, &text, None);
 }
 
@@ -754,7 +1032,9 @@ fn plugin_sh(windows: bool, found: Option<PathBuf>) -> String {
         return String::new();
     }
     match found {
-        Some(p) if !p.to_string_lossy().to_lowercase().replace('\\', "/").contains("/system32/") => p.to_string_lossy().into_owned(),
+        Some(p) if !p.to_string_lossy().to_lowercase().replace('\\', "/").contains("/system32/") => {
+            p.to_string_lossy().into_owned()
+        }
         _ => String::new(),
     }
 }
@@ -769,23 +1049,33 @@ pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, St
         let re2 = Regex::new(r"(:\*|\s\*)$").unwrap();
         if re2.is_match(arg) {
             let cmd = re2.replace(arg, "").trim().to_string();
-            if !cmd.is_empty() && !cmd.contains('*') { return Some(("bash".to_string(), format!("{} *", cmd), kind.to_string())); } else { return None; }
+            if !cmd.is_empty() && !cmd.contains('*') {
+                return Some(("bash".to_string(), format!("{} *", cmd), kind.to_string()));
+            } else {
+                return None;
+            }
         }
         let trimmed = arg.trim();
         let (exe, rest_raw) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
         let exe = exe.trim();
         let rest = rest_raw.trim();
-        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') { return Some(("bash".to_string(), format!("{} {}", exe, rest), kind.to_string())); }
+        if !exe.is_empty() && !rest.is_empty() && !arg.contains('*') {
+            return Some(("bash".to_string(), format!("{} {}", exe, rest), kind.to_string()));
+        }
         return None;
     }
     if tool == "Read" {
         let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
-        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") { path = format!("**/{}", path); }
+        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
+            path = format!("**/{}", path);
+        }
         return Some(("read".to_string(), path, kind.to_string()));
     }
     if tool == "Edit" || tool == "Write" {
         let mut path = arg.strip_prefix("./").unwrap_or(arg).to_string();
-        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") { path = format!("**/{}", path); }
+        if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
+            path = format!("**/{}", path);
+        }
         return Some(("edit".to_string(), path, kind.to_string()));
     }
     if tool == "SuggestPluginInstall" || tool == "SearchPlugins" || tool == "SuggestSkills" {
@@ -800,7 +1090,9 @@ pub fn opencode_config(home: &Path) {
     let path = home.join(".config").join("opencode").join("opencode.jsonc");
     let old = load_json(&path);
     if old.is_none() {
-        if path.exists() { warn(&format!("{} is not valid JSON, left untouched", tilde(&path))); }
+        if path.exists() {
+            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+        }
         return;
     }
     let old = old.unwrap();
@@ -810,7 +1102,9 @@ pub fn opencode_config(home: &Path) {
     let perms = new.as_object_mut().unwrap().entry("permission".to_string()).or_insert(serde_json::json!({})).clone();
     let mut perms = if perms.is_object() { perms } else { serde_json::json!({}) };
     let mut want: serde_json::Map<String, Value> = serde_json::Map::new();
-    for cat in ["bash","read","edit","tool"] { want.insert(cat.to_string(), serde_json::json!({})); }
+    for cat in ["bash", "read", "edit", "tool"] {
+        want.insert(cat.to_string(), serde_json::json!({}));
+    }
     for kind in ["allow", "deny"] {
         let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         for r in rules {
@@ -823,8 +1117,16 @@ pub fn opencode_config(home: &Path) {
             }
         }
     }
-    want.entry("skill".to_string()).or_insert(serde_json::json!({})).as_object_mut().unwrap().insert("*".to_string(), Value::String("allow".to_string()));
-    want.entry("ask".to_string()).or_insert(serde_json::json!({})).as_object_mut().unwrap().insert("*".to_string(), Value::String("allow".to_string()));
+    want.entry("skill".to_string())
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .unwrap()
+        .insert("*".to_string(), Value::String("allow".to_string()));
+    want.entry("ask".to_string())
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+        .unwrap()
+        .insert("*".to_string(), Value::String("allow".to_string()));
 
     let side = home.join(".config").join("opencode").join(MANAGED);
     let managed = load_json(&side).unwrap_or(serde_json::json!({}));
@@ -832,19 +1134,25 @@ pub fn opencode_config(home: &Path) {
     let perms_obj = perms.as_object_mut().unwrap();
     for (cat, ours) in &want {
         let have = perms_obj.entry(cat.clone()).or_insert(serde_json::json!({}));
-        if !have.is_object() { *have = serde_json::json!({}); }
+        if !have.is_object() {
+            *have = serde_json::json!({});
+        }
         let have_obj = have.as_object_mut().unwrap();
         let ours_obj = ours.as_object().cloned().unwrap_or_default();
         // A rule we wrote before and the user left alone goes when we drop it or change its effect.
         if let Some(was) = managed.get(cat).and_then(|v| v.as_object()) {
             for (pat, eff) in was {
-                if ours_obj.get(pat) != Some(eff)
-                    && have_obj.get(pat).and_then(|v| v.as_str()) == eff.as_str() { have_obj.remove(pat); }
+                if ours_obj.get(pat) != Some(eff) && have_obj.get(pat).and_then(|v| v.as_str()) == eff.as_str() {
+                    have_obj.remove(pat);
+                }
             }
         }
         for (pat, eff) in ours_obj {
             if let Some(es) = eff.as_str()
-                && !have_obj.contains_key(&pat) { have_obj.insert(pat.clone(), Value::String(es.to_string())); }
+                && !have_obj.contains_key(&pat)
+            {
+                have_obj.insert(pat.clone(), Value::String(es.to_string()));
+            }
         }
     }
     new.as_object_mut().unwrap().insert("permission".to_string(), perms);
@@ -852,7 +1160,11 @@ pub fn opencode_config(home: &Path) {
     if opencode_mcp_wanted(home) {
         let mcp = new.as_object_mut().unwrap().entry("mcp".to_string()).or_insert(serde_json::json!({})).clone();
         let mut mcp = if mcp.is_object() { mcp } else { serde_json::json!({}) };
-        let ours = load_json(&cursor_src_dir().join("mcp.json")).unwrap_or(serde_json::json!({})).get("mcpServers").cloned().unwrap_or(serde_json::json!({}));
+        let ours = load_json(&cursor_src_dir().join("mcp.json"))
+            .unwrap_or(serde_json::json!({}))
+            .get("mcpServers")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
         if let (Some(mcp_obj), Some(ours_obj)) = (mcp.as_object_mut(), ours.as_object()) {
             for (name, cfg) in ours_obj {
                 if !mcp_obj.contains_key(name) {
@@ -869,7 +1181,8 @@ pub fn opencode_config(home: &Path) {
     save_json(&path, &old, &new, false);
     if !dry()
         && let Some(after) = load_json(&path)
-        && after == new && managed != serde_json::to_value(&want).unwrap_or(Value::Null)
+        && after == new
+        && managed != serde_json::to_value(&want).unwrap_or(Value::Null)
     {
         let _ = atomic_write(&side, &(serde_json::to_string_pretty(&want).unwrap_or_default() + "\n"), None);
     }
@@ -877,34 +1190,71 @@ pub fn opencode_config(home: &Path) {
 
 /// Writes the copper theme file and sets it in `tui.json`, unless the user already names another theme.
 pub fn opencode_theme(home: &Path) {
-    if setting(home, "THEME") == "plain" { skip("Opencode theme (THEME=plain)"); return; }
+    if setting(home, "THEME") == "plain" {
+        skip("Opencode theme (THEME=plain)");
+        return;
+    }
     let themes = home.join(".config").join("opencode").join("themes");
     let text = include_str!("../themes/copper.json").to_string();
     let path = themes.join("copper.json");
     if path.exists() {
         if let Some(oldt) = read_text(&path) {
-            if oldt == text { skip(&tilde(&path)); }
-            else if dry() { info(&format!("would write {}", tilde(&path))); }
-            else { let _ = fs::create_dir_all(&themes); let _ = atomic_write(&path, &text, None); ok(&format!("wrote {}", tilde(&path))); }
-        } else if dry() { info(&format!("would write {}", tilde(&path))); }
-        else { let _ = fs::create_dir_all(&themes); let _ = atomic_write(&path, &text, None); ok(&format!("wrote {}", tilde(&path))); }
+            if oldt == text {
+                skip(&tilde(&path));
+            } else if dry() {
+                info(&format!("would write {}", tilde(&path)));
+            } else {
+                let _ = fs::create_dir_all(&themes);
+                let _ = atomic_write(&path, &text, None);
+                ok(&format!("wrote {}", tilde(&path)));
+            }
+        } else if dry() {
+            info(&format!("would write {}", tilde(&path)));
+        } else {
+            let _ = fs::create_dir_all(&themes);
+            let _ = atomic_write(&path, &text, None);
+            ok(&format!("wrote {}", tilde(&path)));
+        }
     } else {
-        if dry() { info(&format!("would write {}", tilde(&path))); }
-        else { let _ = fs::create_dir_all(&themes); let _ = atomic_write(&path, &text, None); ok(&format!("wrote {}", tilde(&path))); }
+        if dry() {
+            info(&format!("would write {}", tilde(&path)));
+        } else {
+            let _ = fs::create_dir_all(&themes);
+            let _ = atomic_write(&path, &text, None);
+            ok(&format!("wrote {}", tilde(&path)));
+        }
     }
 
     let path = home.join(".config").join("opencode").join("tui.json");
     let old = if path.exists() {
-        match load_json(&path) { Some(v) => v, None => { warn(&format!("{} is not valid JSON, left untouched", tilde(&path))); return; } }
-    } else { serde_json::json!({}) };
+        match load_json(&path) {
+            Some(v) => v,
+            None => {
+                warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+                return;
+            }
+        }
+    } else {
+        serde_json::json!({})
+    };
     // our own file from an older layout: the palette inline plus a `_dotfiles` marker
     let legacy = old.get("_dotfiles").and_then(|d| d.get("generated")) == Some(&Value::Bool(true));
     if let Some(theme) = old.get("theme")
-        && !theme.is_null() && theme.as_str() != Some("copper") && !legacy
+        && !theme.is_null()
+        && theme.as_str() != Some("copper")
+        && !legacy
     {
         let copperfile = home.join(".config").join("opencode").join("themes").join("copper.json");
-        let shown = match theme { Value::String(s) => s.clone(), other => crate::pycompat::py_repr(other) };
-        info(&format!("{} uses your Opencode theme ({}); the copper one is in {}", tilde(&path), shown, tilde(&copperfile)));
+        let shown = match theme {
+            Value::String(s) => s.clone(),
+            other => crate::pycompat::py_repr(other),
+        };
+        info(&format!(
+            "{} uses your Opencode theme ({}); the copper one is in {}",
+            tilde(&path),
+            shown,
+            tilde(&copperfile)
+        ));
         return;
     }
     // keep every other key of the file; drop the markers of the older layouts
@@ -924,40 +1274,63 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
         let v = if v.is_empty() { setting(home, "OPENCODE_PROJECTS") } else { v };
         v.split_whitespace().map(String::from).filter(|s| !s.is_empty()).collect()
     });
-    if projects.is_empty() { return; }
+    if projects.is_empty() {
+        return;
+    }
     let global_cfg = home.join(".config").join("opencode").join("opencode.jsonc");
     let global_agents = home.join(".config").join("opencode").join("agents");
     for proj in projects {
         // a leading ~ means the home folder (Path.expanduser)
-        let proj = if proj == "~" { home.to_path_buf() }
-            else if let Some(rest) = proj.strip_prefix("~/") { home.join(rest) }
-            else { PathBuf::from(&proj) };
-        if !proj.is_absolute() { warn(&format!("skipping non-absolute Opencode project path: {}", proj.display())); continue; }
+        let proj = if proj == "~" {
+            home.to_path_buf()
+        } else if let Some(rest) = proj.strip_prefix("~/") {
+            home.join(rest)
+        } else {
+            PathBuf::from(&proj)
+        };
+        if !proj.is_absolute() {
+            warn(&format!("skipping non-absolute Opencode project path: {}", proj.display()));
+            continue;
+        }
         let popencode = proj.join(".opencode");
         let _ = fs::create_dir_all(&popencode);
         let pcfg = popencode.join("opencode.jsonc");
         if !pcfg.exists() {
             #[cfg(unix)]
             {
-                if let Err(e) = std::os::unix::fs::symlink(&global_cfg, &pcfg) { warn(&format!("couldn't link {}: {}", pcfg.display(), e)); }
-                else { ok(&format!("linked {} → {}", pcfg.display(), global_cfg.display())); }
+                if let Err(e) = std::os::unix::fs::symlink(&global_cfg, &pcfg) {
+                    warn(&format!("couldn't link {}: {}", pcfg.display(), e));
+                } else {
+                    ok(&format!("linked {} → {}", pcfg.display(), global_cfg.display()));
+                }
             }
             #[cfg(not(unix))]
-            { let _ = (&global_cfg, &pcfg); }
+            {
+                let _ = (&global_cfg, &pcfg);
+            }
         }
         if global_agents.is_dir() {
             let pagents = popencode.join("agents");
             let _ = fs::create_dir_all(&pagents);
             if let Ok(entries) = fs::read_dir(&global_agents) {
-                let mut agent_files: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md")).collect();
+                let mut agent_files: Vec<PathBuf> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+                    .collect();
                 agent_files.sort();
                 for src in agent_files {
                     let dst = pagents.join(src.file_name().unwrap());
-                    if dst.exists() { continue; }
+                    if dst.exists() {
+                        continue;
+                    }
                     #[cfg(unix)]
                     {
-                        if let Err(e) = std::os::unix::fs::symlink(&src, &dst) { warn(&format!("couldn't link {}: {}", dst.display(), e)); }
-                        else { ok(&format!("linked {} → {}", dst.display(), src.display())); }
+                        if let Err(e) = std::os::unix::fs::symlink(&src, &dst) {
+                            warn(&format!("couldn't link {}: {}", dst.display(), e));
+                        } else {
+                            ok(&format!("linked {} → {}", dst.display(), src.display()));
+                        }
                     }
                 }
             }
@@ -979,7 +1352,9 @@ fn run_part(part: impl FnOnce()) -> bool {
     match r {
         Ok(()) => true,
         Err(p) => {
-            let why = p.downcast_ref::<&str>().map(|s| s.to_string())
+            let why = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| p.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown error".to_string());
             warn(&format!("skipped a part: {}", why));
@@ -1001,7 +1376,9 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
     ];
     let mut failed = 0;
     for part in parts {
-        if !run_part(part) { failed += 1; }
+        if !run_part(part) {
+            failed += 1;
+        }
     }
     if failed > 0 { 1 } else { 0 }
 }
@@ -1029,15 +1406,21 @@ pub fn clipboard_command() -> Option<Vec<String>> {
 
 /// `clipboard_command` with the search path given, so a test does not change the process PATH.
 pub fn clipboard_command_in(path: Option<&str>) -> Option<Vec<String>> {
-    if cfg!(target_os = "macos") { return Some(vec!["pbcopy".to_string()]); }
-    if cfg!(target_os = "windows") { return Some(vec!["clip".to_string()]); }
+    if cfg!(target_os = "macos") {
+        return Some(vec!["pbcopy".to_string()]);
+    }
+    if cfg!(target_os = "windows") {
+        return Some(vec!["clip".to_string()]);
+    }
     linux_clipboard_in(path)
 }
 
 /// The first Linux clipboard tool found on `path`.
 fn linux_clipboard_in(path: Option<&str>) -> Option<Vec<String>> {
     for cand in [vec!["wl-copy"], vec!["xclip", "-selection", "clipboard"], vec!["xsel", "--clipboard", "--input"]] {
-        if crate_which(cand[0], path) { return Some(cand.into_iter().map(String::from).collect()); }
+        if crate_which(cand[0], path) {
+            return Some(cand.into_iter().map(String::from).collect());
+        }
     }
     None
 }
@@ -1045,7 +1428,9 @@ fn crate_which(cmd: &str, path: Option<&str>) -> bool {
     if let Some(path) = path {
         for dir in path.split(':') {
             let p = PathBuf::from(dir).join(cmd);
-            if p.is_file() { return true; }
+            if p.is_file() {
+                return true;
+            }
         }
     }
     false
@@ -1070,12 +1455,20 @@ pub fn cmd_user_rules(profile: &str, copy: bool, dry_run: bool) -> i32 {
     let c = copycmd.unwrap();
     let mut child = match process::Command::new(&c[0]).args(&c[1..]).stdin(process::Stdio::piped()).spawn() {
         Ok(ch) => ch,
-        Err(_) => { warn("no clipboard tool found. Printing the rules instead."); print!("{}", text); return 1; }
+        Err(_) => {
+            warn("no clipboard tool found. Printing the rules instead.");
+            print!("{}", text);
+            return 1;
+        }
     };
-    if let Some(mut stdin) = child.stdin.take() { let _ = stdin.write_all(text.as_bytes()); }
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(text.as_bytes());
+    }
     let _ = child.wait();
     let _ = atomic_write(&home.join(USER_RULES_MARK), &(sha(&text) + "\n"), None);
-    for f in ["claude-global.mdc", "claude-output-style.mdc"] { remove_generated(&home.join(".cursor").join("rules").join(f), "the rules move to Cursor User Rules"); }
+    for f in ["claude-global.mdc", "claude-output-style.mdc"] {
+        remove_generated(&home.join(".cursor").join("rules").join(f), "the rules move to Cursor User Rules");
+    }
     ok("copied the rules to the clipboard");
     info("Now: Cursor > Cursor Settings > Rules > User Rules > paste > save.");
     info(&format!("To go back to the file copy: rm {} && dots", tilde(&home.join(USER_RULES_MARK))));
@@ -1087,7 +1480,9 @@ pub fn cmd_user_rules(profile: &str, copy: bool, dry_run: bool) -> i32 {
 pub fn get_path(obj: &Value, path: &[&str]) -> Option<Value> {
     let mut cur = obj;
     for k in path {
-        if !cur.is_object() || cur.get(*k).is_none() { return None; }
+        if !cur.is_object() || cur.get(*k).is_none() {
+            return None;
+        }
         cur = cur.get(*k).unwrap();
     }
     Some(cur.clone())
@@ -1095,7 +1490,9 @@ pub fn get_path(obj: &Value, path: &[&str]) -> Option<Value> {
 /// Removes the key at a path, and any parent object that becomes empty.
 pub fn drop_path(obj: &mut Value, path: &[&str]) {
     if path.len() == 1 {
-        if let Some(o) = obj.as_object_mut() { o.remove(path[0]); }
+        if let Some(o) = obj.as_object_mut() {
+            o.remove(path[0]);
+        }
         return;
     }
     if let Some(sub) = obj.get_mut(path[0])
@@ -1103,22 +1500,32 @@ pub fn drop_path(obj: &mut Value, path: &[&str]) {
     {
         drop_path(sub, &path[1..]);
         if sub.as_object().map(|o| o.is_empty()).unwrap_or(false)
-            && let Some(o) = obj.as_object_mut() { o.remove(path[0]); }
+            && let Some(o) = obj.as_object_mut()
+        {
+            o.remove(path[0]);
+        }
     }
 }
 
 fn is_union(path: &[String]) -> bool {
     let joined = path.join(".");
-    matches!(joined.as_str(), "permissions.allow" | "permissions.deny" | "permissions.ask" | "permissions.additionalDirectories")
+    matches!(
+        joined.as_str(),
+        "permissions.allow" | "permissions.deny" | "permissions.ask" | "permissions.additionalDirectories"
+    )
 }
 
 /// The layer laid over the base: objects merge, `null` removes a key, the permission lists join
 /// without repeats, and anything else is replaced.
-pub fn merge(base: &Value, layer: &Value) -> Value { merge_inner(base, layer, &[]) }
+pub fn merge(base: &Value, layer: &Value) -> Value {
+    merge_inner(base, layer, &[])
+}
 fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
     let mut out = base.clone();
     if let Some(lo) = layer.as_object() {
-        if !out.is_object() { out = serde_json::json!({}); }
+        if !out.is_object() {
+            out = serde_json::json!({});
+        }
         let out_obj = out.as_object_mut().unwrap();
         for (k, v) in lo {
             let mut p = path.to_vec();
@@ -1130,7 +1537,11 @@ fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
                 out_obj.insert(k.clone(), merged);
             } else if is_union(&p) && out_obj.get(k).map(|x| x.is_array()).unwrap_or(false) && v.is_array() {
                 let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();
-                for x in v.as_array().unwrap() { if !arr.contains(x) { arr.push(x.clone()); } }
+                for x in v.as_array().unwrap() {
+                    if !arr.contains(x) {
+                        arr.push(x.clone());
+                    }
+                }
                 out_obj.insert(k.clone(), Value::Array(arr));
             } else {
                 out_obj.insert(k.clone(), v.clone());
@@ -1142,7 +1553,9 @@ fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
 
 /// What changed in the live settings since the last build, as a patch for the private layer plus
 /// notes (kind, key path, item count) for the user.
-pub fn drift(last: &Value, live: &Value) -> (Value, Vec<(String, Vec<String>, usize)>) { drift_inner(last, live, &[]) }
+pub fn drift(last: &Value, live: &Value) -> (Value, Vec<(String, Vec<String>, usize)>) {
+    drift_inner(last, live, &[])
+}
 fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(String, Vec<String>, usize)>) {
     let mut patch = serde_json::json!({});
     let mut notes = Vec::new();
@@ -1158,17 +1571,28 @@ fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(Stri
                 }
                 Some(oldv) if oldv.is_object() && v.is_object() => {
                     let (sub, n) = drift_inner(oldv, v, &p);
-                    if !sub.as_object().map(|o| o.is_empty()).unwrap_or(true) { patch.as_object_mut().unwrap().insert(k.clone(), sub); }
+                    if !sub.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                        patch.as_object_mut().unwrap().insert(k.clone(), sub);
+                    }
                     notes.extend(n);
                 }
                 Some(oldv) if is_union(&p) && oldv.is_array() && v.is_array() => {
-                    let added: Vec<Value> = v.as_array().unwrap().iter().filter(|x| !oldv.as_array().unwrap().contains(x)).cloned().collect();
-                    let removed_n = oldv.as_array().unwrap().iter().filter(|x| !v.as_array().unwrap().contains(x)).count();
+                    let added: Vec<Value> = v
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|x| !oldv.as_array().unwrap().contains(x))
+                        .cloned()
+                        .collect();
+                    let removed_n =
+                        oldv.as_array().unwrap().iter().filter(|x| !v.as_array().unwrap().contains(x)).count();
                     if !added.is_empty() {
                         patch.as_object_mut().unwrap().insert(k.clone(), Value::Array(added.clone()));
                         notes.push(("add".to_string(), p.clone(), added.len()));
                     }
-                    if removed_n > 0 { notes.push(("removed".to_string(), p.clone(), removed_n)); }
+                    if removed_n > 0 {
+                        notes.push(("removed".to_string(), p.clone(), removed_n));
+                    }
                 }
                 Some(oldv) => {
                     if oldv != v {
@@ -1193,24 +1617,33 @@ fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(Stri
 }
 
 /// The layer with a `drift` patch applied to it.
-pub fn apply_patch(layer: &Value, patch: &Value) -> Value { apply_patch_inner(layer, patch, &[]) }
+pub fn apply_patch(layer: &Value, patch: &Value) -> Value {
+    apply_patch_inner(layer, patch, &[])
+}
 fn apply_patch_inner(layer: &Value, patch: &Value, path: &[String]) -> Value {
     let mut out = layer.clone();
     if let Some(po) = patch.as_object() {
-        if !out.is_object() { out = serde_json::json!({}); }
+        if !out.is_object() {
+            out = serde_json::json!({});
+        }
         let out_obj = out.as_object_mut().unwrap();
         for (k, v) in po {
             let mut p = path.to_vec();
             p.push(k.clone());
             if let Some(ov) = out_obj.get(k).cloned()
-                && ov.is_object() && v.is_object()
+                && ov.is_object()
+                && v.is_object()
             {
                 out_obj.insert(k.clone(), apply_patch_inner(&ov, v, &p));
                 continue;
             }
             if is_union(&p) && v.is_array() && out_obj.get(k).map(|x| x.is_array()).unwrap_or(false) {
                 let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();
-                for x in v.as_array().unwrap() { if !arr.contains(x) { arr.push(x.clone()); } }
+                for x in v.as_array().unwrap() {
+                    if !arr.contains(x) {
+                        arr.push(x.clone());
+                    }
+                }
                 out_obj.insert(k.clone(), Value::Array(arr));
             } else {
                 out_obj.insert(k.clone(), v.clone());
@@ -1221,7 +1654,9 @@ fn apply_patch_inner(layer: &Value, patch: &Value, path: &[String]) -> Value {
 }
 
 /// The JSON as pretty text with a closing newline.
-pub fn dump(obj: &Value) -> String { serde_json::to_string_pretty(obj).unwrap_or_default() + "\n" }
+pub fn dump(obj: &Value) -> String {
+    serde_json::to_string_pretty(obj).unwrap_or_default() + "\n"
+}
 
 /// Builds `~/.claude/settings.json` from the repo base, the enabled presets and the private layer.
 /// Changes Claude made to the live file move into the layer first. Returns 1 on invalid JSON.
@@ -1248,7 +1683,11 @@ pub fn claude_settings_build(home: &Path) -> i32 {
             return 1;
         }
         let live = live.unwrap();
-        let last = if last_f.exists() { load_json(&last_f).unwrap_or_else(|| merge(&base, &layer)) } else { merge(&base, &layer) };
+        let last = if last_f.exists() {
+            load_json(&last_f).unwrap_or_else(|| merge(&base, &layer))
+        } else {
+            merge(&base, &layer)
+        };
         let (patch, n) = drift(&last, &live);
         notes = n;
         if !patch.as_object().map(|o| o.is_empty()).unwrap_or(true) {
@@ -1266,18 +1705,33 @@ pub fn claude_settings_build(home: &Path) -> i32 {
     for (kind, p, n) in &notes {
         let key = p.join(".");
         if kind == "removed" {
-            warn(&format!("Claude removed {} item(s) from {}, but the repo or your private layer has them. Remove them there to make it stick.", n, key));
+            warn(&format!(
+                "Claude removed {} item(s) from {}, but the repo or your private layer has them. Remove them there to make it stick.",
+                n, key
+            ));
         } else {
-            let what = match kind.as_str() { "set" => "changed".to_string(), "add" => format!("+{} item(s)", n), "unset" => "removed".to_string(), _ => kind.clone() };
+            let what = match kind.as_str() {
+                "set" => "changed".to_string(),
+                "add" => format!("+{} item(s)", n),
+                "unset" => "removed".to_string(),
+                _ => kind.clone(),
+            };
             info(&format!("kept in your private layer: {} ({})", key, what));
         }
     }
     let text = dump(&merge(&base, &layer));
-    if !was_link && live_f.exists()
-        && let Ok(oldtext) = fs::read_to_string(&live_f) && oldtext == text { skip(&tilde(&live_f)); 
-            // still maybe update last
-            if !dry() && ( !last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) { let _=atomic_write(&last_f,&text,Some(0o600)); }
-            return 0; }
+    if !was_link
+        && live_f.exists()
+        && let Ok(oldtext) = fs::read_to_string(&live_f)
+        && oldtext == text
+    {
+        skip(&tilde(&live_f));
+        // still maybe update last
+        if !dry() && (!last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) {
+            let _ = atomic_write(&last_f, &text, Some(0o600));
+        }
+        return 0;
+    }
     if dry() {
         info(&format!("would write {}", tilde(&live_f)));
         return 0;
@@ -1291,7 +1745,7 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         return 1;
     }
     ok(&format!("built {} (repo base + private layer)", tilde(&live_f)));
-    if !dry() && ( !last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) {
+    if !dry() && (!last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) {
         let _ = atomic_write(&last_f, &text, Some(0o600));
     }
     0
@@ -1310,9 +1764,18 @@ pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
     }
     let base = base.unwrap();
     let mut layer = layer.unwrap();
-    let value = match get_path(&layer, &path) { Some(v) => v, None => { warn(&format!("{} is not in {}", dotted, tilde(&layer_f))); return 1; } };
+    let value = match get_path(&layer, &path) {
+        Some(v) => v,
+        None => {
+            warn(&format!("{} is not in {}", dotted, tilde(&layer_f)));
+            return 1;
+        }
+    };
     let mut patch = value.clone();
-    for k in path.iter().rev() { let key = *k; patch = serde_json::json!({ key: patch}); }
+    for k in path.iter().rev() {
+        let key = *k;
+        patch = serde_json::json!({ key: patch});
+    }
     let new_base = merge(&base, &patch);
     drop_path(&mut layer, &path.to_vec());
     if dry() {
@@ -1355,7 +1818,10 @@ pub fn claude_settings_demote(home: &Path, dotted: &str) -> i32 {
         return 0;
     }
     let mut patch = value;
-    for k in path.iter().rev() { let key = *k; patch = serde_json::json!({ key: patch }); }
+    for k in path.iter().rev() {
+        let key = *k;
+        patch = serde_json::json!({ key: patch });
+    }
     let new_layer = merge(&layer, &patch);
     if dry() {
         info(&format!("would copy {} to {}", dotted, tilde(&layer_f)));
@@ -1447,25 +1913,46 @@ pub struct OpencodeArgs {
 }
 
 /// Runs the `agent-config` command line and returns the exit code.
-pub fn run() -> i32 { run_cli(Cli::parse()) }
+pub fn run() -> i32 {
+    run_cli(Cli::parse())
+}
 
 /// Run one agent-config command in this process (`dots` does). A panic counts as a failure.
 pub fn run_args(args: &[&str]) -> i32 {
     let argv = std::iter::once("agent-config").chain(args.iter().copied());
     let cli = match Cli::try_parse_from(argv) {
         Ok(c) => c,
-        Err(e) => { warn(e.to_string().trim_end()); return 2; }
+        Err(e) => {
+            warn(e.to_string().trim_end());
+            return 2;
+        }
     };
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cli(cli))).unwrap_or(1)
 }
 
 fn run_cli(cli: Cli) -> i32 {
-    if let Some(r) = cli.repo { unsafe { env::set_var("DOTFILES_REPO", r); } }
+    if let Some(r) = cli.repo {
+        unsafe {
+            env::set_var("DOTFILES_REPO", r);
+        }
+    }
     let (rc, label) = match cli.cmd {
-        Commands::Cursor(a) => { set_dry(a.dry_run); (cmd_cursor_dispatch(&a), "Cursor config") }
-        Commands::UserRules(a) => { set_dry(a.dry_run); (cmd_user_rules(&a.profile, a.copy, a.dry_run), "user-rules") }
-        Commands::ClaudeSettings(a) => { set_dry(a.dry_run); (cmd_claude_settings_dispatch(&a), "Claude settings") }
-        Commands::Opencode(a) => { set_dry(a.dry_run); (cmd_opencode_dispatch(&a), "Opencode config") }
+        Commands::Cursor(a) => {
+            set_dry(a.dry_run);
+            (cmd_cursor_dispatch(&a), "Cursor config")
+        }
+        Commands::UserRules(a) => {
+            set_dry(a.dry_run);
+            (cmd_user_rules(&a.profile, a.copy, a.dry_run), "user-rules")
+        }
+        Commands::ClaudeSettings(a) => {
+            set_dry(a.dry_run);
+            (cmd_claude_settings_dispatch(&a), "Claude settings")
+        }
+        Commands::Opencode(a) => {
+            set_dry(a.dry_run);
+            (cmd_opencode_dispatch(&a), "Opencode config")
+        }
     };
     summary(label);
     rc
@@ -1500,7 +1987,11 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
     set_dry(a.dry_run);
     let home = home_dir();
     header(&format!("Opencode config from {} (profile: {})", tilde(&claude_dir()), a.profile));
-    let projects = a.projects.as_ref().filter(|s| !s.is_empty()).map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>());
+    let projects = a
+        .projects
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split_whitespace().map(String::from).collect::<Vec<_>>());
     let parts: [Box<dyn FnOnce() + '_>; 6] = [
         Box::new(|| opencode_agents(&home)),
         Box::new(|| opencode_plugin(&home)),
@@ -1514,7 +2005,9 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
     ];
     let mut failed = 0;
     for part in parts {
-        if !run_part(part) { failed += 1; }
+        if !run_part(part) {
+            failed += 1;
+        }
     }
     if failed > 0 { 1 } else { 0 }
 }
@@ -1523,18 +2016,27 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
 pub fn opencode_rules(home: &Path, profile: &str) {
     let path = home.join(".config").join("opencode").join("AGENTS.md");
     if is_symlink(&path) || (path.exists() && !read_text(&path).unwrap_or_default().contains(MARK)) {
-        warn(&format!("{} exists and is not ours ({} has no {} marker), left untouched. Move your own text into ~/.config/dotfiles/owner.md (dots settings) and it lands here too.", tilde(&path), tilde(&path), MARK));
+        warn(&format!(
+            "{} exists and is not ours ({} has no {} marker), left untouched. Move your own text into ~/.config/dotfiles/owner.md (dots settings) and it lands here too.",
+            tilde(&path),
+            tilde(&path),
+            MARK
+        ));
         return;
     }
     let overlay = owner_overlay(home, profile);
     let mut srcs: Vec<&str> = vec!["claude/CLAUDE.md"];
-    if has_preset_rules(home, profile) { srcs.push("claude/presets"); }
+    if has_preset_rules(home, profile) {
+        srcs.push("claude/presets");
+    }
     let mut mode: Option<u32> = None;
     if overlay.is_some() {
         srcs.push("~/.config/dotfiles/owner.md");
         mode = Some(0o600);
     } else if profile == "owner" {
-        warn("no ~/.config/dotfiles/owner.md, so the OpenCode rules have no owner-only rules. Add them with: dots settings");
+        warn(
+            "no ~/.config/dotfiles/owner.md, so the OpenCode rules have no owner-only rules. Add them with: dots settings",
+        );
     }
     let stamp_line = stamp(&srcs);
     let mut text = format!("{}{}{}", stamp_line, OPENCODE_NOTE, rules_text(home, profile));
@@ -1566,9 +2068,15 @@ mod tests {
         let t = |cat: &str, pat: &str, eff: &str| Some((cat.to_string(), pat.to_string(), eff.to_string()));
         assert_eq!(opencode_permission("Read(./foo)", "deny"), t("read", "**/foo", "deny"));
         assert_eq!(opencode_permission("Bash(git status:*)", "allow"), t("bash", "git status *", "allow"));
-        assert_eq!(opencode_permission("Bash(git push origin main)", "allow"), t("bash", "git push origin main", "allow"));
+        assert_eq!(
+            opencode_permission("Bash(git push origin main)", "allow"),
+            t("bash", "git push origin main", "allow")
+        );
         // A deny stays a deny, for Bash too: it once came out as an allow.
-        assert_eq!(opencode_permission("Bash(git push origin main)", "deny"), t("bash", "git push origin main", "deny"));
+        assert_eq!(
+            opencode_permission("Bash(git push origin main)", "deny"),
+            t("bash", "git push origin main", "deny")
+        );
         assert_eq!(opencode_permission("Bash(rm:*)", "deny"), t("bash", "rm *", "deny"));
     }
 }

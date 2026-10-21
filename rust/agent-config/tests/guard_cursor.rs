@@ -64,12 +64,23 @@ impl T {
             return false;
         }
         self.app_db = self.dir.join("state.vscdb").to_string_lossy().into_owned();
-        let mut sql = String::from("CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);\n");
+        let mut sql = String::from(
+            "CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);\n",
+        );
         for (conv, value) in rows {
-            sql.push_str(&format!("INSERT INTO cursorDiskKV VALUES ('composerData:{}', '{}');\n", conv, value.replace('\'', "''")));
+            sql.push_str(&format!(
+                "INSERT INTO cursorDiskKV VALUES ('composerData:{}', '{}');\n",
+                conv,
+                value.replace('\'', "''")
+            ));
         }
-        let mut child = Command::new("sqlite3").arg(&self.app_db).stdin(Stdio::piped()).stdout(Stdio::null())
-            .stderr(Stdio::piped()).spawn().unwrap();
+        let mut child = Command::new("sqlite3")
+            .arg(&self.app_db)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
         child.stdin.take().unwrap().write_all(sql.as_bytes()).unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -98,13 +109,19 @@ impl T {
 
     /// Record a context size the way Cursor would report one (afterAgentResponse).
     fn seed(&self, tokens: i64, conv: &str) -> R {
-        self.run_hook("response", &json!({"hook_event_name": "afterAgentResponse", "conversation_id": conv,
-            "text": "ok", "context_tokens": tokens}))
+        self.run_hook(
+            "response",
+            &json!({"hook_event_name": "afterAgentResponse", "conversation_id": conv,
+            "text": "ok", "context_tokens": tokens}),
+        )
     }
 
     fn compact(&self, conv: &str) -> R {
-        self.run_hook("compact", &json!({"hook_event_name": "preCompact", "conversation_id": conv,
-            "context_tokens": 900_000, "context_window_size": 1_000_000, "context_usage_percent": 90}))
+        self.run_hook(
+            "compact",
+            &json!({"hook_event_name": "preCompact", "conversation_id": conv,
+            "context_tokens": 900_000, "context_window_size": 1_000_000, "context_usage_percent": 90}),
+        )
     }
 
     fn spawn(&self, conv: &str, parent: Option<&str>, extra: Value) -> R {
@@ -120,7 +137,8 @@ impl T {
     }
 
     fn prompt_x(&self, conv: &str, extra: Value) -> Value {
-        let data = merge(json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": conv, "prompt": "go"}), extra);
+        let data =
+            merge(json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": conv, "prompt": "go"}), extra);
         let (rc, out, err) = self.run_hook("prompt", &data);
         assert_eq!(rc, 0, "{out} {err}");
         let out: Value = serde_json::from_str(&out).unwrap();
@@ -230,7 +248,11 @@ fn test_app_store_breakdown_fallback_and_parent_conversation() {
     if !t.app_store(&[("parent", &row)]) {
         return;
     }
-    assert_deny(&t.spawn("child", Some("parent"), json!({"conversation_id": "child", "parent_conversation_id": "parent"})));
+    assert_deny(&t.spawn(
+        "child",
+        Some("parent"),
+        json!({"conversation_id": "child", "parent_conversation_id": "parent"}),
+    ));
 }
 
 #[test]
@@ -349,7 +371,8 @@ fn test_fail_open() {
     assert_silent(&t.run_hook_raw("", ""));
     assert_silent(&t.run_hook("compact", &json!({}))); // missing fields
     assert_silent(&t.run_hook("response", &json!({})));
-    let spawn_without_conv = json!({"hook_event_name": "subagentStart", "conversation_id": null, "subagent_type": "general"});
+    let spawn_without_conv =
+        json!({"hook_event_name": "subagentStart", "conversation_id": null, "subagent_type": "general"});
     assert_silent(&t.run_hook("subagent", &spawn_without_conv));
     assert_silent(&t.run_hook("compact", &json!({"conversation_id": "c1", "context_tokens": "lots"})));
 }
@@ -361,7 +384,8 @@ fn test_state_isolated_in_tmpdir() {
     let t = T::new();
     t.seed(600_000, "x/../y");
     let state = t.dir.join("cursor-guard");
-    let files: Vec<String> = fs::read_dir(&state).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let files: Vec<String> =
+        fs::read_dir(&state).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(files, vec!["x_.._y.json".to_string()]);
     let st: Value = serde_json::from_str(&fs::read_to_string(state.join(&files[0])).unwrap()).unwrap();
     assert_eq!(st["ctx"], 600_000);
@@ -382,7 +406,8 @@ fn test_state_pruned() {
         }
     }
     t.seed(1000, "new");
-    let names: Vec<String> = fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let names: Vec<String> =
+        fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
     assert!(names.len() <= MAX_STATE_FILES, "{}", names.len());
     assert!(names.contains(&"new.json".to_string()));
     assert!(!names.contains(&"k0.json".to_string()));
@@ -413,8 +438,11 @@ impl T {
 
     fn shell(&self, cmd: &str, env: &[(&str, &str)]) -> R {
         let cwd = self.dir.to_string_lossy().into_owned();
-        self.tool(&json!({"hook_event_name": "preToolUse", "tool_name": "Shell",
-            "tool_input": {"command": cmd, "working_directory": cwd}, "cwd": cwd, "conversation_id": "c1"}), env)
+        self.tool(
+            &json!({"hook_event_name": "preToolUse", "tool_name": "Shell",
+            "tool_input": {"command": cmd, "working_directory": cwd}, "cwd": cwd, "conversation_id": "c1"}),
+            env,
+        )
     }
 }
 
@@ -499,7 +527,9 @@ fn cursor_tool_before_read_file_denies_the_secret_file() {
     assert_eq!(body["permission"], "deny", "{res:?}");
     assert!(body["user_message"].as_str().unwrap().starts_with("G15"), "{res:?}");
     assert!(body.get("agent_message").is_none(), "{res:?}");
-    assert_tool_allow(&t.tool(&json!({"hook_event_name": "beforeReadFile", "file_path": "/etc/hosts", "content": ""}), &[]));
+    assert_tool_allow(
+        &t.tool(&json!({"hook_event_name": "beforeReadFile", "file_path": "/etc/hosts", "content": ""}), &[]),
+    );
     // GUARD_OFF turns it off like the other G15 entries
     assert_tool_allow(&t.tool(&read, &[("GUARD_OFF", "G15")]));
 }
@@ -552,7 +582,8 @@ fn cursor_tool_uses_the_same_gate_as_the_guard() {
     assert_tool_deny(&t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", "")]), "G14");
     // shadow mode logs and allows
     let cache = t.dir.join("cache").to_string_lossy().into_owned();
-    let res = t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", ""), ("GUARD_SHADOW", "G14"), ("XDG_CACHE_HOME", &cache)]);
+    let res =
+        t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", ""), ("GUARD_SHADOW", "G14"), ("XDG_CACHE_HOME", &cache)]);
     assert_tool_allow(&res);
     let log = fs::read_to_string(t.dir.join("cache/dots-guard-shadow.log")).unwrap();
     assert!(log.contains(" G14 deny "), "{log}");

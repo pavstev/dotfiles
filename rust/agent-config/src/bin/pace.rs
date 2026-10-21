@@ -21,18 +21,16 @@ fn main() -> ExitCode {
             println!("{}", pace::refresh_json(&pace::refresh(120.0, None)));
             ExitCode::SUCCESS
         }
-        ("seed", 3) => {
-            match pace::parse_percent(&args[2]) {
-                Some(used) if pace::seed(used, None) => {
-                    println!("{}", pace::seed_json(pace::week_weight().unwrap_or(0.0)));
-                    ExitCode::SUCCESS
-                }
-                _ => {
-                    eprintln!("pace: seed needs a percent above 0 up to 100, and some usage this week");
-                    ExitCode::from(2)
-                }
+        ("seed", 3) => match pace::parse_percent(&args[2]) {
+            Some(used) if pace::seed(used, None) => {
+                println!("{}", pace::seed_json(pace::week_weight().unwrap_or(0.0)));
+                ExitCode::SUCCESS
             }
-        }
+            _ => {
+                eprintln!("pace: seed needs a percent above 0 up to 100, and some usage this week");
+                ExitCode::from(2)
+            }
+        },
         _ => {
             eprintln!("usage: pace status | refresh | seed <percent>");
             eprintln!("the plan and the work days come from PLAN and WORK_DAYS in ~/.config/dotfiles/settings");

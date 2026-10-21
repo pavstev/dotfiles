@@ -8,14 +8,20 @@ use std::path::Path;
 const WINDOWS: [&str; 2] = ["12-tools", "57-claude-code"];
 
 /// The step names, in run order.
-pub fn names() -> Vec<String> { install::STEPS.iter().map(|s| s.to_string()).collect() }
+pub fn names() -> Vec<String> {
+    install::STEPS.iter().map(|s| s.to_string()).collect()
+}
 
 /// Whether a step runs. `only`: DOTFILES_STEPS (runs just those, also ones in
 /// SKIP_STEPS). `skip`: SKIP_STEPS, when it applies. Err: skipped, with why.
 pub fn wanted(name: &str, only: &str, skip: &str, windows: bool) -> Result<(), Option<String>> {
     let only_set = !only.is_empty();
-    if only_set && !only.split_whitespace().any(|s| s == name) { return Err(None); }
-    if windows && !only_set && !WINDOWS.contains(&name) { return Err(None); }
+    if only_set && !only.split_whitespace().any(|s| s == name) {
+        return Err(None);
+    }
+    if windows && !only_set && !WINDOWS.contains(&name) {
+        return Err(None);
+    }
     if skip.split_whitespace().any(|s| s == name) {
         return Err(Some(format!("{} skipped (Steps to skip, in dots settings)", name)));
     }
@@ -29,7 +35,10 @@ pub fn run_all(_repo: &Path, own_steps: bool) {
     for name in install::STEPS {
         match wanted(name, &only, &skip, os::is_windows()) {
             Err(None) => continue,
-            Err(Some(why)) => { info(&why); continue; }
+            Err(Some(why)) => {
+                info(&why);
+                continue;
+            }
             Ok(()) => {}
         }
         step_end();
@@ -46,7 +55,7 @@ pub fn run_all(_repo: &Path, own_steps: bool) {
 /// While a step runs, say it is still working: after 20 seconds, then every minute. So a
 /// long download never looks like a frozen terminal. The lines stop when the sender drops.
 fn still_working(name: &'static str) -> std::sync::mpsc::Sender<()> {
-    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::sync::mpsc::{RecvTimeoutError, channel};
     use std::time::{Duration, Instant};
     let (tx, rx) = channel::<()>();
     let start = Instant::now();
@@ -58,7 +67,9 @@ fn still_working(name: &'static str) -> std::sync::mpsc::Sender<()> {
                 _ => return,
             }
             let secs = start.elapsed().as_secs();
-            if secs < next { continue; }
+            if secs < next {
+                continue;
+            }
             next += 60;
             let title = crate::out::step_title();
             let what = if title.is_empty() { name.to_string() } else { title };

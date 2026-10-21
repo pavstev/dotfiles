@@ -12,21 +12,37 @@ use std::process::{Command, Stdio};
 
 /// Whether `brew bundle` prints this line. It says "Using <pkg>" for each present package and a
 /// closing count; both are noise.
-fn keep_line(l: &str) -> bool { !l.starts_with("Using ") && !l.starts_with("`brew bundle` complete") }
+fn keep_line(l: &str) -> bool {
+    !l.starts_with("Using ") && !l.starts_with("`brew bundle` complete")
+}
 
 /// `brew bundle` for one file. True when brew exits 0. Installs and warnings print as they come;
 /// DOTFILES_VERBOSE=1 prints everything.
 fn bundle_quiet(file: &Path) -> bool {
     let f = file.to_string_lossy();
     if verbose() {
-        return Command::new("brew").args(["bundle", &format!("--file={}", f), "--no-upgrade"]).status().map(|s| s.success()).unwrap_or(false);
+        return Command::new("brew")
+            .args(["bundle", &format!("--file={}", f), "--no-upgrade"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
     }
     // stderr into stdout, like 2>&1
-    let Ok(mut child) = Command::new("sh").arg("-c").arg(r#"exec brew bundle --file="$0" --no-upgrade 2>&1"#).arg(&*f)
-        .stdin(Stdio::inherit()).stdout(Stdio::piped()).spawn() else { return false };
+    let Ok(mut child) = Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec brew bundle --file="$0" --no-upgrade 2>&1"#)
+        .arg(&*f)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .spawn()
+    else {
+        return false;
+    };
     if let Some(o) = child.stdout.take() {
         for l in BufReader::new(o).lines().map_while(Result::ok) {
-            if keep_line(&l) { plain(&l); }
+            if keep_line(&l) {
+                plain(&l);
+            }
         }
     }
     child.wait().map(|s| s.success()).unwrap_or(false)
@@ -34,7 +50,9 @@ fn bundle_quiet(file: &Path) -> bool {
 
 /// Install only what is missing from `file`; skip when everything is there. True when it changed.
 fn bundle_run(repo: &Path, file: &Path, label: &str) -> bool {
-    if !file.is_file() { return false; }
+    if !file.is_file() {
+        return false;
+    }
     let f = format!("--file={}", file.display());
     if super::quiet("brew", &["bundle", "check", "--no-upgrade", &f]) {
         skip(&format!("{} (every formula/cask already installed)", label));
@@ -52,7 +70,9 @@ fn bundle_run(repo: &Path, file: &Path, label: &str) -> bool {
 }
 
 pub fn step(repo: &Path) {
-    if !only_macos("Homebrew apps") { return; }
+    if !only_macos("Homebrew apps") {
+        return;
+    }
     out::step("Homebrew apps");
     os::brew_env();
     if !os::have("brew") {
@@ -60,10 +80,14 @@ pub fn step(repo: &Path) {
         return;
     }
     // The Nerd Font is one of the optional looks (LOOKS in the settings).
-    if !crate::dots::looks::on("font") { os::set_env("HOMEBREW_BUNDLE_CASK_SKIP", "font-fira-code-nerd-font"); }
+    if !crate::dots::looks::on("font") {
+        os::set_env("HOMEBREW_BUNDLE_CASK_SKIP", "font-fira-code-nerd-font");
+    }
     let a = bundle_run(repo, &repo.join("Brewfile"), "Brewfile");
     let b = bundle_run(repo, &repo.join("Brewfile.local"), "Brewfile.local"); // per-machine extras (gitignored)
-    if a || b { ok("Mac apps satisfied"); }
+    if a || b {
+        ok("Mac apps satisfied");
+    }
 }
 
 #[cfg(test)]

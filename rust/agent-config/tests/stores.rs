@@ -177,8 +177,13 @@ fn secrets_redacted() {
     let t = tempfile::tempdir().unwrap();
     let home = t.path();
     let key = ["sk", "-", &"a1B2c3D4e5".repeat(4)].concat();
-    let prompt = format!(r#"{{"type":"user","timestamp":"2026-10-20T10:00:00.000Z","message":{{"content":"use {key} for the call"}}}}"#);
-    let cmd = format!(r#"{{"type":"assistant","timestamp":"2026-10-20T10:00:01.000Z","message":{{"id":"m","content":[{{"type":"tool_use","id":"t","name":"Bash","input":{{"command":"curl -H 'Authorization: Bearer {}'"}}}}]}}}}"#, "abcdefghij".repeat(3));
+    let prompt = format!(
+        r#"{{"type":"user","timestamp":"2026-10-20T10:00:00.000Z","message":{{"content":"use {key} for the call"}}}}"#
+    );
+    let cmd = format!(
+        r#"{{"type":"assistant","timestamp":"2026-10-20T10:00:01.000Z","message":{{"id":"m","content":[{{"type":"tool_use","id":"t","name":"Bash","input":{{"command":"curl -H 'Authorization: Bearer {}'"}}}}]}}}}"#,
+        "abcdefghij".repeat(3)
+    );
     write(&main_file(home), &format!("{prompt}\n{cmd}\n"));
 
     let docs = collect(home);
@@ -198,7 +203,9 @@ fn error_text_is_redacted_before_the_cut() {
     let token = ["gh", "p_", &"A1b2C3d4E5".repeat(4)].concat(); // # scan-allowlist
     let body = format!("{}{} tail", "x ".repeat(482), token);
     let call = r#"{"type":"assistant","timestamp":"2026-10-20T10:00:00.000Z","message":{"id":"m","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"ls"}}]}}"#;
-    let result = format!(r#"{{"type":"user","timestamp":"2026-10-20T10:00:01.000Z","message":{{"content":[{{"type":"tool_result","tool_use_id":"t","is_error":true,"content":"{body}"}}]}}}}"#);
+    let result = format!(
+        r#"{{"type":"user","timestamp":"2026-10-20T10:00:01.000Z","message":{{"content":[{{"type":"tool_result","tool_use_id":"t","is_error":true,"content":"{body}"}}]}}}}"#
+    );
     write(&main_file(home), &format!("{call}\n{result}\n"));
     let docs = collect(home);
     let err = docs.iter().find(|d| d.role == "tool_error").expect("tool_error doc");

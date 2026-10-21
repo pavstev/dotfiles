@@ -9,13 +9,21 @@ use std::process::{Command, Stdio};
 /// stdout of a git command, trimmed, or None when it fails.
 pub fn out(args: &[&str]) -> Option<String> {
     let o = Command::new("git").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    if !o.status.success() { return None; }
+    if !o.status.success() {
+        return None;
+    }
     Some(String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string())
 }
 
 fn ok_run(args: &[&str]) -> bool {
-    Command::new("git").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false)
+    Command::new("git")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// The commit the repo is on, or "" when git cannot say.
@@ -27,19 +35,33 @@ pub fn head(repo: &Path) -> String {
 /// change a file edited here stops, instead of leaving conflict markers in a live config.
 /// When the origin history was rewritten and this clone has no work of its own, it moves
 /// to the new history (`heal_rewrite`).
-pub fn pull(repo: &Path) -> bool { pull_saving_to(repo, &os::home().join(".config").join("dotfiles")) }
+pub fn pull(repo: &Path) -> bool {
+    pull_saving_to(repo, &os::home().join(".config").join("dotfiles"))
+}
 
 /// `pull`, with the folder that gets the patch of saved edits.
 fn pull_saving_to(repo: &Path, saved_dir: &Path) -> bool {
     let r = repo.to_string_lossy();
     let before = out(&["-C", &r, "rev-parse", "--verify", "-q", "@{u}"]).unwrap_or_default();
     let pulled = Command::new("git")
-        .args(["-C", &r, "-c", "rebase.autoStash=false", "-c", "merge.autoStash=false",
-            "pull", "--ff-only", "--no-rebase", "--quiet"])
+        .args([
+            "-C",
+            &r,
+            "-c",
+            "rebase.autoStash=false",
+            "-c",
+            "merge.autoStash=false",
+            "pull",
+            "--ff-only",
+            "--no-rebase",
+            "--quiet",
+        ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stderr(Stdio::null()) // git's hint block; the caller warns in one line
-        .status().map(|s| s.success()).unwrap_or(false);
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     pulled || heal_rewrite(repo, &before, saved_dir)
 }
 
@@ -59,28 +81,48 @@ fn heal_rewrite(repo: &Path, before: &str, saved_dir: &Path) -> bool {
         .and_then(|p| fs::read_to_string(repo.join(p)).ok())
         .unwrap_or_default();
     let tips: Vec<&str> = log.lines().flat_map(|l| l.split(' ').take(2)).collect();
-    let old_tip = std::iter::once(before).chain(tips.into_iter().rev())
+    let old_tip = std::iter::once(before)
+        .chain(tips.into_iter().rev())
         .find(|t| !t.is_empty() && *t != after && !anc(t, &after) && anc("HEAD", t));
-    if old_tip.is_none() { return false; }
+    if old_tip.is_none() {
+        return false;
+    }
     let keep = format!("before-rewrite-{}", os::timestamp());
     // Edited files (an editor writes through its linked settings file) go to a patch first.
-    let saved = if changed(repo).is_empty() { None } else {
+    let saved = if changed(repo).is_empty() {
+        None
+    } else {
         let Some(p) = save_edits(repo, saved_dir, &keep) else { return false };
         Some(p)
     };
-    if !ok_run(&["-C", &r, "branch", &keep, "HEAD"]) { return false; }
-    if !ok_run(&["-C", &r, "-c", "core.autocrlf=false", "reset", "--hard", "--quiet", "@{u}"]) { return false; }
-    info(&format!("the dotfiles history was rewritten upstream; this clone had no work of its own, so it moved to the new one (old state: branch {})", keep));
-    if let Some(p) = saved { info(&format!("your edits to tracked files are saved in {} (git apply it to bring them back)", p.display())); }
+    if !ok_run(&["-C", &r, "branch", &keep, "HEAD"]) {
+        return false;
+    }
+    if !ok_run(&["-C", &r, "-c", "core.autocrlf=false", "reset", "--hard", "--quiet", "@{u}"]) {
+        return false;
+    }
+    info(&format!(
+        "the dotfiles history was rewritten upstream; this clone had no work of its own, so it moved to the new one (old state: branch {})",
+        keep
+    ));
+    if let Some(p) = saved {
+        info(&format!("your edits to tracked files are saved in {} (git apply it to bring them back)", p.display()));
+    }
     true
 }
 
 /// Write the edits to tracked files as a patch next to the private settings. None when
 /// the diff is empty, git fails or the file can't be written.
 fn save_edits(repo: &Path, dir: &Path, name: &str) -> Option<std::path::PathBuf> {
-    let o = Command::new("git").args(["-C", &repo.to_string_lossy(), "diff", "HEAD", "--binary"])
-        .stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    if !o.status.success() || o.stdout.is_empty() { return None; }
+    let o = Command::new("git")
+        .args(["-C", &repo.to_string_lossy(), "diff", "HEAD", "--binary"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !o.status.success() || o.stdout.is_empty() {
+        return None;
+    }
     fs::create_dir_all(dir).ok()?;
     let p = dir.join(format!("{}.patch", name));
     fs::write(&p, &o.stdout).ok()?;
@@ -100,8 +142,11 @@ pub fn identity(name: &str, email: &str) {
     let cur_n = out(&["config", "-f", &fs_, "user.name"]).unwrap_or_default();
     let cur_e = out(&["config", "-f", &fs_, "user.email"]).unwrap_or_default();
     if cur_n == name && cur_e == email {
-        if verbose() { skip(&format!("git identity ({} <{}>)", name, email)); }
-    } else if ok_run(&["config", "-f", &fs_, "user.name", name]) && ok_run(&["config", "-f", &fs_, "user.email", email]) {
+        if verbose() {
+            skip(&format!("git identity ({} <{}>)", name, email));
+        }
+    } else if ok_run(&["config", "-f", &fs_, "user.name", name]) && ok_run(&["config", "-f", &fs_, "user.email", email])
+    {
         ok(&format!("git commits use: {} <{}>", name, email));
     } else {
         warn(&format!("couldn't write {}", f.display()));
@@ -113,16 +158,24 @@ pub fn identity(name: &str, email: &str) {
 /// comes back, and ~/.gitconfig includes ~/.gitconfig.local for the identity.
 pub fn windows_gitconfig() {
     let g = os::home().join(".gitconfig");
-    let ours = os::is_symlink(&g) || fs::read_to_string(&g).map(|t| t.contains("symlinked from this repo")).unwrap_or(false);
+    let ours =
+        os::is_symlink(&g) || fs::read_to_string(&g).map(|t| t.contains("symlinked from this repo")).unwrap_or(false);
     if ours {
         let _ = fs::remove_file(&g);
         let name = ".gitconfig.bak-";
-        let mut baks: Vec<_> = fs::read_dir(os::home()).into_iter().flatten().flatten()
+        let mut baks: Vec<_> = fs::read_dir(os::home())
+            .into_iter()
+            .flatten()
+            .flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with(name))
             .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
             .collect();
         baks.sort();
-        if let Some((_, b)) = baks.pop() && fs::rename(&b, &g).is_ok() { info("restored your own .gitconfig"); }
+        if let Some((_, b)) = baks.pop()
+            && fs::rename(&b, &g).is_ok()
+        {
+            info("restored your own .gitconfig");
+        }
     }
     let inc = out(&["config", "--global", "--get-all", "include.path"]).unwrap_or_default();
     if !inc.contains("gitconfig.local") {
@@ -136,10 +189,19 @@ mod tests {
     use std::path::PathBuf;
 
     fn git(dir: &Path, args: &[&str]) -> bool {
-        Command::new("git").arg("-C").arg(dir).args(args)
-            .env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@example.com")
-            .env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@example.com")
-            .stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
     fn commit(dir: &Path, file: &str, text: &str) {
         fs::write(dir.join(file), text).unwrap();
@@ -164,7 +226,11 @@ mod tests {
         let (_t, o, c) = rewritten();
         assert!(pull(&c));
         assert_eq!(head(&c), head(&o));
-        assert!(out(&["-C", &c.to_string_lossy(), "branch", "--list", "before-rewrite-*"]).unwrap().contains("before-rewrite-"));
+        assert!(
+            out(&["-C", &c.to_string_lossy(), "branch", "--list", "before-rewrite-*"])
+                .unwrap()
+                .contains("before-rewrite-")
+        );
     }
 
     #[test]

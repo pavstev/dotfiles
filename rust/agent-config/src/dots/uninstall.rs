@@ -20,12 +20,18 @@ fn home_links(repo: &Path, home: &Path) -> Vec<(PathBuf, PathBuf)> {
 /// entry equal to ours go; anything else is the user's.
 pub fn undo(repo: &Path, home: &Path) {
     step("Links");
-    for (src, dst) in home_links(repo, home) { link::unlink_item(&src, &dst); }
+    for (src, dst) in home_links(repo, home) {
+        link::unlink_item(&src, &dst);
+    }
     step("Claude");
     let (src, dst) = (repo.join("claude"), home.join(".claude"));
-    for d in ["agents", "hooks", "output-styles", "CLAUDE.md"] { link::unlink_item(&src.join(d), &dst.join(d)); }
+    for d in ["agents", "hooks", "output-styles", "CLAUDE.md"] {
+        link::unlink_item(&src.join(d), &dst.join(d));
+    }
     crate::presets::link_all(repo, home, &[]);
-    for name in skills::list(&src.join("skills")) { link::unlink_item(&src.join("skills").join(&name), &dst.join("skills").join(&name)); }
+    for name in skills::list(&src.join("skills")) {
+        link::unlink_item(&src.join("skills").join(&name), &dst.join("skills").join(&name));
+    }
     link::unlink_item(&home.join(".config/dotfiles/owner.md"), &dst.join("rules").join("owner.md"));
     step("Cursor");
     crate::undo::cursor_undo(home);
@@ -40,7 +46,10 @@ pub fn run(repo: &Path, args: &[String]) -> i32 {
     for a in args {
         match a.as_str() {
             "-y" | "--yes" => yes = true,
-            _ => { eprintln!("usage: dots uninstall [-y]"); return 2; }
+            _ => {
+                eprintln!("usage: dots uninstall [-y]");
+                return 2;
+            }
         }
     }
     if !yes {
@@ -56,7 +65,9 @@ pub fn run(repo: &Path, args: &[String]) -> i32 {
     }
     undo(repo, &os::home());
     ok("uninstalled");
-    info("Left on purpose: this repo, your tools (mise, Homebrew apps, Oh My Zsh, toolchains), your settings in ~/.config/dotfiles and ~/.claude/settings.json.");
+    info(
+        "Left on purpose: this repo, your tools (mise, Homebrew apps, Oh My Zsh, toolchains), your settings in ~/.config/dotfiles and ~/.claude/settings.json.",
+    );
     info("To finish: delete the repo folder and ~/.config/dotfiles if you want them gone too.");
     0
 }

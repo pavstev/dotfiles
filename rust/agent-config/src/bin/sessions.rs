@@ -27,7 +27,9 @@ use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
 use tantivy::directory::error::LockError;
 use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
-use tantivy::schema::{Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value};
+use tantivy::schema::{
+    Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
+};
 use tantivy::snippet::SnippetGenerator;
 use tantivy::tokenizer::{Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer};
 use tantivy::{Index, IndexWriter, TantivyDocument, TantivyError, Term};
@@ -97,9 +99,9 @@ struct Fields {
 fn build_schema() -> (Schema, Fields) {
     let mut b = Schema::builder();
     let words = || {
-        TextOptions::default()
-            .set_stored()
-            .set_indexing_options(TextFieldIndexing::default().set_tokenizer(TOKENIZER).set_index_option(IndexRecordOption::WithFreqs))
+        TextOptions::default().set_stored().set_indexing_options(
+            TextFieldIndexing::default().set_tokenizer(TOKENIZER).set_index_option(IndexRecordOption::WithFreqs),
+        )
     };
     let f = Fields {
         source: b.add_text_field("source", STRING | STORED),
@@ -375,7 +377,12 @@ fn parse_day(s: &str) -> Option<i64> {
 /// Words only: query syntax in a typed question (`:`, `-`, quotes, parentheses) is not wanted.
 fn plain_words(q: &str) -> String {
     // Lower case: the tokenizer lowers anyway, and upper-case NOT, AND, OR are query syntax.
-    q.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+    q.chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn str_of(d: &TantivyDocument, f: Field) -> String {
@@ -390,12 +397,21 @@ fn search(index: &Index, f: &Fields, a: &FindArgs) -> Res<Vec<Hit>> {
     }
     let mut parser = QueryParser::for_index(index, vec![f.text, f.title]);
     let mut filters: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-    filters.push((Occur::Must, Box::new(TermQuery::new(Term::from_field_text(f.source, "claude"), IndexRecordOption::Basic))));
+    filters.push((
+        Occur::Must,
+        Box::new(TermQuery::new(Term::from_field_text(f.source, "claude"), IndexRecordOption::Basic)),
+    ));
     if let Some(p) = &a.project {
-        filters.push((Occur::Must, Box::new(TermQuery::new(Term::from_field_text(f.project, p), IndexRecordOption::Basic))));
+        filters.push((
+            Occur::Must,
+            Box::new(TermQuery::new(Term::from_field_text(f.project, p), IndexRecordOption::Basic)),
+        ));
     }
     if let Some(t) = a.since {
-        filters.push((Occur::Must, Box::new(RangeQuery::new(Bound::Included(Term::from_field_i64(f.time, t)), Bound::Unbounded))));
+        filters.push((
+            Occur::Must,
+            Box::new(RangeQuery::new(Bound::Included(Term::from_field_i64(f.time, t)), Bound::Unbounded)),
+        ));
     }
     // Several documents of one session match; take enough to fill `limit` sessions.
     let take = (a.limit * 8).clamp(40, 400);

@@ -43,7 +43,9 @@ impl Host {
             Os::Linux
         };
         let musl = os == Os::Linux
-            && (Path::new("/etc/alpine-release").exists() || Path::new("/lib/ld-musl-x86_64.so.1").exists() || Path::new("/lib/ld-musl-aarch64.so.1").exists());
+            && (Path::new("/etc/alpine-release").exists()
+                || Path::new("/lib/ld-musl-x86_64.so.1").exists()
+                || Path::new("/lib/ld-musl-aarch64.so.1").exists());
         Host { os, musl }
     }
 
@@ -97,7 +99,14 @@ impl Source {
     /// The package or command the source holds.
     pub fn arg(&self) -> &str {
         match self {
-            Source::Mise(a) | Source::Apk(a) | Source::Winget(a) | Source::Scoop(a) | Source::Cargo(a) | Source::Brew(a) | Source::Sh(a) | Source::Boot(a) => a,
+            Source::Mise(a)
+            | Source::Apk(a)
+            | Source::Winget(a)
+            | Source::Scoop(a)
+            | Source::Cargo(a)
+            | Source::Brew(a)
+            | Source::Sh(a)
+            | Source::Boot(a) => a,
         }
     }
 }
@@ -328,7 +337,9 @@ pub fn missing(tools: &[Tool], host: Host, env: &dyn Env, only: &[String]) -> Ve
 
 /// The home folder (USERPROFILE on Windows).
 pub fn home() -> PathBuf {
-    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Where mise puts its shims.
@@ -437,7 +448,14 @@ impl Env for RealEnv {
         let Some(p) = find_in_path(cmd, &self.path) else { return false };
         // `cmd --version`: a spawn error (a glibc binary on Alpine has no loader) or exit 126/127 means
         // it cannot run here. Any other exit status means it started. A slow start counts as started.
-        let mut child = match Command::new(&p).arg("--version").env("PATH", &self.path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        let mut child = match Command::new(&p)
+            .arg("--version")
+            .env("PATH", &self.path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
             Ok(c) => c,
             Err(_) => return false,
         };
@@ -462,11 +480,7 @@ impl Env for RealEnv {
             Source::Apk(_) if !host.musl => Err("not Alpine".into()),
             Source::Apk(_) => {
                 need("apk")?;
-                if self.is_root() || self.has("sudo") {
-                    Ok(())
-                } else {
-                    Err("needs root".into())
-                }
+                if self.is_root() || self.has("sudo") { Ok(()) } else { Err("needs root".into()) }
             }
             Source::Winget(_) | Source::Scoop(_) if host.os != Os::Windows => Err("not Windows".into()),
             Source::Winget(_) => need("winget"),
@@ -494,7 +508,9 @@ impl Env for RealEnv {
                 self.run(c)
             }
             Source::Apk(pkg) => {
-                let mut c = if self.is_root() { self.command("apk") } else {
+                let mut c = if self.is_root() {
+                    self.command("apk")
+                } else {
                     let mut s = self.command("sudo");
                     s.arg("-n").arg("apk");
                     s
@@ -504,7 +520,15 @@ impl Env for RealEnv {
             }
             Source::Winget(id) => {
                 let mut c = self.command("winget");
-                c.args(["install", "--id", id, "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"]);
+                c.args([
+                    "install",
+                    "--id",
+                    id,
+                    "-e",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                    "--silent",
+                ]);
                 self.run(c)
             }
             Source::Scoop(pkg) => {
@@ -527,7 +551,10 @@ impl Env for RealEnv {
                     return self.install(host, &Source::Winget("Rustlang.Rustup".into()));
                 }
                 let mut c = self.command("sh");
-                c.args(["-c", "curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable"]);
+                c.args([
+                    "-c",
+                    "curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain stable",
+                ]);
                 self.run(c)
             }
             Source::Sh(r) => Err(format!("unknown recipe '{r}'")),
@@ -564,7 +591,10 @@ impl Env for RealEnv {
 fn find_real(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let found = find_in_path(cmd, path)?;
     if found.starts_with(mise_shims())
-        && let Ok(o) = Command::new(find_in_path("mise", path).unwrap_or_else(|| PathBuf::from("mise"))).env("PATH", path).args(["which", cmd]).output()
+        && let Ok(o) = Command::new(find_in_path("mise", path).unwrap_or_else(|| PathBuf::from("mise")))
+            .env("PATH", path)
+            .args(["which", cmd])
+            .output()
     {
         let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
         if o.status.success() && !p.is_empty() {
@@ -609,7 +639,11 @@ mod tests {
     }
     impl Fake {
         fn with(cmds: &[&str], tools: &[&str]) -> Fake {
-            Fake { cmds: cmds.iter().map(|s| s.to_string()).collect(), tools: tools.iter().map(|s| s.to_string()).collect(), ..Default::default() }
+            Fake {
+                cmds: cmds.iter().map(|s| s.to_string()).collect(),
+                tools: tools.iter().map(|s| s.to_string()).collect(),
+                ..Default::default()
+            }
         }
         fn provide(mut self, src: &str, cmds: &[&str]) -> Fake {
             self.provides.insert(src.into(), cmds.iter().map(|s| s.to_string()).collect());
@@ -756,10 +790,13 @@ mod tests {
         // The glibc build from mise cannot run on Alpine: apk comes first there, but when apk is
         // not usable (no root) mise installs it, the check fails, and cargo takes over.
         let t = list("eza | eza | unix | apk:eza mise:aqua:eza cargo:eza\n");
-        let mut f = Fake::with(&[], &["mise", "cargo"]).provide("mise:aqua:eza", &["eza"]).provide("cargo:eza", &["eza2"]);
+        let mut f =
+            Fake::with(&[], &["mise", "cargo"]).provide("mise:aqua:eza", &["eza"]).provide("cargo:eza", &["eza2"]);
         f.broken.insert("eza".into());
         let out = resolve(&t, ALPINE, &mut f, &[]);
-        assert!(matches!(&out[0], Outcome::Failed(n, tried) if n == "eza" && tried.iter().any(|s| s.contains("does not start"))));
+        assert!(
+            matches!(&out[0], Outcome::Failed(n, tried) if n == "eza" && tried.iter().any(|s| s.contains("does not start")))
+        );
         assert!(f.log.contains(&"undo mise:aqua:eza".to_string()));
         assert!(!f.has("eza"));
     }

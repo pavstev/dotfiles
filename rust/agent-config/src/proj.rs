@@ -25,8 +25,19 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 /// Files that mark a project folder. The nearest folder up from a path with one of them is the root.
 const MARKERS: &[&str] = &[
-    "package.json", "pyproject.toml", "Cargo.toml", "go.mod", "justfile", "Justfile", "Makefile", "makefile",
-    "GNUmakefile", "biome.json", "biome.jsonc", "ruff.toml", ".ruff.toml",
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "justfile",
+    "Justfile",
+    "Makefile",
+    "makefile",
+    "GNUmakefile",
+    "biome.json",
+    "biome.jsonc",
+    "ruff.toml",
+    ".ruff.toml",
 ];
 
 /// Folders whose files a format hook never touches.
@@ -70,7 +81,10 @@ pub type Have<'a> = &'a dyn Fn(&str) -> bool;
 /// True when `name` is an executable on PATH.
 pub fn on_path(name: &str) -> bool {
     let Some(path) = env::var_os("PATH") else { return false };
-    env::split_paths(&path).any(|d| is_exe(&d.join(name)) || (cfg!(windows) && ["exe", "cmd"].iter().any(|e| is_exe(&d.join(format!("{name}.{e}"))))))
+    env::split_paths(&path).any(|d| {
+        is_exe(&d.join(name))
+            || (cfg!(windows) && ["exe", "cmd"].iter().any(|e| is_exe(&d.join(format!("{name}.{e}")))))
+    })
 }
 
 fn is_exe(p: &Path) -> bool {
@@ -150,18 +164,28 @@ fn pm_name(s: &str) -> Option<&'static str> {
 
 /// Recipe or target names of a `justfile` or `Makefile`.
 fn rule_names(text: &str, make: bool) -> Vec<String> {
-    static JUST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^@?([A-Za-z_][A-Za-z0-9_-]*)[^:=\n]*:(?:[^=]|$)").unwrap());
-    static MAKE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:(?:[^=]|$)").unwrap());
+    static JUST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^@?([A-Za-z_][A-Za-z0-9_-]*)[^:=\n]*:(?:[^=]|$)").unwrap());
+    static MAKE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:(?:[^=]|$)").unwrap());
     let re: &Regex = if make { &MAKE } else { &JUST };
     text.lines().filter_map(|l| re.captures(l).map(|c| c[1].to_string())).collect()
 }
 
 /// True when a file that wires tools (scripts, hooks, CI) mentions one of `needles`.
 fn mentions(root: &Path, needles: &[&str]) -> bool {
-    let mut files: Vec<PathBuf> = ["package.json", "justfile", "Justfile", "Makefile", ".pre-commit-config.yaml", "lefthook.yml", "lefthook.yaml"]
-        .iter()
-        .map(|f| root.join(f))
-        .collect();
+    let mut files: Vec<PathBuf> = [
+        "package.json",
+        "justfile",
+        "Justfile",
+        "Makefile",
+        ".pre-commit-config.yaml",
+        "lefthook.yml",
+        "lefthook.yaml",
+    ]
+    .iter()
+    .map(|f| root.join(f))
+    .collect();
     if let Ok(rd) = fs::read_dir(root.join(".github/workflows")) {
         files.extend(rd.flatten().map(|e| e.path()));
     }
@@ -194,7 +218,21 @@ pub struct Project {
     have: BTreeMap<&'static str, bool>,
 }
 
-const PROBES: &[&str] = &["uv", "ruff", "ty", "pytest", "go", "gofmt", "rustfmt", "cargo", "cargo-nextest", "golangci-lint", "shfmt", "just", "make"];
+const PROBES: &[&str] = &[
+    "uv",
+    "ruff",
+    "ty",
+    "pytest",
+    "go",
+    "gofmt",
+    "rustfmt",
+    "cargo",
+    "cargo-nextest",
+    "golangci-lint",
+    "shfmt",
+    "just",
+    "make",
+];
 
 /// Detect the project of `path`, with the real PATH.
 pub fn detect(path: &Path) -> Option<Project> {
@@ -224,14 +262,18 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
         })
     };
     let biome_cfg = has_file(&|n| n == "biome.json" || n == "biome.jsonc");
-    let prettier_cfg = has_file(&|n| n.starts_with(".prettierrc") || n.starts_with("prettier.config.")) || pkg.get("prettier").is_some();
-    let eslint_cfg = has_file(&|n| n.starts_with("eslint.config.") || n.starts_with(".eslintrc")) || pkg.get("eslintConfig").is_some();
+    let prettier_cfg = has_file(&|n| n.starts_with(".prettierrc") || n.starts_with("prettier.config."))
+        || pkg.get("prettier").is_some();
+    let eslint_cfg = has_file(&|n| n.starts_with("eslint.config.") || n.starts_with(".eslintrc"))
+        || pkg.get("eslintConfig").is_some();
 
     let pyproject = read("pyproject.toml");
     static TY_DEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""ty(?:[<>=!~\[ ;]|")"#).unwrap());
     let ruff = root.join("ruff.toml").is_file() || root.join(".ruff.toml").is_file() || pyproject.contains("ruff");
     let ty = root.join("ty.toml").is_file() || pyproject.contains("[tool.ty") || TY_DEP.is_match(&pyproject);
-    let pytest = root.join("pytest.ini").is_file() || pyproject.contains("[tool.pytest") || (!pyproject.is_empty() && root.join("tests").is_dir());
+    let pytest = root.join("pytest.ini").is_file()
+        || pyproject.contains("[tool.pytest")
+        || (!pyproject.is_empty() && root.join("tests").is_dir());
     let uv = dirs.iter().any(|d| d.join("uv.lock").is_file()) || pyproject.contains("[tool.uv");
 
     let cargo_toml = read("Cargo.toml");
@@ -243,8 +285,16 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
         || mentions(&root, &["cargo fmt", "rustfmt"]);
     let shfmt = mentions(&root, &["shfmt"]);
 
-    let just = ["justfile", "Justfile"].iter().find(|f| root.join(f).is_file()).map(|f| rule_names(&read(f), false)).unwrap_or_default();
-    let make = ["Makefile", "makefile", "GNUmakefile"].iter().find(|f| root.join(f).is_file()).map(|f| rule_names(&read(f), true)).unwrap_or_default();
+    let just = ["justfile", "Justfile"]
+        .iter()
+        .find(|f| root.join(f).is_file())
+        .map(|f| rule_names(&read(f), false))
+        .unwrap_or_default();
+    let make = ["Makefile", "makefile", "GNUmakefile"]
+        .iter()
+        .find(|f| root.join(f).is_file())
+        .map(|f| rule_names(&read(f), true))
+        .unwrap_or_default();
 
     let have_map = PROBES.iter().map(|p| (*p, have(p))).collect();
     Some(Project {
@@ -261,7 +311,9 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
         pytest,
         uv,
         go: root.join("go.mod").is_file(),
-        golangci: [".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"].iter().any(|f| root.join(f).is_file()),
+        golangci: [".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"]
+            .iter()
+            .any(|f| root.join(f).is_file()),
         cargo: root.join("Cargo.toml").is_file(),
         edition,
         rustfmt,
@@ -289,10 +341,20 @@ impl Project {
     pub fn tools(&self) -> Vec<&'static str> {
         let mut t = Vec::new();
         let flags = [
-            (self.prettier.is_some(), "prettier"), (self.eslint.is_some(), "eslint"), (self.biome.is_some(), "biome"),
-            (self.tsc.is_some(), "tsc"), (self.ruff, "ruff"), (self.ty, "ty"), (self.pytest, "pytest"), (self.uv, "uv"),
-            (self.go, "go"), (self.golangci, "golangci-lint"), (self.cargo, "cargo"), (self.cargo && self.has("cargo-nextest"), "nextest"),
-            (self.shfmt && self.has("shfmt"), "shfmt"), (self.rustfmt && self.has("rustfmt"), "rustfmt"),
+            (self.prettier.is_some(), "prettier"),
+            (self.eslint.is_some(), "eslint"),
+            (self.biome.is_some(), "biome"),
+            (self.tsc.is_some(), "tsc"),
+            (self.ruff, "ruff"),
+            (self.ty, "ty"),
+            (self.pytest, "pytest"),
+            (self.uv, "uv"),
+            (self.go, "go"),
+            (self.golangci, "golangci-lint"),
+            (self.cargo, "cargo"),
+            (self.cargo && self.has("cargo-nextest"), "nextest"),
+            (self.shfmt && self.has("shfmt"), "shfmt"),
+            (self.rustfmt && self.has("rustfmt"), "rustfmt"),
         ];
         t.extend(flags.iter().filter(|(on, _)| *on).map(|(_, n)| *n));
         t
@@ -376,7 +438,10 @@ impl Project {
             add(vec![Self::s(p)], &["--write"], pick(PRETTIER_EXT));
         }
         let py = pick(&["py", "pyi"]);
-        if self.ruff && !py.is_empty() && let Some(r) = self.py("ruff", false) {
+        if self.ruff
+            && !py.is_empty()
+            && let Some(r) = self.py("ruff", false)
+        {
             add(r.clone(), &["check", "--fix", "--quiet", "--unfixable", "F401"], py.clone());
             add(r, &["format", "--quiet"], py);
         }
@@ -422,7 +487,10 @@ impl Project {
             }
         }
         let py = pick(&["py", "pyi"]);
-        if self.ruff && !py.is_empty() && let Some(r) = self.py("ruff", true) {
+        if self.ruff
+            && !py.is_empty()
+            && let Some(r) = self.py("ruff", true)
+        {
             add(r.clone(), &["check"], py.clone());
             add(r, &["format", "--check"], py);
         }
@@ -453,7 +521,8 @@ impl Project {
         let mut out = Vec::new();
         let has_script = |n: &str| self.scripts.iter().any(|s| s == n);
         if self.pm.is_some() {
-            let named: Vec<&str> = ["lint", "typecheck", "types", "test"].into_iter().filter(|n| has_script(n)).collect();
+            let named: Vec<&str> =
+                ["lint", "typecheck", "types", "test"].into_iter().filter(|n| has_script(n)).collect();
             if !named.is_empty() {
                 out.extend(named.into_iter().map(|n| self.pm_run(n)));
             } else {
@@ -463,7 +532,9 @@ impl Project {
                 if let Some(e) = &self.eslint {
                     out.push(Cmd::new(vec![Self::s(e), ".".into()], &self.root));
                 }
-                if self.biome.is_none() && let Some(p) = &self.prettier {
+                if self.biome.is_none()
+                    && let Some(p) = &self.prettier
+                {
                     out.push(Cmd::new(vec![Self::s(p), "--check".into(), ".".into()], &self.root));
                 }
                 if let Some(t) = &self.tsc {
@@ -471,14 +542,20 @@ impl Project {
                 }
             }
         }
-        if self.ruff && let Some(r) = self.py("ruff", true) {
+        if self.ruff
+            && let Some(r) = self.py("ruff", true)
+        {
             out.push(Cmd::new([r.clone(), vec!["check".into(), ".".into()]].concat(), &self.root));
             out.push(Cmd::new([r, vec!["format".into(), "--check".into(), ".".into()]].concat(), &self.root));
         }
-        if self.ty && let Some(t) = self.py("ty", true) {
+        if self.ty
+            && let Some(t) = self.py("ty", true)
+        {
             out.push(Cmd::new([t, vec!["check".into()]].concat(), &self.root));
         }
-        if self.pytest && let Some(p) = self.py("pytest", true) {
+        if self.pytest
+            && let Some(p) = self.py("pytest", true)
+        {
             out.push(Cmd::new(p, &self.root));
         }
         if self.go && self.has("go") {
@@ -489,7 +566,9 @@ impl Project {
             out.push(Cmd::new(vec!["go".into(), "test".into(), "./...".into()], &self.root));
         }
         if self.cargo && self.has("cargo") {
-            let c = |a: &[&str]| Cmd::new(std::iter::once("cargo").chain(a.iter().copied()).map(String::from).collect(), &self.root);
+            let c = |a: &[&str]| {
+                Cmd::new(std::iter::once("cargo").chain(a.iter().copied()).map(String::from).collect(), &self.root)
+            };
             out.push(c(&["fmt", "--check"]));
             out.push(c(&["clippy", "--all-targets", "--", "-D", "warnings"]));
             out.push(if self.has("cargo-nextest") { c(&["nextest", "run"]) } else { c(&["test"]) });
@@ -509,7 +588,13 @@ impl Project {
     /// outside git.
     pub fn changed_files(&self) -> Vec<PathBuf> {
         let git = |args: &[&str]| -> Vec<String> {
-            let Ok(o) = Command::new("git").args(args).current_dir(&self.root).stdin(Stdio::null()).stderr(Stdio::null()).output() else {
+            let Ok(o) = Command::new("git")
+                .args(args)
+                .current_dir(&self.root)
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+            else {
                 return Vec::new();
             };
             if !o.status.success() {
@@ -573,7 +658,10 @@ pub fn run(cmd: &Cmd, deadline: Instant) -> Ran {
             _ => {
                 #[cfg(unix)]
                 {
-                    let _ = Command::new("kill").args(["-KILL", &format!("-{}", child.id())]).stderr(Stdio::null()).status();
+                    let _ = Command::new("kill")
+                        .args(["-KILL", &format!("-{}", child.id())])
+                        .stderr(Stdio::null())
+                        .status();
                 }
                 let _ = child.kill();
                 let _ = child.wait();
@@ -647,7 +735,9 @@ pub fn plain_check(cmd: &str) -> Option<String> {
     if bare.contains("--watch") || bare.split(' ').any(|a| a == "-w") {
         return None;
     }
-    CHECK.is_match(&bare).then(|| steps.iter().map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join(" && "))
+    CHECK.is_match(&bare).then(|| {
+        steps.iter().map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join(" && ")
+    })
 }
 
 // --- did the work tree change? -------------------------------------------------------
@@ -657,7 +747,8 @@ pub fn plain_check(cmd: &str) -> Option<String> {
 /// outside git or on any error. Two small git calls, about 20 ms on a normal tree.
 pub fn tree_fingerprint(cwd: &Path) -> Option<String> {
     let git = |args: &[&str]| -> Option<Vec<u8>> {
-        let o = Command::new("git").args(args).current_dir(cwd).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        let o =
+            Command::new("git").args(args).current_dir(cwd).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
         o.status.success().then_some(o.stdout)
     };
     let top = String::from_utf8(git(&["rev-parse", "--show-toplevel"])?).ok()?;
@@ -682,7 +773,8 @@ pub fn tree_fingerprint(cwd: &Path) -> Option<String> {
         }
         let path = top.join(String::from_utf8_lossy(&entry[3..]).as_ref());
         if let Ok(m) = fs::metadata(&path) {
-            let t = m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
+            let t =
+                m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
             h.update(m.len().to_le_bytes());
             h.update(t.to_le_bytes());
         }
@@ -697,15 +789,35 @@ mod tests {
     #[test]
     fn plain_checks() {
         for c in [
-            "pnpm check", "pnpm run check:fast --staged", "npm test", "npm run lint", "cd app && pnpm run build",
-            "CI=1 cargo nextest run", "cargo clippy --all-targets -- -D warnings", "go test ./...", "pytest -x",
-            "uv run ruff check .", "ty check", "just check", "make check-fast", "pnpm check 2>&1",
+            "pnpm check",
+            "pnpm run check:fast --staged",
+            "npm test",
+            "npm run lint",
+            "cd app && pnpm run build",
+            "CI=1 cargo nextest run",
+            "cargo clippy --all-targets -- -D warnings",
+            "go test ./...",
+            "pytest -x",
+            "uv run ruff check .",
+            "ty check",
+            "just check",
+            "make check-fast",
+            "pnpm check 2>&1",
         ] {
             assert!(plain_check(c).is_some(), "{c}");
         }
         for c in [
-            "pnpm check | tail", "pnpm check; echo done", "pnpm check || true", "pnpm check &", "ls", "git commit -m check",
-            "pnpm test --watch", "echo $(pnpm test)", "cd x; pnpm test", "pnpm dev", "cargo build",
+            "pnpm check | tail",
+            "pnpm check; echo done",
+            "pnpm check || true",
+            "pnpm check &",
+            "ls",
+            "git commit -m check",
+            "pnpm test --watch",
+            "echo $(pnpm test)",
+            "cd x; pnpm test",
+            "pnpm dev",
+            "cargo build",
         ] {
             assert!(plain_check(c).is_none(), "{c}");
         }

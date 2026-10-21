@@ -18,7 +18,8 @@ const ROWS: u32 = 28; // ...geometry (Terminal has no padding control)
 
 /// The AppleScript that sets the font and window size.
 fn script() -> String {
-    format!(r#"tell application "Terminal"
+    format!(
+        r#"tell application "Terminal"
     -- "Basic" may have been renamed; wrap it so a miss doesn't block the rest.
     try
         set font name of settings set "Basic" to "{f}"
@@ -34,13 +35,22 @@ fn script() -> String {
     set font name of startup settings to "{f}"
     set font size of startup settings to {s}
 end tell
-"#, f = FONT_PS, s = FONT_SIZE, c = COLUMNS, r = ROWS)
+"#,
+        f = FONT_PS,
+        s = FONT_SIZE,
+        c = COLUMNS,
+        r = ROWS
+    )
 }
 
 pub fn step(_repo: &Path) {
-    if !only_macos("Apple Terminal appearance") { return; }
+    if !only_macos("Apple Terminal appearance") {
+        return;
+    }
     if !crate::dots::looks::on("font") {
-        if out::verbose() { out::info("Apple Terminal appearance: off (Looks, in dots settings)"); }
+        if out::verbose() {
+            out::info("Apple Terminal appearance: off (Looks, in dots settings)");
+        }
         return;
     }
     out::step("Apple Terminal appearance");
@@ -50,12 +60,17 @@ pub fn step(_repo: &Path) {
     }
     // Confirm the font is installed (in EITHER location) before touching Terminal.
     let font = "FiraCodeNerdFontMono-Regular.ttf";
-    if !os::home().join("Library").join("Fonts").join(font).is_file() && !Path::new("/Library/Fonts").join(font).is_file() {
+    if !os::home().join("Library").join("Fonts").join(font).is_file()
+        && !Path::new("/Library/Fonts").join(font).is_file()
+    {
         warn("FiraCode Nerd Font not installed yet — skipping Terminal appearance.");
         return;
     }
     if feed("osascript", &[], &script(), false) {
-        uptodate(&format!("Apple Terminal → FiraCode Nerd Font Mono {}pt, {}×{} (compact, icons on)", FONT_SIZE, COLUMNS, ROWS));
+        uptodate(&format!(
+            "Apple Terminal → FiraCode Nerd Font Mono {}pt, {}×{} (compact, icons on)",
+            FONT_SIZE, COLUMNS, ROWS
+        ));
     } else {
         warn("Couldn't set Apple Terminal appearance automatically.");
         warn("Grant Automation permission (System Settings → Privacy → Automation), then re-run: ./dotfiles");

@@ -40,7 +40,11 @@ pub fn days_in_month(y: i64, m: i64) -> i64 {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
         _ => {
-            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 29 } else { 28 }
+            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                29
+            } else {
+                28
+            }
         }
     }
 }
@@ -134,7 +138,13 @@ pub fn py_float(f: f64) -> String {
         return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
     }
     if !f.is_finite() {
-        return if f.is_nan() { "NaN".into() } else if f > 0.0 { "Infinity".into() } else { "-Infinity".into() };
+        return if f.is_nan() {
+            "NaN".into()
+        } else if f > 0.0 {
+            "Infinity".into()
+        } else {
+            "-Infinity".into()
+        };
     }
     let e = format!("{:e}", f.abs());
     let (mant, exp) = e.split_once('e').unwrap_or((&e, "0"));
@@ -236,7 +246,10 @@ pub fn py_repr(v: &Value) -> String {
         Value::String(s) => py_repr_str(s),
         Value::Array(a) => format!("[{}]", a.iter().map(py_repr).collect::<Vec<_>>().join(", ")),
         Value::Object(o) => {
-            format!("{{{}}}", o.iter().map(|(k, x)| format!("{}: {}", py_repr_str(k), py_repr(x))).collect::<Vec<_>>().join(", "))
+            format!(
+                "{{{}}}",
+                o.iter().map(|(k, x)| format!("{}: {}", py_repr_str(k), py_repr(x))).collect::<Vec<_>>().join(", ")
+            )
         }
         other => py_str(other),
     }
@@ -246,9 +259,19 @@ pub fn py_repr(v: &Value) -> String {
 pub fn py_str(v: &Value) -> String {
     match v {
         Value::Null => "None".into(),
-        Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        Value::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         Value::Number(n) => {
-            if n.is_i64() || n.is_u64() { n.to_string() } else { py_float(n.as_f64().unwrap_or(0.0)) }
+            if n.is_i64() || n.is_u64() {
+                n.to_string()
+            } else {
+                py_float(n.as_f64().unwrap_or(0.0))
+            }
         }
         Value::String(s) => s.clone(),
         other => py_repr(other),

@@ -68,9 +68,7 @@ fn expectations() -> Vec<(PathBuf, String)> {
     for entry in fs::read_dir(dir()).expect("fixtures dir") {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let fixture = name
-            .strip_suffix(".outline")
-            .or_else(|| name.strip_suffix(".refusal"));
+        let fixture = name.strip_suffix(".outline").or_else(|| name.strip_suffix(".refusal"));
         if let Some(fixture) = fixture {
             let expected = fs::read_to_string(&path).unwrap();
             out.push((dir().join(fixture), expected));
@@ -111,12 +109,7 @@ fn crlf_changes_nothing() {
         let lf = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
         let want = show(&path, &lf);
         let got = show(&path, &to_crlf(&lf));
-        assert_eq!(
-            trimmed(&got),
-            trimmed(&want),
-            "CRLF changed the outline of {}",
-            path.display()
-        );
+        assert_eq!(trimmed(&got), trimmed(&want), "CRLF changed the outline of {}", path.display());
     }
 }
 
@@ -176,17 +169,11 @@ fn limits_are_inclusive() {
     assert_eq!(ok.trim_end().chars().count(), 10_000);
     assert!(outline(Path::new("edge.ts"), &ok).is_ok());
     let long = format!("// {}\n", "a".repeat(9_998));
-    assert!(matches!(
-        outline(Path::new("edge.ts"), &long),
-        Err(Refusal::LongLine)
-    ));
+    assert!(matches!(outline(Path::new("edge.ts"), &long), Err(Refusal::LongLine)));
 
     // A long line is refused whatever the language.
     let long_py = format!("# {}\n", "a".repeat(9_999));
-    assert!(matches!(
-        outline(Path::new("edge.py"), &long_py),
-        Err(Refusal::LongLine)
-    ));
+    assert!(matches!(outline(Path::new("edge.py"), &long_py), Err(Refusal::LongLine)));
 
     // A NUL byte means the file is not text. The long-line and unknown-extension refusals have
     // golden files (minified.js, unknown.xyz).

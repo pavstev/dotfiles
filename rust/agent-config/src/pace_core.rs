@@ -9,7 +9,9 @@
 //! transcripts under `$CLAUDE_CONFIG_DIR/projects`. Caches live in `${XDG_CACHE_HOME:-~/.cache}`.
 #![allow(dead_code)] // the guard uses `status` only; the CLI uses the rest
 
-use agent_config::pycompat::{civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float, truthy};
+use agent_config::pycompat::{
+    civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float, truthy,
+};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -91,7 +93,10 @@ impl Paths {
         let (plan, days) = SETTINGS.get_or_init(|| {
             let h = home();
             let plan = agent_config::setting(&h, "PLAN").trim().to_lowercase();
-            (if plan.is_empty() { "unknown".to_string() } else { plan }, work_days(&agent_config::setting(&h, "WORK_DAYS")))
+            (
+                if plan.is_empty() { "unknown".to_string() } else { plan },
+                work_days(&agent_config::setting(&h, "WORK_DAYS")),
+            )
         });
         Paths { cache, projects: base.join("projects"), plan: plan.clone(), days: *days }
     }
@@ -385,11 +390,7 @@ fn week_weight_in(p: &Paths) -> Option<f64> {
 /// When the stored calibration was made (epoch), or 0 when there is none.
 fn calib_updated(p: &Paths) -> f64 {
     let c = calib(p);
-    c.as_ref()
-        .filter(|c| num_eq(get(c, "v"), FORMAT))
-        .and_then(|c| get(c, "updated"))
-        .and_then(pynum)
-        .unwrap_or(0.0)
+    c.as_ref().filter(|c| num_eq(get(c, "v"), FORMAT)).and_then(|c| get(c, "updated")).and_then(pynum).unwrap_or(0.0)
 }
 
 /// Store the calibration. `updated` orders them: the newest calibration wins.
@@ -438,7 +439,9 @@ fn prices(model: &str) -> Option<(f64, f64)> {
 fn cost(u: &serde_json::Map<String, Value>, price: (f64, f64)) -> f64 {
     let cc = num(u.get("cache_creation_input_tokens"));
     let (w5, w1) = match u.get("cache_creation") {
-        Some(Value::Object(d)) if d.contains_key("ephemeral_5m_input_tokens") || d.contains_key("ephemeral_1h_input_tokens") => {
+        Some(Value::Object(d))
+            if d.contains_key("ephemeral_5m_input_tokens") || d.contains_key("ephemeral_1h_input_tokens") =>
+        {
             (num(d.get("ephemeral_5m_input_tokens")), num(d.get("ephemeral_1h_input_tokens")))
         }
         _ => (0.0, cc),
@@ -566,7 +569,11 @@ impl Ent {
             let a = v.as_array()?;
             msgs.set(k.clone(), epoch_int(a.first()?)?, a.get(1).and_then(pynum)?);
         }
-        let hits = o.get("hits").and_then(Value::as_array).map(|a| a.iter().filter_map(epoch_int).collect()).unwrap_or_default();
+        let hits = o
+            .get("hits")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(epoch_int).collect())
+            .unwrap_or_default();
         let size = o.get("size").and_then(|v| v.as_f64()).filter(|f| f.fract() == 0.0).map(|f| f as i64);
         let mtime = o.get("mtime").cloned().unwrap_or(Value::from(0));
         Some(Ent { size, offset, mtime, msgs, hits })
@@ -606,7 +613,11 @@ fn epoch_int(v: &Value) -> Option<i64> {
 fn limit_hit_calibration(files: &[(String, Ent)], wk: i64) -> Option<(f64, i64)> {
     let t0 = files.iter().flat_map(|(_, e)| e.hits.iter().copied()).filter(|t| (wk..wk + WEEK).contains(t)).min()?;
     let c = py_sum(
-        files.iter().flat_map(|(_, e)| e.msgs.items.iter()).filter(|(_, ts, _)| wk <= *ts && *ts <= t0).map(|(_, _, w)| *w),
+        files
+            .iter()
+            .flat_map(|(_, e)| e.msgs.items.iter())
+            .filter(|(_, ts, _)| wk <= *ts && *ts <= t0)
+            .map(|(_, _, w)| *w),
     );
     (c > MIN_HIT_COST).then_some((c, t0))
 }
@@ -628,7 +639,11 @@ fn find_files(root: &PathBuf, min_mtime: f64) -> (Vec<(f64, i64, String)>, usize
             continue;
         }
         total += 1;
-        let mtime = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs() as f64 + d.subsec_nanos() as f64 * 1e-9);
+        let mtime = md
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map_or(0.0, |d| d.as_secs() as f64 + d.subsec_nanos() as f64 * 1e-9);
         if mtime >= min_mtime {
             found.push((mtime, md.len() as i64, ent.path().to_string_lossy().into_owned()));
         }
@@ -928,7 +943,8 @@ pub fn needs_refresh(now: i64) -> bool {
 /// `needs_refresh_in` it ignores a fresh status line, because the scan also saves the
 /// status line calibration and the limit-hit one.
 pub fn prompt_needs_refresh_in(p: &Paths, now: i64) -> bool {
-    load_result(p).is_none_or(|r| get(&r, "complete").and_then(Value::as_bool) != Some(true) || result_stale(p, &r, now))
+    load_result(p)
+        .is_none_or(|r| get(&r, "complete").and_then(Value::as_bool) != Some(true) || result_stale(p, &r, now))
 }
 
 /// `prompt_needs_refresh_in` over this machine's paths.
@@ -1076,7 +1092,10 @@ mod tests {
         assert!(!prompt_needs_refresh_in(&e.p, now + RESULT_TTL_S - 1));
         assert!(prompt_needs_refresh_in(&e.p, now + RESULT_TTL_S));
         // a partial scan is continued on the next prompt
-        write_text(&e.p.file("claude-pace-result.json"), &json!({"at": now, "ws": mon(), "weight": 1.0, "files": 1, "complete": false}).to_string());
+        write_text(
+            &e.p.file("claude-pace-result.json"),
+            &json!({"at": now, "ws": mon(), "weight": 1.0, "files": 1, "complete": false}).to_string(),
+        );
         assert!(prompt_needs_refresh_in(&e.p, now));
         assert!(!needs_refresh_in(&e.p, now));
     }
@@ -1321,7 +1340,9 @@ mod tests {
     fn test_states() {
         let c = pc();
         let now = mon() + 2 * DAY; // Wednesday, budget 50
-        for (used, want) in [(10.0, "ok"), (50.0, "ok"), (50.5, "ahead"), (84.9, "ahead"), (85.0, "critical"), (100.0, "critical")] {
+        for (used, want) in
+            [(10.0, "ok"), (50.0, "ok"), (50.5, "ahead"), (84.9, "ahead"), (85.0, "critical"), (100.0, "critical")]
+        {
             c.c1(now - 10, used, mon() + WEEK_S);
             assert_eq!(status_in(&c.p, Some(now)).state, want, "used {used}");
         }
@@ -1434,9 +1455,12 @@ mod tests {
     #[test]
     fn test_cost_per_model_family() {
         // input 1000, output 500, cache write 2000 (1h), cache read 10000.
-        for (model, (pi, po)) in [("claude-opus-4-8", (5.0, 25.0)), ("claude-sonnet-5-5", (3.0, 15.0)),
-            ("claude-haiku-4-5", (1.0, 5.0)), ("fable-1", (15.0, 75.0))]
-        {
+        for (model, (pi, po)) in [
+            ("claude-opus-4-8", (5.0, 25.0)),
+            ("claude-sonnet-5-5", (3.0, 15.0)),
+            ("claude-haiku-4-5", (1.0, 5.0)),
+            ("fable-1", (15.0, 75.0)),
+        ] {
             let c = pc();
             let want = (pi * (1000.0 + 2.0 * 2000.0 + 0.1 * 10000.0) + po * 500.0) / 1e6;
             let got = c.cost_of(model, 1000, 500, 2000, 10000);
@@ -1448,7 +1472,8 @@ mod tests {
     fn test_cache_write_split_5m_and_1h() {
         let c = pc();
         let mut r = rv(mon() + 60, "m1", "claude-opus-4-8", 0, 0, 3000, 0);
-        r["message"]["usage"]["cache_creation"] = json!({"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 2000});
+        r["message"]["usage"]["cache_creation"] =
+            json!({"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 2000});
         c.lines("a.jsonl", &[r]);
         c.refresh(5.0, mon() + DAY);
         assert!(close(c.weight(), 5.0 * (1.25 * 1000.0 + 2.0 * 2000.0) / 1e6, 7), "{}", c.weight());
@@ -1806,7 +1831,8 @@ mod tests {
     #[test]
     fn test_phrase_is_case_insensitive_and_system_records_count() {
         let c = pc();
-        let sysrec = json!({"type": "system", "timestamp": iso(mon() + 2 * DAY), "content": "YOU'VE HIT YOUR WEEKLY LIMIT"});
+        let sysrec =
+            json!({"type": "system", "timestamp": iso(mon() + 2 * DAY), "content": "YOU'VE HIT YOUR WEEKLY LIMIT"});
         c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), sysrec]);
         refresh_default(&c);
         assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
@@ -1815,7 +1841,10 @@ mod tests {
     #[test]
     fn test_first_hit_of_the_week_wins() {
         let c = pc();
-        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + DAY), big2000(mon() + DAY + 60, "b2"), hit(mon() + 3 * DAY)]);
+        c.lines(
+            "a.jsonl",
+            &[big2000(mon() + 3600, "b1"), hit(mon() + DAY), big2000(mon() + DAY + 60, "b2"), hit(mon() + 3 * DAY)],
+        );
         refresh_default(&c);
         assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
     }

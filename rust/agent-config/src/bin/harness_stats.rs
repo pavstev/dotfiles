@@ -1,8 +1,8 @@
 //! harness_stats: measure Claude Code sessions from local transcripts.
 
 use agent_config::guard_checks::expanduser;
-use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
 use agent_config::pycompat::{civil_from_days, fname, json_str, list_dir, parse_ts_micros, py_float, truthy};
+use agent_config::stores::claude::{desktop_dir, desktop_meta, project_name, text_of};
 use clap::{Args, Parser, Subcommand};
 use regex::Regex;
 use serde_json::{Map, Number, Value};
@@ -41,10 +41,8 @@ static CORRECTION: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 static HANDOFF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Read \S+\.md and do it").unwrap());
-static CD_PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?:cd [^&;]+(?:&&|;)\s*)+").unwrap());
-static PATHS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"/private/tmp/\S+|/Users/[^\s/]+/\S*").unwrap());
+static CD_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:cd [^&;]+(?:&&|;)\s*)+").unwrap());
+static PATHS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/private/tmp/\S+|/Users/[^\s/]+/\S*").unwrap());
 static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+").unwrap());
 static PATHS_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^paths:").unwrap());
 
@@ -76,11 +74,7 @@ fn home() -> String {
 
 fn default_out() -> String {
     let tmp = std::env::var("TMPDIR").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        if cfg!(windows) {
-            std::env::temp_dir().to_string_lossy().into_owned()
-        } else {
-            "/tmp".to_string()
-        }
+        if cfg!(windows) { std::env::temp_dir().to_string_lossy().into_owned() } else { "/tmp".to_string() }
     });
     Path::new(&tmp).join("harness_stats.json").to_string_lossy().into_owned()
 }
@@ -357,7 +351,8 @@ struct Scan {
 
 fn scan(path: &Path, is_sub: bool) -> Scan {
     let mut r: Counter<String> = Counter::new();
-    let (mut tools, mut skills, mut bash, mut errors) = (Counter::new(), Counter::new(), Counter::new(), Counter::new());
+    let (mut tools, mut skills, mut bash, mut errors) =
+        (Counter::new(), Counter::new(), Counter::new(), Counter::new());
     let mut agents: Vec<Value> = vec![];
     let mut times: Vec<Dt> = vec![];
     let mut seen: HashSet<String> = HashSet::new();
@@ -425,7 +420,8 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                             let stripped = CD_PREFIX.replace(&cmd_s, "").into_owned();
                             let cmd: Vec<&str> = stripped.split_whitespace().collect();
                             const TWO: [&str; 13] = [
-                                "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node", "make", "cargo",
+                                "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node",
+                                "make", "cargo",
                             ];
                             if !cmd.is_empty() {
                                 let k = if TWO.contains(&cmd[0]) {
@@ -470,8 +466,10 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                     && arr.iter().any(|x| x.is_object() && get(x, "type").as_str() == Some("tool_result"))
                 {
                     for x in arr {
-                        if x.is_object() && get(x, "type").as_str() == Some("tool_result") && truthy(get(x, "is_error")) {
-                            let nm = names.get(&get(x, "tool_use_id").to_string()).cloned().unwrap_or_else(|| "?".into());
+                        if x.is_object() && get(x, "type").as_str() == Some("tool_result") && truthy(get(x, "is_error"))
+                        {
+                            let nm =
+                                names.get(&get(x, "tool_use_id").to_string()).cloned().unwrap_or_else(|| "?".into());
                             let e = norm_error(&nm, get(x, "content"));
                             if e.contains("hook error") {
                                 r.add("hook_denials".into(), 1);
@@ -522,7 +520,20 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
             active += g;
         }
     }
-    Scan { r, tools, skills, bash, errors, agents, times, first_ctx: first_ctx.unwrap_or(0), peak, models, active_s: active, version }
+    Scan {
+        r,
+        tools,
+        skills,
+        bash,
+        errors,
+        agents,
+        times,
+        first_ctx: first_ctx.unwrap_or(0),
+        peak,
+        models,
+        active_s: active,
+        version,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -535,12 +546,9 @@ fn fail(msg: &str) -> ! {
 }
 
 fn cmd_collect(a: &CollectArgs) {
-    let since = if !a.since.contains('T') {
-        parse_ts(&format!("{}T00:00:00+00:00", a.since))
-    } else {
-        parse_ts(&a.since)
-    }
-    .unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{}'", a.since)));
+    let since =
+        if !a.since.contains('T') { parse_ts(&format!("{}T00:00:00+00:00", a.since)) } else { parse_ts(&a.since) }
+            .unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{}'", a.since)));
     let h = home();
     let projects = Path::new(&h).join(".claude").join("projects");
     let meta = desktop_meta(&desktop_dir(Path::new(&h)));
@@ -552,13 +560,10 @@ fn cmd_collect(a: &CollectArgs) {
                 continue;
             }
             let sid = n[..n.len() - 6].to_string();
-            let mtime = fs::metadata(&f)
-                .and_then(|m| m.modified())
-                .ok()
-                .map(|t| match t.duration_since(UNIX_EPOCH) {
-                    Ok(d) => d.as_secs_f64(),
-                    Err(e) => -e.duration().as_secs_f64(),
-                });
+            let mtime = fs::metadata(&f).and_then(|m| m.modified()).ok().map(|t| match t.duration_since(UNIX_EPOCH) {
+                Ok(d) => d.as_secs_f64(),
+                Err(e) => -e.duration().as_secs_f64(),
+            });
             let Some(mtime) = mtime else { continue };
             if a.exclude.contains(&sid) || mtime < since.timestamp() {
                 continue;
@@ -628,7 +633,12 @@ fn cmd_collect(a: &CollectArgs) {
             row.insert("cli".into(), s.version.clone());
             row.insert(
                 "model".into(),
-                s.models.most_common(Some(1)).first().and_then(|(k, _)| k.clone()).map(Value::from).unwrap_or(Value::Null),
+                s.models
+                    .most_common(Some(1))
+                    .first()
+                    .and_then(|(k, _)| k.clone())
+                    .map(Value::from)
+                    .unwrap_or(Value::Null),
             );
             row.insert("first_ctx".into(), Value::from(s.first_ctx));
             row.insert("peak_ctx".into(), Value::from(s.peak));
@@ -759,11 +769,7 @@ fn med(xs: &[Num]) -> Num {
     let mut v = xs.to_vec();
     v.sort_by(|a, b| a.f().partial_cmp(&b.f()).unwrap_or(std::cmp::Ordering::Equal));
     let n = v.len();
-    if n % 2 == 1 {
-        v[n / 2]
-    } else {
-        Num::F((v[n / 2 - 1].f() + v[n / 2].f()) / 2.0)
-    }
+    if n % 2 == 1 { v[n / 2] } else { Num::F((v[n / 2 - 1].f() + v[n / 2].f()) / 2.0) }
 }
 
 fn nums<'a, F: Fn(&'a Value) -> &'a Value>(rows: &[&'a Value], f: F) -> Vec<Num> {
@@ -781,8 +787,14 @@ fn obj_sum(v: &Value) -> i64 {
 fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
     let n = if rows.is_empty() { 1 } else { rows.len() } as f64;
     let g = |k: &str| -> i64 { rows.iter().map(|r| stat_i(r, k)).sum() };
-    let prompts = { let p = g("prompts"); if p == 0 { 1 } else { p } } as f64;
-    let tools = { let t: i64 = rows.iter().map(|r| obj_sum(get(r, "tools"))).sum(); if t == 0 { 1 } else { t } } as f64;
+    let prompts = {
+        let p = g("prompts");
+        if p == 0 { 1 } else { p }
+    } as f64;
+    let tools = {
+        let t: i64 = rows.iter().map(|r| obj_sum(get(r, "tools"))).sum();
+        if t == 0 { 1 } else { t }
+    } as f64;
     let agents: Vec<&Value> = rows
         .iter()
         .flat_map(|r| get(r, "agent_calls").as_array().map(|a| a.iter().collect::<Vec<_>>()).unwrap_or_default())
@@ -797,10 +809,8 @@ fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
     let with_effort = agents.iter().filter(|c| truthy(get(c, "effort"))).count();
     let typed = agents.iter().filter(|c| truthy(get(c, "type"))).count();
     let gp = agents.iter().filter(|c| get(c, "type").as_str() == Some("general-purpose")).count();
-    let vs: Vec<String> = rows
-        .iter()
-        .filter_map(|r| get(r, "cli").as_str().filter(|s| !s.is_empty()).map(|s| s.to_string()))
-        .collect();
+    let vs: Vec<String> =
+        rows.iter().filter_map(|r| get(r, "cli").as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())).collect();
     let versions = if vs.is_empty() {
         "?".to_string()
     } else {
@@ -808,7 +818,8 @@ fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
     };
     let first_ctx = nums(rows, |r| get(r, "first_ctx"));
     let peak_ctx = nums(rows, |r| get(r, "peak_ctx"));
-    let prompts_per: Vec<Num> = rows.iter().map(|r| num_of(get(get(r, "stats"), "prompts")).unwrap_or(Num::I(0))).collect();
+    let prompts_per: Vec<Num> =
+        rows.iter().map(|r| num_of(get(get(r, "stats"), "prompts")).unwrap_or(Num::I(0))).collect();
     vec![
         ("sessions", rows.len().to_string()),
         ("archived", rows.iter().filter(|r| truthy(get(r, "archived"))).count().to_string()),
@@ -832,7 +843,10 @@ fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
         ("general-purpose spawns %", r0((100 * gp) as f64 / non0(typed))),
         (
             "wait calls (Monitor, Cron, Wakeup)",
-            rows.iter().map(|r| POLL_TOOLS.iter().map(|t| as_i(get(get(r, "tools"), t))).sum::<i64>()).sum::<i64>().to_string(),
+            rows.iter()
+                .map(|r| POLL_TOOLS.iter().map(|t| as_i(get(get(r, "tools"), t))).sum::<i64>())
+                .sum::<i64>()
+                .to_string(),
         ),
         ("from hand-off", g("from_handoff").to_string()),
         ("Claude Code versions", versions),
@@ -964,10 +978,7 @@ fn cmd_agents(a: &AgentsArgs) {
         }
         out!("| {} | {} |", t, cells.join(" | "));
     }
-    out!(
-        "\nSessions: {}",
-        groups.iter().map(|(k, v)| format!("{} {}", k, v.len())).collect::<Vec<_>>().join(", ")
-    );
+    out!("\nSessions: {}", groups.iter().map(|(k, v)| format!("{} {}", k, v.len())).collect::<Vec<_>>().join(", "));
     out!("Start K = median first-turn context of the spawn. Watch: general-purpose share should fall and");
     out!("task-implementer / worker should rise after a dispatch change. Agents with a tools: list start near 15K.");
     let small: Vec<&str> = groups.iter().filter(|(_, v)| v.len() < 20).map(|(k, _)| k.as_str()).collect();
@@ -1093,8 +1104,7 @@ fn cmd_inventory(a: &InvArgs) {
         if p == "tmp" || p == "scratch" {
             continue;
         }
-        let cands: Vec<PathBuf> =
-            if p != "~" { vec![h.join("work").join(p), h.join(p)] } else { vec![h.clone()] };
+        let cands: Vec<PathBuf> = if p != "~" { vec![h.join("work").join(p), h.join(p)] } else { vec![h.clone()] };
         let Some(root) = cands.into_iter().find(|c| is_dir(c)) else {
             out!("| {} | {} | (folder gone) | | | | |", p, c);
             continue;
@@ -1120,7 +1130,8 @@ fn cmd_inventory(a: &InvArgs) {
         if p != "~" && sj.is_file() {
             hooks = match fs::read(&sj).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
                 Some(v) => {
-                    let mut ks: Vec<String> = get(&v, "hooks").as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+                    let mut ks: Vec<String> =
+                        get(&v, "hooks").as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
                     ks.sort();
                     ks.join(",")
                 }

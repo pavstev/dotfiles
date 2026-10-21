@@ -189,6 +189,12 @@ fn guard_off_turns_it_off() {
 fn garbage_input_fails_open() {
     let (code, out, _) = run_bin(GUARD, &["posttool"], "{\"tool_name\": \"Bash\", \"tool_input\": 5}", &[], None);
     assert_eq!((code, out.as_str()), (0, ""));
-    let (code, out, _) = run_bin(GUARD, &["pretool"], "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"pnpm check\"}, \"cwd\": \"/nonexistent\"}", &[], None);
+    let (code, out, _) = run_bin(
+        GUARD,
+        &["pretool"],
+        "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"pnpm check\"}, \"cwd\": \"/nonexistent\"}",
+        &[],
+        None,
+    );
     assert_eq!((code, out.as_str()), (0, ""));
 }

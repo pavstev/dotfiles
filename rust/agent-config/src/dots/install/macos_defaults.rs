@@ -50,7 +50,9 @@ fn writes(home: &Path) -> Vec<Vec<String>> {
     let shots = home.join("Screenshots").to_string_lossy().into_owned();
     let line = |(d, k, t, v): Pref| -> Vec<String> { ["write", d, k, t, v].iter().map(|s| s.to_string()).collect() };
     let mut all: Vec<Vec<String>> = BEFORE_SCREENSHOTS.iter().copied().map(line).collect();
-    all.push(["write", "com.apple.screencapture", "location", "-string", &shots].iter().map(|s| s.to_string()).collect());
+    all.push(
+        ["write", "com.apple.screencapture", "location", "-string", &shots].iter().map(|s| s.to_string()).collect(),
+    );
     all.extend(SCREENSHOTS.iter().copied().map(line));
     all.extend(AFTER_SCREENSHOTS.iter().copied().map(line));
     all
@@ -78,27 +80,37 @@ fn owner_app(domain: &str) -> Option<&'static str> {
 }
 
 pub fn step(_repo: &Path) {
-    if !only_macos("macOS defaults") { return; }
+    if !only_macos("macOS defaults") {
+        return;
+    }
     out::step("macOS defaults");
-    if verbose() { info("Applying curated development defaults…"); }
+    if verbose() {
+        info("Applying curated development defaults…");
+    }
     let home = os::home();
     let _ = std::fs::create_dir_all(home.join("Screenshots"));
     let mut changed = 0;
     let mut restart: Vec<&str> = Vec::new();
     for args in writes(&home) {
         let [_, domain, key, ty, value] = <[String; 5]>::try_from(args.clone()).expect("five words");
-        if same_value(&ty, &value, &stdout_of("defaults", &["read", &domain, &key])) { continue; }
+        if same_value(&ty, &value, &stdout_of("defaults", &["read", &domain, &key])) {
+            continue;
+        }
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         if run("defaults", &a) {
             changed += 1;
-            if let Some(app) = owner_app(&domain).filter(|app| !restart.contains(app)) { restart.push(app); }
+            if let Some(app) = owner_app(&domain).filter(|app| !restart.contains(app)) {
+                restart.push(app);
+            }
         }
     }
     if changed == 0 {
         uptodate("macOS defaults: all set");
         return;
     }
-    for app in restart { quiet("killall", &[app]); }
+    for app in restart {
+        quiet("killall", &[app]);
+    }
     ok(&format!("macOS defaults: {changed} changed (a few need logout/login to take effect)"));
 }
 
