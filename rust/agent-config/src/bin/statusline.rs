@@ -46,7 +46,37 @@ fn int_text(v: Option<&Value>) -> Option<String> {
         Value::String(s) => s.trim().parse::<f64>().ok()?,
         _ => return None,
     };
-    Some(format!("{n:.0}"))
+    Some(format!("{:.0}", n.round_ties_even()))
+}
+
+/// The parts of the session JSON that the line shows, read once.
+#[derive(Default)]
+struct Input {
+    /// `workspace.current_dir`, else `cwd`; empty when neither is set.
+    cwd: String,
+    model: String,
+    /// Context size in tokens.
+    ctx_tokens: Option<f64>,
+    ctx_percent: Option<String>,
+    five_hour_percent: Option<String>,
+    seven_day_percent: Option<String>,
+    session_id: String,
+}
+
+impl Input {
+    fn from_json(v: &Value) -> Self {
+        let text = |path: &[&str]| jq_str(at(v, path)).unwrap_or_default();
+        let cwd = Some(text(&["workspace", "current_dir"])).filter(|s| !s.is_empty()).unwrap_or_else(|| text(&["cwd"]));
+        Self {
+            cwd,
+            model: text(&["model", "display_name"]),
+            ctx_tokens: ctx_tokens(v),
+            ctx_percent: int_text(at(v, &["context_window", "used_percentage"])),
+            five_hour_percent: int_text(at(v, &["rate_limits", "five_hour", "used_percentage"])),
+            seven_day_percent: int_text(at(v, &["rate_limits", "seven_day", "used_percentage"])),
+            session_id: text(&["session_id"]),
+        }
+    }
 }
 
 /// The last call's input plus cache tokens (`total_input_tokens` is a session running total).
@@ -177,14 +207,10 @@ fn parse_head(head: &str) -> Option<String> {
 }
 
 /// Build the line. `branch` is looked up by the caller so tests can pass it in.
-fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
-    let cwd = jq_str(at(input, &["workspace", "current_dir"]))
-        .filter(|s| !s.is_empty())
-        .or_else(|| jq_str(input.get("cwd")).filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| pwd.to_string());
-    let model = jq_str(at(input, &["model", "display_name"])).unwrap_or_default();
-    let dir = basename(&cwd);
-    let branch = branch_of(&cwd);
+fn render(input: &Input, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
+    let cwd = if input.cwd.is_empty() { pwd } else { &input.cwd };
+    let dir = basename(cwd);
+    let branch = branch_of(cwd);
     let paint = |code: &str, text: &str| if color { format!("{code}{text}{RST}") } else { text.to_string() };
 
     let mut line = paint(COPPER, &format!(" {dir}"));
@@ -192,16 +218,16 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
         line.push_str("  ");
         line.push_str(&paint(SAGE, &format!(" {branch}")));
     }
-    if !model.is_empty() {
+    if !input.model.is_empty() {
         line.push_str("  ");
-        line.push_str(&paint(STONE, &model));
+        line.push_str(&paint(STONE, &input.model));
     }
 
-    if let Some(tok) = ctx_tokens(input) {
-        let k = (format!("{tok:.0}").parse::<f64>().unwrap_or(0.0) as i64) / 1000;
+    if let Some(tok) = input.ctx_tokens {
+        let k = (tok.round_ties_even() as i64) / 1000;
         let code = if k >= CTX_WARN_K { COPPER } else { STONE };
         let mut ctx = format!("ctx {k}K");
-        if let Some(p) = int_text(at(input, &["context_window", "used_percentage"])) {
+        if let Some(p) = &input.ctx_percent {
             let _ = write!(ctx, " {p}%");
         }
         line.push_str("  ");
@@ -209,10 +235,10 @@ fn render(input: &Value, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: b
     }
 
     let mut caps = String::new();
-    if let Some(p) = int_text(at(input, &["rate_limits", "five_hour", "used_percentage"])) {
+    if let Some(p) = &input.five_hour_percent {
         caps = format!("5h {p}%");
     }
-    if let Some(p) = int_text(at(input, &["rate_limits", "seven_day", "used_percentage"])) {
+    if let Some(p) = &input.seven_day_percent {
         if !caps.is_empty() {
             caps.push_str(" · ");
         }
@@ -247,9 +273,11 @@ fn left_text(file: &str) -> Option<String> {
 
 /// The line segment for what is left in this session: written by the guard's Stop pass, so it
 /// only shows when the file for the input's `session_id` exists.
-fn left_segment(input: &Value, color: bool) -> Option<String> {
-    let sid = jq_str(input.get("session_id")).filter(|s| !s.is_empty())?;
-    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&sid)).ok()?)?;
+fn left_segment(input: &Input, color: bool) -> Option<String> {
+    if input.session_id.is_empty() {
+        return None;
+    }
+    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&input.session_id)).ok()?)?;
     Some(if color { format!("{COPPER}{text}{RST}") } else { text })
 }
 
@@ -290,10 +318,10 @@ fn write_atomic(file: &Path, text: &str) -> std::io::Result<()> {
 fn main() {
     let mut raw = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut raw);
-    let input: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+    let doc: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
 
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    if let Some(json) = pace_json(&input, now) {
+    if let Some(json) = pace_json(&doc, now) {
         let _ = write_atomic(&agent_config::paths::cache().join("claude-pace.json"), &format!("{json}\n"));
     }
 
@@ -301,6 +329,7 @@ fn main() {
     let plain = agent_config::setting(&home_dir(), "THEME") == "plain";
     let pwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
     let color = !(no_color || plain);
+    let input = Input::from_json(&doc);
     let mut line = render(&input, &pwd, &git_branch, color);
     if let Some(left) = left_segment(&input, color) {
         line.push_str("  ");
@@ -324,6 +353,31 @@ mod tests {
         fs::create_dir(t.path().join(".git")).unwrap();
         fs::write(t.path().join(".git/HEAD"), head).unwrap();
         t
+    }
+
+    #[test]
+    fn percents_round_half_to_even() {
+        for (given, shown) in [(0.5, "0"), (1.5, "2"), (2.5, "2"), (3.5, "4"), (-0.4, "-0"), (97.0, "97")] {
+            assert_eq!(int_text(Some(&Value::from(given))).as_deref(), Some(shown), "{given}");
+        }
+        assert_eq!(int_text(Some(&Value::from(" 2.5 "))).as_deref(), Some("2"));
+        assert_eq!(int_text(Some(&Value::Bool(true))), None);
+    }
+
+    #[test]
+    fn line_from_the_input() {
+        let doc: Value = serde_json::from_str(
+            r#"{"workspace": {"current_dir": "/w/app"}, "model": {"display_name": "Opus"},
+                "context_window": {"current_usage": {"input_tokens": 1500, "cache_read_input_tokens": 1000},
+                                   "used_percentage": 2.5},
+                "rate_limits": {"five_hour": {"used_percentage": 10.5}, "seven_day": {"used_percentage": 40}}}"#,
+        )
+        .unwrap();
+        let line = render(&Input::from_json(&doc), "/elsewhere", &|_| "main".into(), false);
+        assert_eq!(line, " app   main  Opus  ctx 2K 2%  5h 10% · 7d 40%");
+        // no workspace and no cwd: the process folder
+        let line = render(&Input::default(), "/elsewhere", &|_| String::new(), false);
+        assert_eq!(line, " elsewhere");
     }
 
     #[test]
