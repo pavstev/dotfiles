@@ -57,7 +57,9 @@ impl T {
     /// `sqlite3` tool to build it with (the caller returns early). Never false on macOS.
     fn app_store(&mut self, rows: &[(&str, &str)]) -> bool {
         if !have_sqlite() {
-            assert!(!cfg!(target_os = "macos"), "macOS ships sqlite3; these tests must not skip here");
+            if cfg!(target_os = "macos") {
+                panic!("macOS ships sqlite3; these tests must not skip here");
+            }
             eprintln!("skipped: no sqlite3 command line tool");
             return false;
         }

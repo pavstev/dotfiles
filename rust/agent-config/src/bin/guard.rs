@@ -1790,11 +1790,13 @@ fn w5_record(data: &Value) {
     let _ = with_state(data, |state| {
         let table = state.entry("checks").or_insert_with(|| Value::Object(Map::new()));
         if let Some(m) = table.as_object_mut() {
-            m.remove(&key);
+            // shift_remove keeps insertion order (plain remove is swap_remove under
+            // preserve_order), so the first key stays the oldest one.
+            m.shift_remove(&key);
             if m.len() >= 40
                 && let Some(first) = m.keys().next().cloned()
             {
-                m.remove(&first);
+                m.shift_remove(&first);
             }
             m.insert(key, Value::String(fp));
         }

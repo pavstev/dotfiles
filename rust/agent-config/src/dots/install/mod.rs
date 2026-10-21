@@ -86,8 +86,9 @@ pub(crate) fn stdout_of(prog: &str, args: &[&str]) -> String {
 }
 
 /// What `curl <args>` prints, or None when curl fails. Its errors show on stderr.
+/// A stuck server fails after the timeouts instead of hanging `dots`.
 pub(crate) fn curl_text(args: &[&str]) -> Option<String> {
-    let o = Command::new("curl").args(args).stdin(Stdio::null()).stderr(Stdio::inherit()).output().ok()?;
+    let o = Command::new("curl").args(["--connect-timeout", "20", "--max-time", "300"]).args(args).stdin(Stdio::null()).stderr(Stdio::inherit()).output().ok()?;
     if !o.status.success() { return None; }
     Some(String::from_utf8_lossy(&o.stdout).into_owned())
 }

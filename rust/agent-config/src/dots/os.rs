@@ -76,7 +76,9 @@ pub fn path_prepend(dir: &Path) {
 /// Set an environment variable of this process.
 pub fn set_env<V: Into<OsString>>(k: &str, v: V) {
     let v: OsString = v.into();
-    // SAFETY: dots sets its environment from the main thread, before any thread starts.
+    // SAFETY: only the main thread writes the environment. The one other thread, the
+    // "still working" ticker (dots/steps.rs), reads it only through std (env::var), which
+    // takes the same lock as set_var. No thread of dots reads it through C getenv.
     unsafe { env::set_var(k, v) }
 }
 /// Remove an environment variable of this process.

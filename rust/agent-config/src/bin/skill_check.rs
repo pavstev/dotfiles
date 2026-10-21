@@ -355,6 +355,10 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    if let Some(bad) = args.iter().find(|a| a.starts_with('-') && *a != "-q") {
+        eprintln!("skill_check: unknown option {bad} (see --help)");
+        return ExitCode::from(2);
+    }
     let quiet = args.iter().any(|a| a == "-q");
     let targets: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     let root = agent_config::claude_dir().join("skills");

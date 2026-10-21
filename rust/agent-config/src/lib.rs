@@ -1256,7 +1256,10 @@ pub fn claude_settings_build(home: &Path) -> i32 {
             if dry() {
                 info(&format!("would keep {} change(s) in {}", notes.len(), tilde(&layer_f)));
             } else {
-                let _ = atomic_write(&layer_f, &dump(&layer), Some(0o600));
+                if let Err(e) = atomic_write(&layer_f, &dump(&layer), Some(0o600)) {
+                    warn(&format!("could not write {}: {e}", tilde(&layer_f)));
+                    return 1;
+                }
             }
         }
     }
@@ -1283,7 +1286,10 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         info(&format!("{} was a link into the repo; it is now a built file", tilde(&live_f)));
         let _ = fs::remove_file(&live_f);
     }
-    let _ = atomic_write(&live_f, &text, Some(0o644));
+    if let Err(e) = atomic_write(&live_f, &text, Some(0o644)) {
+        warn(&format!("could not write {}: {e}", tilde(&live_f)));
+        return 1;
+    }
     ok(&format!("built {} (repo base + private layer)", tilde(&live_f)));
     if !dry() && ( !last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) {
         let _ = atomic_write(&last_f, &text, Some(0o600));
@@ -1313,8 +1319,15 @@ pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
         info(&format!("would move {} to {}", dotted, tilde(&base_f)));
         return 0;
     }
-    let _ = atomic_write(&base_f, &dump(&new_base), None);
-    let _ = atomic_write(&layer_f, &dump(&layer), Some(0o600));
+    // The base first: when it fails, the key stays in the layer and nothing is lost.
+    if let Err(e) = atomic_write(&base_f, &dump(&new_base), None) {
+        warn(&format!("could not write {}: {e}; nothing moved", tilde(&base_f)));
+        return 1;
+    }
+    if let Err(e) = atomic_write(&layer_f, &dump(&layer), Some(0o600)) {
+        warn(&format!("could not write {}: {e}; the key is now in both files", tilde(&layer_f)));
+        return 1;
+    }
     ok(&format!("moved {} to {}. Commit it to share it.", dotted, tilde(&base_f)));
     claude_settings_build(home)
 }

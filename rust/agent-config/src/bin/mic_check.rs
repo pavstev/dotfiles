@@ -588,6 +588,10 @@ fn main() -> ExitCode {
                 print!("{USAGE}");
                 return ExitCode::SUCCESS;
             }
+            other if other.starts_with('-') => {
+                eprintln!("mic_check: unknown option {other} (see --help)");
+                return ExitCode::from(2);
+            }
             other => repos.push(PathBuf::from(other)),
         }
         i += 1;

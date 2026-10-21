@@ -31,9 +31,11 @@ struct Cli {
     mode: Option<String>,
 }
 
+/// `$TMPDIR/cursor-guard`. Without TMPDIR: `/tmp` on Unix, the system temp folder on Windows
+/// (Windows has no `/tmp`).
 fn state_dir_from(tmpdir: Option<String>) -> PathBuf {
-    let tmp = tmpdir.filter(|s| !s.is_empty()).unwrap_or_else(|| "/tmp".to_string());
-    PathBuf::from(tmp).join("cursor-guard")
+    let fallback = || if cfg!(windows) { env::temp_dir() } else { PathBuf::from("/tmp") };
+    tmpdir.filter(|s| !s.is_empty()).map_or_else(fallback, PathBuf::from).join("cursor-guard")
 }
 
 fn state_dir() -> PathBuf {
@@ -586,8 +588,9 @@ mod tests {
 
     #[test]
     fn empty_tmpdir_falls_back_to_tmp() {
-        assert_eq!(state_dir_from(Some(String::new())), PathBuf::from("/tmp/cursor-guard"));
-        assert_eq!(state_dir_from(None), PathBuf::from("/tmp/cursor-guard"));
+        let fallback = if cfg!(windows) { env::temp_dir() } else { PathBuf::from("/tmp") };
+        assert_eq!(state_dir_from(Some(String::new())), fallback.join("cursor-guard"));
+        assert_eq!(state_dir_from(None), fallback.join("cursor-guard"));
         assert_eq!(state_dir_from(Some("/x".into())), PathBuf::from("/x/cursor-guard"));
     }
 }
