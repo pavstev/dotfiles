@@ -7,12 +7,15 @@
 //! Python code would raise and so fail open, the Rust code returns `Err(Fail)`.
 //!
 //! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
-//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13 and H1 (preset workflow), G8 and
+//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, H1 and W5 (preset workflow), G8 and
 //! PACE (pace), G9 and ROUTER (models), G10 (ship-to-main), G11 (clock), G17 (no-ai-attribution),
 //! G14, G15 and G16 (core). H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
-//! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session.
+//! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session. W5
+//! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
+//! already passed in this session, with the git work tree unchanged since, gets a note to skip it.
 
 use agent_config::guard_checks::{self as gc, expanduser, is_macos, realpath};
+use agent_config::proj;
 use agent_config::pycompat::{days_from_civil, truthy};
 use agent_config::transcript;
 use regex::Regex;
@@ -1776,6 +1779,7 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Result<usize, Fail> {
 
 /// G13 (PostToolUse, main thread): one JSON line after the 8th tool call with no text, else None.
 fn posttool(data: &Value) -> Option<String> {
+    w5_record(data);
     if !check_enabled("G13") || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
         return None; // the desktop app has its own nudge and its transcript can miss text blocks
     }
@@ -1788,6 +1792,51 @@ fn posttool(data: &Value) -> Option<String> {
         Ok(n) if n == G13_AFTER => Some(hook_output("PostToolUse", MSG_G13)),
         _ => None,
     }
+}
+
+// --- W5 check once ------------------------------------------------------------------
+
+/// The `checks` entry of one command: where it ran and the command in one line.
+fn w5_key(data: &Value, cmd: &str) -> Option<String> {
+    let plain = proj::plain_check(cmd)?;
+    Some(format!("{}|{}", call_cwd(data).display(), plain))
+}
+
+/// W5, record side (PostToolUse runs only when the tool succeeded; a failed Bash goes to
+/// PostToolUseFailure): a plain check command that passed is stored with the fingerprint of the work
+/// tree after the run. The table keeps the 40 latest.
+fn w5_record(data: &Value) {
+    if !check_enabled("W5") || get(get(data, "tool_response"), "interrupted").as_bool() == Some(true) {
+        return;
+    }
+    let Some(key) = bash_command(data).and_then(|c| w5_key(data, &c)) else { return };
+    let Some(fp) = proj::tree_fingerprint(&call_cwd(data)) else { return };
+    let _ = with_state(data, |state| {
+        let table = state.entry("checks").or_insert_with(|| Value::Object(Map::new()));
+        if let Some(m) = table.as_object_mut() {
+            m.remove(&key);
+            if m.len() >= 40
+                && let Some(first) = m.keys().next().cloned()
+            {
+                m.remove(&first);
+            }
+            m.insert(key, Value::String(fp));
+        }
+    });
+}
+
+/// W5, warn side: the same plain check command passed in this session and the work tree is the same
+/// as right after that run. Any error says nothing.
+fn w5_repeat(data: &Value) -> Option<String> {
+    let key = w5_key(data, &bash_command(data)?)?;
+    let fp = proj::tree_fingerprint(&call_cwd(data))?;
+    let same = with_state(data, |state| {
+        state.get("checks").and_then(|t| t.get(&key)).and_then(Value::as_str) == Some(fp.as_str())
+    })
+    .ok()?;
+    same.then(|| {
+        "W5: this check already passed in this session and nothing changed since (same commit, no edit, no new file). Skip it, or edit something first.".to_string()
+    })
 }
 
 // --- G8 helper cap, G9 plan gate, router -----------------------------------------
@@ -2058,6 +2107,9 @@ fn pretool_warn(data: &Value, ctx: &Ctx) -> Option<String> {
     }
     if check_enabled("H1") {
         notes.extend(h1_hint(data));
+    }
+    if check_enabled("W5") {
+        notes.extend(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w5_repeat(data))).ok().flatten());
     }
     if notes.is_empty() && updated.is_none() {
         return None;

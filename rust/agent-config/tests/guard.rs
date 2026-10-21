@@ -2635,6 +2635,13 @@ impl G {
             }
             "G13" => self.post(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8)),
             "H1" => self.pre_bash("cat src/a.ts", &[]),
+            "W5" => {
+                let repo = self.make_repo(false);
+                let data = json!({"session_id": "w5", "tool_name": "Bash", "tool_input": {"command": "pnpm check"},
+                    "tool_response": {"interrupted": false}, "cwd": repo});
+                self.run("posttool", &data);
+                self.run("pretool", &data)
+            }
             "PACE" => {
                 let path = self.transcript_named(&[human("hi"), assistant(1000)], "pace.jsonl");
                 let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "pc", "transcript_path": path, "prompt": "go"});

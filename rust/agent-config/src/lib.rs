@@ -39,6 +39,7 @@ pub mod codeview;
 pub mod dots;
 pub mod guard_checks;
 pub mod presets;
+pub mod proj;
 pub mod pycompat;
 pub mod redact;
 pub mod stores;

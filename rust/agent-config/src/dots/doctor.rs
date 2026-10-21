@@ -101,8 +101,8 @@ fn hook_commands(v: &Value, out: &mut Vec<String>) {
 }
 
 /// `~/.claude/settings.json` exists and holds each guard hook of the repo's `claude/settings.json`,
-/// and each of them runs `rust-bin`. Other hooks (a friend's own, the sample
-/// `format-after-edit.sh`) are not checked: `dots` cannot change them.
+/// and each of them runs `rust-bin`. Other hooks (a friend's own) are not
+/// checked: `dots` cannot change them.
 fn settings_built(repo: &Path, home: &Path) -> Result<(), String> {
     let p = home.join(".claude").join("settings.json");
     let text = fs::read_to_string(&p).map_err(|_| "~/.claude/settings.json is missing. Run: dots".to_string())?;

@@ -2095,6 +2095,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G12", "workflow"),
     ("G13", "workflow"),
     ("H1", "workflow"),
+    ("W5", "workflow"),
     ("G8", "pace"),
     ("PACE", "pace"),
     ("G9", "models"),

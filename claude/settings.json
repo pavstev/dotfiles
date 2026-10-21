@@ -74,6 +74,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -r ~/.claude/hooks/rust-bin || exit 0; sh ~/.claude/hooks/rust-bin --hook proj format",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [
