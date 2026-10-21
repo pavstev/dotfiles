@@ -198,7 +198,8 @@ see: [`docs/platforms.md`](docs/platforms.md#windows).
   (Windows 11 Arm64, OpenSSH Server, Developer Mode, Git, PowerShell 7), starts the clone,
   copies the tree over SSH, runs `./dotfiles` twice in Git Bash, then once more after a pull that
   brings a Rust change (the restart rebuilds dots.exe), checks the exit codes, the links and
-  `pwsh -Command exit`, then deletes the clone, also after a failure. It never starts
+  `pwsh -Command exit`, runs `dots uninstall -y` twice (the links go, the repo stays), then deletes
+  the clone, also after a failure. It never starts
   the golden VM. Build the golden VM once with `bash scripts/win-golden.sh` (needs UTM and the
   Windows ISO in `~/VMs/iso`; the script reads your SSH key at run time). The VM, its answer
   file and its login stay in `~/VMs`, outside the repo. A start failure (`utmctl` exit 142, UTM's
