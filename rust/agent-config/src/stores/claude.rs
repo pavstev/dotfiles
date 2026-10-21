@@ -107,6 +107,9 @@ struct FileCtx<'a> {
     is_sub: bool,
 }
 
+// One of three `text_of` copies that differ on purpose: this one joins text blocks with a space for
+// the search index; the guard joins with a newline and returns None when empty; whatsleft joins
+// with a newline. Each caller relies on its own join and empty rule, so do not fold them into one.
 pub fn text_of(content: &Value) -> String {
     match content {
         Value::String(s) => s.clone(),
