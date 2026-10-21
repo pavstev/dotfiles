@@ -168,6 +168,8 @@ A check also needs its preset on (`dots settings`), and `GUARD_OFF` turns one of
 | G17 assistant attribution in a commit, PR or issue (preset `no-ai-attribution`) | deny | deny (`preToolUse`, shell) | deny (plugin) |
 | G3 context ceiling | yes | yes (`guard_cursor`, other modes) | no |
 | H1 hint `Tip: ~/.claude/hooks/rust-bin ctx outline <file>, then ... ctx read <file> <symbol>` when Bash runs `sed -n` or `cat` on a code file (preset `workflow`; allowed, never a deny; at most 3 per session) | context | no | not tested |
+| W5 a plain check command that already passed in this session, with the git work tree unchanged since (preset `workflow`; a note "skip it", never a deny; the pass is recorded by PostToolUse) | context | no | not tested |
+| Format on edit (`rust-bin --hook proj format`, PostToolUse on `Edit`, `Write`, `MultiEdit`; not a guard check) | yes | no (Cursor has its own `afterFileEdit` hook) | no |
 | G1, G2, G4 to G13, pace, router | yes | no (see the gaps in `docs/cursor-port.md`) | not tested |
 
 The Opencode plugin runs the whole `guard pretool` hook, so a Claude check that looks at a shell

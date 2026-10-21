@@ -2,24 +2,67 @@
 
 [Hooks](https://docs.claude.com/en/docs/claude-code/hooks) run shell commands on Claude
 Code events (e.g. `PostToolUse`, `Stop`, `UserPromptSubmit`). The *scripts* live here;
-they're **wired up in `settings.json` under the `hooks` key** (not auto-enabled, so you
-opt in deliberately).
-
-Example wiring in `settings.json` to run `format-after-edit.sh` after edits:
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      { "matcher": "Edit|Write",
-        "hooks": [ { "type": "command", "command": "~/.claude/hooks/format-after-edit.sh" } ] }
-    ]
-  }
-}
-```
+they're **wired up in `settings.json` under the `hooks` key**.
 
 The hooks directory is symlinked to `~/.claude/hooks` by `./dotfiles`.
-See `format-after-edit.sh` for a sample.
+
+## Project contract
+
+"Facts in the project, smarts in the dotfiles." A project states facts in files it already has and
+holds no harness logic. The dotfiles read those facts (`proj`, below) and fall back to language
+defaults when a project states none. Each side works without the other, and every hook fails open.
+
+A project MAY expose these three commands, as `package.json` scripts, or as `check`, `check-fast`
+and `fix` targets in a `justfile` or `Makefile` (a `package.json` script wins over a `justfile`
+recipe, which wins over a `Makefile` target, per name):
+
+| Name | What it does |
+|------|--------------|
+| `check` | the full gate: format check, lint, types, tests |
+| `check:fast` (`check-fast`) | the same on the changed files only; `--staged` limits it to the files staged for a commit |
+| `fix` | formats and applies the safe autofixes |
+
+Its own git hooks SHOULD run the fast check on commit (`check:fast --staged`) and the full check on
+push. Then a change is checked where it is committed, and an agent only runs `check:fast` once
+after its last edit. A project that exposes nothing gets the defaults below.
+
+## proj
+
+The `proj` Rust bin (`rust/agent-config/src/proj.rs`, `src/bin/proj.rs`; tests: `cargo test --test proj`).
+It runs the project's own installed tools in the project folder (`node_modules/.bin`, `.venv/bin`,
+`uv run`, `cargo`), so `mise` picks the pinned runtime and any tool version works.
+
+```bash
+~/.claude/hooks/rust-bin proj detect [path]   # JSON: root, package manager, tools, contract, check and fix commands
+```
+
+- **Root:** the nearest folder up from the path with `package.json`, `pyproject.toml`, `Cargo.toml`,
+  `go.mod`, a `justfile` or `Makefile`, or a Biome or Ruff config. The home folder never counts.
+- **Package manager:** the lockfile (`pnpm-lock.yaml`, `bun.lock`, `yarn.lock`, `package-lock.json`),
+  looked up to the top of the git repo; else the `packageManager` field; else `npm`.
+- **Tools:** a JS tool counts only when it is installed in `node_modules/.bin` *and* configured
+  (Prettier, ESLint or Biome config). Python: Ruff (config or a dependency), `ty`, pytest, `uv`.
+  Go, Cargo with Clippy and nextest. `rustfmt` and `shfmt` count only when the project says it uses
+  them (a `rustfmt.toml`, or a mention in a script, hook config or CI file), so a file is never
+  reformatted into a style the project does not use.
+- **Check commands:** the contract first. Without `check:fast`, the fast default checks the files
+  changed in git (`eslint`, `prettier --check`, `biome check`, `ruff check`, `go vet`, `cargo check`).
+  Without `check`, the full default runs the `lint`, `typecheck` or `types`, and `test` scripts, or
+  the tools over the whole project, or `ruff`, `ty`, `pytest`, `go vet` and `go test`, or
+  `cargo fmt --check`, `clippy` and `nextest`.
+
+### Format on edit
+
+`rust-bin --hook proj format` is a global `PostToolUse` hook on `Edit`, `Write` and `MultiEdit`
+(wired in [`claude/settings.json`](../settings.json)). It formats only the edited file with the
+project's formatter, and adds a safe lint autofix where the project has one: `eslint --fix` first,
+then `prettier --write` or `biome check --write`; `ruff check --fix` (never the unused-import fix,
+which would remove an import before the next edit uses it) then `ruff format`; `gofmt`, `rustfmt`,
+`shfmt`. It is silent and always exits 0. It skips a file outside a project, a file in
+`node_modules`, `.git`, `.venv`, `target`, `dist`, `build` and the like, and a file over 1 MB. The
+tool decides what it ignores (`.prettierignore`), and a tool that fails changes nothing. The hook has
+a budget of 8 s for all commands (`PROJ_FORMAT_BUDGET_MS`); a slow tool is killed. The Python hooks
+never sync an environment (`uv run --no-sync`).
 
 ## guard
 
@@ -39,6 +82,7 @@ A deny wins over a warning. Tests: `cargo test --test guard` in `rust/agent-conf
 | G7 | PreToolUse `Agent` | deny `general-purpose`, `claude` and a missing `subagent_type`; the message names `worker`, `researcher`, `Explore`, `task-implementer`, `Plan` |
 | G8 | PreToolUse `Agent`; SubagentStop | helpers running at once per session: 3 when pace is `ok` or `unknown`, 1 when `ahead`, 0 when `critical`. Each slot is `{id: tool_use_id, t: time}` in the session state file (plain times from the first version still load). SubagentStop frees the oldest slot (not when its hand-back is denied); `guard posttoolfailure` (PostToolUseFailure, matcher `Agent`) frees the slot of the failed call's `tool_use_id`; entries over 90 min old are dropped. `flock` guards parallel calls |
 | G9 | PreToolUse `Skill`, `EnterPlanMode` | `superpowers:brainstorming` and `superpowers:writing-plans` in the main thread are allowed in plan mode, when pace is `ahead` or `critical`, and when the main model is Opus or Fable (newest assistant `message.model` in the transcript). With a Sonnet or Haiku main model they are denied: on `entrypoint: cli` use EnterPlanMode (opusplan); on `entrypoint: claude-desktop` (no opusplan) send a `Plan` helper or pick Opus. An unknown model or entrypoint is allowed. `EnterPlanMode` is denied when pace is `ahead` or `critical` (Sonnet plans without plan mode) |
+| W5 | PreToolUse `Bash` (the record is PostToolUse) | warn, never deny: a plain check command (`<pm> run check\|test\|lint\|typecheck\|types\|build`, `cargo test\|nextest\|clippy\|check`, `go test\|vet`, `pytest`, `uv run ruff check\|ty check\|pytest`, `ruff check`, `ty check`, `just\|make check\|test\|lint`) that already passed in this session, with the git work tree unchanged since, gets the note "skip it". A pass is recorded by PostToolUse, which Claude Code runs only on success (a failed Bash goes to PostToolUseFailure; an interrupted one is not recorded). Only one plain command counts, with optional `cd x &&` steps and `VAR=value` prefixes: a pipe, `;`, `\|\|` or `&` hides the exit code, so those are never recorded. The key is the folder plus the command in one line; the table keeps the latest 40 per session. The fingerprint is the HEAD commit plus `git status` plus the size and time of each listed file (two git calls); it changes on a commit, an edit, a new file or a stage. No git or any error says nothing |
 | W3 | PreToolUse browser tools (`mcp__Claude_Browser__*`, `mcp__claude-in-chrome__*`) | warn in a main window: at the 6th browser call of a turn (then every 20th), route checks to `ui-verifier` |
 | W4 | PreToolUse `Agent` | warn: past 15 spawns or 1.5M subagent tokens in a session (the `totalTokens` of each Agent result, and of each background task notification once), a budget note on every 5th spawn |
 

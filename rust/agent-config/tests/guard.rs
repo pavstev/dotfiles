@@ -2812,6 +2812,13 @@ impl G {
             }
             "G13" => self.post(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8)),
             "H1" => self.pre_bash("cat src/a.ts", &[]),
+            "W5" => {
+                let repo = self.make_repo(false);
+                let data = json!({"session_id": "w5", "tool_name": "Bash", "tool_input": {"command": "pnpm check"},
+                    "tool_response": {"interrupted": false}, "cwd": repo});
+                self.run("posttool", &data);
+                self.run("pretool", &data)
+            }
             "PACE" => {
                 let path = self.transcript_named(&[human("hi"), assistant(1000)], "pace.jsonl");
                 let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "pc", "transcript_path": path, "prompt": "go"});
@@ -2844,7 +2851,7 @@ fn each_check_off_with_its_preset() {
             covered += 1;
         }
     }
-    assert_eq!(covered, 17, "workflow 10, pace 2, models 2, ship-to-main 1, clock 1, no-ai-attribution 1");
+    assert_eq!(covered, 18, "workflow 11, pace 2, models 2, ship-to-main 1, clock 1, no-ai-attribution 1");
 }
 
 #[test]
