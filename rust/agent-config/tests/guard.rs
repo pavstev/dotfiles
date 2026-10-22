@@ -2072,6 +2072,29 @@ Finish them now, or end with what is done, what is left, and one question.",
 }
 
 #[test]
+fn test_g12_quiet_while_a_step_runs_in_another_session() {
+    let g = G::new();
+    let delegated = json!({"items": [
+        {"content": "Check hooks", "status": "in_progress", "session": "sl-hooks"},
+        {"content": "Review reports", "status": "pending"}]});
+    let recs = [human("go"), plan(delegated), say("Both sessions run.")];
+    assert_allow(&g.stop_run(&recs, json!({})));
+    // once the delegated step is done, the rest counts again
+    let recs = [
+        human("go"),
+        plan(json!({"items": [
+        {"content": "Check hooks", "status": "completed", "session": "sl-hooks"},
+        {"content": "Review reports", "status": "pending"}]})),
+        say("Done."),
+    ];
+    assert_deny(&g.stop_run(&recs, json!({})), "G12");
+    // an empty session name is no session
+    let recs =
+        [human("go"), plan(json!({"items": [{"content": "Build", "status": "pending", "session": " "}]})), say("ok")];
+    assert_deny(&g.stop_run(&recs, json!({})), "G12");
+}
+
+#[test]
 fn test_g12_replays_advance_done_and_start() {
     let g = G::new();
     let base =

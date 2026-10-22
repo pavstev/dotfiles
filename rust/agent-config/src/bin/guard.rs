@@ -1112,11 +1112,15 @@ fn step_status(item: &Value) -> String {
     if matches!(status.as_str(), "in_progress" | "in-progress" | "active") { "in_progress".to_string() } else { status }
 }
 
-fn apply_plan(steps: &mut Vec<(String, String)>, inp: &Value) {
+/// One task-list step: name, status, and whether it was handed to another session (`session`).
+type Step = (String, String, bool);
+
+fn apply_plan(steps: &mut Vec<Step>, inp: &Value) {
     if let Some(items) = get(inp, "items").as_array() {
-        *steps = items.iter().map(|i| (step_name(i), step_status(i))).collect();
+        let session = |i: &Value| get(i, "session").as_str().is_some_and(|s| !s.trim().is_empty());
+        *steps = items.iter().map(|i| (step_name(i), step_status(i), session(i))).collect();
     }
-    fn mark(steps: &mut [(String, String)], n: &Value, status: &str) {
+    fn mark(steps: &mut [Step], n: &Value, status: &str) {
         if let Value::Number(num) = n
             && let Some(i) = num.as_i64()
             && i >= 1
@@ -1141,9 +1145,9 @@ fn apply_plan(steps: &mut Vec<(String, String)>, inp: &Value) {
     mark(steps, get(inp, "start"), "in_progress");
 }
 
-/// Names of the steps still open after replaying the plan events (newest first).
-fn open_steps(events: &[(bool, Value)]) -> Vec<String> {
-    let mut steps: Vec<(String, String)> = Vec::new();
+/// The steps still open after replaying the plan events (newest first).
+fn open_plan(events: &[(bool, Value)]) -> Vec<Step> {
+    let mut steps: Vec<Step> = Vec::new();
     for (wrap, inp) in events.iter().rev() {
         if *wrap {
             steps.clear();
@@ -1151,11 +1155,13 @@ fn open_steps(events: &[(bool, Value)]) -> Vec<String> {
             apply_plan(&mut steps, inp);
         }
     }
+    steps.retain(|s| matches!(s.1.as_str(), "pending" | "in_progress" | "in-progress" | "active" | "todo"));
     steps
-        .into_iter()
-        .filter(|s| matches!(s.1.as_str(), "pending" | "in_progress" | "in-progress" | "active" | "todo"))
-        .map(|s| s.0)
-        .collect()
+}
+
+/// Names of the steps still open.
+fn open_steps(events: &[(bool, Value)]) -> Vec<String> {
+    open_plan(events).into_iter().map(|s| s.0).collect()
 }
 
 /// What one git call came to.
@@ -1295,15 +1301,17 @@ fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
     if t.asked || t.wrapped || final_reply(data, t).trim_end().ends_with('?') {
         return None;
     }
-    let running = |st: &mut Map<String, Value>| ["spawns", "sl_spawns"].iter().any(|k| !live_spawns(st, k, now_secs()).is_empty());
+    let running = |st: &mut Map<String, Value>| {
+        ["spawns", "sl_spawns"].iter().any(|k| !live_spawns(st, k, now_secs()).is_empty())
+    };
     if with_state(data, running) == Some(true) {
         return None; // a background helper runs; the app wakes the session when it ends
     }
-    let names = open_steps(&t.plan);
-    if names.is_empty() {
-        return None;
+    let open = open_plan(&t.plan);
+    if open.is_empty() || open.iter().any(|s| s.2) {
+        return None; // a step runs in another session; the app wakes this one when it ends
     }
-    let shown: Vec<String> = names.into_iter().take(3).collect();
+    let shown: Vec<String> = open.into_iter().take(3).map(|s| s.0).collect();
     Some(format!(
         "G12: the task list still has open steps ({}). Finish them now, or end with what is done, what is left, and one question.",
         shown.join(", ")
@@ -1421,7 +1429,8 @@ fn subagentstop(data: &HookInput) -> Option<String> {
         gc::fire_log(Check::G5, FireKind::Deny);
     } else if check_enabled(Check::G19)
         && data.agent_id.is_some()
-        && !data.agent_type.is_some_and(|k| k.starts_with(SUPERLITE)) // superlite gates its own tests
+        && !data.agent_type.is_some_and(|k| k.starts_with(SUPERLITE))
+    // superlite gates its own tests
     {
         msg = g19_gate(data); // a helper always runs unattended
         if msg.is_some() {
