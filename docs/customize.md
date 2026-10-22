@@ -13,8 +13,8 @@ How to change things, set the looks, and uninstall.
 | Terminal | `home/.config/ghostty/config` | live immediately |
 | Git | `home/.gitconfig` (identity is in `~/.gitconfig.local`, not here) | live immediately |
 | VS Code / Cursor | `home/Library/Application Support/{Code,Cursor}/User/settings.json` (only while Looks has `editor`) | live immediately |
-| VS Code extensions | `Brewfile`: add `vscode "publisher.ext-id"` lines | `dots` (the brew step re-runs; 60-cursor.sh adds them to Cursor) |
-| A command-line tool | `tools.list`: add one line | `dots` (step 12 installs it; `scripts/tools --check` lists what is missing) |
+| VS Code extensions | `Brewfile`: add `vscode "publisher.ext-id"` lines | `dots` (step `20-brew-bundle` installs them; step `60-cursor` adds them to Cursor) |
+| A command-line tool | `tools.list`: add one line. It names the tool, its commands, its OSes and its sources in order (mise first, then `apk`, `winget`, `scoop`, `cargo`, `brew`) | `dots` (step `12-tools` installs it; `scripts/tools --check` lists what is missing) |
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
 | bat / lazygit / bottom / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |

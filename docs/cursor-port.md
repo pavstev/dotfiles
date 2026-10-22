@@ -13,9 +13,8 @@ and [permissions](https://cursor.com/docs/reference/permissions), plus read-only
 shipped app and CLI.
 
 `scripts/agent-config` (the Rust build in `rust/agent-config`) writes every Cursor file and never
-writes under `~/.claude`. Generated Markdown carries a `generated-by: dotfiles` marker; a file
-without it is yours and is left alone with a warning. JSON files are merged key by key and your
-values win (except the commit attribution switches, which are forced off).
+writes under `~/.claude`. The marker and merge rules are in [AI agents](ai-agents.md). One
+exception: the commit attribution switches are forced off.
 
 ## Mapping
 

@@ -78,7 +78,7 @@ bash ~/dotfiles/dotfiles
 ```
 
 Expected: about 20 short lines and a closing `dotfiles: done` line. A first run takes 20 to 40
-minutes on a Mac and about 10 on Windows.
+minutes on a Mac and 5 to 10 on Windows.
 
 ## 4. Presets and settings
 

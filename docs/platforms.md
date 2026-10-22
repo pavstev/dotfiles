@@ -22,8 +22,9 @@ goes on.
 - **Alpine (musl):** eza, procs, delta, difftastic, fastfetch, ffmpeg and poppler come from `apk`
   first (no musl release), the rest from mise. That needs root or `sudo`. whisper-cpp is not
   installed. A tool with no source that starts on musl gives a warning.
-- **Skipped:** `70-macos-defaults`, `72-touch-id-sudo` and `75-terminal-appearance` print nothing
-  (`dots -v` shows `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Nerd
+- **Skipped:** the macOS-only steps (`10-homebrew`, `20-brew-bundle`, `70-macos-defaults`,
+  `72-touch-id-sudo`, `75-terminal-appearance`) print nothing (`dots -v` shows
+  `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Nerd
   Font are macOS only too.
 - **Links:** `~/.config/Code/User/*` and `~/.config/Cursor/User/*` link to the files macOS keeps
   under `~/Library/Application Support`. Ghostty reads `~/.config/ghostty` on both.
@@ -44,10 +45,8 @@ bash scripts/test-linux.sh debian:13
 bash scripts/test-linux.sh ubuntu:24.04
 ```
 
-Run 1 must exit 0 with no warning. Run 2 must change nothing and take 90 seconds at most. It
-also checks the links, the tools, `zsh -ic exit` and `bash -n` on every shell script. It has no
-terminal, so the menus, password prompts and sign-in step are not covered. `--keep` leaves the
-container; `--reuse` syncs your edits into it and runs again. All the tests:
+Run 1 must exit 0 with no warning. Run 2 must change nothing. It has no terminal, so the menus,
+password prompts and sign-in step are not covered. What each test checks:
 [AGENTS.md](../AGENTS.md#tests).
 
 To test on another Linux machine, set `TEST_HOST` (an SSH host name) in `dots settings` and run
@@ -80,11 +79,10 @@ Each check then works on a clone of the golden VM and deletes the clone.
   settings (`%APPDATA%\{Code,Cursor}\User\`, only with the `editor` look). `~/.gitconfig` is not
   linked: the git identity goes to `~/.gitconfig.local`, which your own `~/.gitconfig` includes.
 - **Skipped:** the same macOS-only steps and apps as on Linux.
-- **Shell:** Git Bash provides `zsh`, `git`, `ln -s` and `clip.exe`. `init.zsh` loads the usual
-  tools when they are on PATH.
-- **Opencode config:** `scripts/agent-config opencode` writes agents, permissions and MCP under
-  `~/.config/opencode` and uses `clip` for the clipboard. The output is the same on all three OSes.
-- **Python:** not needed. `scripts/agent-config` builds and runs the Rust version. Without `cargo`
-  the generated-config steps warn and skip, and `dots` installs Rust on its next run.
+- **Shell:** Git Bash provides `git`, `ln -s` and `clip`. There is no zsh, so the zsh config is
+  not linked. `scripts/agent-config user-rules --copy` (the Cursor User Rules text) uses `clip`.
+- **Cursor and Opencode config:** the same output as on macOS and Linux.
+- **Rust:** with no Rust, `dots` installs it first (the `x86_64-pc-windows-gnu` host, no Visual
+  Studio). Python is not needed.
 - **Remove it:** `dots uninstall` ([Customize](customize.md#uninstall)). It removes the links and
   keeps the repo.
