@@ -58,6 +58,31 @@ dots                              # links it; commit + push to sync machines
 Test it the way `superpowers:writing-skills` says: run a fresh subagent on a
 realistic task without the change, then with it. Fix what the first run got wrong.
 
+## A `verify` skill in a project
+
+Claude Code 2.1.286 and later tells Claude to run a skill named `verify` right before each
+commit, except for docs-only and test-only changes ([docs](https://code.claude.com/docs/en/skills),
+"Run your checks before each commit"). Three things must hold when the session starts: the skill is
+a user, project, enterprise or additional-directory skill (or a `.claude/commands/verify.md`), Claude
+may invoke it (no `disable-model-invocation: true`), and `includeGitInstructions` is not off. Plugin
+skills and the bundled `/verify` do not count.
+
+A project adds it as `.claude/skills/verify/SKILL.md`. Copy the project's fast check from
+`rust-bin proj detect` (`check_fast`):
+
+```markdown
+---
+name: verify
+description: "Runs the fast check before a commit. Use before every commit that changes code."
+allowed-tools: "Bash(pnpm run check:fast)"
+---
+
+Run `pnpm run check:fast` once. If it fails, fix the cause and run it again. Do not commit on a failure.
+```
+
+Replace the command with the project's own `check_fast`. The dotfiles repo itself has no `verify`
+skill: its checks run in the pre-commit and pre-push hooks.
+
 ## Provenance
 
 See [`SOURCES.md`](SOURCES.md) for where the ideas behind each skill came from.
