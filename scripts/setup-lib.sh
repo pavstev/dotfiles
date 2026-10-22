@@ -11,6 +11,7 @@
 #            is_macos · is_linux · is_windows · is_musl  (which OS; Alpine is musl)
 #            linux_prereqs · at_terminal      (Linux: install the system packages dots needs)
 #            setting                          (read ~/.config/dotfiles/settings)
+#            with_heartbeat                   (run a silent command, say "still ..." every 20 s)
 #            ensure_rust_bin                  (find or install Rust, build one bin; see the end of this file)
 # ============================================================================
 
@@ -212,6 +213,35 @@ win_dlltool() {
   PATH="$d:$PATH"
 }
 
+# with_heartbeat <label> <lockfile> <log> <cmd...>: run <cmd> with its output in <log> ("-": on
+# stderr). A cargo build prints nothing, so a slow one looks frozen. After 20 s, then every 20 s
+# (DOTS_HEARTBEAT=<seconds> changes it), say "still <label> (Ns)". When another process has
+# <lockfile> open (a cargo run of another session holds the build lock), name its pid. Returns the
+# exit code of <cmd>.
+with_heartbeat() {
+  local label="$1" lock="$2" log="$3" every="${DOTS_HEARTBEAT:-20}" start="$SECONDS" pid tick rc
+  shift 3
+  if [[ "$log" == - ]]; then "$@" >&2 & else "$@" >"$log" 2>&1 & fi
+  pid=$!
+  (
+    local p other
+    while sleep "$every"; do
+      kill -0 "$pid" 2>/dev/null || break
+      other=""
+      if [[ -n "$lock" && -f "$lock" ]] && have lsof; then
+        for p in $(lsof -t -- "$lock" 2>/dev/null); do
+          [[ "$p" != "$pid" ]] && { other=" Another run (pid $p) has the build folder open: waiting for it."; break; }
+        done
+      fi
+      printf '»» still %s (%ss).%s\n' "$label" "$((SECONDS - start))" "$other" >&2
+    done
+  ) &
+  tick=$!
+  wait "$pid"; rc=$?
+  kill "$tick" 2>/dev/null; wait "$tick" 2>/dev/null
+  return "$rc"
+}
+
 # ensure_rust_bin <repo> <bin> <label>: make sure target/release/<bin> of rust/agent-config exists
 # and is not older than its sources (src, themes, Cargo.toml, Cargo.lock): find Rust (install
 # it when it is missing), then build just that bin. Sets RUST_BIN to the file. Returns 1 with
@@ -230,10 +260,11 @@ ensure_rust_bin() {
       rust_ok || { printf '!  %s: no cargo with Rust 1.89 or newer\n' "$label" >&2; return 1; }
     fi
     ! is_windows || win_dlltool
-    printf '»» building the Rust %s (the first time takes a few minutes)\n' "$name" >&2
+    printf '»» building the Rust %s (a rebuild takes up to a minute, the first build a few minutes)\n' "$name" >&2
     log="$(mktemp "${TMPDIR:-/tmp}/dots-build.XXXXXX")"
-    if RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$target" \
-        --manifest-path "$crate/Cargo.toml" --bin "$name" >"$log" 2>&1; then
+    if with_heartbeat "building the Rust $name" "$target/release/.cargo-lock" "$log" \
+        env RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$target" \
+        --manifest-path "$crate/Cargo.toml" --bin "$name"; then
       touch "$RUST_BIN"   # cargo leaves it alone when only another bin's source changed
       rm -f "$log"
     else

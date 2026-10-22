@@ -42,13 +42,14 @@ stale() {
 # leaves a bin alone when only an unrelated file changed, and rust-bin takes an older bin
 # for stale.
 cargo_build() {
-  RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$TARGET" \
-    --manifest-path "$CRATE/Cargo.toml" "$@" >&2
+  with_heartbeat "building the Rust binaries" "$TARGET/release/.cargo-lock" - \
+    env RUSTUP_AUTO_INSTALL=0 cargo build --release --quiet --locked --target-dir "$TARGET" \
+    --manifest-path "$CRATE/Cargo.toml" "$@"
 }
 
 build() {
   have cargo || return 1
-  echo "agent-config: building the Rust binaries (first run takes a few minutes)" >&2
+  echo "agent-config: building the Rust binaries (a rebuild takes up to a minute, the first build a few minutes)" >&2
   if cargo_build --bins; then
     local f
     for f in "$TARGET"/release/*; do

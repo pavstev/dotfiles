@@ -385,6 +385,26 @@ rm -f "$T/cargo.log"; bins
 [[ "$(grep -c '^cargo build' "$T/cargo.log" 2>/dev/null)" -ge 1 ]] && pass "--bins builds again when one bin is older than its sources" \
   || bad "--bins did not retry a stale bin"
 
+# 13c. with_heartbeat: a silent command that runs long says "still ..." every second (here), keeps its
+#      exit code and its output in the log, and names another process that has the lock file open.
+#      A fast command prints nothing.
+hb() { # hb <lockfile> <log> <cmd...>: stderr of with_heartbeat in $T/hb.err, its rc on stdout
+  local lock="$1" log="$2"; shift 2
+  DOTS_HEARTBEAT=1 bash -c '. "$1/scripts/setup-lib.sh"; shift; with_heartbeat "doing x" "$@"; echo $?' _ "$R" "$lock" "$log" "$@" 2>"$T/hb.err"
+}
+rc="$(hb "" "$T/hb.log" sh -c 'sleep 3; echo built; exit 7')"
+[[ "$rc" == 7 ]] && pass "with_heartbeat keeps the exit code" || bad "with_heartbeat rc=$rc, wanted 7"
+grep -q '^»» still doing x (' "$T/hb.err" && pass "with_heartbeat says it is still working" || bad "with_heartbeat printed no heartbeat: $(cat "$T/hb.err")"
+[[ "$(cat "$T/hb.log")" == built && "$(grep -c built "$T/hb.err")" -eq 0 ]] && pass "with_heartbeat keeps the command output in the log" || bad "with_heartbeat output went astray"
+rc="$(hb "" "$T/hb.log" true)"
+[[ "$rc" == 0 && ! -s "$T/hb.err" ]] && pass "with_heartbeat prints nothing for a fast command" || bad "with_heartbeat fast: rc=$rc err=$(cat "$T/hb.err")"
+if command -v lsof >/dev/null 2>&1; then
+  : >"$T/hb.lock"; ( exec 9>>"$T/hb.lock"; sleep 6 ) & hbp=$!
+  sleep 1; hb "$T/hb.lock" "$T/hb.log" sleep 3 >/dev/null
+  grep -q 'Another run (pid [0-9]*) has the build folder open' "$T/hb.err" && pass "with_heartbeat names the process that holds the lock" || bad "with_heartbeat did not name the lock holder: $(cat "$T/hb.err")"
+  kill "$hbp" 2>/dev/null; wait "$hbp" 2>/dev/null
+fi
+
 # 14. Step 20 (Homebrew apps) on a Mac with Homebrew: a Brewfile whose one formula is installed
 #     skips; one with an unknown formula warns and the run goes on. Nothing installs.
 if [[ "$(uname -s)" == Darwin ]] && command -v brew >/dev/null 2>&1; then
