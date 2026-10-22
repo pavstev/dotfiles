@@ -64,3 +64,7 @@ Ideas only, rewritten for this setup, no text copied.
 - **ps:map:** a short folder map that the root `CLAUDE.md` points at (an article reported 79% faster work overall in its own test; our numbers are in the commit message).
 - **ps:autopilot:** a done marker before each push or deploy (idempotent resume) and a `Budget:` line (stop on a limit), from graph-engineering videos.
 - **ps:review-panel:** the reviewer budget (3 rounds, stop at nits, correctness and stated requirements only).
+- **ps:design-ref:** Dembrandt (MIT, https://github.com/dembrandt/dembrandt) for DESIGN.md and the drift
+  check, and the Awwwards MCP (MIT, https://github.com/insane0777/awwwards-mcp) for picking reference sites,
+  from an AI LABS video on design repos. Both are installed once from `tools.list`; the MCP is added per
+  project only, so it costs no tokens elsewhere.

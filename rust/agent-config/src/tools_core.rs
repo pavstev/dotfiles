@@ -414,6 +414,13 @@ impl RealEnv {
     fn is_root() -> bool {
         Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
     }
+
+    /// True when mise has at least one version of `tool` installed.
+    fn mise_has(&self, tool: &str) -> bool {
+        let mut c = self.command("mise");
+        c.args(["ls", "--installed", tool]);
+        c.output().is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+    }
 }
 
 impl Default for RealEnv {
@@ -485,6 +492,13 @@ impl Env for RealEnv {
     fn install(&mut self, host: Host, src: &Source) -> Result<(), String> {
         match src {
             Source::Mise(id) => {
+                // An npm: tool runs on mise's Node, which step 50-node-pnpm installs after this step.
+                // On a fresh machine install Node LTS first, with the same command step 50 uses.
+                if id.starts_with("npm:") && !self.mise_has("node") {
+                    let mut c = self.command("mise");
+                    c.args(["--yes", "use", "-g", "node@lts"]);
+                    Self::run(c)?;
+                }
                 let mut c = self.command("mise");
                 c.args(["--yes", "use", "-g", &format!("{id}@latest")]);
                 Self::run(c)
