@@ -48,11 +48,15 @@ const HANDBACK_MAX_DENIES: i64 = 2;
 const HANDBACK_DEFAULT_CAP: i64 = 4000;
 const PROMPT_SCAN_LINES: usize = 200;
 const SCRATCH_ROOTS: &[&str] = &["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
-const SCRATCH_DIRS: &[&str] = &[".agents", ".superpowers"];
+const SCRATCH_DIRS: &[&str] = &[".agents", ".superlite"];
 const ARCHIVE_TOOL: &str = "mcp__ccd_session_mgmt__archive_session";
 const HEAVY_AGENTS: &[&str] = &["general-purpose", "claude"];
 const LOOKUP_AGENTS: &[&str] = &["Explore", "claude-code-guide", "statusline-setup"];
-const PLAN_SKILLS: &[&str] = &["superpowers:brainstorming", "superpowers:writing-plans"];
+const PLAN_SKILLS: &[&str] = &["superlite:brainstorming", "superlite:writing-plans"];
+/// superlite's own agents: its `sl` tool writes their briefs and its agent files pin model and effort.
+const SUPERLITE: &str = "superlite:";
+/// superlite agents pinned to opus; the router lowers them to sonnet only when the week is tight.
+const SUPERLITE_OPUS: &[&str] = &["superlite:final-reviewer", "superlite:fixer-opus"];
 const BROWSER_PREFIXES: &[&str] = &["mcp__Claude_Browser__", "mcp__claude-in-chrome__"];
 const BROWSER_WARN_AT: usize = 5;
 const BROWSER_WARN_EVERY: usize = 20;
@@ -69,7 +73,7 @@ const FAIL_LIMIT: i64 = 2;
 const STEP_TABLE_MAX: usize = 40;
 
 const MSG_SCRATCH: &str =
-    "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.";
+    "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superlite/.";
 const MSG_POLL: &str =
     "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
 const MSG_ASK: &str = "guard: an earlier AskUserQuestion in this turn has no answer yet. Wait for it, then ask again. Put all questions of one round in one call.";
@@ -660,6 +664,9 @@ fn g3_pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
 fn g1_agent(data: &HookInput, _ctx: &Ctx) -> Verdict {
     if data.tool_name != Some("Agent") || !data.tool_input.is_object() {
         return Verdict::Allow;
+    }
+    if data.input_str("subagent_type").is_some_and(|k| k.starts_with(SUPERLITE)) {
+        return Verdict::Allow; // superlite's `sl` writes these briefs
     }
     let prompt_text = data.input_str("prompt").unwrap_or("");
     let mut missing = Vec::new();
@@ -1394,7 +1401,10 @@ fn subagentstop(data: &HookInput) -> Option<String> {
     let mut msg = if check_enabled(Check::G5) { check_handback(data, data.last_assistant_message) } else { None };
     if msg.is_some() {
         gc::fire_log(Check::G5, FireKind::Deny);
-    } else if check_enabled(Check::G19) && data.agent_id.is_some() {
+    } else if check_enabled(Check::G19)
+        && data.agent_id.is_some()
+        && !data.agent_type.is_some_and(|k| k.starts_with(SUPERLITE)) // superlite gates its own tests
+    {
         msg = g19_gate(data); // a helper always runs unattended
         if msg.is_some() {
             gc::fire_log(Check::G19, FireKind::Stop);
@@ -2050,6 +2060,9 @@ fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
     if kind == Some("fork") {
         return (None, None);
     }
+    if let Some(k) = kind.filter(|k| k.starts_with(SUPERLITE)) {
+        return route_superlite(k, ti, ctx); // the agent file pins model and effort
+    }
     let desc = text("description").unwrap_or("");
     let head: String = text("prompt").unwrap_or("").chars().take(400).collect();
     let final_ = kind == Some("code-reviewer") && (FINAL_REVIEW.is_match(desc) || FINAL_REVIEW.is_match(&head));
@@ -2095,6 +2108,22 @@ fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
         msg.push_str(" - ");
         msg.push_str(&n);
     }
+    (Some(Value::Object(new)), Some(msg))
+}
+
+/// Router row for a superlite agent: left alone, except an opus-pinned one runs on sonnet when the
+/// week is tight (superlite says a `model` overrides the agent file, so only then is one set).
+fn route_superlite(kind: &str, ti: &Map<String, Value>, ctx: &Ctx) -> (Option<Value>, Option<String>) {
+    if !SUPERLITE_OPUS.contains(&kind) {
+        return (None, None);
+    }
+    let st = ctx.pace();
+    if !st.state.is_tight() {
+        return (None, None);
+    }
+    let mut new = ti.clone();
+    new.insert("model".into(), Value::String("sonnet".into()));
+    let msg = format!("guard router: helper runs on sonnet - the week is {}, so opus became sonnet", st.state);
     (Some(Value::Object(new)), Some(msg))
 }
 

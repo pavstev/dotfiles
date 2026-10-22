@@ -1358,4 +1358,7 @@ fn test_merge_rules() {
         &json!({"a": null, "s": 3, "p": {"y": 2}, "permissions": {"allow": ["B", "A"]}, "l": [2], "n": 3}),
     );
     assert_eq!(got, json!({"s": 3, "p": {"x": 1, "y": 2}, "permissions": {"allow": ["A", "B"]}, "l": [2], "n": 3}));
+    // a nested null removes the key even when the base has no such object (Claude Code rejects a null plugin)
+    let got = merge(&json!({}), &json!({"enabledPlugins": {"a@m": null, "b@m": true}}));
+    assert_eq!(got, json!({"enabledPlugins": {"b@m": true}}));
 }

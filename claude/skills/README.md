@@ -55,8 +55,8 @@ bash ../hooks/rust-bin skill_check ps:my-skill
 dots                              # links it; commit + push to sync machines
 ```
 
-Test it the way `superpowers:writing-skills` says: run a fresh subagent on a
-realistic task without the change, then with it. Fix what the first run got wrong.
+Test it with fresh subagents: run one on a realistic task without the change,
+then one with it. Fix what the first run got wrong.
 
 ## A `verify` skill in a project
 

@@ -1436,8 +1436,10 @@ fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
             p.push(k.clone());
             if v.is_null() {
                 out_obj.remove(k);
-            } else if out_obj.get(k).is_some_and(Value::is_object) && v.is_object() {
-                let merged = merge_inner(out_obj.get(k).unwrap(), v, &p);
+            } else if v.is_object() {
+                // merge into an empty object when the base has none, so a nested `null` never lands
+                let empty = serde_json::json!({});
+                let merged = merge_inner(out_obj.get(k).filter(|b| b.is_object()).unwrap_or(&empty), v, &p);
                 out_obj.insert(k.clone(), merged);
             } else if is_union(&p) && out_obj.get(k).is_some_and(Value::is_array) && v.is_array() {
                 let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();

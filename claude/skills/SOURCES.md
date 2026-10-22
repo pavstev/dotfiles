@@ -23,6 +23,10 @@ The test runs behind each skill change (baseline, edit, re-run) were logged in t
 
 ## Ideas per skill
 
+superpowers was retired on 2026-10-22 for [superlite](https://github.com/iha2/superlite). The superpowers
+credits below stay as history: those ideas came from it.
+
+
 - **ps:whatsleft** (it took in ps:hurry-up on 2026-10-12; the speed scan is the `hurry_scan` bin):
   superpowers `verification-before-completion` and `writing-skills`, and these public ideas,
   rewritten for this setup:

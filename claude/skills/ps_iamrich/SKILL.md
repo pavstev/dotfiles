@@ -37,6 +37,9 @@ description:   3-5 words
 prompt:        task + context + deadline ("done in N min") + "hand back ≤ 4,000 chars; write the rest to a file and cite it" (read-only agents: "stay ≤ 4,000 chars")
 ```
 
+The `superlite:*` agents are outside this section and the worktree rule: superlite's own skill writes
+their calls, and the guard leaves them alone.
+
 Do not pass `model` or `effort`: the guard router sets them (Plan and the final review on
 Opus, lookups on Haiku, the rest on Sonnet `high`). Never `general-purpose`: the guard refuses it.
 An agent that edits files also gets these two lines in its prompt: "Read each file with Read
@@ -61,7 +64,7 @@ yourself). Send a larger fan-out in waves of that size. The guard enforces the c
 | Recon | Parallel agents in one message, one question each: `Explore` for code, `researcher` for the web. Read the key files yourself too. |
 | Research | `researcher` only, never `general-purpose`. Follow `ps:captain-research`. |
 | Plan | A `Plan` agent designs while you draft. Merge the best of both. |
-| Implement | `task-implementer` (a plan task with tests) or `worker`, with `isolation: "worktree"`, one per independent part. Batch 3-6 small tasks per implementer. REQUIRED SUB-SKILL: superpowers:subagent-driven-development for multi-step plans. |
+| Implement | `task-implementer` (a plan task with tests) or `worker`, with `isolation: "worktree"`, one per independent part. Batch 3-6 small tasks per implementer. A multi-step plan with tests: write it with superlite:writing-plans and run it with superlite:subagent-driven-development instead. That skill spawns its own `superlite:*` agents (no worktree flag, no batching rule from this row); pass its `sl dispatch` tool `--cap 3` (1 when the week runs ahead). |
 | Verify | Agents that did not write the change. One proves the behavior (tests, a reproduction). Per-batch reviews run on sonnet; with one batch, skip them. One fix round, then the final review: one `code-reviewer` on the full diff (the router runs it on Opus). Anything still open goes to the user. |
 
 The floor, even for a one-line change: one independent verifier before you say done.
