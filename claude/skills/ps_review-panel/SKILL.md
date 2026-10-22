@@ -118,6 +118,8 @@ The same budget as the `code-reviewer` and `task-reviewer` agents:
   rounds in the report. Past 3, stop and hand the open findings to the user.
 - Stop when a round returns only nits (style, naming, blank lines, taste). Nits are not findings:
   leave them out of the report, or list at most 3 as `Nits (not counted)`.
+- Stop when a round fixed nothing: the same blocking findings came back unchanged. Another round
+  will not help. Hand them to the user, even if the 3-round cap is not reached.
 - A finding is a correctness bug, or a gap against a stated requirement (the user's words, the
   spec, the task text). "I would write it differently" is not a finding. Put this line in every brief.
 - Say it plainly when a reviewer was not satisfied: `Verdict: CHANGES NEEDED` plus a line
