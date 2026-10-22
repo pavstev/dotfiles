@@ -3018,6 +3018,13 @@ impl G {
                 self.run("posttool", &data);
                 self.run("pretool", &data)
             }
+            "G18" => {
+                let repo = self.make_repo(false);
+                let data = json!({"session_id": "g18", "tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": repo});
+                self.run("posttoolfailure", &data);
+                self.run("posttoolfailure", &data);
+                self.run("pretool", &data)
+            }
             "PACE" => {
                 let path = self.transcript_named(&[human("hi"), assistant(1000)], "pace.jsonl");
                 let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "pc", "transcript_path": path, "prompt": "go"});

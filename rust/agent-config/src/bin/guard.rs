@@ -8,12 +8,13 @@
 //! (a missing transcript) lets the call through.
 //!
 //! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
-//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, H1 and W5 (preset workflow), G8 and
+//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, H1 and W5 (preset workflow), G8 and
 //! PACE (pace), G9 and ROUTER (models), G10 (ship-to-main), G11 (clock), G17 (no-ai-attribution),
 //! G14, G15 and G16 (core). H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
 //! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session. W5
 //! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
-//! already passed in this session, with the git work tree unchanged since, gets a note to skip it.
+//! already passed in this session, with the git work tree unchanged since, gets a note to skip it. G18
+//! (workflow) denies the third try of a Bash command or an edit that failed twice.
 
 use agent_config::guard_checks::{self as gc, Check, FireKind, Verdict, expanduser, is_macos, realpath};
 use agent_config::paths;
@@ -22,9 +23,11 @@ use agent_config::pycompat::{days_from_civil, truthy};
 use agent_config::transcript;
 use regex::Regex;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -61,6 +64,8 @@ const G13_AFTER: usize = 8;
 const H1_MAX: i64 = 3;
 const PLAN_TOOL: &str = "mcp__ccd_turn__update_plan";
 const WRAP_TOOL: &str = "mcp__ccd_turn__wrap_up";
+const FAIL_LIMIT: i64 = 2;
+const STEP_TABLE_MAX: usize = 40;
 
 const MSG_SCRATCH: &str =
     "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.";
@@ -70,6 +75,8 @@ const MSG_ASK: &str = "guard: an earlier AskUserQuestion in this turn has no ans
 const MSG_HEAVY_TAIL: &str = "subagent loads every tool and skill (about 60K tokens; `worker` starts near 15-20K). Use `worker` (edits, commands), `researcher` (web), `Explore` (search), `task-implementer` (one plan task) or `Plan` (planning).";
 const MSG_PLAN_GATE: &str = "guard: plans run on Opus only in plan mode (opusplan). Call EnterPlanMode first, then save the plan file after you approve it (autopilot: send a `Plan` helper instead).";
 const MSG_PLAN_GATE_APP: &str = "guard: in the desktop app plan mode does not switch a Sonnet session to Opus. For this plan, send a `Plan` helper (Opus by the router), or pick Opus in the model menu.";
+const MSG_G18_WARN: &str = "G18: this step failed twice. Rule: after 2 failed tries on one step, stop and report. Change the approach now, or stop and report to the user.";
+const MSG_G18_DENY: &str = "G18: stop and report: 2 failed tries on this step. Say what failed and what you tried, then wait (autopilot: log the blocker and take the next task). A new user message clears this.";
 const MSG_G13: &str = "G13: 8 tool calls with no text. Write one short status line for the user now, then go on.";
 
 static DEADLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -148,6 +155,8 @@ struct HookInput<'a> {
     stop_hook_active: bool,
     /// `tool_response.interrupted`
     interrupted: bool,
+    /// `is_interrupt` of a PostToolUseFailure: the user stopped the call, it did not fail by itself.
+    is_interrupt: bool,
 }
 
 impl<'a> HookInput<'a> {
@@ -168,6 +177,7 @@ impl<'a> HookInput<'a> {
             last_assistant_message: text("last_assistant_message"),
             stop_hook_active: truthy(get(data, "stop_hook_active")),
             interrupted: get(get(data, "tool_response"), "interrupted").as_bool() == Some(true),
+            is_interrupt: get(data, "is_interrupt").as_bool() == Some(true),
         }
     }
 
@@ -1668,6 +1678,7 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
 /// G13 (PostToolUse, main thread): one JSON line after the 8th tool call with no text, else None.
 fn posttool(data: &HookInput) -> Option<String> {
     w5_record(data);
+    g18_passed(data);
     if !check_enabled(Check::G13) || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
         return None; // the desktop app has its own nudge and its transcript can miss text blocks
     }
@@ -1725,6 +1736,106 @@ fn w5_repeat(data: &HookInput) -> Option<String> {
     same.then(|| {
         "W5: this check already passed in this session and nothing changed since (same commit, no edit, no new file). Skip it, or edit something first.".to_string()
     })
+}
+
+// --- G18 failed tries on one step -------------------------------------------------------
+
+/// The key of the step a Bash, Edit, Write or MultiEdit call works on: the same command in the same
+/// folder, or the same file and edit target. It starts with the agent, so a helper's tries are its
+/// own. A hash keeps the state file small.
+fn step_key(data: &HookInput) -> Option<String> {
+    let who = data.agent_id.unwrap_or("main");
+    let what = match data.tool_name? {
+        "Bash" => {
+            let cmd = data.bash_command()?.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!("bash|{}|{cmd}", data.call_cwd().display())
+        }
+        "Edit" => format!("edit|{}|{}", data.input_str("file_path")?, data.input_str("old_string").unwrap_or("")),
+        "Write" => format!("write|{}", data.input_str("file_path")?),
+        "MultiEdit" => {
+            let olds: Vec<&str> = data
+                .tool_input
+                .get("edits")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|e| e.get("old_string").and_then(Value::as_str)).collect())
+                .unwrap_or_default();
+            format!("multiedit|{}|{}", data.input_str("file_path")?, olds.join("\u{1f}"))
+        }
+        _ => return None,
+    };
+    let digest = Sha256::digest(format!("{who}|{what}").as_bytes());
+    Some(digest.iter().take(8).fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    }))
+}
+
+/// The work tree fingerprint that tells "nothing changed since the last try" for a Bash step. An
+/// edit between two tries makes the second a new try; an Edit step has no such fingerprint.
+fn step_fingerprint(data: &HookInput) -> Option<String> {
+    if data.tool_name == Some("Bash") { proj::tree_fingerprint(&data.call_cwd()) } else { None }
+}
+
+/// G18, record side (PostToolUseFailure): count a failed try of this step. The count restarts when the
+/// work tree changed since the last failure of the same command. Returns the warning on the second
+/// failure. A call the user interrupted is no failed try.
+fn g18_failed(data: &HookInput) -> Option<String> {
+    if !check_enabled(Check::G18) || data.is_interrupt {
+        return None;
+    }
+    let key = step_key(data)?;
+    let fp = step_fingerprint(data);
+    let n = with_state(data, |state| {
+        let table = state.entry("fails").or_insert_with(|| Value::Object(Map::new()));
+        let m = table.as_object_mut()?;
+        let old = m.shift_remove(&key);
+        let same = old.as_ref().is_some_and(|e| e.get("fp").and_then(Value::as_str) == fp.as_deref());
+        let n = if same { counter(old.as_ref().and_then(|e| e.get("n"))) + 1 } else { 1 };
+        if m.len() >= STEP_TABLE_MAX
+            && let Some(first) = m.keys().next().cloned()
+        {
+            m.shift_remove(&first);
+        }
+        m.insert(key, json!({"n": n, "fp": fp}));
+        Some(n)
+    })
+    .flatten()?;
+    (n == FAIL_LIMIT).then(|| {
+        gc::fire_log(Check::G18, FireKind::Warn);
+        hook_output("PostToolUseFailure", MSG_G18_WARN)
+    })
+}
+
+/// G18, clear side (PostToolUse runs only on success): the step worked, so its count goes.
+fn g18_passed(data: &HookInput) {
+    if !check_enabled(Check::G18) {
+        return;
+    }
+    let Some(key) = step_key(data) else { return };
+    let _ = with_state(data, |state| {
+        if let Some(m) = state.get_mut("fails").and_then(Value::as_object_mut) {
+            m.shift_remove(&key);
+        }
+    });
+}
+
+/// G18, deny side (PreToolUse): the third try of a step that failed twice. A Bash step counts only
+/// while the work tree is the same as at its last failure. A new user message clears the table.
+fn g18_stuck(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    let Some(key) = step_key(data) else { return Verdict::Allow };
+    let seen = with_state(data, |state| {
+        let e = state.get("fails")?.get(&key)?;
+        Some((counter(e.get("n")), e.get("fp").and_then(Value::as_str).map(String::from)))
+    })
+    .flatten();
+    let Some((n, fp)) = seen else { return Verdict::Allow };
+    if n < FAIL_LIMIT {
+        return Verdict::Allow;
+    }
+    if fp.is_some() && step_fingerprint(data) != fp {
+        return Verdict::Allow;
+    }
+    Verdict::Deny(MSG_G18_DENY.to_string())
 }
 
 // --- G8 helper cap, G9 plan gate, router -----------------------------------------
@@ -1907,7 +2018,7 @@ type WarnFn = fn(&HookInput, &Ctx) -> Option<String>;
 fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
     // g8_cap records the spawn it allows, so it runs after every other deny
     // each check runs only when its id is enabled (G14 and G15 also test their own id)
-    let guards: [(Check, GuardFn); 12] = [
+    let guards: [(Check, GuardFn); 13] = [
         (Check::G3, g3_pretool),
         (Check::G7, g7_heavy),
         (Check::G1, g1_agent),
@@ -1919,6 +2030,7 @@ fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
         (Check::G14, g14_sed),
         (Check::G15, g15_secrets),
         (Check::G17, g17_attr),
+        (Check::G18, g18_stuck),
         (Check::G8, g8_cap),
     ];
     for (check, g) in guards {
@@ -2069,6 +2181,7 @@ fn prompt(data: &HookInput, ctx: &Ctx) -> Option<String> {
     let over = ctx.size() >= NUDGE_CONTEXT;
     let mut note: Option<String> = None;
     let count = with_state(data, |state| {
+        state.remove("fails"); // the user spoke: the tries start again
         let prev = counter(state.get("count"));
         let count = if over { prev + 1 } else { 0 };
         state.insert("count".into(), Value::from(count));
@@ -2118,6 +2231,7 @@ fn run() -> i32 {
     let msg = match mode.as_str() {
         "posttoolfailure" => {
             spawn_failed(&input);
+            out = g18_failed(&input);
             None
         }
         "posttool" => {

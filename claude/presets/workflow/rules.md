@@ -1,7 +1,7 @@
 ---
 name: workflow
 description: Speed over ceremony, hand-offs in files, helper briefs, question style and a fixed set of agents
-guard: [G1, G2, G3, G4, G5, G6, G7, G12, G13, H1, W5]
+guard: [G1, G2, G3, G4, G5, G6, G7, G12, G13, H1, W5, G18]
 ---
 # Workflow
 
