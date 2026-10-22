@@ -111,6 +111,10 @@ pub fn cursor_undo(home: &Path) {
         }
     });
     remove_plain(&side);
+    let sl = crate::cursor_superlite_dir(home);
+    if crate::is_superlite_clone(&sl) {
+        let _ = fs::remove_dir_all(&sl);
+    }
 }
 
 /// Opencode: the generated rules, agents, plugin and theme, plus the permissions and MCP servers we merged.
@@ -163,6 +167,7 @@ pub fn opencode_undo(home: &Path) {
         if v.get("mcp").and_then(|m| m.as_object()).is_some_and(serde_json::Map::is_empty) {
             drop_key(v, "mcp");
         }
+        crate::opencode_superlite(v, false);
     });
     remove_plain(&side);
     projects_undo(home);

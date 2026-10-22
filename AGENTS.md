@@ -127,6 +127,9 @@ Cursor is present: it installs the CLI, the Brewfile `vscode` extensions, and ru
 - Never symlink `~/.cursor/cli-config.json` or `~/.cursor/mcp.json`. Cursor rewrites them.
 - Rules in every folder: run `cursor-rules`, paste in Cursor Settings > Rules > User Rules.
   `dots` then skips the file rule and warns when to paste again.
+- superlite follows the Claude Code switch (`superlite@superlite-dev` in the built
+  `~/.claude/settings.json`): a clone in `~/.cursor/plugins/local/superlite` and the spec in
+  Opencode's `plugins`. `DOTS_SUPERLITE_REPO` points the clone at another repo (tests).
 
 ## Opencode
 

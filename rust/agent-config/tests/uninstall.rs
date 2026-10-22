@@ -73,6 +73,15 @@ fn fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::Pat
     wr(&oc.join("tui.json"), r#"{"theme": "copper", "other": 1}"#);
     wr(&oc.join("opencode.jsonc"), &json!({"permission": {"bash": {"rm *": "deny", "mine *": "allow"}}, "mcp": {"docs": {"type": "remote", "url": "https://example.test/mcp", "enabled": true}}}).to_string());
     wr(&oc.join(".dotfiles-managed.json"), &json!({"bash": {"rm *": "deny"}}).to_string());
+    // superlite: our Cursor clone and our Opencode plugin spec
+    let sl = home.join(".cursor/plugins/local/superlite");
+    wr(&sl.join(".cursor-plugin/plugin.json"), "{}");
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&sl).args(args).status().unwrap().success());
+    git(&["init", "-q"]);
+    git(&["remote", "add", "origin", "https://github.com/iha2/superlite.git"]);
+    let mut cfg = json_at(&oc.join("opencode.jsonc"));
+    cfg["plugins"] = json!(["mine", "superlite@git+https://github.com/iha2/superlite.git"]);
+    wr(&oc.join("opencode.jsonc"), &cfg.to_string());
     (tmp, home, repo)
 }
 
@@ -111,6 +120,8 @@ fn removes_ours_and_keeps_the_users() {
         json!({"bash": {"mine *": "allow"}})
     );
     assert!(json_at(&home.join(".config/opencode/opencode.jsonc")).get("mcp").is_none());
+    assert_eq!(json_at(&home.join(".config/opencode/opencode.jsonc"))["plugins"], json!(["mine"]));
+    assert!(!home.join(".cursor/plugins/local/superlite").exists());
     assert_eq!(json_at(&home.join(".config/opencode/tui.json")), json!({"other": 1}));
     // the repo itself stays, and a second run changes nothing and still succeeds
     assert!(repo.join("claude/agents/a.md").is_file());

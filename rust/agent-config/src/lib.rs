@@ -970,6 +970,133 @@ pub fn opencode_plugin(home: &Path) {
     write_generated(&path, &text, None);
 }
 
+/// superlite (github `iha2/superlite`) in Cursor and Opencode follows the Claude Code switch:
+/// `enabledPlugins["superlite@superlite-dev"]` in the built `~/.claude/settings.json` (not the repo
+/// base: plugins live in the private layer).
+pub const SUPERLITE_PLUGIN: &str = "superlite@superlite-dev";
+/// The git source of the Cursor clone. `DOTS_SUPERLITE_REPO` overrides it (tests).
+pub const SUPERLITE_REPO: &str = "https://github.com/iha2/superlite.git";
+/// The Opencode plugin spec (its install guide, V1 `plugin` and V2 `plugins` key).
+pub const SUPERLITE_OPENCODE: &str = "superlite@git+https://github.com/iha2/superlite.git";
+
+/// True when Claude Code has superlite on.
+pub fn superlite_wanted(home: &Path) -> bool {
+    load_json(&home.join(".claude").join("settings.json"))
+        .and_then(|s| s.get("enabledPlugins")?.get(SUPERLITE_PLUGIN)?.as_bool())
+        == Some(true)
+}
+
+fn superlite_repo() -> String {
+    env::var("DOTS_SUPERLITE_REPO").ok().filter(|r| !r.is_empty()).unwrap_or_else(|| SUPERLITE_REPO.to_string())
+}
+
+/// `git -C dir args`, its trimmed stdout when it exited 0.
+fn git_in(dir: &Path, args: &[&str]) -> Option<String> {
+    let o = process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(process::Stdio::null())
+        .stderr(process::Stdio::null())
+        .output()
+        .ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// The Cursor plugin folder of superlite. Cursor loads a real folder there; a symlink to a folder
+/// outside `~/.cursor/plugins/local` is skipped, so this is a clone, not a link.
+pub fn cursor_superlite_dir(home: &Path) -> PathBuf {
+    home.join(".cursor").join("plugins").join("local").join("superlite")
+}
+
+/// True when `dir` is our clone: a git folder whose origin is the superlite repo.
+pub fn is_superlite_clone(dir: &Path) -> bool {
+    dir.join(".git").exists() && git_in(dir, &["remote", "get-url", "origin"]).is_some_and(|u| u == superlite_repo())
+}
+
+/// Cursor: clone superlite into the local plugin folder, or fast-forward it; remove our clone when
+/// superlite is off in Claude Code. A folder that is not our clone stays.
+pub fn cursor_superlite(home: &Path) {
+    let dir = cursor_superlite_dir(home);
+    let ours = is_superlite_clone(&dir);
+    if !superlite_wanted(home) {
+        if ours {
+            if dry() {
+                info(&format!("would remove {} (superlite is off in Claude Code)", tilde(&dir)));
+            } else if fs::remove_dir_all(&dir).is_ok() {
+                ok(&format!("removed {} (superlite is off in Claude Code)", tilde(&dir)));
+            } else {
+                warn(&format!("could not remove {}", tilde(&dir)));
+            }
+        }
+        return;
+    }
+    if dir.exists() && !ours {
+        warn(&format!("{} is not a superlite clone, left untouched", tilde(&dir)));
+        return;
+    }
+    if dry() {
+        info(&format!("would {} superlite in {}", if ours { "update" } else { "clone" }, tilde(&dir)));
+        return;
+    }
+    if ours {
+        let before = git_in(&dir, &["rev-parse", "HEAD"]);
+        if git_in(&dir, &["pull", "-q", "--ff-only"]).is_none() {
+            warn(&format!("superlite update failed in {}; try: git -C {} pull", tilde(&dir), tilde(&dir)));
+        } else if git_in(&dir, &["rev-parse", "HEAD"]) != before {
+            ok(&format!("updated superlite in {} (reload Cursor)", tilde(&dir)));
+        } else {
+            skip("superlite (Cursor plugin)");
+        }
+        return;
+    }
+    let _ = fs::create_dir_all(dir.parent().unwrap_or(home));
+    let cloned = process::Command::new("git")
+        .args(["clone", "-q", "--depth", "1", &superlite_repo()])
+        .arg(&dir)
+        .stdin(process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if cloned {
+        ok(&format!("cloned superlite into {} (reload Cursor)", tilde(&dir)));
+    } else {
+        warn(&format!("superlite clone failed; try: git clone {} {}", superlite_repo(), tilde(&dir)));
+    }
+}
+
+/// The Opencode plugin list key: `plugin` when the config already uses the V1 key, else `plugins`.
+fn opencode_plugin_key(cfg: &Value) -> &'static str {
+    if cfg.get("plugin").is_some_and(Value::is_array) && cfg.get("plugins").is_none() { "plugin" } else { "plugins" }
+}
+
+/// Adds the superlite spec to the Opencode plugin list when superlite is on in Claude Code, and takes
+/// it out when it is off. Only the exact spec counts, so a pinned `#tag` the user wrote stays.
+pub fn opencode_superlite(cfg: &mut Value, wanted: bool) {
+    let Some(obj) = cfg.as_object_mut() else { return };
+    if !wanted {
+        for key in ["plugin", "plugins"] {
+            let Some(list) = obj.get_mut(key).and_then(Value::as_array_mut) else { continue };
+            let n = list.len();
+            list.retain(|p| p.as_str() != Some(SUPERLITE_OPENCODE));
+            if list.is_empty() && n > 0 {
+                obj.remove(key); // the list held only ours
+            }
+        }
+        return;
+    }
+    let has_one = |v: &Value| {
+        v.as_str().is_some_and(|p| p == SUPERLITE_OPENCODE || p.starts_with(&format!("{SUPERLITE_OPENCODE}#")))
+    };
+    if ["plugin", "plugins"].iter().any(|k| obj.get(*k).and_then(Value::as_array).is_some_and(|l| l.iter().any(has_one))) {
+        return;
+    }
+    let key = opencode_plugin_key(&Value::Object(obj.clone()));
+    let entry = obj.entry(key.to_string()).or_insert_with(|| serde_json::json!([]));
+    if let Some(list) = entry.as_array_mut() {
+        list.push(Value::String(SUPERLITE_OPENCODE.to_string()));
+    }
+}
+
 /// The sh the plugin starts, found when the plugin is written. The launcher is plain POSIX sh, and sh
 /// starts faster than Homebrew bash. On Windows a bare name can find a program in System32 first (bash
 /// there is the WSL launcher), so the plugin gets the full path of the Git Bash `sh.exe` (`usr\bin`)
@@ -1075,6 +1202,7 @@ pub fn opencode_config(home: &Path) {
         }
     }
     new.as_object_mut().unwrap().insert("permission".to_string(), perms);
+    opencode_superlite(&mut new, superlite_wanted(home));
 
     if opencode_mcp_wanted(home) {
         let mcp = new.as_object_mut().unwrap().entry("mcp".to_string()).or_insert(serde_json::json!({})).clone();
@@ -1288,6 +1416,7 @@ pub fn cmd_cursor(args: &CursorArgs) -> i32 {
         part(|| cursor_agents(&home)),
         part(|| cursor_hooks(&home)),
         part(|| cursor_mcp(&home)),
+        part(|| cursor_superlite(&home)),
         Box::new(|| cursor_cli_config(&home)) as Part,
     ];
     i32::from(run_parts(parts) > 0)
