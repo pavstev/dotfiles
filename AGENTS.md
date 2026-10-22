@@ -276,7 +276,8 @@ email, then shows the menu.
   brings a second history. Host names in the private `PUBLIC_HOSTS` setting are removed from the
   text before any of these word checks (hooks, `dots doctor` no-leak, guard G16), so a link to the
   owner's own site can pass; only whole hosts, never paths.
-- **Story page:** the GitHub homepage of this repo is a page that tells its story. It reads the repo
+- **Story page:** https://stevanpavlovic.com/work/dotfiles tells this repo's story and is the GitHub
+  homepage of the repo. It reads the repo
   from GitHub at build: the paths `claude/skills/ps_*/SKILL.md`,
   `claude/agents/*.md`, `claude/presets/*/rules.md`, `claude/output-styles/*.md`, `home/**`,
   `claude/settings.json`, `rust/agent-config/Cargo.toml` and the quoted check ids in

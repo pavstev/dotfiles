@@ -1,6 +1,7 @@
 # Docs
 
 Pick the page that answers your question. The start page is the [README](../README.md).
+For a guided tour of the skills, agents and guard hooks, see [the story page](https://stevanpavlovic.com/work/dotfiles).
 
 | Page | What it answers |
 |------|-----------------|

@@ -16,7 +16,9 @@ One command sets up Claude Code, Cursor and Opencode with shared skills, agents,
 [![AGENTS.md](https://img.shields.io/badge/AGENTS.md-ready-FF6FB5?style=flat-square&labelColor=07080F)](AGENTS.md)
 [![MIT](https://img.shields.io/badge/license-MIT-FFC46B?style=flat-square&labelColor=07080F)](LICENSE)
 
-[Install](#-install) · [What you get](#-what-you-get) · [Every day](#-every-day) · [Docs](docs/README.md)
+[Install](#-install) · [What you get](#-what-you-get) · [Every day](#-every-day) · [Docs](docs/README.md) · [The story](https://stevanpavlovic.com/work/dotfiles)
+
+<sub>New here? [The story page](https://stevanpavlovic.com/work/dotfiles) shows how the skills, agents and guard fit together.</sub>
 </div>
 
 ## ⚡ Install
