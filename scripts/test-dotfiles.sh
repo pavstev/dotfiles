@@ -514,6 +514,14 @@ else
     LC_ALL="$loc" pw_commit "utf1-$loc.txt" "xñoñox" && pass "private words: a 4-character UTF-8 word inside a longer word passes ($loc)" || bad "private words: ñoño blocked xñoñox ($loc): $(cat "$T/pw.out")"
     LC_ALL="$loc" pw_commit "utf2-$loc.txt" "a ñoño b" && bad "private words: a 4-character UTF-8 word as a whole word was not blocked ($loc)" || pass "private words: a 4-character UTF-8 word matches as a whole word ($loc)"
   done
+  # PUBLIC_HOSTS: a listed host passes, the bare word and other paths still block, a hostile entry is ignored
+  pw_settings 'PRIVATE_WORDS="zebrafish"' 'PUBLIC_HOSTS="zebrafish.example, a|b"'
+  pw_commit host1.txt "see https://zebrafish.example/story and HTTPS://ZEBRAFISH.EXAMPLE" && pass "private words: a listed public host passes" || bad "private words: a listed host was blocked: $(cat "$T/pw.out")"
+  pw_commit host2.txt "I like zebrafish" && bad "private words: the bare word was not blocked with a host listed" || pass "private words: the bare word still blocks with a host listed"
+  pw_commit host3.txt "see https://zebrafish.example/zebrafish" && bad "private words: a word in the path of a listed host was not blocked" || pass "private words: a word in a path still blocks"
+  pw_commit host4.txt "see https://other.example/a|b zebrafish.net" && bad "private words: another host with the word was not blocked" || pass "private words: another host holding the word still blocks"
+  pw_settings 'PRIVATE_WORDS="zebrafish"'
+  pw_commit host5.txt "see https://zebrafish.example/story" && bad "private words: the host passed with PUBLIC_HOSTS unset" || pass "private words: the host is blocked with PUBLIC_HOSTS unset"
   pw_settings ''
   pw_commit empty.txt "plain text" && pass "private words: with no words a commit passes" || bad "private words: a commit with no words failed: $(cat "$T/pw.out")"
   [[ "$(grep -c 'private words: none set' "$T/pw.out")" -ge 1 ]] && pass "private words: an empty list prints a warning" || bad "private words: no warning for an empty list: $(cat "$T/pw.out")"

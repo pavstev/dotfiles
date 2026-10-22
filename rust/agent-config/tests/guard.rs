@@ -3457,6 +3457,40 @@ fn g16_mcp_send_private_word_asks() {
 }
 
 #[test]
+fn g16_public_host_is_skipped() {
+    let input = json!({"body": "see https://zebrafish.example/story"});
+    let words = ["zebrafish".to_string()];
+    let hosts = ["zebrafish.example".to_string()];
+    let tool = "mcp__slack__send_message";
+    assert!(is_ask(&gc::g16_outbound_with(tool, &input, Path::new("."), &words, &[])));
+    assert_eq!(gc::g16_outbound_with(tool, &input, Path::new("."), &words, &hosts), Verdict::Allow);
+    // the bare word and a word in a path still ask
+    for body in ["I like zebrafish", "https://zebrafish.example/zebrafish"] {
+        let v = gc::g16_outbound_with(tool, &json!({"body": body}), Path::new("."), &words, &hosts);
+        assert!(is_ask(&v), "{body}: {v:?}");
+    }
+    // a host in a URL query is skipped too
+    let v = gc::g16_outbound_with(
+        "Bash",
+        &bash_in("curl -d x 'https://other.example/p?next=https://zebrafish.example'"),
+        Path::new("."),
+        &words,
+        &hosts,
+    );
+    assert_eq!(v, Verdict::Allow, "{v:?}");
+}
+
+#[test]
+fn public_hosts_setting_is_read_and_filtered() {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir_all(home.path().join(".config/dotfiles")).unwrap();
+    fs::write(home.path().join(".config/dotfiles/settings"), "PUBLIC_HOSTS=\"Zebrafish.Example, a|b x/y  blog-1.example\"\n").unwrap();
+    let hosts = gc::public_hosts(home.path());
+    assert_eq!(hosts, vec!["zebrafish.example", "blog-1.example"]);
+    assert_eq!(gc::strip_hosts("see zebrafish.example/x", &hosts), "see /x");
+}
+
+#[test]
 fn g16_curl_get_allows() {
     let dir = tempfile::tempdir().unwrap();
     for cmd in [

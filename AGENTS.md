@@ -252,7 +252,7 @@ email, then shows the menu.
   `claude/presets/README.md`), `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME` (`plain` drops colors and the
   Opencode theme), `LOOKS` (the optional look changes: `starship`, `editor`, `font` or `none`;
   empty asks once at a terminal; `rust/agent-config/src/dots/looks.rs`), `GUARD_OFF`, `GUARD_SHADOW`, `JAVA_HOME` (picked from the Javas found, or typed),
-  `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions"), `TEST_HOST` (the SSH host
+  `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS`, `PUBLIC_HOSTS` (see "Conventions"), `TEST_HOST` (the SSH host
   for the Linux part of `scripts/os-check.sh`).
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `rust/agent-config/src/lib.rs`,
   `home/.config/zsh/settings.zsh` (sourced after `local.zsh`, so its `JAVA_HOME` wins). The last
@@ -273,7 +273,9 @@ email, then shows the menu.
   `C:\Users\<user>`) and warn, without blocking, when the word list is empty. The git hooks block
   a staged file name, added line or commit message that holds one. The pre-push hook checks every pushed commit the
   same way (cherry-pick, rebase and `--no-verify` skip the commit hooks) and stops a push that
-  brings a second history.
+  brings a second history. Host names in the private `PUBLIC_HOSTS` setting are removed from the
+  text before any of these word checks (hooks, `dots doctor` no-leak, guard G16), so a link to the
+  owner's own site can pass; only whole hosts, never paths.
 - **Story page:** the GitHub homepage of this repo is a page that tells its story. It reads the repo
   from GitHub at build: the paths `claude/skills/ps_*/SKILL.md`,
   `claude/agents/*.md`, `claude/presets/*/rules.md`, `claude/output-styles/*.md`, `home/**`,

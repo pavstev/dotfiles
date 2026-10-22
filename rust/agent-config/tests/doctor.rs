@@ -354,6 +354,24 @@ fn doctor_no_leak_matches_short_words_as_whole_words() {
 }
 
 #[test]
+fn doctor_no_leak_skips_public_hosts() {
+    let fx = fixture("doctor-leak-hosts");
+    fx.setting("PRIVATE_WORDS=\"zebrafish\"\n");
+    wr(&fx.repo.join("claude/link.md"), "see https://zebrafish.example/story\n");
+    git(&fx, &["add", "-A"]);
+    // without the host listed the line is a leak
+    let why = fx.get("no-leak").unwrap_err();
+    assert!(why.contains("claude/link.md:1"), "{why}");
+    // with the host listed it passes, a hostile entry is ignored, the bare word still fails
+    fx.setting("PRIVATE_WORDS=\"zebrafish\"\nPUBLIC_HOSTS=\"a|b, ZebraFish.example\"\n");
+    assert!(fx.get("no-leak").is_ok(), "{:?}", fx.get("no-leak"));
+    wr(&fx.repo.join("claude/bare.md"), "a zebrafish here\n");
+    git(&fx, &["add", "-A"]);
+    let why = fx.get("no-leak").unwrap_err();
+    assert!(why.contains("claude/bare.md:1") && !why.contains("link.md"), "{why}");
+}
+
+#[test]
 fn doctor_guard_selftest_passes_without_settings() {
     // canned inputs and a canned private word: it needs no setting of the machine
     let fx = fixture("doctor-guard");

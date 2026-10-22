@@ -462,7 +462,7 @@ struct MenuRow {
 }
 
 /// The menu lines, in the order they show.
-const ROWS: [MenuRow; 18] = [
+const ROWS: [MenuRow; 19] = [
     MenuRow {
         emoji: "👤 ",
         name: "Git name",
@@ -557,6 +557,19 @@ const ROWS: [MenuRow; 18] = [
                 "🚫 More private words, split by spaces. Your git name and email count already.",
                 "client-name nickname",
                 "private words",
+            );
+        },
+    },
+    MenuRow {
+        emoji: "🌐 ",
+        name: "Public hosts",
+        value: || or(settings::get("PUBLIC_HOSTS"), "none"),
+        edit: |_| {
+            edit_words(
+                "PUBLIC_HOSTS",
+                "🌐 Host names the private-word checks skip, split by spaces (your own site).",
+                "example.com blog.example.com",
+                "public hosts",
             );
         },
     },

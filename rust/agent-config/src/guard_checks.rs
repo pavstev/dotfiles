@@ -1522,11 +1522,11 @@ fn add_kind(kinds: &mut Vec<String>, kind: String) {
 }
 
 /// Note in `kinds` what kind of thing `text` holds; the match itself is never kept.
-fn scan_text(text: &str, words: &[String], kinds: &mut Vec<String>) {
+fn scan_text(text: &str, words: &[String], hosts: &[String], kinds: &mut Vec<String>) {
     if text.is_empty() {
         return;
     }
-    let lower = text.to_lowercase();
+    let lower = strip_hosts(&text.to_lowercase(), hosts);
     if words.iter().any(|w| word_hit(&lower, w)) {
         add_kind(kinds, "a private word".to_string());
     }
@@ -2025,17 +2025,23 @@ const OUTBOUND_TOOLS: &[&str] = &["gh", "curl", "wget"];
 
 /// A URL operand: a secret shape anywhere in it, a private word only in its query (the path of a
 /// private repo is a read, not a leak of the word).
-fn scan_url(url: &str, words: &[String], kinds: &mut Vec<String>) {
-    scan_text(url, &[], kinds);
+fn scan_url(url: &str, words: &[String], hosts: &[String], kinds: &mut Vec<String>) {
+    scan_text(url, &[], hosts, kinds);
     if let Some((_, query)) = url.split_once('?') {
-        scan_text(query, words, kinds);
+        scan_text(query, words, hosts, kinds);
     }
 }
 
 /// G16: ask before text that holds a private word or a secret shape leaves the machine (`gh pr|issue`
 /// writes, `gh api` writes, `curl`/`wget` with a body, MCP send tools). A body that cannot be read
-/// (stdin, a shell expansion, a missing, big or odd file) asks too. `words` are the private words.
+/// (stdin, a shell expansion, a missing, big or odd file) asks too. `words` are the private words;
+/// the hosts of the `PUBLIC_HOSTS` setting are removed from the text before the word match.
 pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> Verdict {
+    g16_outbound_with(tool, input, cwd, words, &public_hosts(&crate::paths::home()))
+}
+
+/// [`g16_outbound`] with the public hosts given (lower case, from [`public_hosts`]).
+pub fn g16_outbound_with(tool: &str, input: &Value, cwd: &Path, words: &[String], hosts: &[String]) -> Verdict {
     let words: Vec<String> = words.iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
     let mut kinds: Vec<String> = Vec::new();
     if tool.starts_with("mcp__") {
@@ -2043,7 +2049,7 @@ pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> 
             let mut all = Vec::new();
             strings_of(input, &mut all);
             for s in &all {
-                scan_text(s, &words, &mut kinds);
+                scan_text(s, &words, hosts, &mut kinds);
             }
         }
     } else if tool == "Bash"
@@ -2060,7 +2066,7 @@ pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> 
             let Some(mut p) = payload_of(&c) else { continue };
             sends = sends || p.body;
             let here = PathBuf::from(c.cwd.as_deref().unwrap_or(&base));
-            p.urls.iter().for_each(|u| scan_url(u, &words, &mut kinds));
+            p.urls.iter().for_each(|u| scan_url(u, &words, hosts, &mut kinds));
             if p.stdin {
                 // the body comes from stdin: a redirect, a here-string or a heredoc that starts
                 // on this command's own line (not one that belongs to another command)
@@ -2091,19 +2097,19 @@ pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> 
                 if is_opaque(t) {
                     add_kind(&mut kinds, "a body it cannot read (a shell expansion)".to_string());
                 } else {
-                    scan_text(t, &words, &mut kinds);
+                    scan_text(t, &words, hosts, &mut kinds);
                 }
             }
             for f in &p.files {
                 match read_body_file(f, &here) {
-                    Ok(text) => scan_text(&text, &words, &mut kinds),
+                    Ok(text) => scan_text(&text, &words, hosts, &mut kinds),
                     Err(why) => add_kind(&mut kinds, why.to_string()),
                 }
             }
         }
         if sends {
             for b in &heredoc_bodies(cmd) {
-                scan_text(b, &words, &mut kinds);
+                scan_text(b, &words, hosts, &mut kinds);
             }
             if has_substitution(cmd) {
                 add_kind(&mut kinds, "a body it cannot read (a shell expansion)".to_string());
@@ -2348,6 +2354,29 @@ pub fn private_words_at(home: &Path, dir: Option<&Path>) -> Vec<String> {
                 push(&mut out, &w);
             }
         }
+    }
+    out
+}
+
+/// The host names of the `PUBLIC_HOSTS` setting (a space or comma list), lower case. The word checks
+/// skip them, so a link to the owner's own site may hold a private word. An entry with a character
+/// outside `[A-Za-z0-9.-]` is ignored.
+pub fn public_hosts(home: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for h in crate::setting(home, "PUBLIC_HOSTS").split(|c: char| c.is_whitespace() || c == ',') {
+        let h = h.to_lowercase();
+        if !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') && !out.contains(&h) {
+            out.push(h);
+        }
+    }
+    out
+}
+
+/// `text` (lower case) with every host in `hosts` removed. Whole host names only, never paths.
+pub fn strip_hosts(text: &str, hosts: &[String]) -> String {
+    let mut out = text.to_string();
+    for h in hosts.iter().filter(|h| !h.is_empty()) {
+        out = out.replace(h.as_str(), "");
     }
     out
 }

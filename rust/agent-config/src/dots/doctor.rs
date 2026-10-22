@@ -414,6 +414,7 @@ fn no_leak(repo: &Path, home: &Path) -> Result<(), String> {
     if words.is_empty() {
         return Ok(());
     }
+    let hosts = gc::public_hosts(home);
     let mut hits: Vec<String> = Vec::new();
     for name in String::from_utf8_lossy(&out.stdout).split('\0').filter(|n| !n.is_empty()) {
         let lower = name.to_lowercase();
@@ -427,7 +428,8 @@ fn no_leak(repo: &Path, home: &Path) -> Result<(), String> {
         }
         let Ok(text) = fs::read(&path).map(|b| String::from_utf8_lossy(&b).to_lowercase()) else { continue };
         for (i, line) in text.lines().enumerate() {
-            if words.iter().any(|w| gc::word_hit(line, w)) {
+            let line = gc::strip_hosts(line, &hosts);
+            if words.iter().any(|w| gc::word_hit(&line, w)) {
                 hits.push(format!("{shown_name}:{}", i + 1));
             }
         }
