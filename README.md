@@ -17,7 +17,6 @@ One command sets up Claude Code, Cursor and Opencode with shared skills, agents,
 [![MIT](https://img.shields.io/badge/license-MIT-FFC46B?style=flat-square&labelColor=07080F)](LICENSE)
 
 [Install](#-install) · [What you get](#-what-you-get) · [Every day](#-every-day) · [Docs](docs/README.md)
-
 </div>
 
 ## ⚡ Install
@@ -44,11 +43,11 @@ Then it installs. A long step says `still working…` each minute, and the last 
 
 | | |
 |---|---|
-| 🤖 **One config, three agents** | Claude Code, Cursor and Opencode read the same rules, 17 `/ps:` skills and 8 agents from [`claude/`](claude). |
+| 🤖 **One config, three agents** | Claude Code, Cursor and Opencode read the same rules, 19 `/ps:` skills and 8 agents from [`claude/`](claude). |
 | 🛡️ **Guard hooks** | A Rust guard checks each tool call: risky git, secrets in files, private words, runaway helpers. |
 | 🧩 **Presets** | Opt-in working habits: workflow, pace, models, clock, plain writing and more. |
 | 🦀 **One command** | `dots` pulls, links and installs. It is idempotent, short, and `dots doctor` checks the result. |
-| 🧰 **39 CLI tools** | `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`, `lazygit` and more, from one [`tools.list`](tools.list) via mise. |
+| 🧰 **41 CLI tools** | `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`, `lazygit` and more, from one [`tools.list`](tools.list) via mise. |
 | 🎨 **Optional looks** | Starship prompt, VS Code and Cursor settings, Nerd Font. Off until you pick them. |
 | 🔒 **Private by design** | Settings and personal rules stay on the machine. Git hooks block secrets and private words. |
 | ✅ **Tested everywhere** | `/os-check` runs the setup on macOS, five Linux distros and a Windows VM. |

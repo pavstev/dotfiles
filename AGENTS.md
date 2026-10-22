@@ -274,6 +274,12 @@ email, then shows the menu.
   a staged file name, added line or commit message that holds one. The pre-push hook checks every pushed commit the
   same way (cherry-pick, rebase and `--no-verify` skip the commit hooks) and stops a push that
   brings a second history.
+- **Story page:** the GitHub homepage of this repo is a page that tells its story. It reads the repo
+  from GitHub at build: the paths `claude/skills/ps_*/SKILL.md`,
+  `claude/agents/*.md`, `claude/presets/*/rules.md`, `claude/output-styles/*.md`, `home/**`,
+  `claude/settings.json`, `rust/agent-config/Cargo.toml` and the quoted check ids in
+  `rust/agent-config/src/guard_checks.rs`. Moving one of them breaks the page build on purpose.
+  A new or renamed skill needs an entry in the page's skill catalog (in the site repo), or it shows as new.
 - **Theme:** warm Claude copper-on-stone. Refine it; never swap palettes.
 - **macOS, Linux and Windows:** one code path where possible; OS-only branches behind
   `is_macos`/`is_linux`/`is_windows`.
