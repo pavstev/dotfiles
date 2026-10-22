@@ -118,7 +118,7 @@ A check also needs its preset on, and `GUARD_OFF` turns one off in every app.
 | H1 hint to use `rust-bin ctx` when Bash runs `sed -n` or `cat` on a code file (preset `workflow`; never a deny; at most 3 per session) | yes | no | not tested |
 | W5 note "skip it" for a check command that already passed with the work tree unchanged (preset `workflow`; never a deny) | yes | no | not tested |
 | Format on edit (`rust-bin --hook proj format`; not a guard check) | yes | no (Cursor has its own `afterFileEdit` hook) | no |
-| G1, G2, G4 to G13, G18, pace, router | yes | no | not tested |
+| G1, G2, G4 to G13, G18, G19, pace, router | yes | no | not tested |
 
 The Opencode plugin runs the whole `guard pretool` hook, so a Claude check that looks at a shell
 command can also fire there. Only G14 to G17 are tested in Opencode.

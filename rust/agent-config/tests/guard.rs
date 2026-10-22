@@ -3025,6 +3025,18 @@ impl G {
                 self.run("posttoolfailure", &data);
                 self.run("pretool", &data)
             }
+            "G19" => {
+                let repo = self.make_repo(false);
+                write_file(&repo, "package.json", r#"{"scripts": {"check:fast": "true"}}"#);
+                let file = write_file(&repo, "a.txt", "x");
+                let edit = json!({"session_id": "g19", "agent_id": "h1", "tool_name": "Edit", "cwd": repo,
+                    "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}});
+                self.run("posttool", &edit);
+                self.run(
+                    "subagentstop",
+                    &json!({"session_id": "g19", "agent_id": "h1", "cwd": repo, "last_assistant_message": "Done."}),
+                )
+            }
             "PACE" => {
                 let path = self.transcript_named(&[human("hi"), assistant(1000)], "pace.jsonl");
                 let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "pc", "transcript_path": path, "prompt": "go"});

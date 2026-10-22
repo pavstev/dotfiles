@@ -1,5 +1,6 @@
-//! G18 (preset workflow): the third try of a step that failed twice is denied. Runs the `guard` bin on a
-//! temp git repo.
+//! G18 (preset workflow): the third try of a step that failed twice is denied, and G19 (preset
+//! workflow): an unattended run that edited a project is held back once until a check passed. Runs
+//! the `guard` bin on a temp git repo that has a `check:fast` script.
 
 mod common;
 
@@ -111,6 +112,42 @@ impl W {
             assert!(err.contains("stop and report: 2 failed tries on this step"), "{err}");
         }
         code == 2
+    }
+
+    /// A transcript that shows the autopilot skill was started, or a plain chat.
+    fn transcript(&self, autopilot: bool) -> PathBuf {
+        let path = self.tmp.join(if autopilot { "auto.jsonl" } else { "chat.jsonl" });
+        let mut lines = vec![json!({"type": "user", "message": {"role": "user", "content": "go"}})];
+        if autopilot {
+            lines.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Skill", "input": {"skill": "ps:autopilot"}}]}}));
+        }
+        lines.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "All tasks are done."}]}}));
+        let body: Vec<String> = lines.iter().map(Value::to_string).collect();
+        fs::create_dir_all(&self.tmp).unwrap();
+        fs::write(&path, body.join("\n") + "\n").unwrap();
+        path
+    }
+
+    /// The main thread stops.
+    fn stop(&self, transcript: &Path, again: bool) -> (i32, String) {
+        let mut ev = self.base();
+        ev["transcript_path"] = json!(transcript);
+        ev["stop_hook_active"] = json!(again);
+        ev["last_assistant_message"] = json!("All tasks are done.");
+        let (code, _, err) = self.run("stop", &ev, &[]);
+        (code, err)
+    }
+
+    /// The helper `id` stops.
+    fn helper_stop(&self, id: &str, again: bool, env: &[(&str, &str)]) -> (i32, String) {
+        let mut ev = self.base();
+        ev["agent_id"] = json!(id);
+        ev["stop_hook_active"] = json!(again);
+        ev["last_assistant_message"] = json!("Done.");
+        let (code, _, err) = self.run("subagentstop", &ev, env);
+        (code, err)
     }
 
     fn src(&self) -> PathBuf {
@@ -238,4 +275,122 @@ fn garbage_input_fails_open() {
         let (code, out, _) = run_bin(GUARD, &[mode], "{\"tool_name\": \"Edit\", \"tool_input\": 5}", &[], None);
         assert_eq!((code, out.as_str()), (0, ""), "{mode}");
     }
+}
+
+// --- G19 ---
+
+#[test]
+fn a_helper_that_edited_and_never_checked_is_held_back_once() {
+    let w = W::new();
+    w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
+    let (code, err) = w.helper_stop("h1", false, &[]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("run the fast check before you stop") && err.contains("npm run check:fast"), "{err}");
+    assert_eq!(w.helper_stop("h1", true, &[]).0, 0, "the second stop goes through");
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 0, "even without the stop hook flag");
+}
+
+#[test]
+fn a_passing_check_after_the_edit_lets_the_helper_stop() {
+    let w = W::new();
+    w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
+    w.passed(&W::as_helper(w.bash("npm test"), "h1"));
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 0);
+    w.passed(&W::as_helper(w.edit(&w.src(), "two"), "h1"));
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 2, "a later edit needs a new pass");
+    assert_eq!(w.helper_stop("h1", true, &[]).0, 0);
+}
+
+#[test]
+fn a_check_that_is_not_a_plain_check_is_no_proof() {
+    let w = W::new();
+    w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
+    w.passed(&W::as_helper(w.bash("npm test | tail -3"), "h1")); // a pipe hides the exit code
+    w.passed(&W::as_helper(w.bash("ls"), "h1"));
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 2);
+}
+
+#[test]
+fn a_helper_that_edited_nothing_in_a_project_is_not_held_back() {
+    let w = W::new();
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 0, "no edits at all");
+    let outside = temp_home("stuck-outside").join("notes.md");
+    w.passed(&W::as_helper(w.edit(&outside, "a"), "h1"));
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 0, "a file outside any project");
+    // the edit of one helper does not hold back another
+    w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h2"));
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 0);
+    assert_eq!(w.helper_stop("h2", false, &[]).0, 2);
+}
+
+#[test]
+fn a_project_without_a_fast_check_is_not_held_back() {
+    let w = W::with(false);
+    w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 0);
+}
+
+#[test]
+fn g19_guard_off_turns_it_off() {
+    let w = W::new();
+    w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
+    assert_eq!(w.helper_stop("h1", false, &[("GUARD_OFF", "G19")]).0, 0);
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 2, "the stop was not marked while it was off");
+}
+
+#[test]
+fn an_autopilot_session_is_held_back_once_on_stop() {
+    let w = W::new();
+    let t = w.transcript(true);
+    w.passed(&w.edit(&w.src(), "one"));
+    let (code, err) = w.stop(&t, false);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("run the fast check before you stop"), "{err}");
+    assert_eq!(w.stop(&t, true).0, 0, "never twice in a row");
+    assert_eq!(w.stop(&t, false).0, 0, "also when the flag is missing");
+    // a new edit is held back again, once
+    w.passed(&w.edit(&w.src(), "two"));
+    assert_eq!(w.stop(&t, false).0, 2);
+    assert_eq!(w.stop(&t, true).0, 0);
+}
+
+#[test]
+fn an_autopilot_session_that_checked_may_stop() {
+    let w = W::new();
+    let t = w.transcript(true);
+    w.passed(&w.edit(&w.src(), "one"));
+    w.passed(&w.bash("cargo test"));
+    assert_eq!(w.stop(&t, false).0, 0);
+}
+
+#[test]
+fn a_normal_chat_is_never_held_back() {
+    let w = W::new();
+    let t = w.transcript(false);
+    w.passed(&w.edit(&w.src(), "one"));
+    assert_eq!(w.stop(&t, false).0, 0);
+    assert_eq!(w.stop(&t, false).0, 0);
+}
+
+#[test]
+fn the_helper_hold_back_does_not_free_the_slot_but_the_second_stop_does() {
+    let w = W::new();
+    let spawn = |id: &str| {
+        let mut ev = w.base();
+        ev["tool_name"] = json!("Agent");
+        ev["tool_use_id"] = json!(id);
+        ev["tool_input"] = json!({"description": "d", "subagent_type": "worker", "prompt": "Deadline 10 min. Hand back at most 4000 chars."});
+        ev
+    };
+    let (code, _) = w.pre(&spawn("a1"));
+    assert_eq!(code, 0);
+    w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
+    assert_eq!(w.helper_stop("h1", false, &[]).0, 2);
+    let state = |w: &W| -> Value {
+        let p = w.tmp.join("claude-guard").join(format!("{}.json", w.sid));
+        serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap()
+    };
+    assert_eq!(state(&w)["spawns"].as_array().map(Vec::len), Some(1), "the slot is still taken");
+    assert_eq!(w.helper_stop("h1", true, &[]).0, 0);
+    assert_eq!(state(&w)["spawns"].as_array().map(Vec::len), Some(0), "the slot is free");
 }

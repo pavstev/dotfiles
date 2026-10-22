@@ -12,7 +12,7 @@ that is off costs no tokens. The core rules stay in `claude/CLAUDE.md`.
 
 | Preset | What it does | Guard | Settings |
 |--------|--------------|-------|----------|
-| `workflow` | Speed over ceremony, hand-offs in files, briefs, question style, the agent set | G1-G7, G12, G13, G18, H1, W5 | none |
+| `workflow` | Speed over ceremony, hand-offs in files, briefs, question style, the agent set | G1-G7, G12, G13, G18, G19, H1, W5 | none |
 | `pace` | Make the weekly budget last the work days; helper caps | G8, PACE | none |
 | `models` | Effort and model picks | G9, ROUTER | `model`, `env.CLAUDE_CODE_SUBAGENT_MODEL` |
 | `clock` | Say the local time and an estimate with a range | G11 | none |

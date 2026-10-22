@@ -8,13 +8,14 @@
 //! (a missing transcript) lets the call through.
 //!
 //! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
-//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, H1 and W5 (preset workflow), G8 and
+//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, G19, H1 and W5 (preset workflow), G8 and
 //! PACE (pace), G9 and ROUTER (models), G10 (ship-to-main), G11 (clock), G17 (no-ai-attribution),
 //! G14, G15 and G16 (core). H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
 //! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session. W5
 //! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
 //! already passed in this session, with the git work tree unchanged since, gets a note to skip it. G18
-//! (workflow) denies the third try of a Bash command or an edit that failed twice.
+//! (workflow) denies the third try of a Bash command or an edit that failed twice. G19 (workflow) holds an
+//! autopilot session or a helper back once at stop when it edited a project and no check passed since.
 
 use agent_config::guard_checks::{self as gc, Check, FireKind, Verdict, expanduser, is_macos, realpath};
 use agent_config::paths;
@@ -1329,7 +1330,7 @@ fn write_status(data: &HookInput, t: &Turn) {
     }
 }
 
-/// Stop checks, first message wins: G6, then G10 to G12 on the main thread. One reminder per turn.
+/// Stop checks, first message wins: G6, then G19 and G10 to G12 on the main thread. One reminder per turn.
 /// The status file for the statusline is updated first on the main thread, also on the final Stop
 /// after a forced continuation (`stop_hook_active`), which runs no check.
 fn stop(data: &HookInput) -> Option<String> {
@@ -1346,8 +1347,8 @@ fn stop(data: &HookInput) -> Option<String> {
         return None;
     }
     type TurnCheck = fn(&HookInput, &Turn) -> Option<String>;
-    let checks: [(Check, TurnCheck); 3] =
-        [(Check::G10, g10_commit), (Check::G11, g11_clock), (Check::G12, g12_open_steps)];
+    let checks: [(Check, TurnCheck); 4] =
+        [(Check::G19, g19_stop), (Check::G10, g10_commit), (Check::G11, g11_clock), (Check::G12, g12_open_steps)];
     let active: Vec<_> = checks.into_iter().filter(|(check, _)| check_enabled(*check)).collect();
     let t = scan_turn(Path::new(path))?;
     write_status(data, &t);
@@ -1390,11 +1391,17 @@ fn subagentstop(data: &HookInput) -> Option<String> {
         spawn_done(data);
         return None;
     }
-    let msg = if check_enabled(Check::G5) { check_handback(data, data.last_assistant_message) } else { None };
+    let mut msg = if check_enabled(Check::G5) { check_handback(data, data.last_assistant_message) } else { None };
+    if msg.is_some() {
+        gc::fire_log(Check::G5, FireKind::Deny);
+    } else if check_enabled(Check::G19) && data.agent_id.is_some() {
+        msg = g19_gate(data); // a helper always runs unattended
+        if msg.is_some() {
+            gc::fire_log(Check::G19, FireKind::Stop);
+        }
+    }
     if msg.is_none() {
         spawn_done(data); // the helper is really done; a denied hand-back keeps its slot
-    } else {
-        gc::fire_log(Check::G5, FireKind::Deny);
     }
     msg
 }
@@ -1679,6 +1686,7 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
 fn posttool(data: &HookInput) -> Option<String> {
     w5_record(data);
     g18_passed(data);
+    g19_record(data);
     if !check_enabled(Check::G13) || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
         return None; // the desktop app has its own nudge and its transcript can miss text blocks
     }
@@ -1836,6 +1844,87 @@ fn g18_stuck(data: &HookInput, _ctx: &Ctx) -> Verdict {
         return Verdict::Allow;
     }
     Verdict::Deny(MSG_G18_DENY.to_string())
+}
+
+// --- G19 fast check before an unattended run stops -----------------------------------------
+
+/// The `edits` entry of the calling agent: `n` project edits so far, `ok` the value of `n` at the last
+/// passing check command, `blocked` the value of `n` at the last stop that was held back, `dir` the
+/// folder of the last edit.
+fn agent_edits<'a>(state: &'a mut Map<String, Value>, data: &HookInput) -> Option<&'a mut Map<String, Value>> {
+    let table = state.entry("edits").or_insert_with(|| Value::Object(Map::new())).as_object_mut()?;
+    table.entry(data.agent_id.unwrap_or("main")).or_insert_with(|| Value::Object(Map::new())).as_object_mut()
+}
+
+/// G19, record side (PostToolUse): an Edit, Write or MultiEdit inside a project counts as an edit, and a
+/// plain check command that passed counts as the proof for every edit so far.
+fn g19_record(data: &HookInput) {
+    if !check_enabled(Check::G19) || data.interrupted {
+        return;
+    }
+    let edited = matches!(data.tool_name, Some("Edit" | "Write" | "MultiEdit"))
+        .then(|| data.input_str("file_path").map(PathBuf::from))
+        .flatten()
+        .and_then(|f| f.parent().filter(|d| proj::find_root(d).is_some()).map(Path::to_path_buf));
+    let passed = data.bash_command().is_some_and(|c| proj::plain_check(c).is_some());
+    if edited.is_none() && !passed {
+        return;
+    }
+    let _ = with_state(data, |state| {
+        let Some(e) = agent_edits(state, data) else { return };
+        if let Some(dir) = edited {
+            e.insert("n".into(), Value::from(counter(e.get("n")) + 1));
+            e.insert("dir".into(), Value::String(dir.to_string_lossy().into_owned()));
+        } else {
+            e.insert("ok".into(), Value::from(counter(e.get("n"))));
+        }
+    });
+}
+
+/// True when the transcript shows `ps:autopilot` was started: a Skill call or the typed command.
+fn autopilot_run(path: &Path) -> bool {
+    static MARK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#""skill"\s*:\s*"ps:autopilot"|<command-name>/?ps:autopilot</command-name>"#).unwrap()
+    });
+    let Ok(f) = fs::File::open(path) else { return false };
+    io::BufReader::new(f)
+        .split(b'\n')
+        .map_while(Result::ok)
+        .any(|line| has(&line, b"ps:autopilot") && std::str::from_utf8(&line).is_ok_and(|l| MARK.is_match(l)))
+}
+
+/// G19, gate side: the caller edited a project that has a fast check and no check passed since. Holds the
+/// stop back once per edit count: the folder of the last edit is marked, so a second stop goes through
+/// even when the stop hook flag is missing. Returns the message.
+fn g19_gate(data: &HookInput) -> Option<String> {
+    let dir = with_state(data, |state| {
+        let e = agent_edits(state, data)?;
+        let (n, ok, blocked) = (counter(e.get("n")), counter(e.get("ok")), counter(e.get("blocked")));
+        if n <= ok || n <= blocked {
+            return None;
+        }
+        e.insert("blocked".into(), Value::from(n));
+        e.get("dir").and_then(Value::as_str).map(PathBuf::from)
+    })
+    .flatten()?;
+    let fast = proj::detect(&dir)?.check_fast();
+    let line = fast.iter().map(proj::Cmd::line).collect::<Vec<_>>().join(" && ");
+    (!line.is_empty())
+        .then(|| format!("G19: you edited files and no check passed since; run the fast check before you stop: {line}"))
+}
+
+/// G19 on Stop: only in an autopilot session. A normal chat is never held back.
+fn g19_stop(data: &HookInput, _t: &Turn) -> Option<String> {
+    let pending = with_state(data, |state| {
+        let e = agent_edits(state, data)?;
+        Some(counter(e.get("n")) > counter(e.get("ok")) && counter(e.get("n")) > counter(e.get("blocked")))
+    })
+    .flatten()
+    .unwrap_or(false);
+    if !pending || !autopilot_run(Path::new(data.transcript_path?)) {
+        return None;
+    }
+    g19_gate(data)
 }
 
 // --- G8 helper cap, G9 plan gate, router -----------------------------------------
