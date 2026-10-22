@@ -762,6 +762,22 @@ fn test_w4_budget() {
     assert_warn(&g.spawn(&g.spawn_session(16, 0), "a15"), "spawned 15 agents");
 }
 
+#[test]
+fn test_w4_counts_each_agent_call_once() {
+    let g = G::new();
+    // a headless transcript repeats an Agent call in several records: 9 calls written twice are 9
+    let path = g.spawn_session(9, 0);
+    let mut text = fs_read(&path);
+    for i in 0..9 {
+        let rec = assistant_b(1000, json!([{"type": "tool_use", "id": format!("a{i}"), "name": "Agent", "input": {}}]));
+        let _ = writeln!(text, "{rec}");
+    }
+    G::write(&path, &text);
+    assert_allow(&g.spawn(&path, "new"));
+    // 15 distinct calls still warn
+    assert_warn(&g.spawn(&g.spawn_session(15, 0), "new"), "spawned 15 agents");
+}
+
 fn fs_read(path: &str) -> String {
     fs::read_to_string(path).unwrap()
 }

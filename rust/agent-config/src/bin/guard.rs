@@ -1536,6 +1536,8 @@ fn session_spawns(path: &Path) -> Option<(usize, i64)> {
     let data = fs::read(path).ok()?;
     let (mut spawns, mut tokens) = (0usize, 0i64);
     let mut tasks: HashSet<String> = HashSet::new();
+    // a transcript can repeat one Agent call in several records: count each call id once
+    let mut calls: HashSet<String> = HashSet::new();
     for line in data.split(|&b| b == b'\n') {
         if has(line, b"\"Agent\"")
             && let Some(rec) = loads(line)
@@ -1545,6 +1547,7 @@ fn session_spawns(path: &Path) -> Option<(usize, i64)> {
                 if b.is_object()
                     && get(b, "type").as_str() == Some("tool_use")
                     && get(b, "name").as_str() == Some("Agent")
+                    && get(b, "id").as_str().is_none_or(|id| calls.insert(id.to_string()))
                 {
                     spawns += 1;
                 }
