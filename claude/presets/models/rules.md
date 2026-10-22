@@ -9,3 +9,5 @@ guard: [G9, ROUTER]
 - **Effort:** `high`. Never `xhigh` or `max` unless the user names it.
 - **Hand-offs:** hand-off blocks and `start_session` use `high`: Opus for plans, Sonnet for builds.
 - **Helpers:** the guard router sets model and effort. Plan and the final review run on Opus, lookups on Haiku, the rest on Sonnet at `high`. Never ask a helper for a higher tier than its job needs.
+
+**Remember:** the app main thread is Opus at `high`; effort is `high`, never `xhigh` or `max` unless the user names it.

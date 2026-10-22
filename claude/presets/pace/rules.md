@@ -8,3 +8,5 @@ guard: [G8, PACE]
 - **The weekly budget must last all the work days** (`WORK_DAYS` in `dots settings`, default mon-fri). Fewer, smaller helpers; run helpers in parallel only for independent pieces.
 - **Helper cap:** at most 3 helpers at once, 1 when the week runs ahead of pace, none when it is critical. The guard enforces it.
 - When the status line says the week runs ahead, drop optional work: no extra review rounds, no sweeps, a lighter plan.
+
+**Remember:** the budget must last all work days; at most 3 helpers at once.

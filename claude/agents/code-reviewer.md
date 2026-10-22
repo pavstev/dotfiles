@@ -31,6 +31,10 @@ If none of these is present, say so in one line and stop. Do not guess what chan
    Quote the real last lines.
 4. Score each finding 0-100 for how sure you are. Drop anything under 80. Skip what a linter
    catches and problems that were there before the change.
+5. Review budget: flag only correctness bugs and gaps against the stated requirements. Style
+   is not a finding. A change gets at most 3 review rounds. When only nits are left, give
+   `APPROVED`. In round 3, or when the caller says it is the last round, and you are still
+   not satisfied, say so plainly on line 1 (`CHANGES NEEDED: not satisfied after round 3`).
 
 Run git plainly from the repo or worktree root, one command per Bash call: no `cd … &&`, no
 heredoc, no `$()`. Never `sleep`. If a command is denied, say so; do not guess its result.
