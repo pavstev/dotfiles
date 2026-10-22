@@ -408,8 +408,8 @@ fn mic_check_since_note_and_leftovers() {
     let (home, repo) = temp_repo("mic-since", 3);
     let second = git(&repo, &["rev-parse", "--short", "HEAD~1"]);
     let first = git(&repo, &["rev-parse", "--short", "HEAD~2"]);
-    let left = home.join("left.md");
-    let env = [("HOME", s(&home)), ("MIC_LEFTOVERS", s(&left))];
+    let left = repo.canonicalize().unwrap().join(".agents").join("leftovers.jsonl");
+    let env = [("HOME", s(&home))];
     let (_, out, _) = run_bin(MIC_CHECK, &["--no-fetch", "--since", &second], "", &env, Some(&repo));
     assert!(
         out.contains(&format!(
@@ -427,18 +427,19 @@ fn mic_check_since_note_and_leftovers() {
         out.contains("  WARN  --since deadbeef is not an ancestor of HEAD here: no squash range for this repo\n"),
         "{out}"
     );
-    // --leftovers before and after a note
-    let (code, out, _) = run_bin(MIC_CHECK, &["--leftovers"], "", &env, None);
+    // --leftovers before and after a note: the store is in the repo, git-ignored
+    let (code, out, _) = run_bin(MIC_CHECK, &["--leftovers"], "", &env, Some(&repo));
     assert_eq!(code, 0);
-    assert_eq!(out, format!("no leftovers file yet ({})\n", left.display()));
+    assert_eq!(out, format!("no leftovers here ({})\n", left.display()));
     let (code, out, _) = run_bin(MIC_CHECK, &["--note", "tidy later"], "", &env, Some(&repo));
-    assert_eq!((code, out), (0, format!("saved to {}\n", left.display())));
+    let ignore = repo.canonicalize().unwrap().join(".gitignore");
+    let want = format!("saved to {}\nadded .agents/ to {} (commit it)\n", left.display(), ignore.display());
+    assert_eq!((code, out), (0, want));
     let text = fs::read_to_string(&left).unwrap();
-    assert!(
-        text.starts_with("# Leftovers\n\nOptional fixes saved by ps:mic-drop. Delete a line when done.\n- [ ] "),
-        "{text}"
-    );
-    assert!(text.ends_with(" · **demo-repo** · tidy later\n"), "{text}");
+    assert!(text.starts_with("{\"v\":1,\"op\":\"add\",\"id\":\""), "{text}");
+    assert!(text.ends_with("\"text\":\"tidy later\",\"tags\":[],\"from\":\"demo-repo\"}\n"), "{text}");
+    let (_, out, _) = run_bin(MIC_CHECK, &["--leftovers"], "", &env, Some(&repo));
+    assert!(out.ends_with("  tidy later\n") && out.lines().count() == 1, "{out}");
     let (_, out, _) = run_bin(MIC_CHECK, &["--no-fetch"], "", &env, Some(&repo));
     assert!(out.contains(&format!("leftovers file: {} (1 open)\n", left.display())), "{out}");
     // --since needs a value
@@ -530,7 +531,11 @@ fn yt_fetch_misses_and_errors() {
     // no argument: usage, exit 2
     let (code, _, err) = run_bin(YT, &["fetch"], "", &env, None);
     assert_eq!(code, 2);
-    assert!(err.contains("usage: yt_transcribe fetch <youtube url>"), "{err}");
+    assert!(err.contains("usage: yt_transcribe fetch [--force-whisper] <youtube url>"), "{err}");
+    // the flag alone is no link: usage, exit 2
+    let (code, _, err) = run_bin(YT, &["fetch", "--force-whisper"], "", &env, None);
+    assert_eq!(code, 2);
+    assert!(err.contains("usage:"), "{err}");
     // not a YouTube link: the parser's message, exit 1
     let (code, _, err) = run_bin(YT, &["fetch", "https://example.com/x"], "", &env, None);
     assert_eq!(code, 1);
@@ -543,6 +548,13 @@ fn yt_fetch_misses_and_errors() {
     assert_eq!(code, 1, "{out}");
     assert!(err.contains("yt-dlp is not installed"), "{err}");
     assert_eq!(out, "");
+    // --force-whisper before or after the link reaches the Whisper path (its tools are missing here)
+    for args in [["fetch", "--force-whisper", "dQw4w9WgXcQ"], ["fetch", "dQw4w9WgXcQ", "--force-whisper"]] {
+        let (code, out, err) = run_bin(YT, &args, "", &env, None);
+        assert_eq!(code, 1, "{args:?}: {out}");
+        assert!(!err.contains("Cannot find a YouTube video ID"), "{args:?}: {err}");
+        assert!(err.contains("is not installed"), "{args:?}: {err}");
+    }
     // the old single-video form still works
     let (code, out, _) = run_bin(YT, &["--print-id", "https://youtu.be/dQw4w9WgXcQ"], "", &env, None);
     assert_eq!((code, out.as_str()), (0, "dQw4w9WgXcQ\n"));

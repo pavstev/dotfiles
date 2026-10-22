@@ -25,7 +25,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
 | `rust/agent-config/src/dots/install/` | the provisioning steps, one Rust file each, in the order of `STEPS` in `install/mod.rs` (`NN-name`). Skip-aware and fault-tolerant. |
 | `scripts/os-check.sh`, `scripts/win-golden.sh` | the manual check on all three OSes; the one-time builder of the Windows test VM `win11-golden` (UTM, Mac only). |
 | `scripts/linux-prereqs.txt` | the Linux packages per manager (apt-get, dnf, pacman, apk, other), read by the shim and by `dots`. |
-| `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`, `ensure_rust_bin` (find or install Rust, build one bin; used by `dotfiles` and `scripts/tools`). |
+| `scripts/setup-lib.sh` | shell helpers for the few scripts that are still bash (`dotfiles`, `scripts/tools`, `scripts/agent-config`, `os-check.sh`, `win-golden.sh`, the private-words hook): `info`/`ok`/`warn`/`have`, `is_macos`/`is_linux`/`is_windows`/`is_musl`, `linux_prereqs`, `setting`, `with_heartbeat` (runs a silent build and says "still building" every 20 s, naming a process that holds the cargo lock; used by both Rust builds), `ensure_rust_bin` (find or install Rust, build one bin; used by `dotfiles` and `scripts/tools`). |
 | `claude/` | Claude config, symlinked per item into `~/.claude`. Skills in `claude/skills/` (rules: `claude/skills/README.md`). The core rules are `claude/CLAUDE.md`; the opt-in habits are `claude/presets/<name>/` (`rules.md`, optional `settings.json`; list and how to add one: `claude/presets/README.md`). |
 | `docs/SETUP-RUNBOOK.md` | the runbook for setting the repo up on a new machine: Claude runs it step by step, then `dots doctor`. |
 | `cursor/` | Cursor-only sources: `mcp.json` (merged into `~/.cursor/mcp.json`). The Cursor guard adapter is the Rust bin `guard_cursor`. |
@@ -66,7 +66,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   before a commit to setup code. No git hook and no CI runs it. It checks each OS whose files
   changed (`--force` runs one anyway, `--since <ref>` widens the diff): macOS with
   `test-dotfiles.sh`, Linux with `test-linux.sh` on the `TEST_HOST` SSH host (or local podman or
-  docker), Windows in a throwaway clone of the UTM VM `win11-golden` (built once with
+  docker; `--local` or `TEST_HOST=local` forces local, e.g. when the host is off), Windows in a throwaway clone of the UTM VM `win11-golden` (built once with
   `scripts/win-golden.sh`; see "Windows"). The OSes run at the same time, and each result line
   prints when its OS ends. Logs: `.os-check/` (Linux per
   image: `.os-check/linux-logs/`). Each run has its own container names and host folder, so two
@@ -127,6 +127,9 @@ Cursor is present: it installs the CLI, the Brewfile `vscode` extensions, and ru
 - Never symlink `~/.cursor/cli-config.json` or `~/.cursor/mcp.json`. Cursor rewrites them.
 - Rules in every folder: run `cursor-rules`, paste in Cursor Settings > Rules > User Rules.
   `dots` then skips the file rule and warns when to paste again.
+- superlite follows the Claude Code switch (`superlite@superlite-dev` in the built
+  `~/.claude/settings.json`): a clone in `~/.cursor/plugins/local/superlite` and the spec in
+  Opencode's `plugins`. `DOTS_SUPERLITE_REPO` points the clone at another repo (tests).
 
 ## Opencode
 
@@ -249,7 +252,7 @@ email, then shows the menu.
   `claude/presets/README.md`), `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME` (`plain` drops colors and the
   Opencode theme), `LOOKS` (the optional look changes: `starship`, `editor`, `font` or `none`;
   empty asks once at a terminal; `rust/agent-config/src/dots/looks.rs`), `GUARD_OFF`, `GUARD_SHADOW`, `JAVA_HOME` (picked from the Javas found, or typed),
-  `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS` (see "Conventions"), `TEST_HOST` (the SSH host
+  `SKIP_STEPS`, `PRIVATE_PROJECTS`, `PRIVATE_WORDS`, `PUBLIC_HOSTS` (see "Conventions"), `TEST_HOST` (the SSH host
   for the Linux part of `scripts/os-check.sh`).
 - Readers: `setting` in `scripts/setup-lib.sh`, `setting()` in `rust/agent-config/src/lib.rs`,
   `home/.config/zsh/settings.zsh` (sourced after `local.zsh`, so its `JAVA_HOME` wins). The last
@@ -270,7 +273,16 @@ email, then shows the menu.
   `C:\Users\<user>`) and warn, without blocking, when the word list is empty. The git hooks block
   a staged file name, added line or commit message that holds one. The pre-push hook checks every pushed commit the
   same way (cherry-pick, rebase and `--no-verify` skip the commit hooks) and stops a push that
-  brings a second history.
+  brings a second history. Host names in the private `PUBLIC_HOSTS` setting are removed from the
+  text before any of these word checks (hooks, `dots doctor` no-leak, guard G16), so a link to the
+  owner's own site can pass; only whole hosts, never paths.
+- **Story page:** https://stevanpavlovic.com/work/dotfiles tells this repo's story and is the GitHub
+  homepage of the repo. It reads the repo
+  from GitHub at build: the paths `claude/skills/ps_*/SKILL.md`,
+  `claude/agents/*.md`, `claude/presets/*/rules.md`, `claude/output-styles/*.md`, `home/**`,
+  `claude/settings.json`, `rust/agent-config/Cargo.toml` and the quoted check ids in
+  `rust/agent-config/src/guard_checks.rs`. Moving one of them breaks the page build on purpose.
+  A new or renamed skill needs an entry in the page's skill catalog (in the site repo), or it shows as new.
 - **Theme:** warm Claude copper-on-stone. Refine it; never swap palettes.
 - **macOS, Linux and Windows:** one code path where possible; OS-only branches behind
   `is_macos`/`is_linux`/`is_windows`.

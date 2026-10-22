@@ -34,6 +34,10 @@ earlier findings. If the task text or the diff range is missing, say so in one l
 
 - Report only defects you can point to with `file:line`. Score each 0-100 for how sure you are.
   Drop anything under 80. No praise, no style opinions, no "consider".
+- Review budget: flag only correctness bugs and gaps against the stated requirements. Style is
+  not a finding. A task gets at most 3 review rounds. When only nits are left, give `APPROVED`.
+  In round 3, or when the caller says it is the last round, and you are still not satisfied,
+  say so plainly on line 1 (`CHANGES NEEDED: not satisfied after round 3`).
 - Pre-existing problems outside the diff are not findings. Name at most one in a "Noted" line.
 - Run git plainly from the repo or worktree root, one command per Bash call: no `cd … &&`,
   no heredoc, no `$()`. Never `sleep` to wait.

@@ -6,6 +6,8 @@ argument-hint: "[repo paths or ticket tracker]"
 
 # Standup
 
+Input: $ARGUMENTS
+
 Reads facts from the user's own work and writes at most 12 lines. A section with no source data
 says `no data`. Never fill a gap with a guess.
 

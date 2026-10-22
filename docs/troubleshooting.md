@@ -17,8 +17,9 @@ race Claude rewriting `~/.claude`. Run `dots` again from a plain shell.
 **`brew bundle` says "Permission denied".** Another user owns Homebrew. Run
 `~/dotfiles/scripts/fix-brew-permissions.sh`, then `dots`.
 
-**Linux: a step failed at the package manager or Homebrew.** Fix the line above it, then run
-`dots` again. The Homebrew installer needs `sudo` and a user that is not root.
+**Linux: a step failed at the package manager.** Fix the line above it, then run `dots` again.
+No `sudo`: install the packages of `scripts/linux-prereqs.txt` as root
+([Platforms](platforms.md#linux)).
 
 **Icons look like boxes.** The Starship prompt needs a Nerd Font. Turn on `font` in
 `dots settings` > Looks (macOS), or set your terminal font to "FiraCode Nerd Font Mono". Or turn

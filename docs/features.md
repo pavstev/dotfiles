@@ -72,10 +72,7 @@ usually `Run: dots`. The checks:
 | `timezone` | `TIMEZONE` is empty or a real zone name (macOS and Linux) |
 | `no-leak` | no private word in a tracked file |
 
-To add a command-line tool, add one line to [`tools.list`](../tools.list) and run `dots`. A line
-names the tool, its commands, the OSes it is for and its sources in order (mise first, then `apk`,
-`winget`, `scoop`, `cargo`, `brew`). `scripts/tools --check` lists what is missing. Mac apps and
-fonts go in the `Brewfile`.
+To add a tool, see [Customize](customize.md#customizing).
 
 ## Cheat sheet
 

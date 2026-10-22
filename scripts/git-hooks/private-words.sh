@@ -58,13 +58,44 @@ home_path_hits() {
   '
 }
 
+# public_hosts: the host names of PUBLIC_HOSTS (space or comma list), one per line. An entry with a
+# character outside [A-Za-z0-9.-] is ignored.
+public_hosts() {
+  local h
+  for h in $(setting PUBLIC_HOSTS | tr ',' ' '); do
+    [[ "$h" =~ ^[A-Za-z0-9.-]+$ ]] && printf '%s\n' "$h"
+  done
+  return 0
+}
+
+# strip_hosts: copy stdin to stdout with every public host (any case) removed, so a link to a
+# listed host passes the word check. Whole host names only, never paths.
+strip_hosts() {
+  PW_HOSTS="$(public_hosts | tr '\n' ' ')" awk '
+    BEGIN { n = split(tolower(ENVIRON["PW_HOSTS"]), hosts, " ") }
+    {
+      line = $0
+      for (i = 1; i <= n; i++) {
+        out = ""; low = tolower(line)
+        while ((p = index(low, hosts[i])) > 0) {
+          out = out substr(line, 1, p - 1)
+          line = substr(line, p + length(hosts[i])); low = substr(low, p + length(hosts[i]))
+        }
+        line = out line
+      }
+      print line
+    }
+  '
+}
+
 # private_hits: print the stdin lines that hold a private word (any case) or a home path of the
 # current user. A word of 4 characters or fewer matches whole words only (grep -w), a longer one
 # anywhere. An empty word list prints one warning on stderr (it never blocks); the home-path rule
-# still runs.
+# still runs. Hosts in PUBLIC_HOSTS are removed from the text before the word match (not the home-path rule).
 private_hits() {
-  local input words user w
+  local input stripped words user w
   input="$(cat)"
+  stripped="$(printf '%s\n' "$input" | strip_hosts)"
   words="$(private_words)"
   user="$(private_user)"
   if [[ -z "$words" ]]; then
@@ -77,9 +108,9 @@ private_hits() {
     while IFS= read -r w; do
       [[ -n "$w" ]] || continue
       if (( $(word_chars "$w") <= 4 )); then
-        printf '%s\n' "$input" | grep -iwF -- "$w" || true
+        printf '%s\n' "$stripped" | grep -iwF -- "$w" || true
       else
-        printf '%s\n' "$input" | grep -iF -- "$w" || true
+        printf '%s\n' "$stripped" | grep -iF -- "$w" || true
       fi
     done <<<"$words"
   } | awk '!seen[$0]++'

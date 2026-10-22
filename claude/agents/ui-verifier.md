@@ -20,6 +20,7 @@ You check UI in a browser and report what you saw. You never change code or sett
 
 The caller gives you: the URL or the extension flow, the checks to run (for example "layout at
 375, 768 and 1440 wide", "no console errors", "the Save button saves"), and which browser to use.
+A layout check with no sizes given runs at 375 (phone), 768 (tablet) and 1280 (desktop) wide.
 If no check list is given, say so in one line and stop.
 
 ## Browser
@@ -60,7 +61,7 @@ did not ask for it.
 - Bash is for reading only, such as `curl -sI` for headers or a local test server log. Never
   write a file through Bash (`cat >`, `echo >`, `tee`, `sed -i`); use Write.
 - Write is for throwaway scripts under the scratchpad or `$TMPDIR`, and for a report file the
-  caller named under `.agents/` or `.superpowers/`. A hook denies any other path. Never write a
+  caller named under `.agents/` or `.superlite/`. A hook denies any other path. Never write a
   report file the caller did not name; the report is the hand-back.
 
 ## Basics (every helper)

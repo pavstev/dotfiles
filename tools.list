@@ -80,3 +80,7 @@ yt-dlp        | yt-dlp        | all     | mise:github:yt-dlp/yt-dlp winget:yt-dl
 ffmpeg        | ffmpeg        | all     | apk:ffmpeg mise:conda:ffmpeg winget:Gyan.FFmpeg
 poppler       | pdftotext     | all     | apk:poppler-utils mise:conda:poppler scoop:poppler
 whisper-cpp   | whisper-cli,whisper-cpp | unix,!musl | mise:conda:whisper.cpp
+# ---- Design references (ps:design-ref) -------------------------------------
+# npm CLIs, installed once so each call skips npx. Their Chromium downloads on first use, not here.
+dembrandt     | dembrandt     | unix,!musl | mise:npm:dembrandt
+awwwards-mcp  | awwwards-mcp  | unix,!musl | mise:npm:awwwards-mcp

@@ -666,6 +666,44 @@ fn test_router_pace_ahead_downgrades_opus() {
 }
 
 #[test]
+fn test_superlite_agents_keep_their_own_brief_and_model() {
+    let g = G::new();
+    // superlite's `sl` writes the brief (no deadline or cap) and the agent file pins the model
+    let res = g.pre("Agent", json!({"subagent_type": "superlite:implementer", "prompt": "Task T1. Reply READY."}));
+    assert_allow(&res);
+    let (_, out) = g.route_full("superlite:final-reviewer", None, None, "Final review", "Review.", None, json!({}));
+    assert!(out.is_none());
+    // a tight week lowers only the opus-pinned ones
+    let pace = Some(fake_pace("ahead", 60.0, 50.0));
+    let (ti, out) = g.route_full("superlite:final-reviewer", None, None, "Final review", "Review.", pace, json!({}));
+    let out = out.expect("a routed call");
+    assert_eq!(out["updatedInput"]["model"], "sonnet");
+    assert!(out["updatedInput"].get("effort").is_none(), "{ti}");
+    let (_, out) = g.route_full("superlite:implementer", None, None, "T1", "Task.", pace, json!({}));
+    assert!(out.is_none());
+    // other agents still need the brief
+    assert_eq!(g.pre("Agent", json!({"subagent_type": "worker", "prompt": "Task T1."})).0, 2);
+}
+
+#[test]
+fn test_g19_skips_superlite_agents() {
+    let g = G::new();
+    let repo = g.make_repo(false);
+    write_file(&repo, "package.json", r#"{"scripts": {"check:fast": "true"}}"#);
+    let file = write_file(&repo, "a.txt", "x");
+    for (agent, held) in [("superlite:implementer", false), ("worker", true)] {
+        let sid = format!("g19-{held}");
+        let edit = json!({"session_id": sid, "agent_id": "h1", "agent_type": agent, "tool_name": "Edit", "cwd": repo,
+            "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}});
+        g.run("posttool", &edit);
+        let stop = json!({"session_id": sid, "agent_id": "h1", "agent_type": agent, "cwd": repo,
+            "last_assistant_message": "Done."});
+        let res = g.run("subagentstop", &stop);
+        assert_eq!(res.1.contains("G19") || res.2.contains("G19"), held, "{agent}: {res:?}");
+    }
+}
+
+#[test]
 fn test_router_merges_with_warnings() {
     let g = G::new();
     // W4 note and the router note come out as one JSON line
@@ -722,6 +760,22 @@ fn test_w4_budget() {
     assert_warn(&g.spawn(&path, "new"), "1600K subagent tokens");
     // the current call already written to the transcript is not counted twice
     assert_warn(&g.spawn(&g.spawn_session(16, 0), "a15"), "spawned 15 agents");
+}
+
+#[test]
+fn test_w4_counts_each_agent_call_once() {
+    let g = G::new();
+    // a headless transcript repeats an Agent call in several records: 9 calls written twice are 9
+    let path = g.spawn_session(9, 0);
+    let mut text = fs_read(&path);
+    for i in 0..9 {
+        let rec = assistant_b(1000, json!([{"type": "tool_use", "id": format!("a{i}"), "name": "Agent", "input": {}}]));
+        let _ = writeln!(text, "{rec}");
+    }
+    G::write(&path, &text);
+    assert_allow(&g.spawn(&path, "new"));
+    // 15 distinct calls still warn
+    assert_warn(&g.spawn(&g.spawn_session(15, 0), "new"), "spawned 15 agents");
 }
 
 fn fs_read(path: &str) -> String {
@@ -1219,7 +1273,7 @@ fn test_scratch_allowed_paths() {
         own.as_str(),
         "/Users/someone/.claude/tmp/scratchpad/s.py",
         "/private/tmp/claude-501/p/abc/scratchpad/s.py",
-        "/Users/someone/proj/.superpowers/sdd/task-9-report.md",
+        "/Users/someone/proj/.superlite/sdd/task-9-report.md",
         "/Users/someone/proj/.agents/notes.md",
     ] {
         assert_allow(&g.scratch(p, "file_path", json!({})));
@@ -1237,12 +1291,12 @@ fn test_scratch_denied_paths() {
         "/Users/someone/proj/src/app.ts",
         "/tmp/../etc/passwd",
         "relative.py",
-        "/Users/someone/proj/.superpowersx/r.md",
+        "/Users/someone/proj/.superlitex/r.md",
         "/Users/someone/proj/README.md",
     ] {
         assert_deny(
             &g.scratch(p, "file_path", json!({"cwd": "/Users/someone/proj"})),
-            "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.",
+            "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superlite/.",
         );
     }
     assert_deny(&g.scratch("/etc/x.ipynb", "notebook_path", json!({})), "scratch files");
@@ -1387,6 +1441,32 @@ fn test_cap_entries_older_than_90_minutes_are_dropped() {
 }
 
 #[test]
+fn test_cap_superlite_has_its_own_pool_of_10() {
+    let g = G::new();
+    let sl = |sid: &str| g.run("pretool", &agent_data(sid, json!({"subagent_type": "superlite:implementer"})));
+    for _ in 0..10 {
+        assert_allow(&sl("c9"));
+    }
+    assert_deny(&sl("c9"), "cap is 10");
+    // the other helpers keep their 3 slots
+    for _ in 0..3 {
+        assert_allow(&g.agent("c9"));
+    }
+    assert_deny(&g.agent("c9"), "cap is 3");
+    // a superlite stop frees a superlite slot, not a helper slot
+    assert_allow(&g.run("subagentstop", &stop_data("c9", json!({"agent_type": "superlite:implementer"}))));
+    assert_deny(&g.agent("c9"), "cap is 3");
+    assert_allow(&sl("c9"));
+    // a tight week: 3 superlite agents
+    let ahead = Some(fake_pace("ahead", 60.0, 50.0));
+    let d = agent_data("c10", json!({"subagent_type": "superlite:implementer"}));
+    for _ in 0..3 {
+        assert_allow(&g.inproc("pretool", &d, ahead));
+    }
+    assert_deny(&g.inproc("pretool", &d, ahead), "cap is 3");
+}
+
+#[test]
 fn test_cap_by_pace() {
     let g = G::new();
     let ahead = Some(fake_pace("ahead", 60.0, 50.0));
@@ -1500,7 +1580,7 @@ impl G {
     }
 }
 
-const PLAN_SKILLS: [&str; 2] = ["superpowers:brainstorming", "superpowers:writing-plans"];
+const PLAN_SKILLS: [&str; 2] = ["superlite:brainstorming", "superlite:writing-plans"];
 
 #[test]
 fn test_plan_gate_denies_planning_skills_outside_plan_mode() {
@@ -1535,9 +1615,9 @@ fn test_plan_gate_desktop_sonnet_points_to_plan_helper_or_opus() {
 fn test_plan_gate_allows_opus_and_fable_mains() {
     let g = G::new();
     for (skill, model, entry, pace) in [
-        ("superpowers:writing-plans", "claude-opus-5-5", "cli", None),
-        ("superpowers:brainstorming", "claude-fable-5-1", "claude-desktop", Some(pace_default("ok"))),
-        ("superpowers:writing-plans", "opus", "claude-desktop", None),
+        ("superlite:writing-plans", "claude-opus-5-5", "cli", None),
+        ("superlite:brainstorming", "claude-fable-5-1", "claude-desktop", Some(pace_default("ok"))),
+        ("superlite:writing-plans", "opus", "claude-desktop", None),
     ] {
         assert_allow(&g.skill(skill, S { model: Some(model), entry: Some(entry), pace, ..S::new() }));
     }
@@ -1546,7 +1626,7 @@ fn test_plan_gate_allows_opus_and_fable_mains() {
 #[test]
 fn test_plan_gate_unknown_model_or_entrypoint_allows() {
     let g = G::new();
-    let name = "superpowers:writing-plans";
+    let name = "superlite:writing-plans";
     assert_allow(&g.skill(name, S { model: None, entry: None, ..S::new() })); // no transcript at all
     assert_allow(&g.skill(name, S { model: None, entry: Some("cli"), ..S::new() })); // no assistant record
     assert_allow(&g.skill(name, S { entry: None, ..S::new() })); // no entrypoint
@@ -1569,26 +1649,26 @@ fn test_plan_gate_uses_the_newest_assistant_model() {
         with_model("claude-opus-5-5"),
     ]);
     let data = json!({"hook_event_name": "PreToolUse", "session_id": "g1", "tool_name": "Skill",
-        "permission_mode": "default", "tool_input": {"skill": "superpowers:writing-plans"}, "transcript_path": path});
+        "permission_mode": "default", "tool_input": {"skill": "superlite:writing-plans"}, "transcript_path": path});
     assert_allow(&g.run("pretool", &data)); // switched to Opus mid-session
 }
 
 #[test]
 fn test_plan_gate_allows() {
     let g = G::new();
-    assert_allow(&g.skill("superpowers:writing-plans", S { mode: Some("plan"), ..S::new() }));
-    assert_allow(&g.skill("superpowers:brainstorming", S { mode: Some("plan"), ..S::new() }));
-    assert_allow(&g.skill("superpowers:test-driven-development", S::new()));
+    assert_allow(&g.skill("superlite:writing-plans", S { mode: Some("plan"), ..S::new() }));
+    assert_allow(&g.skill("superlite:brainstorming", S { mode: Some("plan"), ..S::new() }));
+    assert_allow(&g.skill("superlite:test-driven-development", S::new()));
     assert_allow(&g.skill("ps:handoff", S::new()));
-    assert_allow(&g.skill("superpowers:writing-plans", S { extra: json!({"agent_id": "a1"}), ..S::new() })); // a subagent
+    assert_allow(&g.skill("superlite:writing-plans", S { extra: json!({"agent_id": "a1"}), ..S::new() })); // a subagent
     assert_allow(&g.skill(
-        "superpowers:writing-plans",
+        "superlite:writing-plans",
         S { extra: json!({"transcript_path": "/x/subagents/agent-1.jsonl"}), ..S::new() },
     ));
     for state in ["ahead", "critical"] {
         // Sonnet plans without plan mode
-        assert_allow(&g.skill("superpowers:writing-plans", S { pace: Some(fake_pace(state, 90.0, 50.0)), ..S::new() }));
-        assert_allow(&g.skill("superpowers:brainstorming", S { pace: Some(fake_pace(state, 90.0, 50.0)), ..S::new() }));
+        assert_allow(&g.skill("superlite:writing-plans", S { pace: Some(fake_pace(state, 90.0, 50.0)), ..S::new() }));
+        assert_allow(&g.skill("superlite:brainstorming", S { pace: Some(fake_pace(state, 90.0, 50.0)), ..S::new() }));
     }
 }
 
@@ -2005,6 +2085,29 @@ fn test_g12_open_steps_fire() {
         "G12: the task list still has open steps (Read brief, Build, Test). \
 Finish them now, or end with what is done, what is left, and one question.",
     );
+}
+
+#[test]
+fn test_g12_quiet_while_a_step_runs_in_another_session() {
+    let g = G::new();
+    let delegated = json!({"items": [
+        {"content": "Check hooks", "status": "in_progress", "session": "sl-hooks"},
+        {"content": "Review reports", "status": "pending"}]});
+    let recs = [human("go"), plan(delegated), say("Both sessions run.")];
+    assert_allow(&g.stop_run(&recs, json!({})));
+    // once the delegated step is done, the rest counts again
+    let recs = [
+        human("go"),
+        plan(json!({"items": [
+        {"content": "Check hooks", "status": "completed", "session": "sl-hooks"},
+        {"content": "Review reports", "status": "pending"}]})),
+        say("Done."),
+    ];
+    assert_deny(&g.stop_run(&recs, json!({})), "G12");
+    // an empty session name is no session
+    let recs =
+        [human("go"), plan(json!({"items": [{"content": "Build", "status": "pending", "session": " "}]})), say("ok")];
+    assert_deny(&g.stop_run(&recs, json!({})), "G12");
 }
 
 #[test]
@@ -2997,7 +3100,7 @@ impl G {
                 Self::write(&self.state_dir().join("s8.json").to_string_lossy(), &json!({"spawns": slots}).to_string());
                 self.agent("s8")
             }
-            "G9" => self.skill("superpowers:writing-plans", S::new()),
+            "G9" => self.skill("superlite:writing-plans", S::new()),
             "G10" => {
                 let repo = self.make_repo(true);
                 let p = write_file(&repo, "new.txt", "x");
@@ -3017,6 +3120,25 @@ impl G {
                     "tool_response": {"interrupted": false}, "cwd": repo});
                 self.run("posttool", &data);
                 self.run("pretool", &data)
+            }
+            "G18" => {
+                let repo = self.make_repo(false);
+                let data = json!({"session_id": "g18", "tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": repo});
+                self.run("posttoolfailure", &data);
+                self.run("posttoolfailure", &data);
+                self.run("pretool", &data)
+            }
+            "G19" => {
+                let repo = self.make_repo(false);
+                write_file(&repo, "package.json", r#"{"scripts": {"check:fast": "true"}}"#);
+                let file = write_file(&repo, "a.txt", "x");
+                let edit = json!({"session_id": "g19", "agent_id": "h1", "tool_name": "Edit", "cwd": repo,
+                    "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}});
+                self.run("posttool", &edit);
+                self.run(
+                    "subagentstop",
+                    &json!({"session_id": "g19", "agent_id": "h1", "cwd": repo, "last_assistant_message": "Done."}),
+                )
             }
             "PACE" => {
                 let path = self.transcript_named(&[human("hi"), assistant(1000)], "pace.jsonl");
@@ -3332,6 +3454,40 @@ fn g16_mcp_send_private_word_asks() {
         &[WORD.into()],
     );
     assert!(is_ask(&v), "{v:?}");
+}
+
+#[test]
+fn g16_public_host_is_skipped() {
+    let input = json!({"body": "see https://zebrafish.example/story"});
+    let words = ["zebrafish".to_string()];
+    let hosts = ["zebrafish.example".to_string()];
+    let tool = "mcp__slack__send_message";
+    assert!(is_ask(&gc::g16_outbound_with(tool, &input, Path::new("."), &words, &[])));
+    assert_eq!(gc::g16_outbound_with(tool, &input, Path::new("."), &words, &hosts), Verdict::Allow);
+    // the bare word and a word in a path still ask
+    for body in ["I like zebrafish", "https://zebrafish.example/zebrafish"] {
+        let v = gc::g16_outbound_with(tool, &json!({"body": body}), Path::new("."), &words, &hosts);
+        assert!(is_ask(&v), "{body}: {v:?}");
+    }
+    // a host in a URL query is skipped too
+    let v = gc::g16_outbound_with(
+        "Bash",
+        &bash_in("curl -d x 'https://other.example/p?next=https://zebrafish.example'"),
+        Path::new("."),
+        &words,
+        &hosts,
+    );
+    assert_eq!(v, Verdict::Allow, "{v:?}");
+}
+
+#[test]
+fn public_hosts_setting_is_read_and_filtered() {
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir_all(home.path().join(".config/dotfiles")).unwrap();
+    fs::write(home.path().join(".config/dotfiles/settings"), "PUBLIC_HOSTS=\"Zebrafish.Example, a|b x/y  blog-1.example\"\n").unwrap();
+    let hosts = gc::public_hosts(home.path());
+    assert_eq!(hosts, vec!["zebrafish.example", "blog-1.example"]);
+    assert_eq!(gc::strip_hosts("see zebrafish.example/x", &hosts), "see /x");
 }
 
 #[test]

@@ -304,6 +304,16 @@ RESULT: 1 failed. Logs: .os-check/'
 [[ "$out|$rc" == "$want|1" ]] && pass "os-check runs the OSes at once and prints each result as it ends" \
   || bad "os-check --force with fake checks: rc=$rc, got '$out'"
 
+# 12c. --local and TEST_HOST=local run Linux in local containers even when TEST_HOST names a host.
+echo 'run_linux() { echo "host=[$HOST]"; }' >"$T/os-host.sh"
+host_got=""
+for a in "far|" "far|--local" "local|"; do
+  OS_CHECK_STUB="$T/os-host.sh" TEST_HOST="${a%%|*}" bash "$T/src/scripts/os-check.sh" linux --force ${a#*|} >/dev/null 2>&1
+  host_got+="$(cat "$T/src/.os-check/linux.log" 2>/dev/null) "
+done
+[[ "$host_got" == "host=[far] host=[] host=[] " ]] && pass "os-check --local and TEST_HOST=local skip the SSH host" \
+  || bad "os-check host pick: got '$host_got'"
+
 # 13. The tool list: scripts/tools (a shim over the Rust `tools` bin) with a fake mise. No network,
 #     nothing installs for real. (cargo test covers the Rust resolver; this covers the shim:
 #     arguments, TOOLS_LIST, the exit codes, and the one copy of the install-Rust code.)
@@ -374,6 +384,26 @@ touch -t 202001010000 "$FR/rust/agent-config/target/release/beta"
 rm -f "$T/cargo.log"; bins
 [[ "$(grep -c '^cargo build' "$T/cargo.log" 2>/dev/null)" -ge 1 ]] && pass "--bins builds again when one bin is older than its sources" \
   || bad "--bins did not retry a stale bin"
+
+# 13c. with_heartbeat: a silent command that runs long says "still ..." every second (here), keeps its
+#      exit code and its output in the log, and names another process that has the lock file open.
+#      A fast command prints nothing.
+hb() { # hb <lockfile> <log> <cmd...>: stderr of with_heartbeat in $T/hb.err, its rc on stdout
+  local lock="$1" log="$2"; shift 2
+  DOTS_HEARTBEAT=1 bash -c '. "$1/scripts/setup-lib.sh"; shift; with_heartbeat "doing x" "$@"; echo $?' _ "$R" "$lock" "$log" "$@" 2>"$T/hb.err"
+}
+rc="$(hb "" "$T/hb.log" sh -c 'sleep 3; echo built; exit 7')"
+[[ "$rc" == 7 ]] && pass "with_heartbeat keeps the exit code" || bad "with_heartbeat rc=$rc, wanted 7"
+grep -q '^»» still doing x (' "$T/hb.err" && pass "with_heartbeat says it is still working" || bad "with_heartbeat printed no heartbeat: $(cat "$T/hb.err")"
+[[ "$(cat "$T/hb.log")" == built && "$(grep -c built "$T/hb.err")" -eq 0 ]] && pass "with_heartbeat keeps the command output in the log" || bad "with_heartbeat output went astray"
+rc="$(hb "" "$T/hb.log" true)"
+[[ "$rc" == 0 && ! -s "$T/hb.err" ]] && pass "with_heartbeat prints nothing for a fast command" || bad "with_heartbeat fast: rc=$rc err=$(cat "$T/hb.err")"
+if command -v lsof >/dev/null 2>&1; then
+  : >"$T/hb.lock"; ( exec 9>>"$T/hb.lock"; sleep 6 ) & hbp=$!
+  sleep 1; hb "$T/hb.lock" "$T/hb.log" sleep 3 >/dev/null
+  grep -q 'Another run (pid [0-9]*) has the build folder open' "$T/hb.err" && pass "with_heartbeat names the process that holds the lock" || bad "with_heartbeat did not name the lock holder: $(cat "$T/hb.err")"
+  kill "$hbp" 2>/dev/null; wait "$hbp" 2>/dev/null
+fi
 
 # 14. Step 20 (Homebrew apps) on a Mac with Homebrew: a Brewfile whose one formula is installed
 #     skips; one with an unknown formula warns and the run goes on. Nothing installs.
@@ -484,6 +514,14 @@ else
     LC_ALL="$loc" pw_commit "utf1-$loc.txt" "xñoñox" && pass "private words: a 4-character UTF-8 word inside a longer word passes ($loc)" || bad "private words: ñoño blocked xñoñox ($loc): $(cat "$T/pw.out")"
     LC_ALL="$loc" pw_commit "utf2-$loc.txt" "a ñoño b" && bad "private words: a 4-character UTF-8 word as a whole word was not blocked ($loc)" || pass "private words: a 4-character UTF-8 word matches as a whole word ($loc)"
   done
+  # PUBLIC_HOSTS: a listed host passes, the bare word and other paths still block, a hostile entry is ignored
+  pw_settings 'PRIVATE_WORDS="zebrafish"' 'PUBLIC_HOSTS="zebrafish.example, a|b"'
+  pw_commit host1.txt "see https://zebrafish.example/story and HTTPS://ZEBRAFISH.EXAMPLE" && pass "private words: a listed public host passes" || bad "private words: a listed host was blocked: $(cat "$T/pw.out")"
+  pw_commit host2.txt "I like zebrafish" && bad "private words: the bare word was not blocked with a host listed" || pass "private words: the bare word still blocks with a host listed"
+  pw_commit host3.txt "see https://zebrafish.example/zebrafish" && bad "private words: a word in the path of a listed host was not blocked" || pass "private words: a word in a path still blocks"
+  pw_commit host4.txt "see https://other.example/a|b zebrafish.net" && bad "private words: another host with the word was not blocked" || pass "private words: another host holding the word still blocks"
+  pw_settings 'PRIVATE_WORDS="zebrafish"'
+  pw_commit host5.txt "see https://zebrafish.example/story" && bad "private words: the host passed with PUBLIC_HOSTS unset" || pass "private words: the host is blocked with PUBLIC_HOSTS unset"
   pw_settings ''
   pw_commit empty.txt "plain text" && pass "private words: with no words a commit passes" || bad "private words: a commit with no words failed: $(cat "$T/pw.out")"
   [[ "$(grep -c 'private words: none set' "$T/pw.out")" -ge 1 ]] && pass "private words: an empty list prints a warning" || bad "private words: no warning for an empty list: $(cat "$T/pw.out")"

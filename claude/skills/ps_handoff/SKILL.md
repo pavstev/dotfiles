@@ -7,6 +7,8 @@ allowed-tools: "Bash(bash ${CLAUDE_SKILL_DIR}/scripts/handoff-path.sh *)"
 
 # Handoff
 
+Input: $ARGUMENTS
+
 The brief goes in a file. The reply is a one-line code block that points at the file, plus the folder, model and effort outside the block.
 Work alone, no subagents. Finish in 10 minutes.
 

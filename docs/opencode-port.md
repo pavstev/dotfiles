@@ -12,10 +12,9 @@ Checked against Opencode v2.0.25 (the plugin against 2.0.30). Sources: the Openc
 and `https://opencode.ai/tui.json`.
 
 `scripts/agent-config` (the Rust build in `rust/agent-config`) writes every Opencode file and never
-writes under `~/.claude`. It runs inside `./dotfiles` on every `dots`, including `dots settings`.
-Generated Markdown carries `generated-by: dotfiles`; JSON merges keep your values and back up
-before a change. `opencode` itself comes from `tools.list` (step `12-tools`; on Windows through
-mise or `winget install SST.opencode`). Step `90-sign-in` offers `opencode auth login`.
+writes under `~/.claude`. When it runs and the marker and merge rules: [AI agents](ai-agents.md).
+On Windows `opencode` comes through mise or `winget install SST.opencode`. Step `90-sign-in`
+offers `opencode auth login`.
 
 ## Mapping
 

@@ -438,6 +438,86 @@ fn test_opencode_config_dry_run_writes_nothing() {
     assert!(out.contains("would"), "{out}");
 }
 
+// --- superlite in Opencode and Cursor ------------------------------------------
+
+const SL_SPEC: &str = "superlite@git+https://github.com/iha2/superlite.git";
+
+/// The built Claude settings with superlite on or off (the switch lives in the private layer).
+fn sl_switch(fx: &Fx, on: bool) {
+    wj(&fx.home.join(".claude/settings.json"), &json!({"enabledPlugins": {"superlite@superlite-dev": on}}));
+}
+
+#[test]
+fn test_opencode_superlite_follows_the_claude_switch() {
+    let fx = Fx::new("ac-oc-superlite");
+    wj(&oc_cfg(&fx), &json!({"plugins": ["mine"]}));
+    sl_switch(&fx, true);
+    assert_eq!(run_oc(&fx).0, 0);
+    assert_eq!(rj(&oc_cfg(&fx))["plugins"], json!(["mine", SL_SPEC]));
+    assert_eq!(run_oc(&fx).0, 0); // a second run adds nothing
+    assert_eq!(rj(&oc_cfg(&fx))["plugins"], json!(["mine", SL_SPEC]));
+    sl_switch(&fx, false);
+    assert_eq!(run_oc(&fx).0, 0);
+    assert_eq!(rj(&oc_cfg(&fx))["plugins"], json!(["mine"]));
+    // the V1 key stays V1, and a pinned spec of the user's is kept as it is
+    wj(&oc_cfg(&fx), &json!({"plugin": []}));
+    sl_switch(&fx, true);
+    run_oc(&fx);
+    assert_eq!(rj(&oc_cfg(&fx))["plugin"], json!([SL_SPEC]));
+    assert!(rj(&oc_cfg(&fx)).get("plugins").is_none());
+    let pinned = format!("{SL_SPEC}#v1.6.0");
+    wj(&oc_cfg(&fx), &json!({"plugins": [pinned]}));
+    run_oc(&fx);
+    assert_eq!(rj(&oc_cfg(&fx))["plugins"], json!([pinned]));
+    // no switch at all: nothing is added
+    let fx = Fx::new("ac-oc-superlite-none");
+    wj(&oc_cfg(&fx), &json!({}));
+    run_oc(&fx);
+    assert!(rj(&oc_cfg(&fx)).get("plugins").is_none());
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let ok = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success();
+    assert!(ok, "git {args:?}");
+}
+
+#[test]
+fn test_cursor_superlite_clones_updates_and_removes() {
+    let fx = Fx::new("ac-cursor-superlite");
+    // a local stand-in for github iha2/superlite
+    let src = fx.tmp.join("superlite-src");
+    fs::create_dir_all(&src).unwrap();
+    git(&src, &["init", "-q", "-b", "main"]);
+    wr(&src.join(".cursor-plugin/plugin.json"), r#"{"name": "superlite"}"#);
+    git(&src, &["add", "."]);
+    git(&src, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]);
+    let url = src.to_str().unwrap();
+    let env = [("DOTS_SUPERLITE_REPO", url)];
+    let dir = fx.cdir().join("plugins/local/superlite");
+    sl_switch(&fx, true);
+    let (rc, out, err) = fx.ac_env(&["cursor", "--profile", "shared"], &env);
+    assert_eq!(rc, 0, "{err}");
+    assert!(dir.join(".cursor-plugin/plugin.json").is_file(), "{out}{err}");
+    assert!(!is_link(&dir), "Cursor skips a link to a folder outside plugins/local");
+    // a new upstream commit is pulled on the next run
+    wr(&src.join("README.md"), "two\n");
+    git(&src, &["add", "."]);
+    git(&src, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "two"]);
+    let (_, out, _) = fx.ac_env(&["cursor", "--profile", "shared"], &env);
+    assert!(dir.join("README.md").is_file(), "{out}");
+    assert!(out.contains("updated superlite"), "{out}");
+    // off in Claude Code: our clone goes
+    sl_switch(&fx, false);
+    fx.ac_env(&["cursor", "--profile", "shared"], &env);
+    assert!(!dir.exists());
+    // a folder that is not our clone stays, with a warning
+    wr(&dir.join("mine.txt"), "x");
+    sl_switch(&fx, true);
+    let (_, out, err) = fx.ac_env(&["cursor", "--profile", "shared"], &env);
+    assert!(dir.join("mine.txt").is_file());
+    assert!(format!("{out}{err}").contains("not a superlite clone"), "{out}{err}");
+}
+
 // --- opencode managed permissions (the sidecar) -------------------------------
 
 fn oc_side(fx: &Fx) -> PathBuf {

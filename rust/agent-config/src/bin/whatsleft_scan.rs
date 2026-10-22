@@ -5,6 +5,7 @@
 //! Read-only, except `git fetch` (skip with --no-fetch).
 
 use agent_config::guard_checks::expanduser;
+use agent_config::leftovers::{self, Store};
 use agent_config::paths;
 use agent_config::pycompat::{basename, dirname, fname, list_dir, mtime, parse_ts, py_splitlines, py_str, truthy};
 use agent_config::scan::{Search, find_session, py_dumps};
@@ -33,7 +34,7 @@ Tags:
   ME     open work Claude can do
   YOU    needs the user (a decision, an approval, a login)
   CHECK  maybe open, the agent decides
-  LATER  optional, parked in the leftovers file
+  LATER  optional, parked in the project's leftovers list
   OK     nothing to do
   TASK   a running background task or subagent, with a STOP or KEEP advice
   SPEED  a slowness finding from hurry-scan (only the worst 3)
@@ -1329,24 +1330,29 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     pl!();
 }
 
-fn leftovers_path() -> String {
-    std::env::var("MIC_LEFTOVERS")
-        .unwrap_or_else(|_| paths::home().join(".claude").join("leftovers.md").to_string_lossy().into_owned())
-}
-
+/// The open leftovers of the projects the session touched (one store per main checkout).
 fn section_leftovers(roots: &[String]) {
-    let lp = leftovers_path();
-    let Some(text) = read_text(Path::new(&lp)) else { return };
-    let rows: Vec<String> =
-        text.split_inclusive('\n').filter(|l| l.starts_with("- [ ]")).map(|l| l.trim().to_string()).collect();
-    let names: HashSet<String> = roots.iter().map(|r| basename(r)).collect();
-    let mine: Vec<&String> = rows.iter().filter(|r| names.iter().any(|n| r.contains(&format!("**{n}**")))).collect();
-    if mine.is_empty() {
+    let mut seen = HashSet::new();
+    let stores =
+        roots.iter().filter_map(|r| Store::at(Path::new(r)).ok()).filter(|s| seen.insert(s.path().to_path_buf()));
+    let (mut places, mut rows) = (Vec::new(), Vec::new());
+    for store in stores {
+        let open = store.open_items();
+        if open.is_empty() {
+            continue;
+        }
+        places.push(tilde(&store.path().to_string_lossy()));
+        for item in open {
+            let text = item.text.replace(['\n', '\r'], " ");
+            rows.push(format!("{} · **{}** · {text}", leftovers::date_of(&item.at), item.from));
+        }
+    }
+    if rows.is_empty() {
         return;
     }
-    pl!("== LEFTOVERS ({}) ==", tilde(&lp));
-    for r in &mine[mine.len().saturating_sub(8)..] {
-        line("LATER", &short(&pychars(r, 6, usize::MAX), 130));
+    pl!("== LEFTOVERS ({}) ==", places.join(", "));
+    for r in &rows[rows.len().saturating_sub(8)..] {
+        line("LATER", &short(r, 130));
     }
     pl!();
 }

@@ -14,7 +14,7 @@ This is a conversation that adapts, not a fixed questionnaire: every round shoul
 
 <request>
 Arguments that start with `whatsleft:` mean hand-off mode (below).
-The request is the text passed with this command (shown as ARGUMENTS, or after the command name).
+The request is the text passed with this command (`$ARGUMENTS`).
 If nothing was passed, it is my most recent message before the command.
 If neither gives you a request, ask me what to stress-test.
 </request>

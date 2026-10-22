@@ -8,12 +8,14 @@
 //! (a missing transcript) lets the call through.
 //!
 //! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
-//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, H1 and W5 (preset workflow), G8 and
+//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, G19, H1 and W5 (preset workflow), G8 and
 //! PACE (pace), G9 and ROUTER (models), G10 (ship-to-main), G11 (clock), G17 (no-ai-attribution),
 //! G14, G15 and G16 (core). H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
 //! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session. W5
 //! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
-//! already passed in this session, with the git work tree unchanged since, gets a note to skip it.
+//! already passed in this session, with the git work tree unchanged since, gets a note to skip it. G18
+//! (workflow) denies the third try of a Bash command or an edit that failed twice. G19 (workflow) holds an
+//! autopilot session or a helper back once at stop when it edited a project and no check passed since.
 
 use agent_config::guard_checks::{self as gc, Check, FireKind, Verdict, expanduser, is_macos, realpath};
 use agent_config::paths;
@@ -22,9 +24,11 @@ use agent_config::pycompat::{days_from_civil, truthy};
 use agent_config::transcript;
 use regex::Regex;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -44,11 +48,15 @@ const HANDBACK_MAX_DENIES: i64 = 2;
 const HANDBACK_DEFAULT_CAP: i64 = 4000;
 const PROMPT_SCAN_LINES: usize = 200;
 const SCRATCH_ROOTS: &[&str] = &["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
-const SCRATCH_DIRS: &[&str] = &[".agents", ".superpowers"];
+const SCRATCH_DIRS: &[&str] = &[".agents", ".superlite"];
 const ARCHIVE_TOOL: &str = "mcp__ccd_session_mgmt__archive_session";
 const HEAVY_AGENTS: &[&str] = &["general-purpose", "claude"];
 const LOOKUP_AGENTS: &[&str] = &["Explore", "claude-code-guide", "statusline-setup"];
-const PLAN_SKILLS: &[&str] = &["superpowers:brainstorming", "superpowers:writing-plans"];
+const PLAN_SKILLS: &[&str] = &["superlite:brainstorming", "superlite:writing-plans"];
+/// superlite's own agents: its `sl` tool writes their briefs and its agent files pin model and effort.
+const SUPERLITE: &str = "superlite:";
+/// superlite agents pinned to opus; the router lowers them to sonnet only when the week is tight.
+const SUPERLITE_OPUS: &[&str] = &["superlite:final-reviewer", "superlite:fixer-opus"];
 const BROWSER_PREFIXES: &[&str] = &["mcp__Claude_Browser__", "mcp__claude-in-chrome__"];
 const BROWSER_WARN_AT: usize = 5;
 const BROWSER_WARN_EVERY: usize = 20;
@@ -61,15 +69,19 @@ const G13_AFTER: usize = 8;
 const H1_MAX: i64 = 3;
 const PLAN_TOOL: &str = "mcp__ccd_turn__update_plan";
 const WRAP_TOOL: &str = "mcp__ccd_turn__wrap_up";
+const FAIL_LIMIT: i64 = 2;
+const STEP_TABLE_MAX: usize = 40;
 
 const MSG_SCRATCH: &str =
-    "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superpowers/.";
+    "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superlite/.";
 const MSG_POLL: &str =
     "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
 const MSG_ASK: &str = "guard: an earlier AskUserQuestion in this turn has no answer yet. Wait for it, then ask again. Put all questions of one round in one call.";
 const MSG_HEAVY_TAIL: &str = "subagent loads every tool and skill (about 60K tokens; `worker` starts near 15-20K). Use `worker` (edits, commands), `researcher` (web), `Explore` (search), `task-implementer` (one plan task) or `Plan` (planning).";
 const MSG_PLAN_GATE: &str = "guard: plans run on Opus only in plan mode (opusplan). Call EnterPlanMode first, then save the plan file after you approve it (autopilot: send a `Plan` helper instead).";
 const MSG_PLAN_GATE_APP: &str = "guard: in the desktop app plan mode does not switch a Sonnet session to Opus. For this plan, send a `Plan` helper (Opus by the router), or pick Opus in the model menu.";
+const MSG_G18_WARN: &str = "G18: this step failed twice. Rule: after 2 failed tries on one step, stop and report. Change the approach now, or stop and report to the user.";
+const MSG_G18_DENY: &str = "G18: stop and report: 2 failed tries on this step. Say what failed and what you tried, then wait (autopilot: log the blocker and take the next task). A new user message clears this.";
 const MSG_G13: &str = "G13: 8 tool calls with no text. Write one short status line for the user now, then go on.";
 
 static DEADLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -148,6 +160,8 @@ struct HookInput<'a> {
     stop_hook_active: bool,
     /// `tool_response.interrupted`
     interrupted: bool,
+    /// `is_interrupt` of a PostToolUseFailure: the user stopped the call, it did not fail by itself.
+    is_interrupt: bool,
 }
 
 impl<'a> HookInput<'a> {
@@ -168,6 +182,7 @@ impl<'a> HookInput<'a> {
             last_assistant_message: text("last_assistant_message"),
             stop_hook_active: truthy(get(data, "stop_hook_active")),
             interrupted: get(get(data, "tool_response"), "interrupted").as_bool() == Some(true),
+            is_interrupt: get(data, "is_interrupt").as_bool() == Some(true),
         }
     }
 
@@ -298,10 +313,15 @@ struct Slot {
     t: f64,
 }
 
-/// Running slots, oldest first.
-fn live_spawns(state: &Map<String, Value>, now: f64) -> Vec<Slot> {
+/// The state key of the slots a spawn of this agent type takes: superlite runs have their own pool.
+fn slot_key(kind: Option<&str>) -> &'static str {
+    if kind.is_some_and(|k| k.starts_with(SUPERLITE)) { "sl_spawns" } else { "spawns" }
+}
+
+/// Running slots under `key`, oldest first.
+fn live_spawns(state: &Map<String, Value>, key: &str, now: f64) -> Vec<Slot> {
     let mut slots = Vec::new();
-    if let Some(Value::Array(a)) = state.get("spawns") {
+    if let Some(Value::Array(a)) = state.get(key) {
         for s in a {
             if let Value::Object(o) = s
                 && let Some(t) = o.get("t").and_then(Value::as_f64)
@@ -594,6 +614,15 @@ fn cap_for(state: PaceState) -> usize {
     }
 }
 
+/// G8 cap for superlite's own agents, a pool apart from the other helpers.
+fn superlite_cap_for(state: PaceState) -> usize {
+    match state {
+        PaceState::Ahead => 3,
+        PaceState::Critical => 0,
+        PaceState::Ok | PaceState::Unknown => 10,
+    }
+}
+
 /// `"%.0f%%" % v`, or "?".
 fn pct(v: Option<f64>) -> String {
     match v {
@@ -649,6 +678,9 @@ fn g3_pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
 fn g1_agent(data: &HookInput, _ctx: &Ctx) -> Verdict {
     if data.tool_name != Some("Agent") || !data.tool_input.is_object() {
         return Verdict::Allow;
+    }
+    if data.input_str("subagent_type").is_some_and(|k| k.starts_with(SUPERLITE)) {
+        return Verdict::Allow; // superlite's `sl` writes these briefs
     }
     let prompt_text = data.input_str("prompt").unwrap_or("");
     let mut missing = Vec::new();
@@ -1080,11 +1112,15 @@ fn step_status(item: &Value) -> String {
     if matches!(status.as_str(), "in_progress" | "in-progress" | "active") { "in_progress".to_string() } else { status }
 }
 
-fn apply_plan(steps: &mut Vec<(String, String)>, inp: &Value) {
+/// One task-list step: name, status, and whether it was handed to another session (`session`).
+type Step = (String, String, bool);
+
+fn apply_plan(steps: &mut Vec<Step>, inp: &Value) {
     if let Some(items) = get(inp, "items").as_array() {
-        *steps = items.iter().map(|i| (step_name(i), step_status(i))).collect();
+        let session = |i: &Value| get(i, "session").as_str().is_some_and(|s| !s.trim().is_empty());
+        *steps = items.iter().map(|i| (step_name(i), step_status(i), session(i))).collect();
     }
-    fn mark(steps: &mut [(String, String)], n: &Value, status: &str) {
+    fn mark(steps: &mut [Step], n: &Value, status: &str) {
         if let Value::Number(num) = n
             && let Some(i) = num.as_i64()
             && i >= 1
@@ -1109,9 +1145,9 @@ fn apply_plan(steps: &mut Vec<(String, String)>, inp: &Value) {
     mark(steps, get(inp, "start"), "in_progress");
 }
 
-/// Names of the steps still open after replaying the plan events (newest first).
-fn open_steps(events: &[(bool, Value)]) -> Vec<String> {
-    let mut steps: Vec<(String, String)> = Vec::new();
+/// The steps still open after replaying the plan events (newest first).
+fn open_plan(events: &[(bool, Value)]) -> Vec<Step> {
+    let mut steps: Vec<Step> = Vec::new();
     for (wrap, inp) in events.iter().rev() {
         if *wrap {
             steps.clear();
@@ -1119,11 +1155,13 @@ fn open_steps(events: &[(bool, Value)]) -> Vec<String> {
             apply_plan(&mut steps, inp);
         }
     }
+    steps.retain(|s| matches!(s.1.as_str(), "pending" | "in_progress" | "in-progress" | "active" | "todo"));
     steps
-        .into_iter()
-        .filter(|s| matches!(s.1.as_str(), "pending" | "in_progress" | "in-progress" | "active" | "todo"))
-        .map(|s| s.0)
-        .collect()
+}
+
+/// Names of the steps still open.
+fn open_steps(events: &[(bool, Value)]) -> Vec<String> {
+    open_plan(events).into_iter().map(|s| s.0).collect()
 }
 
 /// What one git call came to.
@@ -1263,14 +1301,17 @@ fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
     if t.asked || t.wrapped || final_reply(data, t).trim_end().ends_with('?') {
         return None;
     }
-    if with_state(data, |st| !live_spawns(st, now_secs()).is_empty()) == Some(true) {
+    let running = |st: &mut Map<String, Value>| {
+        ["spawns", "sl_spawns"].iter().any(|k| !live_spawns(st, k, now_secs()).is_empty())
+    };
+    if with_state(data, running) == Some(true) {
         return None; // a background helper runs; the app wakes the session when it ends
     }
-    let names = open_steps(&t.plan);
-    if names.is_empty() {
-        return None;
+    let open = open_plan(&t.plan);
+    if open.is_empty() || open.iter().any(|s| s.2) {
+        return None; // a step runs in another session; the app wakes this one when it ends
     }
-    let shown: Vec<String> = names.into_iter().take(3).collect();
+    let shown: Vec<String> = open.into_iter().take(3).map(|s| s.0).collect();
     Some(format!(
         "G12: the task list still has open steps ({}). Finish them now, or end with what is done, what is left, and one question.",
         shown.join(", ")
@@ -1319,7 +1360,7 @@ fn write_status(data: &HookInput, t: &Turn) {
     }
 }
 
-/// Stop checks, first message wins: G6, then G10 to G12 on the main thread. One reminder per turn.
+/// Stop checks, first message wins: G6, then G19 and G10 to G12 on the main thread. One reminder per turn.
 /// The status file for the statusline is updated first on the main thread, also on the final Stop
 /// after a forced continuation (`stop_hook_active`), which runs no check.
 fn stop(data: &HookInput) -> Option<String> {
@@ -1336,8 +1377,8 @@ fn stop(data: &HookInput) -> Option<String> {
         return None;
     }
     type TurnCheck = fn(&HookInput, &Turn) -> Option<String>;
-    let checks: [(Check, TurnCheck); 3] =
-        [(Check::G10, g10_commit), (Check::G11, g11_clock), (Check::G12, g12_open_steps)];
+    let checks: [(Check, TurnCheck); 4] =
+        [(Check::G19, g19_stop), (Check::G10, g10_commit), (Check::G11, g11_clock), (Check::G12, g12_open_steps)];
     let active: Vec<_> = checks.into_iter().filter(|(check, _)| check_enabled(*check)).collect();
     let t = scan_turn(Path::new(path))?;
     write_status(data, &t);
@@ -1351,12 +1392,13 @@ fn stop(data: &HookInput) -> Option<String> {
     })
 }
 
-/// SubagentStop: the oldest running spawn of this session is done.
+/// SubagentStop: the oldest running spawn of this session, in the pool of its agent type, is done.
 fn spawn_done(data: &HookInput) {
+    let key = slot_key(data.agent_type);
     let _ = with_state(data, |st| {
-        let live = live_spawns(st, now_secs());
+        let live = live_spawns(st, key, now_secs());
         let rest: Vec<Slot> = live.into_iter().skip(1).collect();
-        st.insert("spawns".into(), slots_value(&rest));
+        st.insert(key.into(), slots_value(&rest));
     });
 }
 
@@ -1367,11 +1409,13 @@ fn spawn_failed(data: &HookInput) {
         return;
     }
     let _ = with_state(data, |st| {
-        let mut live = live_spawns(st, now_secs());
-        if let Some(i) = live.iter().position(|s| s.id.as_deref() == Some(tid)) {
-            live.remove(i);
+        for key in ["spawns", "sl_spawns"] {
+            let mut live = live_spawns(st, key, now_secs());
+            if let Some(i) = live.iter().position(|s| s.id.as_deref() == Some(tid)) {
+                live.remove(i);
+                st.insert(key.into(), slots_value(&live));
+            }
         }
-        st.insert("spawns".into(), slots_value(&live));
     });
 }
 
@@ -1380,11 +1424,21 @@ fn subagentstop(data: &HookInput) -> Option<String> {
         spawn_done(data);
         return None;
     }
-    let msg = if check_enabled(Check::G5) { check_handback(data, data.last_assistant_message) } else { None };
+    let mut msg = if check_enabled(Check::G5) { check_handback(data, data.last_assistant_message) } else { None };
+    if msg.is_some() {
+        gc::fire_log(Check::G5, FireKind::Deny);
+    } else if check_enabled(Check::G19)
+        && data.agent_id.is_some()
+        && !data.agent_type.is_some_and(|k| k.starts_with(SUPERLITE))
+    // superlite gates its own tests
+    {
+        msg = g19_gate(data); // a helper always runs unattended
+        if msg.is_some() {
+            gc::fire_log(Check::G19, FireKind::Stop);
+        }
+    }
     if msg.is_none() {
         spawn_done(data); // the helper is really done; a denied hand-back keeps its slot
-    } else {
-        gc::fire_log(Check::G5, FireKind::Deny);
     }
     msg
 }
@@ -1482,6 +1536,8 @@ fn session_spawns(path: &Path) -> Option<(usize, i64)> {
     let data = fs::read(path).ok()?;
     let (mut spawns, mut tokens) = (0usize, 0i64);
     let mut tasks: HashSet<String> = HashSet::new();
+    // a transcript can repeat one Agent call in several records: count each call id once
+    let mut calls: HashSet<String> = HashSet::new();
     for line in data.split(|&b| b == b'\n') {
         if has(line, b"\"Agent\"")
             && let Some(rec) = loads(line)
@@ -1491,6 +1547,7 @@ fn session_spawns(path: &Path) -> Option<(usize, i64)> {
                 if b.is_object()
                     && get(b, "type").as_str() == Some("tool_use")
                     && get(b, "name").as_str() == Some("Agent")
+                    && get(b, "id").as_str().is_none_or(|id| calls.insert(id.to_string()))
                 {
                     spawns += 1;
                 }
@@ -1668,6 +1725,8 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
 /// G13 (PostToolUse, main thread): one JSON line after the 8th tool call with no text, else None.
 fn posttool(data: &HookInput) -> Option<String> {
     w5_record(data);
+    g18_passed(data);
+    g19_record(data);
     if !check_enabled(Check::G13) || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
         return None; // the desktop app has its own nudge and its transcript can miss text blocks
     }
@@ -1727,18 +1786,202 @@ fn w5_repeat(data: &HookInput) -> Option<String> {
     })
 }
 
+// --- G18 failed tries on one step -------------------------------------------------------
+
+/// The key of the step a Bash, Edit, Write or MultiEdit call works on: the same command in the same
+/// folder, or the same file and edit target. It starts with the agent, so a helper's tries are its
+/// own. A hash keeps the state file small.
+fn step_key(data: &HookInput) -> Option<String> {
+    let who = data.agent_id.unwrap_or("main");
+    let what = match data.tool_name? {
+        "Bash" => {
+            let cmd = data.bash_command()?.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!("bash|{}|{cmd}", data.call_cwd().display())
+        }
+        "Edit" => format!("edit|{}|{}", data.input_str("file_path")?, data.input_str("old_string").unwrap_or("")),
+        "Write" => format!("write|{}", data.input_str("file_path")?),
+        "MultiEdit" => {
+            let olds: Vec<&str> = data
+                .tool_input
+                .get("edits")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|e| e.get("old_string").and_then(Value::as_str)).collect())
+                .unwrap_or_default();
+            format!("multiedit|{}|{}", data.input_str("file_path")?, olds.join("\u{1f}"))
+        }
+        _ => return None,
+    };
+    let digest = Sha256::digest(format!("{who}|{what}").as_bytes());
+    Some(digest.iter().take(8).fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    }))
+}
+
+/// The work tree fingerprint that tells "nothing changed since the last try" for a Bash step. An
+/// edit between two tries makes the second a new try; an Edit step has no such fingerprint.
+fn step_fingerprint(data: &HookInput) -> Option<String> {
+    if data.tool_name == Some("Bash") { proj::tree_fingerprint(&data.call_cwd()) } else { None }
+}
+
+/// G18, record side (PostToolUseFailure): count a failed try of this step. The count restarts when the
+/// work tree changed since the last failure of the same command. Returns the warning on the second
+/// failure. A call the user interrupted is no failed try.
+fn g18_failed(data: &HookInput) -> Option<String> {
+    if !check_enabled(Check::G18) || data.is_interrupt {
+        return None;
+    }
+    let key = step_key(data)?;
+    let fp = step_fingerprint(data);
+    let n = with_state(data, |state| {
+        let table = state.entry("fails").or_insert_with(|| Value::Object(Map::new()));
+        let m = table.as_object_mut()?;
+        let old = m.shift_remove(&key);
+        let same = old.as_ref().is_some_and(|e| e.get("fp").and_then(Value::as_str) == fp.as_deref());
+        let n = if same { counter(old.as_ref().and_then(|e| e.get("n"))) + 1 } else { 1 };
+        if m.len() >= STEP_TABLE_MAX
+            && let Some(first) = m.keys().next().cloned()
+        {
+            m.shift_remove(&first);
+        }
+        m.insert(key, json!({"n": n, "fp": fp}));
+        Some(n)
+    })
+    .flatten()?;
+    (n == FAIL_LIMIT).then(|| {
+        gc::fire_log(Check::G18, FireKind::Warn);
+        hook_output("PostToolUseFailure", MSG_G18_WARN)
+    })
+}
+
+/// G18, clear side (PostToolUse runs only on success): the step worked, so its count goes.
+fn g18_passed(data: &HookInput) {
+    if !check_enabled(Check::G18) {
+        return;
+    }
+    let Some(key) = step_key(data) else { return };
+    let _ = with_state(data, |state| {
+        if let Some(m) = state.get_mut("fails").and_then(Value::as_object_mut) {
+            m.shift_remove(&key);
+        }
+    });
+}
+
+/// G18, deny side (PreToolUse): the third try of a step that failed twice. A Bash step counts only
+/// while the work tree is the same as at its last failure. A new user message clears the table.
+fn g18_stuck(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    let Some(key) = step_key(data) else { return Verdict::Allow };
+    let seen = with_state(data, |state| {
+        let e = state.get("fails")?.get(&key)?;
+        Some((counter(e.get("n")), e.get("fp").and_then(Value::as_str).map(String::from)))
+    })
+    .flatten();
+    let Some((n, fp)) = seen else { return Verdict::Allow };
+    if n < FAIL_LIMIT {
+        return Verdict::Allow;
+    }
+    if fp.is_some() && step_fingerprint(data) != fp {
+        return Verdict::Allow;
+    }
+    Verdict::Deny(MSG_G18_DENY.to_string())
+}
+
+// --- G19 fast check before an unattended run stops -----------------------------------------
+
+/// The `edits` entry of the calling agent: `n` project edits so far, `ok` the value of `n` at the last
+/// passing check command, `blocked` the value of `n` at the last stop that was held back, `dir` the
+/// folder of the last edit.
+fn agent_edits<'a>(state: &'a mut Map<String, Value>, data: &HookInput) -> Option<&'a mut Map<String, Value>> {
+    let table = state.entry("edits").or_insert_with(|| Value::Object(Map::new())).as_object_mut()?;
+    table.entry(data.agent_id.unwrap_or("main")).or_insert_with(|| Value::Object(Map::new())).as_object_mut()
+}
+
+/// G19, record side (PostToolUse): an Edit, Write or MultiEdit inside a project counts as an edit, and a
+/// plain check command that passed counts as the proof for every edit so far.
+fn g19_record(data: &HookInput) {
+    if !check_enabled(Check::G19) || data.interrupted {
+        return;
+    }
+    let edited = matches!(data.tool_name, Some("Edit" | "Write" | "MultiEdit"))
+        .then(|| data.input_str("file_path").map(PathBuf::from))
+        .flatten()
+        .and_then(|f| f.parent().filter(|d| proj::find_root(d).is_some()).map(Path::to_path_buf));
+    let passed = data.bash_command().is_some_and(|c| proj::plain_check(c).is_some());
+    if edited.is_none() && !passed {
+        return;
+    }
+    let _ = with_state(data, |state| {
+        let Some(e) = agent_edits(state, data) else { return };
+        if let Some(dir) = edited {
+            e.insert("n".into(), Value::from(counter(e.get("n")) + 1));
+            e.insert("dir".into(), Value::String(dir.to_string_lossy().into_owned()));
+        } else {
+            e.insert("ok".into(), Value::from(counter(e.get("n"))));
+        }
+    });
+}
+
+/// True when the transcript shows `ps:autopilot` was started: a Skill call or the typed command.
+fn autopilot_run(path: &Path) -> bool {
+    static MARK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#""skill"\s*:\s*"ps:autopilot"|<command-name>/?ps:autopilot</command-name>"#).unwrap()
+    });
+    let Ok(f) = fs::File::open(path) else { return false };
+    io::BufReader::new(f)
+        .split(b'\n')
+        .map_while(Result::ok)
+        .any(|line| has(&line, b"ps:autopilot") && std::str::from_utf8(&line).is_ok_and(|l| MARK.is_match(l)))
+}
+
+/// G19, gate side: the caller edited a project that has a fast check and no check passed since. Holds the
+/// stop back once per edit count: the folder of the last edit is marked, so a second stop goes through
+/// even when the stop hook flag is missing. Returns the message.
+fn g19_gate(data: &HookInput) -> Option<String> {
+    let dir = with_state(data, |state| {
+        let e = agent_edits(state, data)?;
+        let (n, ok, blocked) = (counter(e.get("n")), counter(e.get("ok")), counter(e.get("blocked")));
+        if n <= ok || n <= blocked {
+            return None;
+        }
+        e.insert("blocked".into(), Value::from(n));
+        e.get("dir").and_then(Value::as_str).map(PathBuf::from)
+    })
+    .flatten()?;
+    let fast = proj::detect(&dir)?.check_fast();
+    let line = fast.iter().map(proj::Cmd::line).collect::<Vec<_>>().join(" && ");
+    (!line.is_empty())
+        .then(|| format!("G19: you edited files and no check passed since; run the fast check before you stop: {line}"))
+}
+
+/// G19 on Stop: only in an autopilot session. A normal chat is never held back.
+fn g19_stop(data: &HookInput, _t: &Turn) -> Option<String> {
+    let pending = with_state(data, |state| {
+        let e = agent_edits(state, data)?;
+        Some(counter(e.get("n")) > counter(e.get("ok")) && counter(e.get("n")) > counter(e.get("blocked")))
+    })
+    .flatten()
+    .unwrap_or(false);
+    if !pending || !autopilot_run(Path::new(data.transcript_path?)) {
+        return None;
+    }
+    g19_gate(data)
+}
+
 // --- G8 helper cap, G9 plan gate, router -----------------------------------------
 
 /// G8: helpers running at once, per session. An allowed call is recorded here, so keep this last.
+/// superlite's own agents have a pool of their own (10, 3 when the week runs ahead).
 fn g8_cap(data: &HookInput, ctx: &Ctx) -> Verdict {
     if data.tool_name != Some("Agent") {
         return Verdict::Allow;
     }
     let now = now_secs();
     let st = ctx.pace(); // read before the lock: pace may take a moment
+    let kind = data.input_str("subagent_type");
+    let key = slot_key(kind);
     let r = with_state(data, |state| {
-        let mut spawns = live_spawns(state, now);
-        let cap = cap_for(st.state);
+        let mut spawns = live_spawns(state, key, now);
+        let cap = if key == "spawns" { cap_for(st.state) } else { superlite_cap_for(st.state) };
         if spawns.len() >= cap {
             let msg = format!(
                 "guard: {} {} running, the cap is {} (week {} used, budget {}, pace {}). Wait for one to finish, or do the step yourself.",
@@ -1749,11 +1992,11 @@ fn g8_cap(data: &HookInput, ctx: &Ctx) -> Verdict {
                 pct(st.budget),
                 st.state
             );
-            state.insert("spawns".into(), slots_value(&spawns));
+            state.insert(key.into(), slots_value(&spawns));
             return Some(msg);
         }
         spawns.push(Slot { id: data.tool_use_id.map(String::from), t: now });
-        state.insert("spawns".into(), slots_value(&spawns));
+        state.insert(key.into(), slots_value(&spawns));
         None
     });
     Verdict::from(r.flatten()) // no state, no cap: fail open
@@ -1850,6 +2093,9 @@ fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
     if kind == Some("fork") {
         return (None, None);
     }
+    if let Some(k) = kind.filter(|k| k.starts_with(SUPERLITE)) {
+        return route_superlite(k, ti, ctx); // the agent file pins model and effort
+    }
     let desc = text("description").unwrap_or("");
     let head: String = text("prompt").unwrap_or("").chars().take(400).collect();
     let final_ = kind == Some("code-reviewer") && (FINAL_REVIEW.is_match(desc) || FINAL_REVIEW.is_match(&head));
@@ -1898,6 +2144,22 @@ fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
     (Some(Value::Object(new)), Some(msg))
 }
 
+/// Router row for a superlite agent: left alone, except an opus-pinned one runs on sonnet when the
+/// week is tight (superlite says a `model` overrides the agent file, so only then is one set).
+fn route_superlite(kind: &str, ti: &Map<String, Value>, ctx: &Ctx) -> (Option<Value>, Option<String>) {
+    if !SUPERLITE_OPUS.contains(&kind) {
+        return (None, None);
+    }
+    let st = ctx.pace();
+    if !st.state.is_tight() {
+        return (None, None);
+    }
+    let mut new = ti.clone();
+    new.insert("model".into(), Value::String("sonnet".into()));
+    let msg = format!("guard router: helper runs on sonnet - the week is {}, so opus became sonnet", st.state);
+    (Some(Value::Object(new)), Some(msg))
+}
+
 // --- modes --------------------------------------------------------------------
 
 type GuardFn = fn(&HookInput, &Ctx) -> Verdict;
@@ -1907,7 +2169,7 @@ type WarnFn = fn(&HookInput, &Ctx) -> Option<String>;
 fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
     // g8_cap records the spawn it allows, so it runs after every other deny
     // each check runs only when its id is enabled (G14 and G15 also test their own id)
-    let guards: [(Check, GuardFn); 12] = [
+    let guards: [(Check, GuardFn); 13] = [
         (Check::G3, g3_pretool),
         (Check::G7, g7_heavy),
         (Check::G1, g1_agent),
@@ -1919,6 +2181,7 @@ fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
         (Check::G14, g14_sed),
         (Check::G15, g15_secrets),
         (Check::G17, g17_attr),
+        (Check::G18, g18_stuck),
         (Check::G8, g8_cap),
     ];
     for (check, g) in guards {
@@ -2069,6 +2332,7 @@ fn prompt(data: &HookInput, ctx: &Ctx) -> Option<String> {
     let over = ctx.size() >= NUDGE_CONTEXT;
     let mut note: Option<String> = None;
     let count = with_state(data, |state| {
+        state.remove("fails"); // the user spoke: the tries start again
         let prev = counter(state.get("count"));
         let count = if over { prev + 1 } else { 0 };
         state.insert("count".into(), Value::from(count));
@@ -2118,6 +2382,7 @@ fn run() -> i32 {
     let msg = match mode.as_str() {
         "posttoolfailure" => {
             spawn_failed(&input);
+            out = g18_failed(&input);
             None
         }
         "posttool" => {

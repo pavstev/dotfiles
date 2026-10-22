@@ -55,7 +55,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Agent|EnterPlanMode|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session|mcp__Claude_Browser__.*|mcp__claude-in-chrome__.*|Bash|Read|Grep|mcp__.*([Ss]end|[Pp]ost|[Rr]eply|[Ff]orward|[Cc]omment|[Cc]reate_?[Ii]ssue|[Uu]pdate_?[Ii]ssue|[Cc]reate_?[Pp]ull_?[Rr]equest|[Uu]pdate_?[Pp]ull_?[Rr]equest|[Pp]ush_?[Ff]iles|[Cc]reate_?[Oo]r_?[Uu]pdate_?[Ff]ile|[Pp]ublish|[Uu]pload|[Ss]ubmit_?[Rr]eview|[Dd]raft|[Mm]essage|[Tt]weet|[Nn]otify).*",
+        "matcher": "Agent|Edit|Write|MultiEdit|EnterPlanMode|CronCreate|ScheduleWakeup|Skill|AskUserQuestion|SubagentHandback|mcp__ccd_session_mgmt__archive_session|mcp__Claude_Browser__.*|mcp__claude-in-chrome__.*|Bash|Read|Grep|mcp__.*([Ss]end|[Pp]ost|[Rr]eply|[Ff]orward|[Cc]omment|[Cc]reate_?[Ii]ssue|[Uu]pdate_?[Ii]ssue|[Cc]reate_?[Pp]ull_?[Rr]equest|[Uu]pdate_?[Pp]ull_?[Rr]equest|[Pp]ush_?[Ff]iles|[Cc]reate_?[Oo]r_?[Uu]pdate_?[Ff]ile|[Pp]ublish|[Uu]pload|[Ss]ubmit_?[Rr]eview|[Dd]raft|[Mm]essage|[Tt]weet|[Nn]otify).*",
         "hooks": [
           {
             "type": "command",
@@ -110,7 +110,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Agent",
+        "matcher": "Agent|Bash|Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",

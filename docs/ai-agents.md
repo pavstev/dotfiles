@@ -81,6 +81,10 @@ installs the Brewfile `vscode` extensions into Cursor, and runs `scripts/agent-c
   [`cursor/mcp.json`](../cursor/mcp.json); opt-in with Cursor MCP in `dots settings`) and
   `~/.cursor/cli-config.json` (permissions, attribution, status line). Commit attribution to
   the agent is always off.
+- **Cloned:** [superlite](https://github.com/iha2/superlite) into `~/.cursor/plugins/local/superlite`
+  when Claude Code has `superlite@superlite-dev` on (the built `~/.claude/settings.json`). Each run
+  pulls it; off removes our clone. A real folder, because Cursor skips a link to a folder outside
+  `plugins/local`.
 
 The full mapping and the gaps: [Cursor port](cursor-port.md).
 
@@ -95,7 +99,9 @@ The full mapping and the gaps: [Cursor port](cursor-port.md).
   `plugins/dots-guard.ts`.
 - **Merged:** `opencode.jsonc` (`permission` from `claude/settings.json`; `mcp` from
   `cursor/mcp.json`, opt-in with Opencode MCP in `dots settings`) and `tui.json` (the theme
-  name, unless it already names another theme).
+  name, unless it already names another theme). The superlite plugin spec goes into `plugins`
+  (`plugin` when the file uses that V1 key) while Claude Code has `superlite@superlite-dev` on, and
+  comes out when it is off.
 - **Per project:** each path in `OPENCODE_PROJECTS` gets a `.opencode/` that links the global
   config and agents. What the project already has wins.
 
@@ -118,7 +124,7 @@ A check also needs its preset on, and `GUARD_OFF` turns one off in every app.
 | H1 hint to use `rust-bin ctx` when Bash runs `sed -n` or `cat` on a code file (preset `workflow`; never a deny; at most 3 per session) | yes | no | not tested |
 | W5 note "skip it" for a check command that already passed with the work tree unchanged (preset `workflow`; never a deny) | yes | no | not tested |
 | Format on edit (`rust-bin --hook proj format`; not a guard check) | yes | no (Cursor has its own `afterFileEdit` hook) | no |
-| G1, G2, G4 to G13, pace, router | yes | no | not tested |
+| G1, G2, G4 to G13, G18, G19, pace, router | yes | no | not tested |
 
 The Opencode plugin runs the whole `guard pretool` hook, so a Claude check that looks at a shell
 command can also fire there. Only G14 to G17 are tested in Opencode.

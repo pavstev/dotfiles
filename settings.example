@@ -71,6 +71,11 @@ SKIP_STEPS=""
 PRIVATE_PROJECTS=""
 PRIVATE_WORDS=""
 
+# Host names the word checks skip, split by spaces or commas (a link to your own site may
+# hold a private word). Only the host is removed from the text, never a path. An entry with
+# a character outside letters, digits, dot and hyphen is ignored. Empty: no host is skipped.
+PUBLIC_HOSTS=""
+
 # The SSH host (a name from ~/.ssh/config) where scripts/os-check.sh runs the Linux
 # check in podman or docker. Empty: it uses podman or docker on this machine.
 TEST_HOST=""
