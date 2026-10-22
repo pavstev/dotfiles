@@ -1425,6 +1425,32 @@ fn test_cap_entries_older_than_90_minutes_are_dropped() {
 }
 
 #[test]
+fn test_cap_superlite_has_its_own_pool_of_10() {
+    let g = G::new();
+    let sl = |sid: &str| g.run("pretool", &agent_data(sid, json!({"subagent_type": "superlite:implementer"})));
+    for _ in 0..10 {
+        assert_allow(&sl("c9"));
+    }
+    assert_deny(&sl("c9"), "cap is 10");
+    // the other helpers keep their 3 slots
+    for _ in 0..3 {
+        assert_allow(&g.agent("c9"));
+    }
+    assert_deny(&g.agent("c9"), "cap is 3");
+    // a superlite stop frees a superlite slot, not a helper slot
+    assert_allow(&g.run("subagentstop", &stop_data("c9", json!({"agent_type": "superlite:implementer"}))));
+    assert_deny(&g.agent("c9"), "cap is 3");
+    assert_allow(&sl("c9"));
+    // a tight week: 3 superlite agents
+    let ahead = Some(fake_pace("ahead", 60.0, 50.0));
+    let d = agent_data("c10", json!({"subagent_type": "superlite:implementer"}));
+    for _ in 0..3 {
+        assert_allow(&g.inproc("pretool", &d, ahead));
+    }
+    assert_deny(&g.inproc("pretool", &d, ahead), "cap is 3");
+}
+
+#[test]
 fn test_cap_by_pace() {
     let g = G::new();
     let ahead = Some(fake_pace("ahead", 60.0, 50.0));

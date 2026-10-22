@@ -313,10 +313,15 @@ struct Slot {
     t: f64,
 }
 
-/// Running slots, oldest first.
-fn live_spawns(state: &Map<String, Value>, now: f64) -> Vec<Slot> {
+/// The state key of the slots a spawn of this agent type takes: superlite runs have their own pool.
+fn slot_key(kind: Option<&str>) -> &'static str {
+    if kind.is_some_and(|k| k.starts_with(SUPERLITE)) { "sl_spawns" } else { "spawns" }
+}
+
+/// Running slots under `key`, oldest first.
+fn live_spawns(state: &Map<String, Value>, key: &str, now: f64) -> Vec<Slot> {
     let mut slots = Vec::new();
-    if let Some(Value::Array(a)) = state.get("spawns") {
+    if let Some(Value::Array(a)) = state.get(key) {
         for s in a {
             if let Value::Object(o) = s
                 && let Some(t) = o.get("t").and_then(Value::as_f64)
@@ -606,6 +611,15 @@ fn cap_for(state: PaceState) -> usize {
         PaceState::Ahead => 1,
         PaceState::Critical => 0,
         PaceState::Ok | PaceState::Unknown => 3,
+    }
+}
+
+/// G8 cap for superlite's own agents, a pool apart from the other helpers.
+fn superlite_cap_for(state: PaceState) -> usize {
+    match state {
+        PaceState::Ahead => 3,
+        PaceState::Critical => 0,
+        PaceState::Ok | PaceState::Unknown => 10,
     }
 }
 
@@ -1281,7 +1295,8 @@ fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
     if t.asked || t.wrapped || final_reply(data, t).trim_end().ends_with('?') {
         return None;
     }
-    if with_state(data, |st| !live_spawns(st, now_secs()).is_empty()) == Some(true) {
+    let running = |st: &mut Map<String, Value>| ["spawns", "sl_spawns"].iter().any(|k| !live_spawns(st, k, now_secs()).is_empty());
+    if with_state(data, running) == Some(true) {
         return None; // a background helper runs; the app wakes the session when it ends
     }
     let names = open_steps(&t.plan);
@@ -1369,12 +1384,13 @@ fn stop(data: &HookInput) -> Option<String> {
     })
 }
 
-/// SubagentStop: the oldest running spawn of this session is done.
+/// SubagentStop: the oldest running spawn of this session, in the pool of its agent type, is done.
 fn spawn_done(data: &HookInput) {
+    let key = slot_key(data.agent_type);
     let _ = with_state(data, |st| {
-        let live = live_spawns(st, now_secs());
+        let live = live_spawns(st, key, now_secs());
         let rest: Vec<Slot> = live.into_iter().skip(1).collect();
-        st.insert("spawns".into(), slots_value(&rest));
+        st.insert(key.into(), slots_value(&rest));
     });
 }
 
@@ -1385,11 +1401,13 @@ fn spawn_failed(data: &HookInput) {
         return;
     }
     let _ = with_state(data, |st| {
-        let mut live = live_spawns(st, now_secs());
-        if let Some(i) = live.iter().position(|s| s.id.as_deref() == Some(tid)) {
-            live.remove(i);
+        for key in ["spawns", "sl_spawns"] {
+            let mut live = live_spawns(st, key, now_secs());
+            if let Some(i) = live.iter().position(|s| s.id.as_deref() == Some(tid)) {
+                live.remove(i);
+                st.insert(key.into(), slots_value(&live));
+            }
         }
-        st.insert("spawns".into(), slots_value(&live));
     });
 }
 
@@ -1940,15 +1958,18 @@ fn g19_stop(data: &HookInput, _t: &Turn) -> Option<String> {
 // --- G8 helper cap, G9 plan gate, router -----------------------------------------
 
 /// G8: helpers running at once, per session. An allowed call is recorded here, so keep this last.
+/// superlite's own agents have a pool of their own (10, 3 when the week runs ahead).
 fn g8_cap(data: &HookInput, ctx: &Ctx) -> Verdict {
     if data.tool_name != Some("Agent") {
         return Verdict::Allow;
     }
     let now = now_secs();
     let st = ctx.pace(); // read before the lock: pace may take a moment
+    let kind = data.input_str("subagent_type");
+    let key = slot_key(kind);
     let r = with_state(data, |state| {
-        let mut spawns = live_spawns(state, now);
-        let cap = cap_for(st.state);
+        let mut spawns = live_spawns(state, key, now);
+        let cap = if key == "spawns" { cap_for(st.state) } else { superlite_cap_for(st.state) };
         if spawns.len() >= cap {
             let msg = format!(
                 "guard: {} {} running, the cap is {} (week {} used, budget {}, pace {}). Wait for one to finish, or do the step yourself.",
@@ -1959,11 +1980,11 @@ fn g8_cap(data: &HookInput, ctx: &Ctx) -> Verdict {
                 pct(st.budget),
                 st.state
             );
-            state.insert("spawns".into(), slots_value(&spawns));
+            state.insert(key.into(), slots_value(&spawns));
             return Some(msg);
         }
         spawns.push(Slot { id: data.tool_use_id.map(String::from), t: now });
-        state.insert("spawns".into(), slots_value(&spawns));
+        state.insert(key.into(), slots_value(&spawns));
         None
     });
     Verdict::from(r.flatten()) // no state, no cap: fail open
