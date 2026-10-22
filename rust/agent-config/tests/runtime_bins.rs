@@ -531,7 +531,11 @@ fn yt_fetch_misses_and_errors() {
     // no argument: usage, exit 2
     let (code, _, err) = run_bin(YT, &["fetch"], "", &env, None);
     assert_eq!(code, 2);
-    assert!(err.contains("usage: yt_transcribe fetch <youtube url>"), "{err}");
+    assert!(err.contains("usage: yt_transcribe fetch [--force-whisper] <youtube url>"), "{err}");
+    // the flag alone is no link: usage, exit 2
+    let (code, _, err) = run_bin(YT, &["fetch", "--force-whisper"], "", &env, None);
+    assert_eq!(code, 2);
+    assert!(err.contains("usage:"), "{err}");
     // not a YouTube link: the parser's message, exit 1
     let (code, _, err) = run_bin(YT, &["fetch", "https://example.com/x"], "", &env, None);
     assert_eq!(code, 1);
@@ -544,6 +548,13 @@ fn yt_fetch_misses_and_errors() {
     assert_eq!(code, 1, "{out}");
     assert!(err.contains("yt-dlp is not installed"), "{err}");
     assert_eq!(out, "");
+    // --force-whisper before or after the link reaches the Whisper path (its tools are missing here)
+    for args in [["fetch", "--force-whisper", "dQw4w9WgXcQ"], ["fetch", "dQw4w9WgXcQ", "--force-whisper"]] {
+        let (code, out, err) = run_bin(YT, &args, "", &env, None);
+        assert_eq!(code, 1, "{args:?}: {out}");
+        assert!(!err.contains("Cannot find a YouTube video ID"), "{args:?}: {err}");
+        assert!(err.contains("is not installed"), "{args:?}: {err}");
+    }
     // the old single-video form still works
     let (code, out, _) = run_bin(YT, &["--print-id", "https://youtu.be/dQw4w9WgXcQ"], "", &env, None);
     assert_eq!((code, out.as_str()), (0, "dQw4w9WgXcQ\n"));

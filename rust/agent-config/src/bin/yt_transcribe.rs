@@ -448,7 +448,9 @@ fn need_tool(tool: &str, why: &str, finder: &dyn Fn(&str) -> Option<PathBuf>) ->
 const MSG_UNAVAILABLE: &str = "Video is unavailable (removed, private, or the link is wrong).";
 const MSG_UNPLAYABLE: &str = "Video cannot be played (private, members-only, or removed).";
 const MSG_AGE: &str = "Video is age-restricted. Captions need a signed-in session; try cookies with yt-dlp.";
-const MSG_BLOCKED: &str = "YouTube blocked this IP for caption requests. Wait, or use --force-whisper.";
+// Captions and the Whisper audio both come through yt-dlp, so a block stops both.
+const MSG_BLOCKED: &str = "YouTube blocked this IP (bot check or too many requests). \
+     Wait an hour and try again, or open the video in a browser and read its captions there.";
 const MSG_SIGNIN: &str = "YouTube asks for sign-in (age or bot check). Try again later.";
 
 /// Map yt-dlp's stderr to the same user messages the Python tool gave.
@@ -783,7 +785,31 @@ fn run(cli: &Cli) -> i32 {
     0
 }
 
-const FETCH_USAGE: &str = "usage: yt_transcribe fetch <youtube url>";
+const FETCH_USAGE: &str = "usage: yt_transcribe fetch [--force-whisper] <youtube url>";
+
+/// What `fetch` was asked: help, or one link with its flags.
+#[derive(Debug, PartialEq)]
+enum FetchArgs {
+    Help,
+    Run { url: String, force_whisper: bool },
+}
+
+/// Parse the words after `fetch`. Flags may come before or after the link. Any other word is
+/// the link, so an ID that starts with `-` still works. `None`: no link or two links.
+fn parse_fetch_args(args: &[String]) -> Option<FetchArgs> {
+    let mut url = None;
+    let mut force_whisper = false;
+    for a in args {
+        match a.as_str() {
+            "-h" | "--help" => return Some(FetchArgs::Help),
+            "--force-whisper" => force_whisper = true,
+            "" => return None,
+            _ if url.is_some() => return None,
+            _ => url = Some(a.clone()),
+        }
+    }
+    url.map(|url| FetchArgs::Run { url, force_whisper })
+}
 
 /// `~/.cache/yt-learn`: the cache of `fetch` (HOME first, like the shell script it replaced).
 fn fetch_dir() -> PathBuf {
@@ -793,10 +819,10 @@ fn fetch_dir() -> PathBuf {
 }
 
 /// `fetch <url>`: print the path of a timestamped markdown transcript, `~/.cache/yt-learn/<id>.md`.
-/// A cached, non-empty file is returned at once with no network.
-fn fetch(url: &str) -> i32 {
+/// A cached, non-empty file is returned at once with no network, with or without `--force-whisper`.
+fn fetch(url: &str, force_whisper: bool) -> i32 {
     fetch_with(url, &fetch_dir(), &|id| {
-        transcribe_with(id, &[], "base", false, false, &from_captions, &from_whisper)
+        transcribe_with(id, &[], "base", force_whisper, false, &from_captions, &from_whisper)
             .and_then(|t| render(&t, "markdown"))
     })
 }
@@ -838,13 +864,13 @@ fn fetch_with(url: &str, dir: &Path, make: &dyn Fn(&str) -> Result<String, Strin
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "fetch") {
-        match args.get(1).map(String::as_str) {
-            Some("-h" | "--help") => {
+        match parse_fetch_args(&args[1..]) {
+            Some(FetchArgs::Help) => {
                 println!("{FETCH_USAGE}");
                 std::process::exit(0);
             }
-            Some(url) if !url.is_empty() => std::process::exit(fetch(url)),
-            _ => {
+            Some(FetchArgs::Run { url, force_whisper }) => std::process::exit(fetch(&url, force_whisper)),
+            None => {
                 eprintln!("{FETCH_USAGE}");
                 std::process::exit(2);
             }
@@ -1036,6 +1062,29 @@ mod tests {
         let c = |_: &str, _: &[String]| -> Result<Transcript, CapErr> { panic!("captions must not run") };
         let t = transcribe_with(V, &[], "base", true, false, &c, &whisper_ok()).unwrap();
         assert_eq!(t.source, "whisper");
+    }
+
+    #[test]
+    fn fetch_args_take_the_flag_in_any_position() {
+        let v = |xs: &[&str]| xs.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let run = |url: &str, force_whisper| Some(FetchArgs::Run { url: url.into(), force_whisper });
+        assert_eq!(parse_fetch_args(&v(&[V])), run(V, false));
+        assert_eq!(parse_fetch_args(&v(&["--force-whisper", V])), run(V, true));
+        assert_eq!(parse_fetch_args(&v(&[V, "--force-whisper"])), run(V, true));
+        // an ID may start with a dash: it is the link, not an unknown flag
+        assert_eq!(parse_fetch_args(&v(&["--force-whisper", "-abcdefghij"])), run("-abcdefghij", true));
+        assert_eq!(parse_fetch_args(&v(&[V, "--help"])), Some(FetchArgs::Help));
+        assert_eq!(parse_fetch_args(&v(&[])), None);
+        assert_eq!(parse_fetch_args(&v(&["--force-whisper"])), None);
+        assert_eq!(parse_fetch_args(&v(&[""])), None);
+        assert_eq!(parse_fetch_args(&v(&[V, W])), None);
+    }
+
+    #[test]
+    fn blocked_message_does_not_promise_whisper() {
+        // the Whisper audio also comes through yt-dlp, so a block stops it too
+        assert!(!MSG_BLOCKED.contains("whisper") && !MSG_BLOCKED.contains("Whisper"), "{MSG_BLOCKED}");
+        assert!(MSG_BLOCKED.contains("Wait") && MSG_BLOCKED.contains("browser"), "{MSG_BLOCKED}");
     }
 
     #[test]
