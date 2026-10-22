@@ -46,7 +46,7 @@ Done means: nothing mandatory left, everything committed and pushed, no conflict
 
 ## Squash mode
 
-On when the repo CLAUDE.md or AGENTS.md says one commit on main, the user asks for it, or `--squash` is passed. Squash only commits THIS session made.
+On when the repo CLAUDE.md or AGENTS.md says one commit on main, the ship-to-main preset is on, the user asks for it, or `--squash` is passed. Off when the user or the brief asked for one commit per part. Squash only commits THIS session made. Not pushed yet → a plain `git push` after the squash, no force.
 
 1. Find them: scan with `--since <sha of the first commit this session made>`. It lists them and warns about other authors and merges.
 2. Any listed commit this session did not make, or a merge → leave it out. Squash only the unbroken run of ours at the tip. None → skip squash.
@@ -74,9 +74,9 @@ Done: <path, URL or sha>: <what I did, max 5 lines>
 Checks: <which ran>: passed / failed
 Git: <repo>: committed, pushed, <short sha> on main, CI green / no CI / skipped
 Tasks: <n> stopped, <n> still running (why)
-Leftovers: <n> saved in <repo>/.agents/leftovers.jsonl
+Leftovers: <n> open in <repo>/.agents/leftovers.jsonl (<k> saved now)
 You do: <exact steps for anything only the user can do, or "nothing">
-Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side session>)
+Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side session>) / kept (no archive tool)
 ```
 
 "You do" lists what I cannot do: logins, secrets, approvals, paid things, decisions. Give the exact command or click.
@@ -105,7 +105,7 @@ Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side s
    - A side session still working → no retry. Go to step 2.
    - The guard (G6) says you wrote a hand-off this turn → no retry. Give its link and the `Read <path> and do it.` block, end the turn, and archive after the user answers.
    - Anything else (open on screen and not approved, a cause you do not know) → no retry. Say "Session: kept (not clean)" and put "archive it from the sidebar" under "You do".
-8. No `ccd_session_mgmt` tools (terminal CLI) → say "archive it by hand".
+8. No `ccd_session_mgmt` tools (terminal CLI) → "Session: kept (no archive tool)" and put "archive it by hand" under "You do".
 
 ## Rules
 
@@ -116,4 +116,6 @@ Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side s
 
 ## Options
 
-`--no-fetch` skip the network. `--since <sha|time>` list this session's commits. `--note "text" [repo]` save a leftover for that repo. `--leftovers` show the list. `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin leftovers list` shows the open ones, `... leftovers done <id>` closes one.
+`--no-fetch` skip the network. `--since <sha|time>` list this session's commits. `--note "text" [repo]` save a leftover for that repo. `--leftovers` show the list. `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin leftovers list --repo <repo>` shows the open ones, `... leftovers done <id> --repo <repo>` closes one. Without `--repo` it reads the repo of the shell's folder, which may be another repo.
+
+"Where are my leftovers?" → run `leftovers list --repo <repo>` and `leftovers path --repo <repo>` for every repo this session touched. Answer with the path and the open items. Never answer "none" from a list without `--repo`.
