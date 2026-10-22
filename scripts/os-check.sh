@@ -8,12 +8,14 @@
 #    scripts/os-check.sh linux --force      # one OS, even with no change
 #    scripts/os-check.sh --since origin/main
 #    scripts/os-check.sh linux --host NAME  # Linux on that SSH host
+#    scripts/os-check.sh linux --local      # Linux in local podman or docker
 #    scripts/os-check.sh --which FILE...    # the OSes each file is for (the skip rule)
 #
 #  macOS:   scripts/test-dotfiles.sh on this Mac (temp HOME).
 #  Linux:   scripts/test-linux.sh for each image in OS_CHECK_IMAGES (default
 #           "debian:13 ubuntu:24.04") on the SSH host TEST_HOST (dots settings,
-#           or --host), else with local podman or docker.
+#           or --host), else with local podman or docker. --local (or TEST_HOST=local)
+#           uses podman or docker even when TEST_HOST is set, e.g. when that host is off.
 #  Windows: a throwaway clone of the UTM VM win11-golden (built once by
 #           scripts/win-golden.sh). It starts the clone, copies the tree over SSH, runs
 #           ./dotfiles twice in Git Bash, then a third time after a pull that brings a
@@ -39,14 +41,16 @@ while (($#)); do
     --force) FORCE=1 ;;
     --since) SINCE="${2:?--since needs a git ref}"; shift ;;
     --host) HOST="${2:?--host needs an SSH host}"; shift ;;
+    --local) HOST=local ;;
     --which) shift; WHICH=("$@"); break ;;
-    -h | --help) sed -n '2,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h | --help) sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
   shift
 done
 ((${#targets[@]})) || targets=(macos linux windows)
 HOST="${HOST:-${TEST_HOST:-$(setting TEST_HOST)}}"
+[[ "$HOST" != local ]] || HOST="" # local: podman or docker on this machine
 IMAGES="${OS_CHECK_IMAGES:-debian:13 ubuntu:24.04}"
 RUN_ID="${OS_CHECK_ID:-os-check-$$}"
 OUT="$REPO/.os-check"

@@ -51,7 +51,8 @@ container; `--reuse` syncs your edits into it and runs again. All the tests:
 [AGENTS.md](../AGENTS.md#tests).
 
 To test on another Linux machine, set `TEST_HOST` (an SSH host name) in `dots settings` and run
-`scripts/os-check.sh linux`. With no OS, `scripts/os-check.sh` checks every OS whose files
+`scripts/os-check.sh linux`. When that host is off, `scripts/os-check.sh linux --local` uses
+local podman or docker instead. With no OS, `scripts/os-check.sh` checks every OS whose files
 changed. It is manual only. In Claude Code, run `/os-check`.
 
 The Windows check needs the VM `win11-golden` once:

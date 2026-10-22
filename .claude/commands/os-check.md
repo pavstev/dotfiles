@@ -1,6 +1,6 @@
 ---
 description: Manual check of ./dotfiles on macOS, Linux and Windows before a commit. Report only.
-argument-hint: "[macos|linux|windows|all] [--force] [--since REF] [--host NAME]"
+argument-hint: "[macos|linux|windows|all] [--force] [--since REF] [--host NAME | --local]"
 ---
 
 Run the manual OS check through one helper. Show only its short report.

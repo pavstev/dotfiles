@@ -304,6 +304,16 @@ RESULT: 1 failed. Logs: .os-check/'
 [[ "$out|$rc" == "$want|1" ]] && pass "os-check runs the OSes at once and prints each result as it ends" \
   || bad "os-check --force with fake checks: rc=$rc, got '$out'"
 
+# 12c. --local and TEST_HOST=local run Linux in local containers even when TEST_HOST names a host.
+echo 'run_linux() { echo "host=[$HOST]"; }' >"$T/os-host.sh"
+host_got=""
+for a in "far|" "far|--local" "local|"; do
+  OS_CHECK_STUB="$T/os-host.sh" TEST_HOST="${a%%|*}" bash "$T/src/scripts/os-check.sh" linux --force ${a#*|} >/dev/null 2>&1
+  host_got+="$(cat "$T/src/.os-check/linux.log" 2>/dev/null) "
+done
+[[ "$host_got" == "host=[far] host=[] host=[] " ]] && pass "os-check --local and TEST_HOST=local skip the SSH host" \
+  || bad "os-check host pick: got '$host_got'"
+
 # 13. The tool list: scripts/tools (a shim over the Rust `tools` bin) with a fake mise. No network,
 #     nothing installs for real. (cargo test covers the Rust resolver; this covers the shim:
 #     arguments, TOOLS_LIST, the exit codes, and the one copy of the install-Rust code.)

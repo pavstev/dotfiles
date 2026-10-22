@@ -66,7 +66,7 @@ and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link,
   before a commit to setup code. No git hook and no CI runs it. It checks each OS whose files
   changed (`--force` runs one anyway, `--since <ref>` widens the diff): macOS with
   `test-dotfiles.sh`, Linux with `test-linux.sh` on the `TEST_HOST` SSH host (or local podman or
-  docker), Windows in a throwaway clone of the UTM VM `win11-golden` (built once with
+  docker; `--local` or `TEST_HOST=local` forces local, e.g. when the host is off), Windows in a throwaway clone of the UTM VM `win11-golden` (built once with
   `scripts/win-golden.sh`; see "Windows"). The OSes run at the same time, and each result line
   prints when its OS ends. Logs: `.os-check/` (Linux per
   image: `.os-check/linux-logs/`). Each run has its own container names and host folder, so two
