@@ -66,6 +66,7 @@ Never more than 5 agents.
 Each brief holds: the repo path, the range, the angle and its lens, the check commands, and:
 
 ```
+Report only correctness bugs and gaps against stated requirements; style is not a finding.
 Report each finding as: [blocking|minor] file:line: <defect>. Fix: <concrete fix>. (score 0-100)
 Drop findings under <80, or 60 on the floor>. Change nothing. Deadline: 15 min. Hand back at most 3,000 chars.
 ```
@@ -93,6 +94,7 @@ Reviewers have no Write tool. Never ask them for a notes file. The verify brief 
 
 ```
 Verdict: APPROVED | CHANGES NEEDED | BLOCKED: <why>
+Rounds: <n> of 3   (add: Reviewer not satisfied after <n> rounds: <open findings>)
 Checks: <command> -> <real last line>   (from verify, one line each)
 Blocking (<n>):
 1. file:line: <defect>. Fix: <fix>. [angles]
@@ -108,6 +110,19 @@ Spent: <n> agents (<n> opus)
 One fix round, then a re-review of the blocking findings only: one `code-reviewer`,
 description `re-review: <slug>` (Sonnet), with the findings and the fix range. Not the full panel again. Anything still open goes to the user.
 
+## Review budget
+
+The same budget as the `code-reviewer` and `task-reviewer` agents:
+
+- At most 3 review rounds per change. The panel is round 1, each re-review one more. Count the
+  rounds in the report. Past 3, stop and hand the open findings to the user.
+- Stop when a round returns only nits (style, naming, blank lines, taste). Nits are not findings:
+  leave them out of the report, or list at most 3 as `Nits (not counted)`.
+- A finding is a correctness bug, or a gap against a stated requirement (the user's words, the
+  spec, the task text). "I would write it differently" is not a finding. Put this line in every brief.
+- Say it plainly when a reviewer was not satisfied: `Verdict: CHANGES NEEDED` plus a line
+  `Reviewer not satisfied after <n> rounds: <open blocking findings>`. Never turn it into APPROVED.
+
 ## Mistakes
 
 | Mistake | Do instead |
@@ -119,5 +134,6 @@ description `re-review: <slug>` (Sonnet), with the findings and the fix range. N
 | A panel for a 40-line change | The gate: one `final review:` `code-reviewer`. |
 | More than 3 agents at once | The Pace cap. Send the judge after the angles. |
 | A second full panel after the fixes | Re-review the blocking findings only. |
+| A 4th round for naming or style | Stop. Nits are not findings; 3 rounds is the cap. |
 | Dropping a blocking finding because the reviewer lacked context | Keep it; the judge needs a written reason. |
 | Skipping a CSS or lockfile change because it looks harmless | The Gate reads every path and picks the lens. |
