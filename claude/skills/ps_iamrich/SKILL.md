@@ -12,7 +12,7 @@ The user wants thorough work from helpers. Their wall-clock time and the weekly 
 
 ## The task
 
-1. The text passed with the command.
+1. The text passed with the command: `$ARGUMENTS`.
 2. Empty? The message the command came with (text before or after `/ps:iamrich`).
 3. Still empty? The user's previous message.
 4. Nothing at all? Reply in one line: rich mode is on.

@@ -6,6 +6,8 @@ argument-hint: "[base..head or branch] [repo path]"
 
 # Review panel
 
+Input: $ARGUMENTS
+
 Several review angles run at once, then one merged report. Each angle is an agent with one lens.
 The merge waits for all of them (a barrier). This buys quality, not tokens: a panel is 4 agent runs.
 The guard router sets model and effort: `panel: <angle>` calls run on Sonnet, a `final review:` call runs on Opus.

@@ -6,6 +6,8 @@ argument-hint: "[what to design — e.g. a dashboard card, a checkout form, a se
 
 # Design brainstorm
 
+Input: $ARGUMENTS
+
 Explore a UI design together: research the domain, interview in a loop, build a live-knob artifact, revise, repeat until you say ship it.
 
 ## Steps

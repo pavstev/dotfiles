@@ -6,6 +6,8 @@ argument-hint: "[path to the brief, or paste the brief]"
 
 # Autopilot
 
+Input: $ARGUMENTS
+
 Run the brief to the end while the user is away. The ledger is the memory. Commits are the proof. No turn ends with a question.
 
 ## Core loop

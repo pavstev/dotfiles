@@ -7,6 +7,8 @@ allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin whatsleft_scan *) 
 
 # What's Left
 
+Input: $ARGUMENTS
+
 Two tables, one for the agent and one for the user, plus an ETA and a table of running tasks. Every row is one simple action. Every ✅ has proof.
 
 Then the agent does its own rows, asks the user the rest through [ps:askme](../ps_askme/SKILL.md), and closes out with `ps:mic-drop` when nothing is left to ask. The `route` bin decides who does what, so the answer is the same every time. The same steps hold in Claude Code, in Cursor and in OpenCode.

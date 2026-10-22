@@ -7,6 +7,8 @@ allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check *) Bash(
 
 # Mic Drop
 
+Input: $ARGUMENTS
+
 Finish the job. Prove it is finished. Then leave the stage.
 
 Done means: nothing mandatory left, everything committed and pushed, no conflicts, checks green, no stray tasks. Optional ideas go to the project's leftovers list. Then archive when all of that is true and the session is not pinned. No need to ask.

@@ -6,6 +6,8 @@ argument-hint: "[thread link or sender]"
 
 # Draft a reply
 
+Input: $ARGUMENTS
+
 Writes the reply and stops. Sending is a second step that needs the user's yes for this exact
 message. The default is a dry run: draft only.
 

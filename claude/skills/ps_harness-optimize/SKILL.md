@@ -7,6 +7,8 @@ allowed-tools: "Bash(${CLAUDE_SKILL_DIR}/../../hooks/rust-bin harness_stats *)"
 
 # Harness optimize
 
+Input: $ARGUMENTS
+
 Measure sessions from local transcripts, split them by harness change and by project, then propose
 small changes with evidence. The numbers come from the script, never from eyeballing transcripts.
 

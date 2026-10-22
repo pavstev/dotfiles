@@ -6,6 +6,8 @@ argument-hint: "[what to choose between, and how many options]"
 
 # Pick
 
+Input: $ARGUMENTS
+
 The user cannot judge from words, so show the options. One artifact, one click to pick, one paste back.
 
 ## Build

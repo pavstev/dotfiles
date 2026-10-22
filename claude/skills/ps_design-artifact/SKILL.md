@@ -6,6 +6,8 @@ argument-hint: "[what to design, e.g. a card, a button, a dashboard widget]"
 
 # Design artifact
 
+Input: $ARGUMENTS
+
 One HTML artifact, live knobs, WCAG contrast, one `pick:` line to copy back into the project.
 
 ## Steps
