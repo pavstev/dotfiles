@@ -38,6 +38,12 @@ small changes with evidence. The numbers come from the script, never from eyebal
 6. **Read the harness you judge.** `harness_stats inventory` gives each project's CLAUDE.md lines,
    rules (path-scoped / all), agents, skills and hooks. Then read the global `~/.claude/CLAUDE.md`,
    `~/.claude/settings.json` and the files behind each proposal.
+   **Prune test.** Ask of every CLAUDE.md line: "could Claude find this in the repo?" (a folder
+   layout, a command in `package.json`, a rule a linter enforces, a name visible in the code). If yes,
+   it is a cut candidate: context files that restate the repo raise cost by 20% or more without a
+   better result (arXiv 2602.11988). Keep a line only when Claude could not find it or would get it
+   wrong: a hidden gotcha, a command that differs from the obvious one, a rule with a reason. Report
+   `kept / cut candidates` per file with one line of why each, and put the cuts in Proposals.
 7. **Skills.** `harness_stats skills` lists calls per skill and installed skills never called.
 8. **Guard checks.** `harness_stats guard --days 30` reads the guard's fire log: fires per check by
    kind, the last fire, and the checks that are on but never fired in the window. A guardrail the
@@ -57,6 +63,24 @@ small changes with evidence. The numbers come from the script, never from eyebal
    keep the previous reviews: the next run compares against them.
 10. **Apply nothing yet.** Show the proposals. Apply only the ones the user picks, one commit each,
    in the repo that owns the file. Skill edits follow the skill TDD rule.
+
+## A/B mode: does the harness help?
+
+The transcripts only compare periods, so tasks differ. To test one change on one task, run the same
+read-only task twice with `bash ${CLAUDE_SKILL_DIR}/scripts/ab.sh`. It spends real tokens: say the plan
+(task, runs, model) first. Use 2 or 3 tasks and 3 runs each, a cheap model, and tasks with a known
+right answer.
+
+```sh
+# harness on vs. off (claude --safe-mode: no CLAUDE.md, skills, plugins, hooks, MCP; needs claude 2.1.169+)
+bash ${CLAUDE_SKILL_DIR}/scripts/ab.sh --safe --prompt "Which file builds the sitemap? Answer with the path." --expect 'sitemap' --runs 3
+# the same task in two folders, for example a repo with and without a map file
+bash ${CLAUDE_SKILL_DIR}/scripts/ab.sh --dirs ./with ./without --prompt "..." --expect '<regex>' --runs 3
+```
+
+It prints turns, cost and seconds per run and the mean per arm, and `hit` or `miss` when `--expect`
+is set. Read the answers too: a cheap wrong answer is not a win. Fewer than 3 runs per arm, or a
+spread wider than the gap between the means, is "no clear difference". Say that.
 
 ## Where a fix belongs
 
