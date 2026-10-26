@@ -16,6 +16,7 @@ presets (`dots settings`); personal rules go in `~/.config/dotfiles/owner.md`, n
 - **Plain worktree commands:** in a worktree, every Bash call is one plain command from the worktree root: no `cd … &&`, chains, heredocs or `$()`. File content goes through Write or Edit. A worktree-isolated session refuses anything more complex.
 - **Stop what you started:** before the final report, stop your own helpers, monitors, dev servers, test databases and shells.
 - **After a push,** say which deployment carries the commit before calling anything live; test the real domain only after that.
+- **Browser tests run headless:** use Playwright (Chromium, Firefox, WebKit for Safari) whenever it can do the job. Never drive a visible browser on the user's machine for tests (safaridriver, AppleScript, a headed window): it steals focus and blocks the user. Real Safari only when the user names it.
 - **Debugging:** when a thing used to work, find the bad commit with `git bisect` before you guess at causes.
 
 ## Environment
