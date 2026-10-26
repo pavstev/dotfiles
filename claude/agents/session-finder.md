@@ -4,6 +4,7 @@ description: "Use for finding which past Claude Code session did something (\"wh
 model: haiku
 effort: high
 maxTurns: 12
+omitClaudeMd: true
 tools: Bash, Read
 disallowedTools: Write, Edit, NotebookEdit, Agent
 ---

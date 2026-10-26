@@ -797,10 +797,23 @@ pub fn g14_sed(cmd: &str, macos: bool) -> Verdict {
 
 // --- H1 hint: read code with ctx --------------------------------------------------
 
+/// Extensions of plain text and data files: a read of one gets no H1 hint, even where `codeview`
+/// has a scanner (Markdown). Agents ignored these hints.
+const H1_TEXT_EXT: [&str; 12] =
+    ["md", "mdx", "txt", "json", "jsonl", "yaml", "yml", "toml", "css", "csv", "log", "lock"];
+
+fn is_text_file(file: &str) -> bool {
+    Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| H1_TEXT_EXT.iter().any(|t| e.eq_ignore_ascii_case(t)))
+}
+
 /// The file that `sed -n 'A,Bp' FILE`, `cat FILE` or `cat -n FILE` reads, when `codeview` knows its
-/// extension; else None. Pipes, `&&` and `;` split the line (so does `walk`); the first command of
-/// the two that names a code file wins, and of several files the first one counts. Anything odd (an
-/// unbalanced quote, a glob, a variable, a control character) gives None.
+/// extension and it is not a text or data file (`H1_TEXT_EXT`); else None. Pipes, `&&` and `;` split
+/// the line (so does `walk`); the first command of the two that names a code file wins, and of
+/// several files the first one counts. Anything odd (an unbalanced quote, a glob, a variable, a
+/// control character) gives None.
 pub fn h1_read_target(cmd: &str) -> Option<String> {
     if !cmd.contains("sed") && !cmd.contains("cat") {
         return None; // the cheap exit: most Bash calls read nothing
@@ -813,7 +826,7 @@ pub fn h1_read_target(cmd: &str) -> Option<String> {
                 _ => None,
             }?;
             let odd = file.len() > 200 || file.chars().any(|ch| ch.is_control() || "*?$`{}".contains(ch));
-            (!odd && crate::codeview::scan_name(Path::new(&file)).is_some()).then_some(file)
+            (!odd && !is_text_file(&file) && crate::codeview::scan_name(Path::new(&file)).is_some()).then_some(file)
         })
     })
     .ok()
@@ -2528,6 +2541,7 @@ pub enum Check {
     W5,
     G18,
     G19,
+    G20,
     G8,
     Pace,
     G9,
@@ -2557,6 +2571,7 @@ impl Check {
             Self::W5 => "W5",
             Self::G18 => "G18",
             Self::G19 => "G19",
+            Self::G20 => "G20",
             Self::G8 => "G8",
             Self::Pace => "PACE",
             Self::G9 => "G9",
@@ -2596,6 +2611,7 @@ pub const REGISTRY: &[(Check, &str)] = &[
     (Check::W5, "workflow"),
     (Check::G18, "workflow"),
     (Check::G19, "workflow"),
+    (Check::G20, "workflow"),
     (Check::G8, "pace"),
     (Check::Pace, "pace"),
     (Check::G9, "models"),

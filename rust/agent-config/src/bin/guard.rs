@@ -8,14 +8,16 @@
 //! (a missing transcript) lets the call through.
 //!
 //! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
-//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, G19, H1 and W5 (preset workflow), G8 and
+//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, G19, G20, H1 and W5 (preset workflow), G8 and
 //! PACE (pace), G9 and ROUTER (models), G10 (ship-to-main), G11 (clock), G17 (no-ai-attribution),
 //! G14, G15 and G16 (core). H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
 //! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session. W5
 //! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
 //! already passed in this session, with the git work tree unchanged since, gets a note to skip it. G18
 //! (workflow) denies the third try of a Bash command or an edit that failed twice. G19 (workflow) holds an
-//! autopilot session or a helper back once at stop when it edited a project and no check passed since.
+//! autopilot session or a helper back once at stop when it edited a project and no check passed since. G20
+//! (workflow) denies a `Read` of a file over 40,000 bytes with no `offset` or `limit`, once per file per
+//! session; the same call again goes through. Images, PDFs and notebooks are exempt.
 
 use agent_config::guard_checks::{self as gc, Check, FireKind, Verdict, expanduser, is_macos, realpath};
 use agent_config::paths;
@@ -71,6 +73,11 @@ const PLAN_TOOL: &str = "mcp__ccd_turn__update_plan";
 const WRAP_TOOL: &str = "mcp__ccd_turn__wrap_up";
 const FAIL_LIMIT: i64 = 2;
 const STEP_TABLE_MAX: usize = 40;
+/// G20: a whole-file Read over this many bytes is denied once per file.
+const BIG_READ_BYTES: u64 = 40_000;
+const BIG_READ_TABLE_MAX: usize = 200;
+/// G20 exempts the files the Read tool shows as images, pages or cells.
+const BIG_READ_SKIP_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf", "ipynb"];
 
 const MSG_SCRATCH: &str =
     "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superlite/.";
@@ -113,7 +120,10 @@ static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9]+\z").unwr
 static MINUTE_PART: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\A([0-9]+)(?:-([0-9]+))?(?:/([0-9]+))?\z").unwrap());
 static NO_PUSH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)do not push|don['’]t push|no push|local only|don['’]t commit|do not commit").unwrap()
+    Regex::new(
+        r"(?i)do not push|don['’]t push|no push|local only|don['’]t commit|do not commit|\bnot push\b|\bnot to push\b|\bwithout pushing\b|\blet me review (?:it|this|first)\b|\bwait for (?:my )?review\b|\bask before (?:you )?push|\bdo not merge|\bdon['’]t merge",
+    )
+    .unwrap()
 });
 static CLOCK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:min(?:ute)?s?|h|hrs?|hours?)\b").unwrap());
@@ -1184,8 +1194,8 @@ fn git(args: &[&str], cwd: &str, deadline: Instant) -> Git {
     }
 }
 
-/// True when any human prompt of the session says not to push or commit; None when the transcript
-/// cannot be read.
+/// True when any human prompt of the session says not to push, commit or merge, or asks to review
+/// first (the `NO_PUSH` phrases); None when the transcript cannot be read.
 fn said_no_push(path: &Path) -> Option<bool> {
     for line in rev_lines(path)? {
         if !has(&line, b"\"user\"") {
@@ -1215,9 +1225,14 @@ fn path_join(a: &str, b: &str) -> String {
 /// G10: this turn's work is uncommitted or unpushed in the session's repo. It fires once per repo
 /// state: the session state keeps the last (repo, uncommitted, unpushed) it reported, and the same
 /// tuple at the next Stop stays quiet. A changed tuple, or a clean repo in between, fires again.
+/// It is also quiet while a helper of this session runs (the work is not finished), and `stop`
+/// lets only one of G10 to G12 fire per human turn.
 fn g10_commit(data: &HookInput, t: &Turn) -> Option<String> {
     let cwd = data.cwd?;
     if t.paths.is_empty() && !t.committed {
+        return None;
+    }
+    if helpers_running(data) {
         return None;
     }
     let deadline = Instant::now() + Duration::from_secs_f64(GIT_TIMEOUT);
@@ -1283,11 +1298,24 @@ fn final_reply(data: &HookInput, t: &Turn) -> String {
     data.last_assistant_message.map_or_else(|| t.last_text.clone().unwrap_or_default(), String::from)
 }
 
-/// G11: a turn of 10 min or more ends without a clock time or a duration.
+/// True while a helper of this session runs (a live slot in `spawns` or `sl_spawns`). The app wakes
+/// the session when it ends, so the Stop reminders wait.
+fn helpers_running(data: &HookInput) -> bool {
+    let running = |st: &mut Map<String, Value>| {
+        ["spawns", "sl_spawns"].iter().any(|k| !live_spawns(st, k, now_secs()).is_empty())
+    };
+    with_state(data, running) == Some(true)
+}
+
+/// G11: a turn of 10 min or more ends without a clock time or a duration. Quiet while a helper
+/// of this session runs; `stop` lets only one of G10 to G12 fire per human turn.
 fn g11_clock(data: &HookInput, t: &Turn) -> Option<String> {
     let start = t.start?;
     let minutes = ((now_secs() - start as f64) / 60.0).floor() as i64;
     if minutes >= CLOCK_TURN_MIN && !CLOCK.is_match(&final_reply(data, t)) {
+        if helpers_running(data) {
+            return None;
+        }
         let zone = cfg().zone.as_ref().map(|z| format!(" in {z}")).unwrap_or_default();
         return Some(format!(
             "G11: this turn ran {minutes} min. The clock preset asks: give the clock as a local time (HH:MM){zone} and one estimate with a range."
@@ -1297,14 +1325,12 @@ fn g11_clock(data: &HookInput, t: &Turn) -> Option<String> {
 }
 
 /// G12: task-list steps are still open and the turn asks nothing (quiet while a helper still runs).
+/// `stop` lets only one of G10 to G12 fire per human turn.
 fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
     if t.asked || t.wrapped || final_reply(data, t).trim_end().ends_with('?') {
         return None;
     }
-    let running = |st: &mut Map<String, Value>| {
-        ["spawns", "sl_spawns"].iter().any(|k| !live_spawns(st, k, now_secs()).is_empty())
-    };
-    if with_state(data, running) == Some(true) {
+    if helpers_running(data) {
         return None; // a background helper runs; the app wakes the session when it ends
     }
     let open = open_plan(&t.plan);
@@ -1360,9 +1386,21 @@ fn write_status(data: &HookInput, t: &Turn) {
     }
 }
 
-/// Stop checks, first message wins: G6, then G19 and G10 to G12 on the main thread. One reminder per turn.
-/// The status file for the statusline is updated first on the main thread, also on the final Stop
-/// after a forced continuation (`stop_hook_active`), which runs no check.
+/// The state key that holds the start (`Turn.start`) of the human turn in which G10, G11 or G12 last fired.
+const STOP_TURN_KEY: &str = "stop_turn";
+
+/// True when G10 to G12 already fired in the human turn that began at `start`. A task notification
+/// starts a new segment of the same turn, so the Stop checks would fire again at each segment end.
+fn reminded_this_turn(data: &HookInput, start: Option<i64>) -> bool {
+    let Some(start) = start else { return false };
+    with_state(data, |st| st.get(STOP_TURN_KEY).and_then(Value::as_i64) == Some(start)) == Some(true)
+}
+
+/// Stop checks, first message wins: G6, then G19 and G10 to G12 on the main thread. G10 to G12 give
+/// one reminder per human turn together (keyed on the turn start in the session state; a turn with
+/// no timestamp is never deduped); G6 and G19 are not limited. The status file for the statusline
+/// is updated first on the main thread, also on the final Stop after a forced continuation
+/// (`stop_hook_active`), which runs no check.
 fn stop(data: &HookInput) -> Option<String> {
     let path = data.transcript_path?;
     let again = data.stop_hook_active;
@@ -1385,8 +1423,16 @@ fn stop(data: &HookInput) -> Option<String> {
     if again {
         return None;
     }
+    let mut reminded: Option<bool> = None; // looked up once, and only when G10 to G12 are about to run
     active.into_iter().find_map(|(check, f)| {
+        let once = matches!(check, Check::G10 | Check::G11 | Check::G12);
+        if once && *reminded.get_or_insert_with(|| reminded_this_turn(data, t.start)) {
+            return None;
+        }
         let m = f(data, &t)?;
+        if let (true, Some(start)) = (once, t.start) {
+            let _ = with_state(data, |st| st.insert(STOP_TURN_KEY.into(), Value::from(start)));
+        }
         gc::fire_log(check, FireKind::Stop);
         Some(m)
     })
@@ -1886,6 +1932,54 @@ fn g18_stuck(data: &HookInput, _ctx: &Ctx) -> Verdict {
     Verdict::Deny(MSG_G18_DENY.to_string())
 }
 
+// --- G20 whole-file Read of a big file ------------------------------------------------------
+
+/// G20 (preset workflow), PreToolUse on `Read`, main thread and helpers: deny a Read with no `offset`
+/// and no `limit` of an existing file over `BIG_READ_BYTES`, once per file per session. The deny
+/// records the real path in the session state, so the same call again goes through. Images, PDFs and
+/// notebooks are exempt. Any error reading the size or the state lets the call through.
+fn g20_big_read(data: &HookInput, _ctx: &Ctx) -> Verdict {
+    if data.tool_name != Some("Read") {
+        return Verdict::Allow;
+    }
+    let ti = data.tool_input;
+    if ["offset", "limit"].iter().any(|k| ti.get(*k).is_some_and(|v| !v.is_null())) {
+        return Verdict::Allow;
+    }
+    let Some(raw) = data.input_str("file_path").filter(|s| !s.is_empty()) else { return Verdict::Allow };
+    let ext = Path::new(raw).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    if BIG_READ_SKIP_EXT.contains(&ext.as_str()) {
+        return Verdict::Allow;
+    }
+    let path = expanduser(raw);
+    let path = if path.starts_with('/') { path } else { format!("{}/{path}", data.call_cwd().display()) };
+    let real = realpath(&path);
+    let Ok(meta) = fs::metadata(&real) else { return Verdict::Allow };
+    if !meta.is_file() || meta.len() <= BIG_READ_BYTES {
+        return Verdict::Allow;
+    }
+    let first = with_state(data, |state| {
+        let list = state.entry("big_reads").or_insert_with(|| Value::Array(Vec::new()));
+        let Some(a) = list.as_array_mut() else { return false };
+        if a.iter().any(|v| v.as_str() == Some(real.as_str())) {
+            return false;
+        }
+        if a.len() >= BIG_READ_TABLE_MAX {
+            a.remove(0);
+        }
+        a.push(Value::String(real.clone()));
+        true
+    });
+    if first != Some(true) {
+        return Verdict::Allow;
+    }
+    let name = Path::new(&real).file_name().map_or_else(|| real.clone(), |n| n.to_string_lossy().into_owned());
+    Verdict::Deny(format!(
+        "G20: {name} is {}K chars. Read only the part you need with offset and limit, or run ~/.claude/hooks/rust-bin ctx outline {raw} first. Repeat this exact call to read the whole file.",
+        meta.len() / 1000
+    ))
+}
+
 // --- G19 fast check before an unattended run stops -----------------------------------------
 
 /// The `edits` entry of the calling agent: `n` project edits so far, `ok` the value of `n` at the last
@@ -2169,7 +2263,7 @@ type WarnFn = fn(&HookInput, &Ctx) -> Option<String>;
 fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
     // g8_cap records the spawn it allows, so it runs after every other deny
     // each check runs only when its id is enabled (G14 and G15 also test their own id)
-    let guards: [(Check, GuardFn); 13] = [
+    let guards: [(Check, GuardFn); 14] = [
         (Check::G3, g3_pretool),
         (Check::G7, g7_heavy),
         (Check::G1, g1_agent),
@@ -2182,6 +2276,7 @@ fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
         (Check::G15, g15_secrets),
         (Check::G17, g17_attr),
         (Check::G18, g18_stuck),
+        (Check::G20, g20_big_read),
         (Check::G8, g8_cap),
     ];
     for (check, g) in guards {
@@ -2235,8 +2330,8 @@ fn outbound_ask(data: &HookInput) -> Option<String> {
 }
 
 /// H1 (preset workflow): a Bash `sed -n` or `cat` of a code file `ctx` can outline gets a one-line
-/// tip, at most `H1_MAX` times per session (the count lives in the per-session state, and only a
-/// shown tip counts). A call that reads nothing like that costs no file access.
+/// tip (none for text and data files such as md, json, yaml or toml), at most `H1_MAX` times per
+/// session (the count lives in the per-session state, and only a shown tip counts). A call that reads nothing like that costs no file access.
 fn h1_hint(data: &HookInput) -> Option<String> {
     let file = gc::h1_read_target(data.bash_command()?)?;
     let show = with_state(data, |state| {

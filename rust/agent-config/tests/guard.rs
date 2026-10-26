@@ -1961,6 +1961,61 @@ fn test_g10_user_said_not_to_push() {
 }
 
 #[test]
+fn test_g10_wider_no_push_phrases() {
+    let g = G::new();
+    let repo = g.make_repo(true);
+    let p = write_file(&repo, "new.txt", "x");
+    let work = vec![tu("Write", json!({"file_path": p}), "u1"), say("done")];
+    for phrase in [
+        "do not push this",
+        "please do not push",
+        "I told you not to push",
+        "work without pushing",
+        "let me review first",
+        "Let me review it",
+        "wait for my review",
+        "wait for review",
+        "ask before you push",
+        "ask before pushing",
+        "do not merge it",
+        "don't merge it",
+        "don\u{2019}t merge it",
+        "this is NOT PUSH time",
+    ] {
+        let recs = cat(&[&[human(&format!("first. {phrase}")), human("more")], &work]);
+        assert_allow(&g.g10(&recs, &repo, json!({})));
+    }
+    for phrase in [
+        "push the branch",
+        "run git push",
+        "it was pushed",
+        "please push when done",
+        "there is no commit yet",
+        "let me review the logs and then push",
+    ] {
+        let recs = cat(&[&[human(&format!("first. {phrase}"))], &work]);
+        assert_deny(&g.g10(&recs, &repo, json!({})), "G10");
+    }
+}
+
+#[test]
+fn test_g10_quiet_while_a_helper_is_live() {
+    let g = G::new();
+    let repo = g.make_repo(true);
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
+    let extra = json!({"session_id": "g10-live"});
+    let state = g.state_dir().join("g10-live.json").to_string_lossy().into_owned();
+    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    assert_allow(&g.g10(&recs, &repo, extra.clone()));
+    G::write(&state, &json!({"sl_spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    assert_allow(&g.g10(&recs, &repo, extra.clone()));
+    // the helper is gone: the reminder comes back
+    G::write(&state, &json!({"spawns": []}).to_string());
+    assert_deny(&g.g10(&recs, &repo, extra), "G10");
+}
+
+#[test]
 fn test_g10_no_upstream_and_git_failures_are_quiet() {
     let g = G::new();
     let repo = g.make_repo(false);
@@ -2043,7 +2098,11 @@ fn test_g11_a_clock_or_duration_in_the_reply_is_enough() {
         &g.stop_run(&cat(&[&base, &[say("Done at 14:05.")]]), json!({"last_assistant_message": "Done."})),
         "G11",
     );
-    assert_deny(&g.stop_run(&cat(&[&base, &[say("Version 3 is out, 5 files changed.")]]), json!({})), "G11");
+    // G11 fires once per human turn: the next case runs in a session of its own
+    assert_deny(
+        &g.stop_run(&cat(&[&base, &[say("Version 3 is out, 5 files changed.")]]), json!({"session_id": "s2"})),
+        "G11",
+    );
 }
 
 #[test]
@@ -2058,6 +2117,50 @@ fn test_g11_switches_and_missing_transcript() {
     assert_allow(&g.stop_run(&[human_at(60 * 60, "go"), say("a"), human_at(60, "go"), say("b")], json!({})));
     // a tool_result is not a prompt
     assert_deny(&g.stop_run(&[human_at(15 * 60, "go"), tool_result("t1"), say("b")], json!({})), "G11");
+}
+
+/// The user record the app writes when a background helper ends: not a human prompt.
+fn task_notification() -> Value {
+    json!({"type": "user", "origin": {"kind": "task-notification"},
+        "message": {"role": "user", "content": "<task-notification><task-id>t1</task-id></task-notification>"}})
+}
+
+#[test]
+fn test_g11_fires_once_per_human_turn() {
+    let g = G::new();
+    let prompt = human_at(12 * 60 + 10, "go");
+    let first = [prompt.clone(), say("Waiting for the helpers.")];
+    assert_deny(&g.stop_run(&first, json!({})), "G11");
+    // a task notification starts a new segment of the same human turn: quiet
+    let second = [prompt.clone(), say("Waiting for the helpers."), task_notification(), say("One helper is back.")];
+    assert_allow(&g.stop_run(&second, json!({})));
+    assert_allow(&g.stop_run(&second, json!({})));
+    // G12 shares the one reminder of the turn
+    let steps = plan(json!({"items": items(&[("A", "pending")])}));
+    let open = [prompt, steps.clone(), say("x"), task_notification(), say("y")];
+    assert_allow(&g.stop_run(&open, json!({})));
+    // a new human prompt resets it
+    let next = [human_at(15 * 60, "next"), say("Still going.")];
+    assert_deny(&g.stop_run(&next, json!({})), "G11");
+    assert_allow(&g.stop_run(&next, json!({})));
+    // a prompt with no timestamp is never deduped
+    let plain = [human("go"), steps, say("x")];
+    assert_deny(&g.stop_run(&plain, json!({})), "G12");
+    assert_deny(&g.stop_run(&plain, json!({})), "G12");
+}
+
+#[test]
+fn test_g11_quiet_while_a_helper_is_live() {
+    let g = G::new();
+    let recs = [human_at(12 * 60 + 10, "go"), say("Waiting for the helpers.")];
+    let state = g.state_dir().join("s.json").to_string_lossy().into_owned();
+    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    assert_allow(&g.stop_run(&recs, json!({})));
+    G::write(&state, &json!({"sl_spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    assert_allow(&g.stop_run(&recs, json!({})));
+    // quiet means the turn was not used up: once the helper ends, the reminder fires
+    G::write(&state, &json!({"spawns": []}).to_string());
+    assert_deny(&g.stop_run(&recs, json!({})), "G11");
 }
 
 // G12 open steps check
@@ -3033,6 +3136,51 @@ fn test_g13_fail_open() {
     assert_allow(&g.run("posttool", &json!({"transcript_path": "/no/such", "tool_use_id": "u8"})));
 }
 
+// --- G20 whole-file Read of a big file ---
+
+impl G {
+    fn read20(&self, sid: &str, ti: Value) -> R {
+        self.run(
+            "pretool",
+            &json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Read", "tool_input": ti}),
+        )
+    }
+}
+
+#[test]
+fn g20_denies_a_big_whole_file_read_once_per_file() {
+    let g = G::new();
+    let big = write_file(&g.d(), "big.rs", &"a".repeat(50_000));
+    let res = g.read20("g20a", json!({"file_path": big}));
+    assert_deny(&res, "G20: big.rs is 50K chars.");
+    assert!(res.2.contains("Repeat this exact call"), "{res:?}");
+    // the repeat in the same session passes
+    assert_allow(&g.read20("g20a", json!({"file_path": big})));
+    // another session is stopped again
+    assert_deny(&g.read20("g20b", json!({"file_path": big})), "G20");
+}
+
+#[test]
+fn g20_allows_a_part_a_small_file_an_image_and_a_missing_file() {
+    let g = G::new();
+    let big = write_file(&g.d(), "big.rs", &"a".repeat(50_000));
+    assert_allow(&g.read20("g20c", json!({"file_path": big, "limit": 100})));
+    assert_allow(&g.read20("g20c", json!({"file_path": big, "offset": 10})));
+    let small = write_file(&g.d(), "small.rs", &"a".repeat(30_000));
+    assert_allow(&g.read20("g20d", json!({"file_path": small})));
+    let png = write_file(&g.d(), "big.png", &"a".repeat(50_000));
+    assert_allow(&g.read20("g20e", json!({"file_path": png})));
+    assert_allow(&g.read20("g20f", json!({"file_path": g.join("no/such.rs")})));
+}
+
+#[test]
+fn g20_is_off_with_guard_off() {
+    let g = G::new();
+    let big = write_file(&g.d(), "big.rs", &"a".repeat(50_000));
+    let data = json!({"session_id": "g20g", "tool_name": "Read", "tool_input": {"file_path": big}});
+    assert_allow(&g.run_with("pretool", &data, &[("GUARD_OFF", "G20")]));
+}
+
 // --- presets, GUARD_OFF setting, local time (Task 8) ---
 
 /// `(preset, ids)` from the `guard:` front matter of every `claude/presets/*/rules.md`.
@@ -3127,6 +3275,10 @@ impl G {
                 self.run("posttoolfailure", &data);
                 self.run("posttoolfailure", &data);
                 self.run("pretool", &data)
+            }
+            "G20" => {
+                let big = write_file(&self.d(), "big.rs", &"a".repeat(50_000));
+                self.pre("Read", json!({"file_path": big}))
             }
             "G19" => {
                 let repo = self.make_repo(false);
@@ -3228,9 +3380,10 @@ fn clock_names_timezone() {
 #[test]
 fn clock_bad_timezone_falls_back_to_the_system_zone() {
     let g = G::new();
-    for bad in ["Mars/Olympus_Mons", "not a zone", "../../etc/passwd"] {
+    for (i, bad) in ["Mars/Olympus_Mons", "not a zone", "../../etc/passwd"].into_iter().enumerate() {
         g.set(&format!("TIMEZONE=\"{bad}\"\n"));
-        let res = g.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({}));
+        // a session of its own per zone: G11 fires once per human turn
+        let res = g.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({"session_id": format!("tz{i}")}));
         assert_deny(&res, "local time (HH:MM) and one estimate");
         assert!(!res.2.contains(bad), "{res:?}");
     }
@@ -3484,7 +3637,11 @@ fn g16_public_host_is_skipped() {
 fn public_hosts_setting_is_read_and_filtered() {
     let home = tempfile::tempdir().unwrap();
     fs::create_dir_all(home.path().join(".config/dotfiles")).unwrap();
-    fs::write(home.path().join(".config/dotfiles/settings"), "PUBLIC_HOSTS=\"Zebrafish.Example, a|b x/y  blog-1.example\"\n").unwrap();
+    fs::write(
+        home.path().join(".config/dotfiles/settings"),
+        "PUBLIC_HOSTS=\"Zebrafish.Example, a|b x/y  blog-1.example\"\n",
+    )
+    .unwrap();
     let hosts = gc::public_hosts(home.path());
     assert_eq!(hosts, vec!["zebrafish.example", "blog-1.example"]);
     assert_eq!(gc::strip_hosts("see zebrafish.example/x", &hosts), "see /x");
@@ -4156,7 +4313,7 @@ fn h1_hints_ctx_for_sed_n_and_cat_of_code() {
         ("cat src/a.ts", "src/a.ts"),
         ("cat -n src/main.rs", "src/main.rs"),
         ("cat src/a.ts | head -20", "src/a.ts"),
-        ("cat one.css two.py", "one.css"),
+        ("cat one.py two.css", "one.py"),
         ("cd web && cat 'my dir/x.ts'", "my dir/x.ts"),
     ];
     for (i, (cmd, file)) in cases.iter().enumerate() {
@@ -4202,6 +4359,31 @@ fn h1_gives_at_most_three_hints_per_session() {
     assert_warn(&g.bash_sid("h1d", "cat src/f1.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
     assert_allow(&g.bash_sid("h1d", "cat notes.xyz", &[]));
     assert_warn(&g.bash_sid("h1d", "cat src/f2.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+}
+
+#[test]
+fn h1_is_silent_for_text_files_and_hints_for_code() {
+    let g = G::new();
+    for (i, cmd) in [
+        "sed -n 1,80p README.md",
+        "cat docs/page.mdx",
+        "cat notes.txt",
+        "cat data.jsonl",
+        "cat conf.yaml",
+        "cat conf.yml",
+        "cat Cargo.toml",
+        "cat style.css",
+        "cat table.csv",
+        "cat run.log",
+        "cat Cargo.lock",
+        "sed -n '1,9p' CHANGES.MD",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_allow(&g.bash_sid(&format!("h1t{i}"), cmd, &[]));
+    }
+    assert_warn(&g.bash_sid("h1u", "sed -n 1,80p src/a.rs", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline src/a.rs");
 }
 
 #[test]

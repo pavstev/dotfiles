@@ -2,7 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "cleanupPeriodDays": 365,
   "effortLevel": "high",
-  "autoCompactWindow": 450000,
+  "autoCompactWindow": 300000,
+  "skillListingMaxDescChars": 500,
   "modelSettings": {
     "claude-opus-5-5": {
       "effortLevel": "high"
