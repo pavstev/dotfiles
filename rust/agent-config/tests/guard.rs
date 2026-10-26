@@ -2163,6 +2163,47 @@ fn test_g11_quiet_while_a_helper_is_live() {
     assert_deny(&g.stop_run(&recs, json!({})), "G11");
 }
 
+/// The tool_result record of a `run_in_background` Bash call, as the app writes it.
+fn bg_launch(id: &str) -> Value {
+    json!({"type": "user", "toolUseResult": {"backgroundTaskId": id}, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "b", "content": format!("Command running in background with ID: {id}.")}]}})
+}
+
+/// The task notification the app writes when a background task changes state.
+fn bg_note(id: &str, status: &str) -> Value {
+    json!({"type": "user", "origin": {"kind": "task-notification"}, "message": {"role": "user", "content":
+        format!("<task-notification>\n<task-id>{id}</task-id>\n<status>{status}</status>\n</task-notification>")}})
+}
+
+#[test]
+fn test_stop_checks_quiet_while_background_work_runs() {
+    let g = G::new();
+    let steps = plan(json!({"items": items(&[("A", "pending")])}));
+    // a background Bash with no end yet keeps G12 quiet
+    assert_allow(&g.stop_run(&[human("go"), steps.clone(), bg_launch("b1"), say("Waiting for the check.")], json!({})));
+    // its notification with a final status ends it, and G12 fires
+    let ended =
+        [human("go"), steps.clone(), bg_launch("b1"), say("Waiting."), bg_note("b1", "completed"), say("It passed.")];
+    assert_deny(&g.stop_run(&ended, json!({})), "G12");
+    // a running status does not end it
+    let still = [human("go"), steps.clone(), bg_launch("b1"), bg_note("b1", "running"), say("Still going.")];
+    assert_allow(&g.stop_run(&still, json!({})));
+    // TaskStop ends it
+    let stop = tu("TaskStop", json!({"task_id": "b1"}), "u9");
+    assert_deny(&g.stop_run(&[human("go"), steps.clone(), bg_launch("b1"), stop, say("Stopped.")], json!({})), "G12");
+    // a Monitor counts too, and so does a wakeup
+    let monitor = json!({"type": "user", "toolUseResult": {"taskId": "m1", "timeoutMs": 900_000}, "message": {"role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": "m", "content": "Monitor started (task m1)"}]}});
+    assert_allow(&g.stop_run(&[human("go"), steps.clone(), monitor, say("Watching.")], json!({})));
+    let wake = tu("ScheduleWakeup", json!({"delaySeconds": 1200}), "w1");
+    assert_allow(&g.stop_run(&[human("go"), steps, wake, say("Back later.")], json!({})));
+    // G11 is quiet while a background Bash runs, and fires once it ended
+    let long = [human_at(12 * 60 + 10, "go"), bg_launch("b2"), say("Waiting for the check.")];
+    assert_allow(&g.stop_run(&long, json!({})));
+    let done = [human_at(12 * 60 + 10, "go"), bg_launch("b2"), bg_note("b2", "failed"), say("It failed.")];
+    assert_deny(&g.stop_run(&done, json!({})), "G11");
+}
+
 // G12 open steps check
 fn plan(kw: Value) -> Value {
     let n = kw.as_object().map_or(0, serde_json::Map::len);

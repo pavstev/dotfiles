@@ -115,6 +115,7 @@ static FINAL_REVIEW: LazyLock<Regex> =
 static HANDOFF_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/handoffs/[^/]+\.md\n?\z").unwrap());
 static LINK_TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\]\(([^)\s]+)\)").unwrap());
 static TASK_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<task-id>([^<]+)</task-id>").unwrap());
+static TASK_STATUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<status>([a-z_]+)</status>").unwrap());
 static STAR_STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A\*/([0-9]+)\z").unwrap());
 static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9]+\z").unwrap());
 static MINUTE_PART: LazyLock<Regex> =
@@ -1022,6 +1023,38 @@ struct Turn {
     last_text: Option<String>,
     plan: Vec<(bool, Value)>, // (is wrap_up, input), newest first
     plan_done: bool,
+    bg_started: HashSet<String>, // background Bash and Monitor task ids started this turn
+    bg_ended: HashSet<String>,   // ids that a task notification or TaskStop ended
+    wakeup: bool,                // a ScheduleWakeup this turn: the app wakes the session later
+}
+
+impl Turn {
+    /// Background work of this turn still runs, or a wakeup is set.
+    fn bg_open(&self) -> bool {
+        self.wakeup || self.bg_started.iter().any(|id| !self.bg_ended.contains(id))
+    }
+}
+
+/// Background work in a user record of the turn: a Bash or Monitor launch (its `toolUseResult`
+/// names the task id), or a task notification whose status is no longer `running`.
+fn scan_bg(rec: &Value, t: &mut Turn) {
+    let res = get(rec, "toolUseResult");
+    if let Some(id) = get(res, "backgroundTaskId").as_str() {
+        t.bg_started.insert(id.to_string());
+    } else if let (Some(id), false) = (get(res, "taskId").as_str(), get(res, "timeoutMs").is_null()) {
+        t.bg_started.insert(id.to_string()); // a Monitor
+    }
+    if get(get(rec, "origin"), "kind").as_str() != Some("task-notification") {
+        return;
+    }
+    let text = text_of(message_content(rec)).unwrap_or_default();
+    for c in TASK_ID.captures_iter(&text) {
+        let (Some(all), Some(id)) = (c.get(0), c.get(1)) else { continue };
+        let rest = text[all.end()..].split("<task-id>").next().unwrap_or("");
+        if TASK_STATUS.captures(rest).and_then(|s| s.get(1)).is_some_and(|s| s.as_str() != "running") {
+            t.bg_ended.insert(id.as_str().trim().to_string());
+        }
+    }
 }
 
 /// Fold one assistant record (newest block first) into the scan result.
@@ -1070,6 +1103,12 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
             }
         } else if name == Some("AskUserQuestion") {
             t.asked = true;
+        } else if name == Some("TaskStop") {
+            if let Some(id) = get(inp, "task_id").as_str().or_else(|| get(inp, "shell_id").as_str()) {
+                t.bg_ended.insert(id.to_string());
+            }
+        } else if name == Some("ScheduleWakeup") {
+            t.wakeup = true;
         }
     }
 }
@@ -1098,6 +1137,10 @@ fn scan_turn(path: &Path) -> Option<Turn> {
         }
         if get(&rec, "type").as_str() == Some("assistant") {
             scan_record(&rec, in_turn, &mut t);
+        } else if in_turn
+            && (has(&line, b"backgroundTaskId") || has(&line, b"\"taskId\"") || has(&line, b"task-notification"))
+        {
+            scan_bg(&rec, &mut t);
         }
     }
     Some(t)
@@ -1232,7 +1275,7 @@ fn g10_commit(data: &HookInput, t: &Turn) -> Option<String> {
     if t.paths.is_empty() && !t.committed {
         return None;
     }
-    if helpers_running(data) {
+    if busy(data, t) {
         return None;
     }
     let deadline = Instant::now() + Duration::from_secs_f64(GIT_TIMEOUT);
@@ -1307,13 +1350,20 @@ fn helpers_running(data: &HookInput) -> bool {
     with_state(data, running) == Some(true)
 }
 
+/// True while the session waits on work that wakes it later: background Bash or Monitor tasks
+/// of this turn that no notification or TaskStop ended, a ScheduleWakeup, or a live helper.
+/// G10 to G12 stay quiet then; the app starts a new segment of the turn when the work ends.
+fn busy(data: &HookInput, t: &Turn) -> bool {
+    t.bg_open() || helpers_running(data)
+}
+
 /// G11: a turn of 10 min or more ends without a clock time or a duration. Quiet while a helper
 /// of this session runs; `stop` lets only one of G10 to G12 fire per human turn.
 fn g11_clock(data: &HookInput, t: &Turn) -> Option<String> {
     let start = t.start?;
     let minutes = ((now_secs() - start as f64) / 60.0).floor() as i64;
     if minutes >= CLOCK_TURN_MIN && !CLOCK.is_match(&final_reply(data, t)) {
-        if helpers_running(data) {
+        if busy(data, t) {
             return None;
         }
         let zone = cfg().zone.as_ref().map(|z| format!(" in {z}")).unwrap_or_default();
@@ -1330,7 +1380,7 @@ fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
     if t.asked || t.wrapped || final_reply(data, t).trim_end().ends_with('?') {
         return None;
     }
-    if helpers_running(data) {
+    if busy(data, t) {
         return None; // a background helper runs; the app wakes the session when it ends
     }
     let open = open_plan(&t.plan);

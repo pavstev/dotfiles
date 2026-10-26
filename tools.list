@@ -84,3 +84,6 @@ whisper-cpp   | whisper-cli,whisper-cpp | unix,!musl | mise:conda:whisper.cpp
 # npm CLIs, installed once so each call skips npx. Their Chromium downloads on first use, not here.
 dembrandt     | dembrandt     | unix,!musl | mise:npm:dembrandt
 awwwards-mcp  | awwwards-mcp  | unix,!musl | mise:npm:awwwards-mcp
+# ---- Language servers (the Claude Code LSP plugins) ------------------------
+typescript    | tsc           | unix,!musl | mise:npm:typescript
+typescript-language-server | typescript-language-server | unix,!musl | mise:npm:typescript-language-server
