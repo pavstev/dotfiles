@@ -4,6 +4,7 @@ description: "Use for one narrow research question that needs the web or local f
 model: sonnet
 effort: high
 maxTurns: 60
+omitClaudeMd: true
 tools: WebSearch, WebFetch, Read, Grep, Glob, Write
 disallowedTools: Edit, NotebookEdit, Bash, Agent
 ---
