@@ -2196,7 +2196,21 @@ fn test_stop_checks_quiet_while_background_work_runs() {
         "content": [{"type": "tool_result", "tool_use_id": "m", "content": "Monitor started (task m1)"}]}});
     assert_allow(&g.stop_run(&[human("go"), steps.clone(), monitor, say("Watching.")], json!({})));
     let wake = tu("ScheduleWakeup", json!({"delaySeconds": 1200}), "w1");
-    assert_allow(&g.stop_run(&[human("go"), steps, wake, say("Back later.")], json!({})));
+    assert_allow(&g.stop_run(&[human("go"), steps.clone(), wake.clone(), say("Back later.")], json!({})));
+    // a refused wakeup sets nothing
+    let refused = json!({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "w1", "is_error": true, "content": "Permission denied."}]}});
+    assert_deny(&g.stop_run(&[human("go"), steps.clone(), wake, refused, say("Hm.")], json!({})), "G12");
+    // a notice that arrives mid-turn is a queued_command attachment, and it ends the task too
+    let queued = json!({"type": "attachment", "attachment": {"type": "queued_command", "prompt":
+        "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"}});
+    let mid = [human("go"), steps.clone(), bg_launch("b1"), tu("Edit", json!({"file_path": "/x"}), "e1"), queued];
+    assert_deny(&g.stop_run(&[&mid[..], &[say("Done.")]].concat(), json!({})), "G12");
+    // a Monitor past its timeout has ended, with or without a notice
+    let old_monitor = json!({"type": "user", "timestamp": stamp(20 * 60), "toolUseResult": {"taskId": "m2",
+        "timeoutMs": 900_000}, "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "m", "content": "Monitor started (task m2)"}]}});
+    assert_deny(&g.stop_run(&[human("go"), steps, old_monitor, say("Done.")], json!({})), "G12");
     // G11 is quiet while a background Bash runs, and fires once it ended
     let long = [human_at(12 * 60 + 10, "go"), bg_launch("b2"), say("Waiting for the check.")];
     assert_allow(&g.stop_run(&long, json!({})));
@@ -3180,7 +3194,7 @@ fn test_g13_fail_open() {
 // --- G20 whole-file Read of a big file ---
 
 impl G {
-    fn read20(&self, sid: &str, ti: Value) -> R {
+    fn read20(&self, sid: &str, ti: &Value) -> R {
         self.run(
             "pretool",
             &json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Read", "tool_input": ti}),
@@ -3192,26 +3206,26 @@ impl G {
 fn g20_denies_a_big_whole_file_read_once_per_file() {
     let g = G::new();
     let big = write_file(&g.d(), "big.rs", &"a".repeat(50_000));
-    let res = g.read20("g20a", json!({"file_path": big}));
+    let res = g.read20("g20a", &json!({"file_path": big}));
     assert_deny(&res, "G20: big.rs is 50K chars.");
     assert!(res.2.contains("Repeat this exact call"), "{res:?}");
     // the repeat in the same session passes
-    assert_allow(&g.read20("g20a", json!({"file_path": big})));
+    assert_allow(&g.read20("g20a", &json!({"file_path": big})));
     // another session is stopped again
-    assert_deny(&g.read20("g20b", json!({"file_path": big})), "G20");
+    assert_deny(&g.read20("g20b", &json!({"file_path": big})), "G20");
 }
 
 #[test]
 fn g20_allows_a_part_a_small_file_an_image_and_a_missing_file() {
     let g = G::new();
     let big = write_file(&g.d(), "big.rs", &"a".repeat(50_000));
-    assert_allow(&g.read20("g20c", json!({"file_path": big, "limit": 100})));
-    assert_allow(&g.read20("g20c", json!({"file_path": big, "offset": 10})));
+    assert_allow(&g.read20("g20c", &json!({"file_path": big, "limit": 100})));
+    assert_allow(&g.read20("g20c", &json!({"file_path": big, "offset": 10})));
     let small = write_file(&g.d(), "small.rs", &"a".repeat(30_000));
-    assert_allow(&g.read20("g20d", json!({"file_path": small})));
+    assert_allow(&g.read20("g20d", &json!({"file_path": small})));
     let png = write_file(&g.d(), "big.png", &"a".repeat(50_000));
-    assert_allow(&g.read20("g20e", json!({"file_path": png})));
-    assert_allow(&g.read20("g20f", json!({"file_path": g.join("no/such.rs")})));
+    assert_allow(&g.read20("g20e", &json!({"file_path": png})));
+    assert_allow(&g.read20("g20f", &json!({"file_path": g.join("no/such.rs")})));
 }
 
 #[test]

@@ -28,7 +28,7 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -1025,29 +1025,55 @@ struct Turn {
     plan_done: bool,
     bg_started: HashSet<String>, // background Bash and Monitor task ids started this turn
     bg_ended: HashSet<String>,   // ids that a task notification or TaskStop ended
+    bg_expires: HashMap<String, i64>, // Monitor id -> launch time + its timeout (epoch seconds)
+    failed: HashSet<String>,     // tool_use ids whose result is an error
     wakeup: bool,                // a ScheduleWakeup this turn: the app wakes the session later
 }
 
 impl Turn {
-    /// Background work of this turn still runs, or a wakeup is set.
-    fn bg_open(&self) -> bool {
-        self.wakeup || self.bg_started.iter().any(|id| !self.bg_ended.contains(id))
+    /// Background work of this turn still runs, or a wakeup is set. A Monitor past its timeout
+    /// has ended even when no notification says so.
+    fn bg_open(&self, now: i64) -> bool {
+        self.wakeup
+            || self
+                .bg_started
+                .iter()
+                .any(|id| !self.bg_ended.contains(id) && self.bg_expires.get(id).is_none_or(|&end| now < end))
     }
 }
 
-/// Background work in a user record of the turn: a Bash or Monitor launch (its `toolUseResult`
-/// names the task id), or a task notification whose status is no longer `running`.
+/// Background work in a non-assistant record of the turn: a Bash or Monitor launch (its
+/// `toolUseResult` names the task id), a failed tool result, or a task notification whose status
+/// is no longer `running`. The app writes a notification as a user record when the session is
+/// idle, and as a `queued_command` attachment when it arrives mid-turn.
 fn scan_bg(rec: &Value, t: &mut Turn) {
     let res = get(rec, "toolUseResult");
     if let Some(id) = get(res, "backgroundTaskId").as_str() {
         t.bg_started.insert(id.to_string());
-    } else if let (Some(id), false) = (get(res, "taskId").as_str(), get(res, "timeoutMs").is_null()) {
+    } else if let (Some(id), Some(ms)) = (get(res, "taskId").as_str(), get(res, "timeoutMs").as_i64()) {
         t.bg_started.insert(id.to_string()); // a Monitor
+        if let Some(at) = timestamp(get(rec, "timestamp")) {
+            t.bg_expires.insert(id.to_string(), at + ms / 1000);
+        }
     }
-    if get(get(rec, "origin"), "kind").as_str() != Some("task-notification") {
+    for b in message_content(rec).as_array().into_iter().flatten() {
+        if get(b, "type").as_str() == Some("tool_result")
+            && truthy(get(b, "is_error"))
+            && let Some(id) = get(b, "tool_use_id").as_str()
+        {
+            t.failed.insert(id.to_string());
+        }
+    }
+    let att = get(rec, "attachment");
+    let text = if get(rec, "type").as_str() == Some("attachment") && get(att, "type").as_str() == Some("queued_command")
+    {
+        text_of(get(att, "prompt"))
+    } else if get(get(rec, "origin"), "kind").as_str() == Some("task-notification") {
+        text_of(message_content(rec))
+    } else {
         return;
-    }
-    let text = text_of(message_content(rec)).unwrap_or_default();
+    };
+    let text = text.unwrap_or_default();
     for c in TASK_ID.captures_iter(&text) {
         let (Some(all), Some(id)) = (c.get(0), c.get(1)) else { continue };
         let rest = text[all.end()..].split("<task-id>").next().unwrap_or("");
@@ -1108,7 +1134,8 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
                 t.bg_ended.insert(id.to_string());
             }
         } else if name == Some("ScheduleWakeup") {
-            t.wakeup = true;
+            // a refused or failed call sets no wakeup; its result came first in this scan
+            t.wakeup = t.wakeup || !get(b, "id").as_str().is_some_and(|id| t.failed.contains(id));
         }
     }
 }
@@ -1138,7 +1165,10 @@ fn scan_turn(path: &Path) -> Option<Turn> {
         if get(&rec, "type").as_str() == Some("assistant") {
             scan_record(&rec, in_turn, &mut t);
         } else if in_turn
-            && (has(&line, b"backgroundTaskId") || has(&line, b"\"taskId\"") || has(&line, b"task-notification"))
+            && (has(&line, b"backgroundTaskId")
+                || has(&line, b"\"taskId\"")
+                || has(&line, b"task-notification")
+                || has(&line, b"\"is_error\":true"))
         {
             scan_bg(&rec, &mut t);
         }
@@ -1354,7 +1384,7 @@ fn helpers_running(data: &HookInput) -> bool {
 /// of this turn that no notification or TaskStop ended, a ScheduleWakeup, or a live helper.
 /// G10 to G12 stay quiet then; the app starts a new segment of the turn when the work ends.
 fn busy(data: &HookInput, t: &Turn) -> bool {
-    t.bg_open() || helpers_running(data)
+    t.bg_open(now_secs() as i64) || helpers_running(data)
 }
 
 /// G11: a turn of 10 min or more ends without a clock time or a duration. Quiet while a helper
