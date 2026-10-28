@@ -1,5 +1,5 @@
-//! 58-opencode: Opencode (the `opencode` CLI) from Homebrew, already in the Brewfile. Skips
-//! when `opencode` is present; warns when brew could not install it. Its config comes from
+//! 58-opencode: Opencode (the `opencode` CLI), which step 12-tools installs from tools.list. Skips
+//! when `opencode` is present; warns when that step could not install it. Its config comes from
 //! claude/ via `agent-config opencode` (wired into `dots`).
 
 use super::super::os;
@@ -12,6 +12,6 @@ pub fn step(_repo: &Path) {
     if os::have("opencode") {
         skip("Opencode");
     } else {
-        warn("Opencode is missing. The Brewfile installs it (brew \"opencode\"); run dots again.");
+        warn("Opencode is missing. The tools step installs it (tools.list); read its warning, then run dots again.");
     }
 }

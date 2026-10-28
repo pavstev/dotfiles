@@ -435,7 +435,8 @@ impl Env for RealEnv {
     }
 
     fn runs(&self, cmd: &str) -> bool {
-        let Some(p) = find_in_path(cmd, &self.path) else { return false };
+        // The real file, not a mise shim: the shim starts even when the tool behind it cannot.
+        let Some(p) = find_real(cmd, &self.path) else { return false };
         // `cmd --version`: a spawn error (a glibc binary on Alpine has no loader) or exit 126/127 means
         // it cannot run here. Any other exit status means it started. A slow start counts as started.
         let Ok(mut child) = Command::new(&p)
