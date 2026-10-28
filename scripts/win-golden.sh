@@ -52,6 +52,9 @@ if "$UTMCTL" list 2>/dev/null | grep -qw "$VM"; then
   ((REBUILD)) || die "$VM already exists. Use --rebuild to delete it and build again"
   "$UTMCTL" stop "$VM" --kill >/dev/null 2>&1 || true
   "$UTMCTL" delete "$VM" >/dev/null
+  # utmctl can exit 0 while UTM still lists the VM: wait, then stop with the fix.
+  for _ in $(seq 15); do "$UTMCTL" list 2>/dev/null | grep -qw "$VM" || break; sleep 2; done
+  "$UTMCTL" list 2>/dev/null | grep -qw "$VM" && die "UTM still lists $VM. Quit and reopen UTM, then run this again"
 fi
 mkdir -p "$DIR/iso"
 if [[ ! -f "$KEY" ]]; then
@@ -66,7 +69,7 @@ fi
 # ---- 1. the seed ISO: answer file + first-logon script + the guest tools -------------
 PASS="$(openssl rand -hex 12)"
 (umask 077; printf 'user=%s\npassword=%s\n' "$WUSER" "$PASS" >"$DIR/$VM.cred")  # scan-allowlist: the VM's own random login, kept outside the repo
-W="$(mktemp -d)"; trap 'hdiutil detach "$W.mnt" -quiet 2>/dev/null; rm -rf "$W" "$W.mnt"' EXIT
+W="$(mktemp -d)"; trap 'hdiutil detach "$W.mnt" -quiet 2>/dev/null || true; rm -rf "$W" "$W.mnt"' EXIT
 mkdir -p "$W.mnt" "$W/seed"
 hdiutil attach -readonly -nobrowse -mountpoint "$W.mnt" "$TOOLS" >/dev/null
 cp -R "$W.mnt"/. "$W/seed/"            # the drivers and the installer (the original answer file goes)
@@ -241,10 +244,15 @@ osascript -e "tell application \"UTM\" to reload configuration (virtual machine 
 # ---- 3. install ---------------------------------------------------------------------
 say "starting the VM and pressing a key for the installer's boot prompt"
 "$UTMCTL" start "$VM"
-# The Windows ISO asks "press any key to boot from CD" for a few seconds. Send a space every 2 seconds
-# for 60 seconds (UTM's own key input, so no extra permission is needed).
+# utmctl start can time out (OSStatus -1712) and still exit 0, with the VM left stopped.
+for _ in $(seq 15); do "$UTMCTL" status "$VM" 2>/dev/null | grep -qi started && break; sleep 2; done
+"$UTMCTL" status "$VM" 2>/dev/null | grep -qi started \
+  || die "UTM did not start $VM. Quit and reopen UTM, then run: bash scripts/win-golden.sh --rebuild"
+# The Windows ISO asks "press any key to boot from CD" for a few seconds. Send an "x" every 2 seconds
+# for 60 seconds (UTM's own key input, so no extra permission is needed). Not a space or Enter: once
+# Setup runs, its focused Cancel button would take them.
 osascript -e "tell application \"UTM\"" -e "set vm to virtual machine named \"$VM\"" \
-  -e 'repeat 30 times' -e 'input keystroke vm text " "' -e 'delay 2' -e 'end repeat' -e 'end tell' >/dev/null 2>&1 || true
+  -e 'repeat 30 times' -e 'input keystroke vm text "x"' -e 'delay 2' -e 'end repeat' -e 'end tell' >/dev/null 2>&1 || true
 say "waiting for the install, up to 60 minutes (SSH answers and C:\\golden-ready.txt exists)"
 ip="" end=$((SECONDS + 3600))
 while ((SECONDS < end)); do
