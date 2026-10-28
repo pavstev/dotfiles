@@ -61,6 +61,7 @@ Then it installs. A long step says `still working…` each minute, and the last 
 | `dots` | Get the newest setup: pull, link, install what is missing. |
 | `dots settings` | Change a setting: git identity, presets, looks, Java, private rules. |
 | `dots doctor` | Check the setup. One PASS or FAIL line per check, with the fix. |
+| `dots update` | macOS: find the updates of every package manager (Homebrew, mise, rustup, npm and more) and install them. `--check` only looks. |
 | `dots -v` | The same run, with every command shown. |
 | `dots uninstall` | Take it all back: links, generated files, merged entries. Your tools and settings stay. |
 

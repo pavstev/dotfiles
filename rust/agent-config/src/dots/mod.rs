@@ -4,7 +4,8 @@
 //! A run prints one short line per step. `dots -v` (or DOTFILES_VERBOSE=1) prints
 //! everything. `dots settings` (or `dots private`) opens the settings menu, then
 //! refreshes the links, the Cursor rule and the Opencode config. `dots doctor` checks the
-//! result and changes nothing.
+//! result and changes nothing. `dots update` (macOS) checks every package manager and installs
+//! the updates in one run.
 
 pub mod ask;
 pub mod doctor;
@@ -19,6 +20,7 @@ pub mod settings;
 pub mod skills;
 pub mod steps;
 pub mod uninstall;
+pub mod update;
 
 use crate::out::{self, info, ok, step, step_end, uptodate, verbose, warn};
 use crate::presets::Profile;
@@ -74,9 +76,29 @@ enum Cmd {
         #[arg(short, long)]
         yes: bool,
     },
+    /// find the updates of every package manager and install them (macOS)
+    ///
+    /// Checks Homebrew, mise, rustup, cargo crates, uv tools, npm and pnpm globals, gh extensions,
+    /// Oh My Zsh, the App Store, Claude Code and macOS, then updates what is outdated, one manager
+    /// at a time. macOS and App Store updates are only reported: install macOS updates in System
+    /// Settings and App Store updates with `sudo mas upgrade` (it needs root). The log is
+    /// in ~/Library/Logs/dots. Not covered: system Ruby gems, `go install` binaries, pipx, editor
+    /// extensions and apps that update themselves. Ids: brew, mise, rustup, cargo, uv, npm, pnpm,
+    /// gh, omz, mas, claude, macos.
+    Update {
+        /// check only, change nothing
+        #[arg(long)]
+        check: bool,
+        /// only these managers (comma list of ids)
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// all but these managers (comma list of ids)
+        #[arg(long, value_delimiter = ',')]
+        skip: Vec<String>,
+    },
 }
 
-/// The `dots` command line: `dots [-v] [settings | doctor | uninstall [-y]]`. Returns the exit code.
+/// The `dots` command line: `dots [-v] [settings | doctor | update [--check] | uninstall [-y]]`. Returns the exit code.
 /// It pulls the repo (and restarts on new commits), links files, builds the Claude config and runs the steps.
 pub fn main() -> i32 {
     let cli = Cli::parse();
@@ -101,6 +123,10 @@ pub fn main() -> i32 {
         Some(Cmd::Uninstall { yes }) => return uninstall::run(&repo, yes),
         // `dots doctor` only reads: no pull, no links, no steps.
         Some(Cmd::Doctor) => return doctor::run(),
+        // `dots update` runs the package managers: no pull, no links, no steps. macOS only.
+        Some(Cmd::Update { check, only, skip }) => {
+            return update::run(&update::Opts { check, only, skip });
+        }
         _ => {}
     }
     let ask_settings = matches!(cli.cmd, Some(Cmd::Settings));

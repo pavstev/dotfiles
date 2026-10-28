@@ -61,14 +61,14 @@ gh            | gh            | all     | mise:aqua:cli/cli winget:GitHub.cli
 # ---- Dev workflow ----------------------------------------------------------
 just          | just          | all     | mise:aqua:casey/just cargo:just
 gum           | gum           | all     | mise:aqua:charmbracelet/gum
-opencode      | opencode      | all     | mise:aqua:anomalyco/opencode winget:SST.opencode
+opencode      | opencode      | all     | mise:aqua:anomalyco/opencode mise:github:anomalyco/opencode winget:SST.opencode
 oxker         | oxker         | unix    | mise:aqua:mrjackwills/oxker cargo:oxker
 
 # ---- Python, JavaScript, Go ------------------------------------------------
 uv            | uv            | all     | mise:aqua:astral-sh/uv cargo:uv
 ruff          | ruff          | all     | mise:aqua:astral-sh/ruff
 ty            | ty            | all     | mise:aqua:astral-sh/ty
-biome         | biome         | all     | mise:aqua:biomejs/biome
+biome         | biome         | all     | mise:aqua:biomejs/biome mise:github:biomejs/biome
 golangci-lint | golangci-lint | all     | mise:aqua:golangci/golangci-lint
 
 # ---- Rust ------------------------------------------------------------------

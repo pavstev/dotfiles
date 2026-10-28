@@ -27,6 +27,9 @@
 #  Env:      CONTAINER_RUNTIME=podman|docker (default: the first one found)
 #            TEST_LOG_DIR=<dir> for the logs (default: $TMPDIR/dots-test-linux)
 #            TEST_NAME_SUFFIX=<word> added to the container name, so two runs never clash
+#            TEST_PLATFORM=<os/arch> passed as --platform (default: linux/amd64 for archlinux on an
+#            arm64 host, because Arch publishes no arm64 image; empty otherwise). The Arch base
+#            image turns off pacman's syscall sandbox, which fails under amd64 emulation.
 #  Images: Debian, Ubuntu, Fedora, Arch, Alpine (and others with one of their package managers).
 # ============================================================================
 set -uo pipefail
@@ -39,7 +42,7 @@ for a in "$@"; do
     --reuse) REUSE=1; KEEP=1 ;;
     --clean) CLEAN=1 ;;
     -v|--verbose) VERBOSE=1 ;;
-    -h|--help) sed -n '2,31p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) printf 'unknown option: %s\n' "$a" >&2; exit 2 ;;
     *) IMAGE="$a" ;;
   esac
@@ -52,6 +55,13 @@ if [[ -z "$RT" ]]; then
 fi
 [[ -n "$RT" ]] || { printf 'no podman or docker found\n' >&2; exit 2; }
 
+PLAT=()
+platform="${TEST_PLATFORM-}"
+if [[ -z "${TEST_PLATFORM+x}" && "$IMAGE" == archlinux* ]]; then
+  case "$(uname -m)" in arm64|aarch64) platform=linux/amd64 ;; esac
+fi
+[[ -n "$platform" ]] && PLAT=(--platform "$platform")
+
 slug="$(printf '%s' "$IMAGE" | tr -c 'a-zA-Z0-9\n' '-' | sed 's/-*$//')"
 # The base image: the image plus sudo, git, curl and a user "dev" with sudo. Its tag holds a
 # hash of this recipe, so a changed recipe builds a new image instead of using a stale one.
@@ -61,7 +71,8 @@ RUN if command -v apt-get >/dev/null; then apt-get update \\
       && apt-get install -y --no-install-recommends sudo ca-certificates curl git && rm -rf /var/lib/apt/lists/*; \\
     elif command -v dnf >/dev/null; then \\
       dnf install -y sudo ca-certificates curl git findutils tar shadow-utils procps-ng && dnf clean all; \\
-    elif command -v pacman >/dev/null; then pacman -Syu --noconfirm sudo ca-certificates curl git findutils tar; \\
+    elif command -v pacman >/dev/null; then sed -i 's/^#DisableSandboxSyscalls/DisableSandboxSyscalls/' /etc/pacman.conf \\
+      && pacman -Syu --noconfirm sudo ca-certificates curl git findutils tar; \\
     elif command -v apk >/dev/null; then \\
       apk add --no-cache bash sudo ca-certificates curl git findutils tar coreutils shadow; \\
     else echo \"no apt-get, dnf, pacman or apk in $IMAGE\" >&2; exit 1; fi
@@ -91,7 +102,7 @@ trap cleanup EXIT
 if ! "$RT" image inspect "$BASE" >/dev/null 2>&1; then
   note "building $BASE from $IMAGE"
   ctx="$(mktemp -d)"
-  if ! printf '%s\n' "$RECIPE" | "$RT" build -q -t "$BASE" -f - "$ctx" >"$LOGS/build.log" 2>&1
+  if ! printf '%s\n' "$RECIPE" | "$RT" build -q ${PLAT[@]+"${PLAT[@]}"} -t "$BASE" -f - "$ctx" >"$LOGS/build.log" 2>&1
   then
     rmdir "$ctx" 2>/dev/null
     bad "base image build failed (see $LOGS/build.log)"
@@ -105,7 +116,7 @@ if (( REUSE == 1 )) && "$RT" container inspect "$NAME" >/dev/null 2>&1; then
   note "reusing container $NAME"
 else
   "$RT" rm -f "$NAME" >/dev/null 2>&1
-  "$RT" run -d --name "$NAME" --user dev -w /home/dev "$BASE" sleep infinity >/dev/null \
+  "$RT" run -d ${PLAT[@]+"${PLAT[@]}"} --name "$NAME" --user dev -w /home/dev "$BASE" sleep infinity >/dev/null \
     || { bad "couldn't start the container"; exit 1; }
 fi
 
