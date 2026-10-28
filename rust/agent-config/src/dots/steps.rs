@@ -51,12 +51,22 @@ pub fn run_all(repo: &Path, own_steps: bool) {
 /// While a step runs, say it is still working: after 20 seconds, then every minute. So a
 /// long download never looks like a frozen terminal. The lines stop when the sender drops.
 fn still_working(name: &'static str) -> std::sync::mpsc::Sender<()> {
+    ticker(20, 60, move |secs| {
+        let title = crate::out::step_title();
+        let what = if title.is_empty() { name.to_string() } else { title };
+        format!("still working on {} ({})…", what, crate::out::duration(secs))
+    })
+}
+
+/// A thread that prints an info line made by `line(seconds)` after `first` seconds, then every
+/// `every` seconds. It stops when the returned sender drops. `line` must not read the environment.
+pub fn ticker(first: u64, every: u64, line: impl Fn(u64) -> String + Send + 'static) -> std::sync::mpsc::Sender<()> {
     use std::sync::mpsc::{RecvTimeoutError, channel};
     use std::time::{Duration, Instant};
     let (tx, rx) = channel::<()>();
     let start = Instant::now();
     std::thread::spawn(move || {
-        let mut next = 20;
+        let mut next = first;
         loop {
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Err(RecvTimeoutError::Timeout) => {}
@@ -66,10 +76,8 @@ fn still_working(name: &'static str) -> std::sync::mpsc::Sender<()> {
             if secs < next {
                 continue;
             }
-            next += 60;
-            let title = crate::out::step_title();
-            let what = if title.is_empty() { name.to_string() } else { title };
-            info(&format!("still working on {} ({})…", what, crate::out::duration(secs)));
+            next += every;
+            info(&line(secs));
         }
     });
     tx

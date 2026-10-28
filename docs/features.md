@@ -55,8 +55,21 @@ dots settings                                   # the settings menu: git name, J
 dots -v                                         # the same run, with every line (the default is one line per step)
 dots doctor                                     # check the setup: PASS or FAIL per check, changes nothing
 dots uninstall                                  # take it all back (asks first; -y skips the question)
+dots update                                     # macOS: update every package manager in one run
+dots update --check                             # macOS: list the updates, change nothing
 dot                                             # cd into the repo
 ```
+
+`dots update` (macOS only) checks Homebrew, mise, rustup, cargo crates, uv tools, npm and pnpm
+globals, gh extensions, Oh My Zsh, the App Store, Claude Code and macOS. The checks run in
+parallel and print one line each. Then it updates what is outdated, one manager at a time, and goes
+on after a failure. After each update it checks again and names what is still outdated (a version
+pin can hold a package back). macOS and App Store updates are only reported: install macOS updates in System
+Settings and App Store updates with `sudo mas upgrade` (it needs root). Pick managers
+with `--only brew,mise` or `--skip mas,claude`; `dots -v update` also shows each command's output.
+The log of each run is in `~/Library/Logs/dots` (the last 10 are kept). The exit code is 1 when a
+check or an update failed, 2 for an unknown manager id. Not covered: system Ruby gems, `go install`
+binaries, pipx, editor extensions and apps that update themselves.
 
 `dots doctor` prints one line per check and exits 1 when one fails. A FAIL line names the fix,
 usually `Run: dots`. The checks:
