@@ -27,6 +27,10 @@ PLAN=""
 # mon-sat or sun-thu. Empty: mon-fri.
 WORK_DAYS=""
 
+# The weekly use (percent, 50 to 100) where the pace turns critical: no more helpers,
+# and autopilot waits for the weekly reset. Empty: 85.
+PACE_CRITICAL=""
+
 # Colors of the status line, dots output and the Opencode theme: copper or plain
 # (no colors, no Opencode theme). Empty: copper.
 THEME=""

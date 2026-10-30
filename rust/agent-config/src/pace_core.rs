@@ -132,8 +132,9 @@ pub struct RefreshResult {
 
 // --- paths and JSON files --------------------------------------------------------------------
 
-/// Where the caches and the transcripts live, and the two settings that shape the numbers: the plan
-/// (`pro`, `max5`, ...; `unknown` when unset) and the work days a week. Tests build one over a temp dir.
+/// Where the caches and the transcripts live, and the settings that shape the numbers: the plan
+/// (`pro`, `max5`, ...; `unknown` when unset), the work days a week and the critical use.
+/// Tests build one over a temp dir.
 #[derive(Clone)]
 pub struct Paths {
     /// The cache folder.
@@ -144,6 +145,13 @@ pub struct Paths {
     pub plan: String,
     /// Work days a week.
     pub days: i64,
+    /// The weekly use (percent) where the state turns critical.
+    pub critical: f64,
+}
+
+/// The critical use from the `PACE_CRITICAL` value: a number from 50 to 100, anything else 85.
+fn critical_of(raw: &str) -> f64 {
+    raw.trim().parse::<f64>().ok().filter(|v| (50.0..=100.0).contains(v)).unwrap_or(CRITICAL)
 }
 
 fn env_nonempty(k: &str) -> Option<String> {
@@ -156,13 +164,20 @@ impl Paths {
         let cache = crate::paths::cache();
         let base = env_nonempty("CLAUDE_CONFIG_DIR").map_or_else(|| home().join(".claude"), PathBuf::from);
         // the settings file is read once per process
-        static SETTINGS: OnceLock<(String, i64)> = OnceLock::new();
-        let (plan, days) = SETTINGS.get_or_init(|| {
+        static SETTINGS: OnceLock<(String, i64, f64)> = OnceLock::new();
+        let (plan, days, critical) = SETTINGS.get_or_init(|| {
             let h = home();
             let plan = crate::setting(&h, "PLAN").trim().to_lowercase();
-            (if plan.is_empty() { "unknown".to_string() } else { plan }, work_days(&crate::setting(&h, "WORK_DAYS")))
+            // the env wins over the settings file, like GUARD_OFF
+            let critical =
+                critical_of(&env_nonempty("PACE_CRITICAL").unwrap_or_else(|| crate::setting(&h, "PACE_CRITICAL")));
+            (
+                if plan.is_empty() { "unknown".to_string() } else { plan },
+                work_days(&crate::setting(&h, "WORK_DAYS")),
+                critical,
+            )
         });
-        Self { cache, projects: base.join("projects"), plan: plan.clone(), days: *days }
+        Self { cache, projects: base.join("projects"), plan: plan.clone(), days: *days, critical: *critical }
     }
 
     fn file(&self, name: &str) -> PathBuf {
@@ -938,10 +953,10 @@ pub fn seed(used: f64, now: Option<i64>) -> bool {
 
 // --- status ----------------------------------------------------------------------------------
 
-fn state_of(used: Option<f64>, budget: f64) -> PaceState {
+fn state_of(used: Option<f64>, budget: f64, critical: f64) -> PaceState {
     match used {
         None => PaceState::Unknown,
-        Some(u) if u >= CRITICAL => PaceState::Critical,
+        Some(u) if u >= critical => PaceState::Critical,
         Some(u) if u > budget => PaceState::Ahead,
         Some(_) => PaceState::Ok,
     }
@@ -955,7 +970,7 @@ fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
     let ws = week_start(p, now);
     let budget = budget_for(now, ws, p.days);
     if let Some((used, resets)) = fresh_c1(p, now) {
-        return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("statusline"), Some(resets)));
+        return Ok(out(state_of(Some(used), budget, p.critical), Some(used), budget, Some("statusline"), Some(resets)));
     }
     if let Some(r) = load_result(p)
         && r.ws == ws
@@ -966,7 +981,13 @@ fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
             if let Some(total) = week_weight_in(p) {
                 let raw = r.weight / total * 100.0;
                 let used = if raw < 100.0 { raw } else { 100.0 };
-                return Ok(out(state_of(Some(used), budget), Some(used), budget, Some("estimate"), c1_reset(p, now)));
+                return Ok(out(
+                    state_of(Some(used), budget, p.critical),
+                    Some(used),
+                    budget,
+                    Some("estimate"),
+                    c1_reset(p, now),
+                ));
             }
         }
     }
@@ -1101,6 +1122,7 @@ mod tests {
             projects: dir.path().join("projects"),
             plan: "pro".into(),
             days: 6,
+            critical: CRITICAL,
         };
         fs::create_dir_all(p.projects.join("proj")).unwrap();
         Env { _dir: dir, p }
@@ -1226,6 +1248,7 @@ mod tests {
             projects: dir.path().join(".claude/projects"),
             plan: "pro".into(),
             days: 6,
+            critical: CRITICAL,
         };
         fs::create_dir_all(&p.cache).unwrap();
         fs::create_dir_all(p.projects.join("proj")).unwrap();
@@ -1419,6 +1442,22 @@ mod tests {
         for (used, want) in table {
             c.c1(now - 10, used, mon() + WEEK_S);
             assert_eq!(status_in(&c.p, Some(now)).state, want, "used {used}");
+        }
+    }
+
+    #[test]
+    fn test_critical_setting() {
+        let c = pc();
+        let p = Paths { critical: critical_of("95"), ..c.p.clone() };
+        let now = mon() + 2 * DAY; // Wednesday, budget 50
+        use PaceState::{Ahead, Critical};
+        for (used, want) in [(85.0, Ahead), (94.9, Ahead), (95.0, Critical)] {
+            c.c1(now - 10, used, mon() + WEEK_S);
+            assert_eq!(status_in(&p, Some(now)).state, want, "used {used}");
+        }
+        // out of range or not a number: the default
+        for raw in ["", "abc", "40", "101"] {
+            assert_eq!(critical_of(raw), CRITICAL, "raw {raw:?}");
         }
     }
 
