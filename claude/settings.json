@@ -44,7 +44,6 @@
       "mcp__claude_ai_Google_Drive__*",
       "mcp__claude_ai_PDF_Viewer__*",
       "mcp__plugin_pdf-viewer_pdf__*",
-      "mcp__computer-use__*",
       "mcp__plugin_desktop-commander_desktop-commander__*"
     ]
   },
