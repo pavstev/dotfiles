@@ -23,7 +23,7 @@ goes on.
   first (no musl release), the rest from mise. That needs root or `sudo`. whisper-cpp is not
   installed. A tool with no source that starts on musl gives a warning.
 - **Skipped:** the macOS-only steps (`10-homebrew`, `20-brew-bundle`, `70-macos-defaults`,
-  `72-touch-id-sudo`, `75-terminal-appearance`) print nothing (`dots -v` shows
+  `71-default-apps`, `72-touch-id-sudo`, `75-terminal-appearance`) print nothing (`dots -v` shows
   `macOS only, skipping`). The Claude desktop app offer, AeroSpace and the Nerd
   Font are macOS only too.
 - **Links:** `~/.config/Code/User/*` and `~/.config/Cursor/User/*` link to the files macOS keeps

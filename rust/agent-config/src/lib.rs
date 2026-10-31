@@ -502,29 +502,30 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
         return;
     }
     if path.exists() {
-        let bak = path.with_file_name(format!("{}.bak-{}", path.file_name().unwrap().to_str().unwrap(), unix_ts()));
-        let _ = atomic_write(
-            &bak,
-            &fs::read_to_string(path).unwrap_or_default(),
-            Some(fs::metadata(path).map_or(0o644, |m| {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    m.permissions().mode() & 0o777
-                }
-                #[cfg(not(unix))]
-                {
-                    let _ = m;
-                    0o644
-                }
-            })),
-        );
+        // A failed backup stops the write: the old file may be the only copy.
+        if let Err(e) = fs::copy(path, backup_path(path, unix_ts())) {
+            warn(&format!("could not back up {}: {e}; left untouched", tilde(path)));
+            return;
+        }
     }
     let mode = if private { Some(0o600) } else { None };
     match atomic_write(path, &dump(new), mode) {
         Ok(()) => wrote(&format!("updated {}", tilde(path))),
         Err(e) => warn(&format!("could not write {}: {e}", tilde(path))),
     }
+}
+
+/// A free `<file>.bak-<ts>` name next to `path`. A second save in the same second gets
+/// `-1`, `-2` and so on, so it never overwrites the backup of the first.
+pub fn backup_path(path: &Path, ts: u64) -> PathBuf {
+    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let mut bak = path.with_file_name(format!("{name}.bak-{ts}"));
+    let mut n = 0;
+    while bak.symlink_metadata().is_ok() {
+        n += 1;
+        bak = path.with_file_name(format!("{name}.bak-{ts}-{n}"));
+    }
+    bak
 }
 
 fn unix_ts() -> u64 {
