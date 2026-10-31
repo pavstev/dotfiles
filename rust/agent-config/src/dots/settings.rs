@@ -26,9 +26,9 @@ pub fn get(name: &str) -> String {
     crate::setting(&os::home(), name)
 }
 
-/// A value can't hold " \ $ ` or a new line: zsh sources the file.
+/// A value can't hold " \ $ ` or a line break (LF or CR): zsh sources the file.
 pub fn valid_value(v: &str) -> bool {
-    !v.contains(['"', '\\', '$', '`', '\n'])
+    !v.contains(['"', '\\', '$', '`', '\n', '\r'])
 }
 
 /// The new file text: the first NAME line replaced, later ones dropped, or the line
@@ -136,10 +136,25 @@ mod tests {
         assert_eq!(replaced("AB=\"1\"\n", "A", "x"), "AB=\"1\"\nA=\"x\"\n");
     }
     #[test]
+    fn replaced_keeps_a_real_settings_file() {
+        let old = "# machine settings\nPLAN=\"pro\"\nWORK_DAYS=\"mon-fri\"\nTIMEZONE=\"\"\n\nPRESETS=\"clock pace\"";
+        let new = replaced(old, "WORK_DAYS", "mon-sat");
+        assert_eq!(
+            new,
+            "# machine settings\nPLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\nTIMEZONE=\"\"\n\nPRESETS=\"clock pace\"\n"
+        );
+        // Running it again changes nothing.
+        assert_eq!(replaced(&new, "WORK_DAYS", "mon-sat"), new);
+        // A comment that mentions the name is not a setting.
+        assert_eq!(replaced("# WORK_DAYS=\"x\"\n", "WORK_DAYS", "mon-sat"), "# WORK_DAYS=\"x\"\nWORK_DAYS=\"mon-sat\"\n");
+    }
+    #[test]
     fn bad_values() {
-        for v in ["a\"b", "a\\b", "$HOME", "`x`", "a\nb"] {
+        for v in ["a\"b", "C:\\Users\\me", "$HOME", "`date`", "Europe/Vienna\nPROFILE=\"owner", "mon-sat\r"] {
             assert!(!valid_value(v));
         }
-        assert!(valid_value("Jane Doe"));
+        for v in ["Jane Doe", "Europe/Vienna", "mon-sat", "pro", "ghostty", "", "/home/dev/dotfiles"] {
+            assert!(valid_value(v), "{v}");
+        }
     }
 }

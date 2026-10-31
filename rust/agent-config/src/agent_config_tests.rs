@@ -780,6 +780,38 @@ fn test_backup_made_before_change() {
 }
 
 #[test]
+fn test_backup_is_a_byte_exact_copy() {
+    let fx = Fx::new();
+    let p = fx.cdir().join("settings.json");
+    // Real shape: tab indent, no final newline, non-ASCII text, key order kept.
+    let before = "{\n\t\"model\": \"opus\",\n\t\"statusLine\": {\"command\": \"café\"}\n}";
+    wr(&p, before);
+    call(|| save_json(&p, &json!({"model": "opus"}), &json!({"model": "sonnet"}), false));
+    let bak: Vec<_> = fs::read_dir(fx.cdir())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains("settings.json.bak-"))
+        .collect();
+    assert_eq!(bak.len(), 1);
+    assert_eq!(fs::read(&bak[0]).unwrap(), before.as_bytes());
+}
+
+#[test]
+fn test_two_saves_in_one_second_keep_both_backups() {
+    let fx = Fx::new();
+    let p = fx.cdir().join("opencode.json");
+    let first = backup_path(&p, 1_793_000_000);
+    assert_eq!(first.file_name().unwrap(), "opencode.json.bak-1793000000");
+    wr(&first, "oldest");
+    let second = backup_path(&p, 1_793_000_000);
+    assert_eq!(second.file_name().unwrap(), "opencode.json.bak-1793000000-1");
+    wr(&second, "older");
+    assert_eq!(backup_path(&p, 1_793_000_000).file_name().unwrap(), "opencode.json.bak-1793000000-2");
+    // A new second starts clean.
+    assert_eq!(backup_path(&p, 1_793_000_001).file_name().unwrap(), "opencode.json.bak-1793000001");
+}
+
+#[test]
 fn test_no_backup_for_new_file() {
     let fx = Fx::new();
     let p = fx.cdir().join("x.json");
