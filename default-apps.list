@@ -1,0 +1,42 @@
+# default-apps.list: which app opens which file type on macOS. The ONE list.
+#
+# A line "@bundle.id" picks the app. Every type line after it opens with that app.
+# Types are UTIs (public.json), never extensions: md, json, yaml and css have no useful
+# type when given as an extension. Find a UTI with: mdls -name kMDItemContentType <file>
+# An app that is not installed is skipped. A type that is already set is left alone.
+#
+# Applied by step 71-default-apps (scripts/default-apps.sh) with no Finder pop-up: it edits
+# the Launch Services preferences and restarts lsd. Run it alone: scripts/default-apps.sh
+# Left alone on purpose: browser, PDF, images, zip, mail, .txt, .html.
+
+@org.videolan.vlc
+public.mpeg-4
+org.matroska.mkv
+public.avi
+com.apple.quicktime-movie
+org.webmproject.webm
+com.adobe.flash.video
+com.microsoft.windows-media-wmv
+com.apple.m4v-video
+public.mpeg
+public.3gpp
+public.mp3
+org.xiph.flac
+com.microsoft.waveform-audio
+com.apple.m4a-audio
+public.aac-audio
+org.xiph.ogg-audio
+com.microsoft.windows-media-wma
+public.aiff-audio
+
+@com.microsoft.VSCode
+net.daringfireball.markdown
+public.json
+public.yaml
+public.css
+com.microsoft.typescript
+com.netscape.javascript-source
+public.python-script
+public.shell-script
+# A .ts file is also an MPEG transport stream. Without this line it opens in VLC.
+public.mpeg-2-transport-stream

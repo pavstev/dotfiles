@@ -13,6 +13,7 @@ tap "nikitabobko/tap"     # AeroSpace tiling window manager
 # ---- macOS apps & fonts ----------------------------------------------------
 cask "ghostty"
 cask "visual-studio-code"
+cask "vlc"                           # video and audio player (default app: default-apps.list)
 cask "cursor"                        # AI-first editor (mirrors VS Code config). Agent CLI comes from the
                                      # official installer in step 60-cursor, not cask "cursor-cli".
 cask "raycast"                       # launcher (settings sync through its own account)

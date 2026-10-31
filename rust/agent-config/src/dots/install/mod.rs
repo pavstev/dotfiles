@@ -4,6 +4,7 @@
 mod brew_bundle;
 mod claude_code;
 mod cursor;
+mod default_apps;
 mod gh_extensions;
 mod git_hooks;
 mod homebrew;
@@ -56,6 +57,7 @@ pub const STEPS: &[Step] = &[
     step("58-opencode", opencode::step),
     step("60-cursor", cursor::step),
     step("70-macos-defaults", macos_defaults::step),
+    step("71-default-apps", default_apps::step),
     step("72-touch-id-sudo", touch_id::step),
     step("75-terminal-appearance", terminal::step),
     step("77-dotfiles-git-hooks", git_hooks::step),
