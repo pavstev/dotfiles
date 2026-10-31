@@ -5,8 +5,10 @@
 # type when given as an extension. Find a UTI with: mdls -name kMDItemContentType <file>
 # An app that is not installed is skipped. A type that is already set is left alone.
 #
-# Applied by step 71-default-apps (scripts/default-apps.sh) with no Finder pop-up: it edits
-# the Launch Services preferences and restarts lsd. Run it alone: scripts/default-apps.sh
+# Applied by step 71-default-apps (scripts/default-apps.swift) with no Finder pop-up: it edits
+# the Launch Services preferences and restarts lsd. Run it alone: DOTFILES_STEPS=71-default-apps ./dotfiles
+# A "#" starts a comment, also at the end of a line. An app is a bundle id (no spaces:
+# Visual Studio Code is com.microsoft.VSCode). A wrong line is a warning and the rest still applies.
 # Left alone on purpose: browser, PDF, images, zip, mail, .txt, .html.
 
 @org.videolan.vlc
