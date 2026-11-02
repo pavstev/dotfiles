@@ -1,13 +1,14 @@
 //! Process tests of the skill bins that their unit tests do not cover: `whatsleft_scan` freshness
 //! and `harness_stats`. Every test runs the real binary against a temp HOME and temp files.
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 mod common;
 
-use common::{run_bin, temp_home};
+use common::{git, run_bin, temp_home};
 use serde_json::{Value, json};
 use std::fmt::{Display, Write as _};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const SCAN: &str = env!("CARGO_BIN_EXE_whatsleft_scan");
 const STATS: &str = env!("CARGO_BIN_EXE_harness_stats");
@@ -35,7 +36,8 @@ const PASSED: &str = "a check ran after the last edit, and it passed";
 const STALE: &str = "files edited after the last check run";
 const FAILED: &str = "the last check run failed";
 const NO_CHECK: &str = "no test/lint/check ran";
-const RUNNING: &str = "the last check is still running: wait for its notice, then read its exit line";
+const RUNNING: &str =
+    "the last check is still running: wait for its notice, then read its exit line";
 
 struct Transcript {
     home: PathBuf,
@@ -50,17 +52,14 @@ impl Transcript {
         let home = temp_home("scan");
         let root = home.join("repo");
         fs::create_dir_all(&root).unwrap();
-        let ok = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&root)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .status()
-            .expect("git init");
-        assert!(ok.success());
+        git(&root, &["init", "-q"]);
         let root = fs::canonicalize(&root).unwrap();
-        Self { home, root, lines: vec![], n: 0 }
+        Self {
+            home,
+            root,
+            lines: vec![],
+            n: 0,
+        }
     }
 
     fn ts(&mut self) -> String {
@@ -68,7 +67,14 @@ impl Transcript {
         format!("2026-10-14T10:{:02}:00+00:00", self.n)
     }
 
-    fn tool(&mut self, name: &str, inp: &Value, result: &str, error: bool, cwd: Option<&Path>) -> String {
+    fn tool(
+        &mut self,
+        name: &str,
+        inp: &Value,
+        result: &str,
+        error: bool,
+        cwd: Option<&Path>,
+    ) -> String {
         let tid = format!("toolu_{}", self.n);
         let cwd = cwd.unwrap_or(&self.root).to_string_lossy().into_owned();
         let t = self.ts();
@@ -98,9 +104,16 @@ impl Transcript {
     }
 
     fn bash_bg(&mut self, cmd: &str, bg_id: &str) -> String {
-        let res =
-            format!("Command running in background with ID: {bg_id}. Output is being written to: /x/{bg_id}.output");
-        self.tool("Bash", &json!({"command": cmd, "run_in_background": true}), &res, false, None)
+        let res = format!(
+            "Command running in background with ID: {bg_id}. Output is being written to: /x/{bg_id}.output"
+        );
+        self.tool(
+            "Bash",
+            &json!({"command": cmd, "run_in_background": true}),
+            &res,
+            false,
+            None,
+        )
     }
 
     fn notice(&mut self, tool_id: &str, status: &str, summary: &str, task: &str) {
@@ -139,7 +152,8 @@ impl Drop for Transcript {
 
 /// True when a line of the report has `tag` first and holds `text`.
 fn tagged(out: &str, tag: &str, text: &str) -> bool {
-    out.lines().any(|l| l.trim_start().starts_with(tag) && l.contains(text))
+    out.lines()
+        .any(|l| l.trim_start().starts_with(tag) && l.contains(text))
 }
 
 fn no_alarm(out: &str) {
@@ -151,7 +165,11 @@ fn no_alarm(out: &str) {
 #[test]
 fn passing_checks() {
     // a check after the edit passes: plain, piped with pipefail, chained with &&, or in the background with exit 0
-    for cmd in ["pnpm check", "set -o pipefail; pnpm check 2>&1 | tail -20", "pnpm check && echo done"] {
+    for cmd in [
+        "pnpm check",
+        "set -o pipefail; pnpm check 2>&1 | tail -20",
+        "pnpm check && echo done",
+    ] {
         let mut t = Transcript::new();
         t.edit();
         t.bash(cmd);
@@ -162,7 +180,12 @@ fn passing_checks() {
     let mut t = Transcript::new();
     t.edit();
     let tid = t.bash_bg("pnpm check", "bg1");
-    t.notice(&tid, "completed", "Background command \"pnpm check\" completed (exit code 0)", "bg1");
+    t.notice(
+        &tid,
+        "completed",
+        "Background command \"pnpm check\" completed (exit code 0)",
+        "bg1",
+    );
     assert!(t.freshness().contains(PASSED));
 }
 
@@ -191,8 +214,14 @@ fn test_background_check_without_notice_is_still_running() {
 #[test]
 fn test_background_check_failed_or_non_zero_exit_failed() {
     let cases = [
-        ("failed", "Background command \"pnpm check\" failed with exit code 1"),
-        ("completed", "Background command \"pnpm check\" completed (exit code 2)"),
+        (
+            "failed",
+            "Background command \"pnpm check\" failed with exit code 1",
+        ),
+        (
+            "completed",
+            "Background command \"pnpm check\" completed (exit code 2)",
+        ),
         ("killed", "Background command \"pnpm check\" was stopped"),
     ];
     for (status, summary) in cases {
@@ -225,7 +254,9 @@ fn test_masked_exit_code_is_named() {
         t.edit();
         t.bash(cmd);
         let out = t.freshness();
-        let want = format!("the last check's exit code is hidden ({mask}): read its log or run it again without it");
+        let want = format!(
+            "the last check's exit code is hidden ({mask}): read its log or run it again without it"
+        );
         assert!(tagged(&out, "ME", &want), "{cmd}: {out}");
         assert!(!out.contains(PASSED), "{cmd}: {out}");
     }
@@ -236,7 +267,12 @@ fn test_masked_background_check_with_exit_0_notice_is_hidden() {
     let mut t = Transcript::new();
     t.edit();
     let tid = t.bash_bg("pnpm check; echo", "bg1");
-    t.notice(&tid, "completed", "Background command \"pnpm check; echo\" completed (exit code 0)", "bg1");
+    t.notice(
+        &tid,
+        "completed",
+        "Background command \"pnpm check; echo\" completed (exit code 0)",
+        "bg1",
+    );
     let out = t.freshness();
     assert!(out.contains("exit code is hidden (; echo)"), "{out}");
     assert!(!out.contains(PASSED), "{out}");
@@ -330,7 +366,11 @@ fn session(home: &Path, sid: &str, day: &str, spawns: &[(Option<&str>, i64)]) {
     let folder = home.join(".claude/projects/-tmp-proj");
     fs::create_dir_all(folder.join(sid).join("subagents")).unwrap();
     let t = format!("2026-10-{day}T10:00:00Z");
-    let blocks: Vec<Value> = spawns.iter().enumerate().map(|(i, (k, _))| agent_use(&format!("a{i}"), *k)).collect();
+    let blocks: Vec<Value> = spawns
+        .iter()
+        .enumerate()
+        .map(|(i, (k, _))| agent_use(&format!("a{i}"), *k))
+        .collect();
     let recs = [
         json!({"type": "user", "timestamp": t, "message": {"role": "user", "content": "go"}}),
         usage_rec(&t, 20000, &format!("{sid}m0"), Some(Value::Array(blocks))),
@@ -338,7 +378,10 @@ fn session(home: &Path, sid: &str, day: &str, spawns: &[(Option<&str>, i64)]) {
     let body = lines_text(&recs);
     fs::write(folder.join(format!("{sid}.jsonl")), body).unwrap();
     for (i, (kind, ctx)) in spawns.iter().enumerate() {
-        let base = folder.join(sid).join("subagents").join(format!("agent-{sid}{i}"));
+        let base = folder
+            .join(sid)
+            .join("subagents")
+            .join(format!("agent-{sid}{i}"));
         fs::write(
             format!("{}.jsonl", base.display()),
             format!("{}\n", usage_rec(&t, *ctx, &format!("{sid}-s{i}"), None)),
@@ -359,27 +402,70 @@ fn stats(home: &Path, args: &[&str]) -> String {
 #[test]
 fn test_spawns_and_agents_table() {
     let home = temp_home("stats");
-    session(&home, "s1", "10", &[(None, 60000), (Some("general-purpose"), 64000), (Some("researcher"), 15000)]);
-    session(&home, "s2", "16", &[(Some("worker"), 14000), (Some("worker"), 16000)]);
+    session(
+        &home,
+        "s1",
+        "10",
+        &[
+            (None, 60000),
+            (Some("general-purpose"), 64000),
+            (Some("researcher"), 15000),
+        ],
+    );
+    session(
+        &home,
+        "s2",
+        "16",
+        &[(Some("worker"), 14000), (Some("worker"), 16000)],
+    );
     let rows_path = home.join("rows.json");
     let rows_arg = rows_path.to_string_lossy().into_owned();
-    stats(&home, &["collect", "--since", "2026-10-01", "--out", &rows_arg]);
+    stats(
+        &home,
+        &["collect", "--since", "2026-10-01", "--out", &rows_arg],
+    );
     let rows: Vec<Value> = serde_json::from_str(&fs::read_to_string(&rows_path).unwrap()).unwrap();
     let s1 = rows.iter().find(|r| r["sid"] == "s1").expect("row s1");
-    let mut spawns: Vec<String> = s1["sub"]["spawns"].as_array().unwrap().iter().map(ToString::to_string).collect();
+    let mut spawns: Vec<String> = s1["sub"]["spawns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     spawns.sort();
-    assert_eq!(spawns, [r#"["general-purpose",60000]"#, r#"["general-purpose",64000]"#, r#"["researcher",15000]"#]);
-    let types: Vec<&str> = s1["agent_calls"].as_array().unwrap().iter().map(|c| c["type"].as_str().unwrap()).collect();
+    assert_eq!(
+        spawns,
+        [
+            r#"["general-purpose",60000]"#,
+            r#"["general-purpose",64000]"#,
+            r#"["researcher",15000]"#
+        ]
+    );
+    let types: Vec<&str> = s1["agent_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["type"].as_str().unwrap())
+        .collect();
     assert_eq!(types, ["general-purpose", "general-purpose", "researcher"]);
 
     let cut = "2026-10-15T00:00:00+00:00";
     let out = stats(&home, &["agents", "--in", &rows_arg, "--cut", cut]);
-    assert!(out.contains("| general-purpose | 2 (67%) | 62 | 0 (0%) | - |"), "{out}");
-    assert!(out.contains("| worker | 0 (0%) | - | 2 (100%) | 15 |"), "{out}");
+    assert!(
+        out.contains("| general-purpose | 2 (67%) | 62 | 0 (0%) | - |"),
+        "{out}"
+    );
+    assert!(
+        out.contains("| worker | 0 (0%) | - | 2 (100%) | 15 |"),
+        "{out}"
+    );
     assert!(out.contains("Sessions: P0 1, P1 1"), "{out}");
     assert!(out.contains("Early (under 20 sessions): P0, P1."), "{out}");
     let rep = stats(&home, &["report", "--in", &rows_arg, "--cut", cut]);
-    assert!(rep.contains("| general-purpose spawns % | 67 | 0 |"), "{rep}");
+    assert!(
+        rep.contains("| general-purpose spawns % | 67 | 0 |"),
+        "{rep}"
+    );
     let _ = fs::remove_dir_all(&home);
 }
 
@@ -387,7 +473,11 @@ fn test_spawns_and_agents_table() {
 fn test_scan_survives_null_token_fields() {
     let home = temp_home("stats-null");
     let mut rec = usage_rec("2026-10-10T10:00:00Z", 1000, "m1", None);
-    for k in ["input_tokens", "cache_creation_input_tokens", "output_tokens"] {
+    for k in [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "output_tokens",
+    ] {
         rec["message"]["usage"][k] = Value::Null;
     }
     let folder = home.join(".claude/projects/-tmp-proj");
@@ -395,7 +485,10 @@ fn test_scan_survives_null_token_fields() {
     fs::write(folder.join("s.jsonl"), format!("{rec}\n")).unwrap();
     let rows_path = home.join("rows.json");
     let rows_arg = rows_path.to_string_lossy().into_owned();
-    stats(&home, &["collect", "--since", "2026-10-01", "--out", &rows_arg]);
+    stats(
+        &home,
+        &["collect", "--since", "2026-10-01", "--out", &rows_arg],
+    );
     let rows: Vec<Value> = serde_json::from_str(&fs::read_to_string(&rows_path).unwrap()).unwrap();
     assert_eq!(rows.len(), 1);
     let r = &rows[0];

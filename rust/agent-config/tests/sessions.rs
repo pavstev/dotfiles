@@ -1,5 +1,7 @@
 //! `sessions`: index and search Claude Code transcripts in a temp HOME.
 
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
+
 mod common;
 
 use common::{iso_utc, run_bin, temp_home};
@@ -29,20 +31,30 @@ fn sessions(home: &Path, args: &[&str]) -> (i32, String, String) {
 /// Where `dirs::cache_dir()` points for a child run with this HOME (see `common::run_bin`).
 fn index_dir(home: &Path) -> PathBuf {
     if cfg!(target_os = "macos") {
-        home.join("Library").join("Caches").join("dots").join("sessions")
+        home.join("Library")
+            .join("Caches")
+            .join("dots")
+            .join("sessions")
     } else if cfg!(windows) {
-        dirs::cache_dir().expect("cache dir").join("dots").join("sessions")
+        dirs::cache_dir()
+            .expect("cache dir")
+            .join("dots")
+            .join("sessions")
     } else {
         home.join(".cache").join("dots").join("sessions")
     }
 }
 
 fn transcript(home: &Path, project_dir: &str, sid: &str) -> PathBuf {
-    home.join(".claude").join("projects").join(project_dir).join(format!("{sid}.jsonl"))
+    home.join(".claude")
+        .join("projects")
+        .join(project_dir)
+        .join(format!("{sid}.jsonl"))
 }
 
 fn user_line(t: i64, text: &str) -> String {
-    json!({"type":"user","timestamp":iso_utc(t),"message":{"role":"user","content":text}}).to_string()
+    json!({"type":"user","timestamp":iso_utc(t),"message":{"role":"user","content":text}})
+        .to_string()
 }
 
 fn assistant_line(t: i64, text: &str) -> String {
@@ -63,22 +75,41 @@ fn append(path: &Path, text: &str) {
 }
 
 fn title_record(home: &Path, sid: &str, title: &str) {
-    let p = home.join("Library/Application Support/Claude/claude-code-sessions/a/b").join(format!("local_{sid}.json"));
+    let p = home
+        .join("Library/Application Support/Claude/claude-code-sessions/a/b")
+        .join(format!("local_{sid}.json"));
     fs::create_dir_all(p.parent().unwrap()).unwrap();
-    fs::write(p, json!({"cliSessionId": sid, "title": title, "isArchived": false}).to_string()).unwrap();
+    fs::write(
+        p,
+        json!({"cliSessionId": sid, "title": title, "isArchived": false}).to_string(),
+    )
+    .unwrap();
 }
 
 /// Session A (demo, October, titled), session B (other, September), both with "common".
 fn fixtures(home: &Path) {
-    let long = format!("{} flaky vitest {}", "padding words here ".repeat(30), "more padding text ".repeat(30));
+    let long = format!(
+        "{} flaky vitest {}",
+        "padding words here ".repeat(30),
+        "more padding text ".repeat(30)
+    );
     write_lines(
         &transcript(home, "-work-demo", SID_A),
-        &[user_line(T_OCT, "why is the flaky vitest suite failing, common problem"), assistant_line(T_OCT + 5, &long)],
+        &[
+            user_line(
+                T_OCT,
+                "why is the flaky vitest suite failing, common problem",
+            ),
+            assistant_line(T_OCT + 5, &long),
+        ],
     );
     title_record(home, SID_A, "Fix flaky vitest");
     write_lines(
         &transcript(home, "-work-other", SID_B),
-        &[user_line(T_SEP, "deploy the worker to cloudflare, common problem")],
+        &[user_line(
+            T_SEP,
+            "deploy the worker to cloudflare, common problem",
+        )],
     );
 }
 
@@ -102,14 +133,21 @@ fn find_returns_hit_block() {
     let (code, out, err) = sessions(&home, &["find", "flaky vitest"]);
     assert_eq!(code, 0, "{out}\n{err}");
     let lines: Vec<&str> = out.lines().collect();
-    let i = lines.iter().position(|l| hit_re().is_match(l)).unwrap_or_else(|| panic!("no hit line in:\n{out}"));
+    let i = lines
+        .iter()
+        .position(|l| hit_re().is_match(l))
+        .unwrap_or_else(|| panic!("no hit line in:\n{out}"));
     assert!(lines[i].contains("  demo  "), "{}", lines[i]);
     assert!(lines[i].contains(SID_A), "{}", lines[i]);
     assert!(lines[i].ends_with("Fix flaky vitest"), "{}", lines[i]);
     assert!(lines[i].starts_with("2026-10-20"), "{}", lines[i]);
     let snippet = lines.get(i + 1).expect("snippet line").trim();
     assert_ne!(snippet, "");
-    assert!(snippet.chars().count() <= 200, "{} chars", snippet.chars().count());
+    assert!(
+        snippet.chars().count() <= 200,
+        "{} chars",
+        snippet.chars().count()
+    );
     assert!(snippet.to_lowercase().contains("vitest"), "{snippet}");
 }
 
@@ -125,10 +163,17 @@ fn incremental_index() {
     assert_eq!(code, 0);
     assert_eq!(out.trim(), "• sessions: 0 new");
 
-    append(&transcript(&home, "-work-other", SID_B), &(user_line(T_SEP + 60, "one more line") + "\n"));
+    append(
+        &transcript(&home, "-work-other", SID_B),
+        &(user_line(T_SEP + 60, "one more line") + "\n"),
+    );
     let (_, out, _) = sessions(&home, &["index"]);
     assert_eq!(out.trim(), "• sessions: 1 new");
-    assert_eq!(doc_count(&home), 4, "a re-read file must not leave duplicates");
+    assert_eq!(
+        doc_count(&home),
+        4,
+        "a re-read file must not leave duplicates"
+    );
 
     let (_, out, _) = sessions(&home, &["index"]);
     assert_eq!(out.trim(), "• sessions: 0 new");
@@ -170,16 +215,27 @@ fn lock_wait_then_stale() {
     assert_eq!(code, 0, "{err}");
 
     let index = Index::open_in_dir(index_dir(&home)).expect("open index");
-    let _writer = index.writer::<TantivyDocument>(50_000_000).expect("hold the writer lock");
+    let _writer = index
+        .writer::<TantivyDocument>(50_000_000)
+        .expect("hold the writer lock");
 
     let start = Instant::now();
-    let env = [("HOME", home.to_str().unwrap()), ("SESSIONS_LOCK_WAIT_MS", "300")];
+    let env = [
+        ("HOME", home.to_str().unwrap()),
+        ("SESSIONS_LOCK_WAIT_MS", "300"),
+    ];
     let (code, out, err) = run_bin(BIN, &["find", "flaky vitest"], "", &env, None);
     let took = start.elapsed();
     assert_eq!(code, 0, "{out}\n{err}");
-    assert!(took >= Duration::from_millis(300), "did not wait for the lock: {took:?}");
+    assert!(
+        took >= Duration::from_millis(300),
+        "did not wait for the lock: {took:?}"
+    );
     assert!(took < Duration::from_secs(5), "took {took:?}");
-    assert!(out.contains("• sessions: index busy, searched the last index"), "{out}");
+    assert!(
+        out.contains("• sessions: index busy, searched the last index"),
+        "{out}"
+    );
     assert_eq!(hit_count(&out), 1, "{out}");
 }
 
@@ -187,7 +243,10 @@ fn lock_wait_then_stale() {
 fn filters() {
     let home = temp_home("sessions-filters");
     fixtures(&home);
-    write_lines(&transcript(&home, "-work-demo", SID_C), &[user_line(T_OCT + 100, "a third common thing")]);
+    write_lines(
+        &transcript(&home, "-work-demo", SID_C),
+        &[user_line(T_OCT + 100, "a third common thing")],
+    );
 
     let (_, out, _) = sessions(&home, &["find", "common"]);
     assert_eq!(hit_count(&out), 3, "{out}");
@@ -219,19 +278,34 @@ fn no_secret_in_index() {
         &transcript(&home, "-work-demo", SID_A),
         &[
             user_line(T_OCT, &format!("use {key} for the upload call")),
-            assistant_line(T_OCT + 1, &["export API", "_TOKEN", "=", &"q9X8w7E6r5".repeat(3)].concat()),
+            assistant_line(
+                T_OCT + 1,
+                &["export API", "_TOKEN", "=", &"q9X8w7E6r5".repeat(3)].concat(),
+            ),
         ],
     );
     let (code, _, err) = sessions(&home, &["index"]);
     assert_eq!(code, 0, "{err}");
 
     let mut files = 0;
-    for e in walkdir::WalkDir::new(index_dir(&home)).into_iter().flatten().filter(|e| e.file_type().is_file()) {
+    for e in walkdir::WalkDir::new(index_dir(&home))
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+    {
         let bytes = fs::read(e.path()).unwrap();
         let hay = String::from_utf8_lossy(&bytes).to_lowercase();
         files += 1;
-        assert!(!hay.contains(&body.to_lowercase()), "key body in {}", e.path().display());
-        assert!(!hay.contains(&"q9x8w7e6r5".to_string()), "token value in {}", e.path().display());
+        assert!(
+            !hay.contains(&body.to_lowercase()),
+            "key body in {}",
+            e.path().display()
+        );
+        assert!(
+            !hay.contains(&"q9x8w7e6r5".to_string()),
+            "token value in {}",
+            e.path().display()
+        );
     }
     assert!(files > 0);
 
@@ -252,7 +326,11 @@ fn corrupt_index_rebuilt() {
 
     let (code, out, err) = sessions(&home, &["find", "flaky vitest"]);
     assert_eq!(code, 0, "{out}\n{err}");
-    assert!(out.lines().any(|l| l.starts_with("• sessions: ") && l.contains("rebuil")), "{out}");
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("• sessions: ") && l.contains("rebuil")),
+        "{out}"
+    );
     assert_eq!(hit_count(&out), 1, "{out}");
     assert_eq!(doc_count(&home), 3);
 }
@@ -262,7 +340,10 @@ fn missing_claude_dir_is_one_line() {
     let home = temp_home("sessions-missing");
     let (code, out, _) = sessions(&home, &["index"]);
     assert_eq!(code, 0);
-    assert!(out.contains("• sessions: claude skipped: not found"), "{out}");
+    assert!(
+        out.contains("• sessions: claude skipped: not found"),
+        "{out}"
+    );
 }
 
 /// Peak resident memory of `sessions index`, in bytes. None when the platform cannot say.
@@ -271,7 +352,11 @@ fn peak_rss(home: &Path) -> Option<u64> {
     if cfg!(windows) || !time.exists() {
         return None;
     }
-    let flag = if cfg!(target_os = "macos") { "-l" } else { "-v" };
+    let flag = if cfg!(target_os = "macos") {
+        "-l"
+    } else {
+        "-v"
+    };
     let env = [("HOME", home.to_str().unwrap())];
     let (code, _, err) = run_bin("/usr/bin/time", &[flag, BIN, "index"], "", &env, None);
     assert_eq!(code, 0, "{err}");
@@ -302,7 +387,11 @@ fn generate_big(path: &Path, megabytes: usize) {
             x ^= x << 17;
             let _ = write!(text, "w{:x} ", x % 60_000);
         }
-        let line = if n % 2 == 0 { user_line(T_OCT + n, &text) } else { assistant_line(T_OCT + n, &text) };
+        let line = if n % 2 == 0 {
+            user_line(T_OCT + n, &text)
+        } else {
+            assistant_line(T_OCT + n, &text)
+        };
         w.write_all(line.as_bytes()).unwrap();
         w.write_all(b"\n").unwrap();
         written += line.len() + 1;
@@ -317,11 +406,19 @@ fn big_transcript_streams() {
     let file = transcript(&home, "-work-big", SID_A);
     let t0 = Instant::now();
     generate_big(&file, 32);
-    eprintln!("generated {} bytes in {:?}", fs::metadata(&file).unwrap().len(), t0.elapsed());
+    eprintln!(
+        "generated {} bytes in {:?}",
+        fs::metadata(&file).unwrap().len(),
+        t0.elapsed()
+    );
 
     let t1 = Instant::now();
     if let Some(bytes) = peak_rss(&home) {
-        eprintln!("indexed in {:?}, peak RSS {} MB", t1.elapsed(), bytes / 1_000_000);
+        eprintln!(
+            "indexed in {:?}, peak RSS {} MB",
+            t1.elapsed(),
+            bytes / 1_000_000
+        );
         assert!(bytes < 140_000_000, "peak RSS {bytes} bytes");
     } else {
         eprintln!("note: no peak RSS on this platform, memory check skipped");

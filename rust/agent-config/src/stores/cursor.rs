@@ -5,9 +5,15 @@ use std::path::{Path, PathBuf};
 /// `state.vscdb` in Cursor's `User/globalStorage`, per OS.
 pub fn cursor_db(home: &Path) -> PathBuf {
     let user = if cfg!(target_os = "macos") {
-        home.join("Library").join("Application Support").join("Cursor").join("User")
+        home.join("Library")
+            .join("Application Support")
+            .join("Cursor")
+            .join("User")
     } else if cfg!(windows) {
-        home.join("AppData").join("Roaming").join("Cursor").join("User")
+        home.join("AppData")
+            .join("Roaming")
+            .join("Cursor")
+            .join("User")
     } else {
         home.join(".config").join("Cursor").join("User")
     };

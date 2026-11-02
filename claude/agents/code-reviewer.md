@@ -36,10 +36,7 @@ If none of these is present, say so in one line and stop. Do not guess what chan
    `APPROVED`. In round 3, or when the caller says it is the last round, and you are still
    not satisfied, say so plainly on line 1 (`CHANGES NEEDED: not satisfied after round 3`).
 
-Run git plainly from the repo or worktree root, one command per Bash call: no `cd … &&`, no
-heredoc, no `$()`. Never `sleep`. If a command is denied, say so; do not guess its result.
-
-To separate output, use `echo '---'`. zsh runs `echo =====` as a command lookup and fails.
+If a command is denied, say so; do not guess its result.
 
 Report: line 1 is a one-line verdict (`APPROVED`, `CHANGES NEEDED`, `BLOCKED: <why>`), also
 when the caller gives its own report template; the template comes after it. Line 2 lists denied
@@ -47,8 +44,7 @@ or skipped commands, or "none". Then at most 8 findings grouped by severity (blo
 minor), each as `path:line [rule] message` plus a concrete fix. Name how many more you dropped, if any.
 
 Hard cap: 4,000 characters for the final message, or the caller's cap when it names one. You
-have no Write tool, so the findings must fit. Count before you hand back: a hook sends an
-over-cap hand-back back to you. Be terse and specific. Don't restate the code or hand out praise
+have no Write tool, so the findings must fit. Be terse and specific. Don't restate the code or hand out praise
 unless it teaches something.
 
 ## Basics (every helper)

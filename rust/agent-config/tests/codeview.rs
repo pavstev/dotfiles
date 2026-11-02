@@ -22,6 +22,8 @@
 //! - Decorators (TS `@x`, Python `@x`), single or multi-line, move `start` up to the first `@`
 //!   line. Rust `#[attr]` lines are not covered here.
 
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
+
 use agent_config::codeview::{Refusal, outline, render, scan_name};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -68,7 +70,9 @@ fn expectations() -> Vec<(PathBuf, String)> {
     for entry in fs::read_dir(dir()).expect("fixtures dir") {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        let fixture = name.strip_suffix(".outline").or_else(|| name.strip_suffix(".refusal"));
+        let fixture = name
+            .strip_suffix(".outline")
+            .or_else(|| name.strip_suffix(".refusal"));
         if let Some(fixture) = fixture {
             let expected = fs::read_to_string(&path).unwrap();
             out.push((dir().join(fixture), expected));
@@ -109,7 +113,12 @@ fn crlf_changes_nothing() {
         let lf = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
         let want = show(&path, &lf);
         let got = show(&path, &to_crlf(&lf));
-        assert_eq!(trimmed(&got), trimmed(&want), "CRLF changed the outline of {}", path.display());
+        assert_eq!(
+            trimmed(&got),
+            trimmed(&want),
+            "CRLF changed the outline of {}",
+            path.display()
+        );
     }
 }
 
@@ -162,21 +171,36 @@ fn scan_names() {
 fn limits_are_inclusive() {
     // Exactly 2 MiB is allowed (the limit is "over 2 MB"); one byte more is too big, not a long line.
     assert!(outline(Path::new("edge.ts"), &sized(TWO_MIB)).is_ok());
-    assert!(matches!(outline(Path::new("big.ts"), &sized(TWO_MIB + 1)), Err(Refusal::TooBig)));
+    assert!(matches!(
+        outline(Path::new("big.ts"), &sized(TWO_MIB + 1)),
+        Err(Refusal::TooBig)
+    ));
 
     // A line of exactly 10,000 chars is allowed, 10,001 is not.
     let ok = format!("// {}\n", "a".repeat(9_997));
     assert_eq!(ok.trim_end().chars().count(), 10_000);
     assert!(outline(Path::new("edge.ts"), &ok).is_ok());
     let long = format!("// {}\n", "a".repeat(9_998));
-    assert!(matches!(outline(Path::new("edge.ts"), &long), Err(Refusal::LongLine)));
+    assert!(matches!(
+        outline(Path::new("edge.ts"), &long),
+        Err(Refusal::LongLine)
+    ));
 
     // A long line is refused whatever the language.
     let long_py = format!("# {}\n", "a".repeat(9_999));
-    assert!(matches!(outline(Path::new("edge.py"), &long_py), Err(Refusal::LongLine)));
+    assert!(matches!(
+        outline(Path::new("edge.py"), &long_py),
+        Err(Refusal::LongLine)
+    ));
 
     // A NUL byte means the file is not text. The long-line and unknown-extension refusals have
     // golden files (minified.js, unknown.xyz).
-    assert!(matches!(outline(Path::new("bin.ts"), "function a() {\n}\0\n"), Err(Refusal::NotText)));
-    assert!(matches!(outline(Path::new("bin.py"), "def a():\n    pass\0\n"), Err(Refusal::NotText)));
+    assert!(matches!(
+        outline(Path::new("bin.ts"), "function a() {\n}\0\n"),
+        Err(Refusal::NotText)
+    ));
+    assert!(matches!(
+        outline(Path::new("bin.py"), "def a():\n    pass\0\n"),
+        Err(Refusal::NotText)
+    ));
 }

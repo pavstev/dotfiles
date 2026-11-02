@@ -29,35 +29,28 @@ Write the list out for the user before delegating. Number them. This is the plan
 
 If the topic genuinely has a dependency chain, run it as ordered waves: wave 1 parallel, then wave 2 parallel using wave 1's answers. Never serialize what can run together, up to the Pace cap.
 
-## Fan-out gate (before Phase 2)
+## Split the work (before Phase 2)
 
 Each `researcher` costs a full agent run, and a fan-out costs about 15 times one chat. Merge
-first: sub-questions that one search or one source page answers are one sub-question. Then
-answer four questions:
+first: sub-questions that one search or one source page answers are one sub-question. One run
+handles up to 3 narrow facts (a version, a flag, a date), even from different sites. Split only
+for a 4th fact, or for a sub-question that needs its own deep dig (a comparison, many pages, a spike).
 
-1. Is there more than one researcher can do well in one run? One run handles up to 3 narrow
-   facts (a version, a flag, a date), even from different sites. Split only for a 4th fact, or
-   for a sub-question that needs its own deep dig (a comparison, many pages, a spike).
-2. Must the run pause for the user between waves?
-3. Must it recover mid-run (a long run that may die)?
-4. Must each step leave a record beyond the research file?
-
-Only a yes to 1 buys parallel researchers, one per sub-question. All no: send ONE `researcher`
-with every sub-question in its prompt. Phase 3 still checks its answer. Say in the plan which
-way the gate went and why.
+Then follow "Parallel by default" in the workflow preset: send one `researcher` per independent
+sub-question, all in one message, up to the pace cap. One sub-question left: send ONE `researcher`.
+Phase 3 still checks every answer. Say in the plan how you split the work and why.
 
 ## Pace
 
 Before Phase 2, when `~/.claude/hooks/rust-bin` exists, run `~/.claude/hooks/rust-bin pace status`.
-Researchers at once: 3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (tell the user the
-week is spent and research the top sub-questions yourself with WebSearch). The guard enforces the cap. When `ahead`,
-merge sub-questions into fewer, larger researchers (3 to 6 facts each) before you send any.
+The pace preset sets the cap; guard G8 enforces it. At `critical` the cap is 0: tell the user the
+week is spent and research the top sub-questions yourself with WebSearch.
 
 ## Phase 2 — Sub-agent delegation
 
 Spawn one `researcher` per sub-question, in one message per wave. **At most the Pace cap at once.** Send more sub-questions as later waves after the previous wave returns. Every wave obeys the same cap.
 
-Every research agent gets `subagent_type: researcher` and a deadline in its prompt ("answer within 5 min"). The guard router sets model and effort. Never `general-purpose`.
+Every research agent gets `subagent_type: researcher` and a deadline in its prompt ("answer within 5 min"). The guard router sets model and effort.
 
 Each prompt must be self-contained:
 - The exact question, in one sentence.

@@ -1,13 +1,14 @@
 //! `dots doctor`: each check passes on a fresh setup and fails, with a reason, when its part is broken.
 //! A fake repo and a temp HOME hold everything; nothing reads the real home of the machine.
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 mod common;
 
 use agent_config::dots::{doctor, links};
 use agent_config::presets;
-use common::{run_bin, temp_home};
+use common::{run_bin, temp_home, wr};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 const AC: &str = env!("CARGO_BIN_EXE_agent-config");
@@ -25,17 +26,21 @@ impl Drop for Fx {
     }
 }
 
-fn wr(p: &Path, text: &str) {
-    fs::create_dir_all(p.parent().unwrap()).unwrap();
-    fs::write(p, text).unwrap();
-}
-
 fn set_mtime(p: &Path, t: SystemTime) {
-    fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
+    fs::File::options()
+        .write(true)
+        .open(p)
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
 }
 
 fn exe(name: &str) -> String {
-    if cfg!(windows) { format!("{name}.exe") } else { name.to_string() }
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
 }
 
 #[cfg(unix)]
@@ -48,14 +53,19 @@ fn symlink(src: &Path, dst: &Path) {
 }
 
 fn git(fx: &Fx, args: &[&str]) {
-    let st = Command::new("git").args(args).current_dir(&fx.repo).env("HOME", &fx.home).status().unwrap();
-    assert!(st.success(), "git {args:?}");
+    common::git_env(&fx.repo, &[("HOME", fx.home.to_str().unwrap())], args);
 }
 
 impl Fx {
     fn ac(&self, args: &[&str]) -> (i32, String, String) {
         let (home, repo) = (self.home.to_str().unwrap(), self.repo.to_str().unwrap());
-        run_bin(AC, args, "", &[("HOME", home), ("DOTFILES_REPO", repo)], None)
+        run_bin(
+            AC,
+            args,
+            "",
+            &[("HOME", home), ("DOTFILES_REPO", repo)],
+            None,
+        )
     }
 
     fn checks(&self) -> Vec<doctor::Check> {
@@ -63,7 +73,11 @@ impl Fx {
     }
 
     fn get(&self, name: &str) -> Result<(), String> {
-        self.checks().into_iter().find(|c| c.name == name).unwrap_or_else(|| panic!("no check {name}")).result
+        self.checks()
+            .into_iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("no check {name}"))
+            .result
     }
 
     fn setting(&self, text: &str) {
@@ -90,7 +104,10 @@ fn fixture(tag: &str) -> Fx {
     let c = fx.repo.join("claude");
     wr(&c.join("agents/a.md"), "---\nname: a\n---\nA.\n");
     wr(&c.join("hooks/rust-bin"), "# fake launcher\n");
-    wr(&c.join("output-styles/ELI5.md"), "---\nname: ELI5\n---\nExplain it simply.\n");
+    wr(
+        &c.join("output-styles/ELI5.md"),
+        "---\nname: ELI5\n---\nExplain it simply.\n",
+    );
     wr(&c.join("CLAUDE.md"), "# Core\n\ncore line\n");
     wr(
         &c.join("settings.json"),
@@ -137,8 +154,11 @@ fn fixture(tag: &str) -> Fx {
 }
 
 fn assert_all_pass(fx: &Fx) {
-    let bad: Vec<String> =
-        fx.checks().into_iter().filter_map(|c| c.result.err().map(|e| format!("{}: {e}", c.name))).collect();
+    let bad: Vec<String> = fx
+        .checks()
+        .into_iter()
+        .filter_map(|c| c.result.err().map(|e| format!("{}: {e}", c.name)))
+        .collect();
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
@@ -148,14 +168,33 @@ fn doctor_all_pass_after_dots() {
     let names: Vec<&str> = fx.checks().iter().map(|c| c.name).collect();
     assert_eq!(
         names,
-        ["links", "settings-built", "bins-fresh", "guard-selftest", "presets", "generated", "timezone", "no-leak"]
+        [
+            "links",
+            "settings-built",
+            "bins-fresh",
+            "guard-selftest",
+            "presets",
+            "generated",
+            "timezone",
+            "no-leak"
+        ]
     );
     assert_all_pass(&fx);
     // the command prints one line per check and exits 0
     let (home, repo) = (fx.home.to_str().unwrap(), fx.repo.to_str().unwrap());
-    let (code, out, err) = run_bin(DOTS, &["doctor"], "", &[("HOME", home), ("DOTFILES_REPO", repo)], None);
+    let (code, out, err) = run_bin(
+        DOTS,
+        &["doctor"],
+        "",
+        &[("HOME", home), ("DOTFILES_REPO", repo)],
+        None,
+    );
     assert_eq!(code, 0, "{out}{err}");
-    assert_eq!(out.lines().filter(|l| l.starts_with("PASS ")).count(), names.len(), "{out}");
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("PASS ")).count(),
+        names.len(),
+        "{out}"
+    );
     assert!(!out.contains("FAIL"), "{out}");
 }
 
@@ -177,10 +216,19 @@ fn doctor_broken_link_fails() {
     assert!(fx2.get("links").unwrap_err().contains(".claude/hooks"));
     // the command fails with the FAIL line
     let (home, repo) = (fx.home.to_str().unwrap(), fx.repo.to_str().unwrap());
-    let (code, out, _) = run_bin(DOTS, &["doctor"], "", &[("HOME", home), ("DOTFILES_REPO", repo)], None);
+    let (code, out, _) = run_bin(
+        DOTS,
+        &["doctor"],
+        "",
+        &[("HOME", home), ("DOTFILES_REPO", repo)],
+        None,
+    );
     assert_eq!(code, 1, "{out}");
     assert!(out.lines().any(|l| l.starts_with("FAIL links: ")), "{out}");
-    assert!(out.lines().any(|l| l.starts_with("PASS settings-built")), "{out}");
+    assert!(
+        out.lines().any(|l| l.starts_with("PASS settings-built")),
+        "{out}"
+    );
 }
 
 #[test]
@@ -188,10 +236,16 @@ fn doctor_stale_bin_fails() {
     let fx = fixture("doctor-stale");
     let crate_dir = fx.repo.join("rust/agent-config");
     // a source newer than a bin
-    set_mtime(&crate_dir.join("target/release").join(exe("beta")), SystemTime::now() - Duration::from_secs(3600));
+    set_mtime(
+        &crate_dir.join("target/release").join(exe("beta")),
+        SystemTime::now() - Duration::from_secs(3600),
+    );
     let why = fx.get("bins-fresh").unwrap_err();
     assert!(why.contains("beta") && !why.contains("alpha"), "{why}");
-    assert!(why.contains("Run: dots") || why.contains("--bins"), "the fix is named: {why}");
+    assert!(
+        why.contains("Run: dots") || why.contains("--bins"),
+        "the fix is named: {why}"
+    );
     // a missing bin
     fs::remove_file(crate_dir.join("target/release").join(exe("alpha"))).unwrap();
     let why = fx.get("bins-fresh").unwrap_err();
@@ -226,7 +280,9 @@ fn doctor_bad_timezone_fails() {
 fn doctor_settings_without_rust_bin_fails() {
     let fx = fixture("doctor-settings");
     let live = fx.home.join(".claude/settings.json");
-    let text = fs::read_to_string(&live).unwrap().replace("rust-bin", "other-bin");
+    let text = fs::read_to_string(&live)
+        .unwrap()
+        .replace("rust-bin", "other-bin");
     fs::write(&live, text).unwrap();
     assert!(fx.get("settings-built").unwrap_err().contains("rust-bin"));
     fs::remove_file(&live).unwrap();
@@ -237,7 +293,8 @@ fn doctor_settings_without_rust_bin_fails() {
 fn doctor_settings_ignores_other_hooks_but_needs_the_repo_ones() {
     let fx = fixture("doctor-own-hooks");
     let live = fx.home.join(".claude/settings.json");
-    let mut v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&live).unwrap()).unwrap();
+    let mut v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&live).unwrap()).unwrap();
     // the user's own hooks, and the documented sample, next to the repo's
     let own = serde_json::json!([{"hooks": [
         {"type": "command", "command": "bash ~/.claude/hooks/format-after-edit.sh"},
@@ -245,7 +302,11 @@ fn doctor_settings_ignores_other_hooks_but_needs_the_repo_ones() {
     ]}]);
     v["hooks"]["PostToolUse"] = own;
     fs::write(&live, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    assert!(fx.get("settings-built").is_ok(), "{:?}", fx.get("settings-built"));
+    assert!(
+        fx.get("settings-built").is_ok(),
+        "{:?}",
+        fx.get("settings-built")
+    );
     // a repo hook that is gone fails, even when other hooks are there
     v["hooks"].as_object_mut().unwrap().remove("PreToolUse");
     fs::write(&live, serde_json::to_string_pretty(&v).unwrap()).unwrap();
@@ -273,7 +334,11 @@ fn doctor_presets_pass_when_the_repo_is_spelled_another_way() {
     let fx = fixture("doctor-presets-alias");
     let alias = fx.tmp.join("alias");
     std::os::unix::fs::symlink(&fx.repo, &alias).unwrap();
-    let r = doctor::checks(&alias, &fx.home).into_iter().find(|c| c.name == "presets").unwrap().result;
+    let r = doctor::checks(&alias, &fx.home)
+        .into_iter()
+        .find(|c| c.name == "presets")
+        .unwrap()
+        .result;
     assert!(r.is_ok(), "{r:?}");
 }
 
@@ -284,11 +349,21 @@ fn doctor_presets_fail_when_the_links_point_into_another_repo() {
     let fx = fixture("doctor-presets-other");
     let other = fx.tmp.join("worktree");
     for n in ["workflow", "clock"] {
-        wr(&other.join("claude/presets").join(n).join("rules.md"), "# copy\n");
+        wr(
+            &other.join("claude/presets").join(n).join("rules.md"),
+            "# copy\n",
+        );
     }
-    let r = doctor::checks(&other, &fx.home).into_iter().find(|c| c.name == "presets").unwrap().result;
+    let r = doctor::checks(&other, &fx.home)
+        .into_iter()
+        .find(|c| c.name == "presets")
+        .unwrap()
+        .result;
     let why = r.unwrap_err();
-    assert!(why.contains("no link for") && why.contains("clock") && why.contains("workflow"), "{why}");
+    assert!(
+        why.contains("no link for") && why.contains("clock") && why.contains("workflow"),
+        "{why}"
+    );
 }
 
 #[test]
@@ -309,7 +384,11 @@ fn doctor_generated_needs_the_marker() {
     // the Cursor rule
     let fx = fixture("doctor-generated2");
     fs::write(fx.home.join(".cursor/rules/claude-global.mdc"), "mine\n").unwrap();
-    assert!(fx.get("generated").unwrap_err().contains("claude-global.mdc"));
+    assert!(
+        fx.get("generated")
+            .unwrap_err()
+            .contains("claude-global.mdc")
+    );
     // no Cursor and no Opencode config at all: nothing to check
     let fx = fixture("doctor-generated3");
     fs::remove_dir_all(fx.home.join(".cursor")).unwrap();
@@ -322,11 +401,17 @@ fn doctor_no_leak_finds_a_private_word() {
     let fx = fixture("doctor-leak");
     fx.setting("PRIVATE_WORDS=\"zebraquux\"\n");
     assert!(fx.get("no-leak").is_ok());
-    wr(&fx.repo.join("claude/note.md"), "ok\nthe ZebraQuux project\n");
+    wr(
+        &fx.repo.join("claude/note.md"),
+        "ok\nthe ZebraQuux project\n",
+    );
     git(&fx, &["add", "-A"]);
     let why = fx.get("no-leak").unwrap_err();
     assert!(why.contains("claude/note.md:2"), "{why}");
-    assert!(!why.to_lowercase().contains("zebraquux"), "the word itself is never printed: {why}");
+    assert!(
+        !why.to_lowercase().contains("zebraquux"),
+        "the word itself is never printed: {why}"
+    );
 }
 
 #[test]
@@ -334,7 +419,10 @@ fn doctor_no_leak_matches_short_words_as_whole_words() {
     let fx = fixture("doctor-leak-short");
     fx.setting("PRIVATE_WORDS=\"abc\"\n");
     // a short word inside a longer word is no hit, in a line or in a file name
-    wr(&fx.repo.join("notes/abcdef.md"), "the abcdef thing and xabc\n");
+    wr(
+        &fx.repo.join("notes/abcdef.md"),
+        "the abcdef thing and xabc\n",
+    );
     git(&fx, &["add", "-A"]);
     assert!(fx.get("no-leak").is_ok(), "{:?}", fx.get("no-leak"));
     // the whole word is a hit, and a printed name masks it
@@ -347,17 +435,32 @@ fn doctor_no_leak_matches_short_words_as_whole_words() {
     assert!(why.contains("2 place(s)"), "{why}");
     // the whole command output, not just the check text
     let (home, repo) = (fx.home.to_str().unwrap(), fx.repo.to_str().unwrap());
-    let (code, out, err) = run_bin(DOTS, &["doctor"], "", &[("HOME", home), ("DOTFILES_REPO", repo)], None);
+    let (code, out, err) = run_bin(
+        DOTS,
+        &["doctor"],
+        "",
+        &[("HOME", home), ("DOTFILES_REPO", repo)],
+        None,
+    );
     assert_eq!(code, 1, "{out}{err}");
-    assert!(out.lines().any(|l| l.starts_with("FAIL no-leak: ")), "{out}");
-    assert!(!format!("{out}{err}").contains("abc"), "word printed: {out}{err}");
+    assert!(
+        out.lines().any(|l| l.starts_with("FAIL no-leak: ")),
+        "{out}"
+    );
+    assert!(
+        !format!("{out}{err}").contains("abc"),
+        "word printed: {out}{err}"
+    );
 }
 
 #[test]
 fn doctor_no_leak_skips_public_hosts() {
     let fx = fixture("doctor-leak-hosts");
     fx.setting("PRIVATE_WORDS=\"zebrafish\"\n");
-    wr(&fx.repo.join("claude/link.md"), "see https://zebrafish.example/story\n");
+    wr(
+        &fx.repo.join("claude/link.md"),
+        "see https://zebrafish.example/story\n",
+    );
     git(&fx, &["add", "-A"]);
     // without the host listed the line is a leak
     let why = fx.get("no-leak").unwrap_err();
@@ -368,7 +471,10 @@ fn doctor_no_leak_skips_public_hosts() {
     wr(&fx.repo.join("claude/bare.md"), "a zebrafish here\n");
     git(&fx, &["add", "-A"]);
     let why = fx.get("no-leak").unwrap_err();
-    assert!(why.contains("claude/bare.md:1") && !why.contains("link.md"), "{why}");
+    assert!(
+        why.contains("claude/bare.md:1") && !why.contains("link.md"),
+        "{why}"
+    );
 }
 
 #[test]

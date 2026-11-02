@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const VERSION: u32 = 1;
@@ -40,7 +40,11 @@ pub enum Error {
 impl Error {
     /// The exit code a command line ends with.
     pub fn code(&self) -> u8 {
-        if matches!(self, Self::NotGit(_)) { 2 } else { 1 }
+        if matches!(self, Self::NotGit(_)) {
+            2
+        } else {
+            1
+        }
     }
 }
 
@@ -85,10 +89,17 @@ struct Line<E> {
 
 /// The event on one line of the log, or `None` for a bad line, an unknown op or another version.
 pub fn parse_line(line: &str) -> Option<Event> {
-    serde_json::from_str::<Line<Event>>(line).ok().filter(|l| l.v == VERSION).map(|l| l.event)
+    serde_json::from_str::<Line<Event>>(line)
+        .ok()
+        .filter(|l| l.v == VERSION)
+        .map(|l| l.event)
 }
 
 /// The event as a log line, newline included.
+///
+/// # Panics
+///
+/// Never in practice: an event holds only strings and lists of strings, which always serialize.
 pub fn encode(event: &Event) -> String {
     let mut s = serde_json::to_string(&Line { v: VERSION, event }).expect("an event is plain data");
     s.push('\n');
@@ -156,17 +167,36 @@ pub fn fold(events: impl IntoIterator<Item = Event>) -> Vec<Item> {
     let mut index: HashMap<String, usize> = HashMap::new();
     for event in events {
         let (id, status, at, note) = match event {
-            Event::Add { id, at, text, tags, from } => {
+            Event::Add {
+                id,
+                at,
+                text,
+                tags,
+                from,
+            } => {
                 if !index.contains_key(&id) {
                     index.insert(id.clone(), items.len());
-                    items.push(Item { id, at, text, tags, from, status: Status::Open, closed_at: None, note: None });
+                    items.push(Item {
+                        id,
+                        at,
+                        text,
+                        tags,
+                        from,
+                        status: Status::Open,
+                        closed_at: None,
+                        note: None,
+                    });
                 }
                 continue;
             }
             Event::Done { id, at, note } => (id, Status::Done, at, note),
             Event::Drop { id, at, note } => (id, Status::Dropped, at, note),
         };
-        if let Some(item) = index.get(&id).map(|&i| &mut items[i]).filter(|i| i.status == Status::Open) {
+        if let Some(item) = index
+            .get(&id)
+            .map(|&i| &mut items[i])
+            .filter(|i| i.status == Status::Open)
+        {
             item.status = status;
             item.closed_at = Some(at);
             item.note = note;
@@ -176,6 +206,11 @@ pub fn fold(events: impl IntoIterator<Item = Event>) -> Vec<Item> {
 }
 
 /// The item that `prefix` names: the exact id, else a unique prefix of `MIN_PREFIX` hex or more.
+///
+/// # Errors
+///
+/// Returns [`Error::Unknown`] when no item matches or the prefix is too short or not hex, and
+/// [`Error::Ambiguous`] when a prefix matches more than one item.
 pub fn find<'a>(items: &'a [Item], prefix: &str) -> Result<&'a Item, Error> {
     if let Some(item) = items.iter().find(|i| i.id == prefix) {
         return Ok(item);
@@ -205,17 +240,33 @@ pub fn list_lines(items: &[Item], all: bool) -> Vec<String> {
         .map(|i| {
             let text = i.text.replace(['\n', '\r'], " ");
             let state = i.closed_at.as_deref().map(|closed| {
-                let note = i.note.as_deref().map(|n| format!(": {}", n.replace(['\n', '\r'], " ")));
-                format!("  [{} {}{}]", i.status, date_of(closed), note.unwrap_or_default())
+                let note = i
+                    .note
+                    .as_deref()
+                    .map(|n| format!(": {}", n.replace(['\n', '\r'], " ")));
+                format!(
+                    "  [{} {}{}]",
+                    i.status,
+                    date_of(closed),
+                    note.unwrap_or_default()
+                )
             });
-            format!("{}  {}  {}{}", i.id, date_of(&i.at), text, state.unwrap_or_default())
+            format!(
+                "{}  {}  {}{}",
+                i.id,
+                date_of(&i.at),
+                text,
+                state.unwrap_or_default()
+            )
         })
         .collect()
 }
 
 /// Now, as `2026-10-21T08:30:00Z`.
 pub fn now() -> String {
-    jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
+    jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
 }
 
 /// A new id: 8 hex from sha2 over the time, the text, the process id and a counter (the counter
@@ -228,14 +279,15 @@ pub fn new_id(at: &str, text: &str) -> String {
     sha.update(std::process::id().to_le_bytes());
     sha.update(COUNT.fetch_add(1, Ordering::Relaxed).to_le_bytes());
     let sum = sha.finalize();
-    format!("{:08x}", u32::from_be_bytes([sum[0], sum[1], sum[2], sum[3]]))
+    format!(
+        "{:08x}",
+        u32::from_be_bytes([sum[0], sum[1], sum[2], sum[3]])
+    )
 }
 
 /// Run `git -C dir args`: stdout without the trailing newline, `None` when git fails.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output();
-    let out = out.ok().filter(|o| o.status.success())?;
-    Some(String::from_utf8_lossy(&out.stdout).trim_end_matches(['\n', '\r']).to_string())
+    crate::gitutil::git_out(Some(dir), args)
 }
 
 /// What `add` did.
@@ -256,20 +308,38 @@ pub struct Store {
 
 impl Store {
     /// The store of the project that holds `dir`. A worktree reaches its main checkout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotGit`] when `dir` is not inside a git repository.
     pub fn at(dir: &Path) -> Result<Self, Error> {
         let not_git = || Error::NotGit(dir.to_path_buf());
-        let args = ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"];
+        let args = [
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+            "--show-toplevel",
+        ];
         let out = git(dir, &args).ok_or_else(not_git)?;
         let mut lines = out.lines();
-        let (Some(common), Some(top)) = (lines.next(), lines.next()) else { return Err(not_git()) };
+        let (Some(common), Some(top)) = (lines.next(), lines.next()) else {
+            return Err(not_git());
+        };
         let (common, top) = (PathBuf::from(common), PathBuf::from(top));
         // A common dir named `.git` sits in the main checkout. Elsewhere (a submodule) use this checkout.
         let root = match common.parent() {
             Some(parent) if common.file_name().is_some_and(|n| n == ".git") => parent.to_path_buf(),
             _ => top.clone(),
         };
-        let from = top.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        Ok(Self { path: root.join(".agents").join("leftovers.jsonl"), root, from })
+        let from = top
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(Self {
+            path: root.join(".agents").join("leftovers.jsonl"),
+            root,
+            from,
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -283,8 +353,13 @@ impl Store {
 
     /// The events in the file; none when it does not exist.
     pub fn events(&self) -> Vec<Event> {
-        let Ok(bytes) = std::fs::read(&self.path) else { return Vec::new() };
-        String::from_utf8_lossy(&bytes).lines().filter_map(parse_line).collect()
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .filter_map(parse_line)
+            .collect()
     }
 
     pub fn items(&self) -> Vec<Item> {
@@ -292,21 +367,36 @@ impl Store {
     }
 
     pub fn open_items(&self) -> Vec<Item> {
-        self.items().into_iter().filter(|i| i.status == Status::Open).collect()
+        self.items()
+            .into_iter()
+            .filter(|i| i.status == Status::Open)
+            .collect()
     }
 
     /// Append one event with a single write, so two sessions can add at once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] when the folder cannot be made or the file cannot be opened or written.
     pub fn append(&self, event: &Event) -> Result<(), Error> {
         let fail = io_at(&self.path);
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(io_at(parent))?;
         }
-        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&self.path).map_err(&fail)?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(&fail)?;
         file.write_all(encode(event).as_bytes()).map_err(&fail)
     }
 
     /// Make git ignore the store: append `.agents/` to the `.gitignore` of the main checkout when it
     /// does not. True when the line was added.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] when the `.gitignore` cannot be written.
     pub fn ensure_ignored(&self) -> Result<bool, Error> {
         if git(&self.root, &["check-ignore", "-q", STORE_REL]).is_some() {
             return Ok(false);
@@ -323,16 +413,33 @@ impl Store {
     }
 
     /// Add a leftover from this checkout, now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] when the event cannot be appended or the `.gitignore` cannot be written.
     pub fn add(&self, text: &str, tags: &[String]) -> Result<Added, Error> {
         let at = now();
         let id = new_id(&at, text);
-        let event =
-            Event::Add { id: id.clone(), at, text: text.to_string(), tags: tags.to_vec(), from: self.from.clone() };
+        let event = Event::Add {
+            id: id.clone(),
+            at,
+            text: text.to_string(),
+            tags: tags.to_vec(),
+            from: self.from.clone(),
+        };
         self.append(&event)?;
-        Ok(Added { id, ignore_added: self.ensure_ignored()? })
+        Ok(Added {
+            id,
+            ignore_added: self.ensure_ignored()?,
+        })
     }
 
     /// Close the open item that `prefix` names as done or dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`find`], [`Error::Closed`] when the item is not open, and
+    /// [`Error::Io`] when the event cannot be appended.
     pub fn close(&self, prefix: &str, status: Status, note: Option<&str>) -> Result<Item, Error> {
         let items = self.items();
         let item = find(&items, prefix)?;
@@ -340,7 +447,11 @@ impl Store {
             return Err(Error::Closed(item.id.clone(), item.status));
         }
         let (id, at, note) = (item.id.clone(), now(), note.map(str::to_string));
-        let event = if status == Status::Dropped { Event::Drop { id, at, note } } else { Event::Done { id, at, note } };
+        let event = if status == Status::Dropped {
+            Event::Drop { id, at, note }
+        } else {
+            Event::Done { id, at, note }
+        };
         self.append(&event)?;
         let items = fold(self.events());
         find(&items, &item.id).cloned()
@@ -348,15 +459,27 @@ impl Store {
 
     /// Rewrite the file with the open items and those closed in the last 30 days (temp file, then
     /// rename). Returns (kept, removed). An add that lands during the rewrite is lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] when the temp file cannot be made, written or renamed over the store.
     pub fn compact(&self) -> Result<(usize, usize), Error> {
         let items = self.items();
-        let cutoff = jiff::Timestamp::now().checked_sub(jiff::SignedDuration::from_hours(KEEP_DAYS * 24)).ok();
+        let cutoff = jiff::Timestamp::now()
+            .checked_sub(jiff::SignedDuration::from_hours(KEEP_DAYS * 24))
+            .ok();
         let recent = |item: &Item| {
-            let closed = item.closed_at.as_deref().and_then(|c| c.parse::<jiff::Timestamp>().ok());
+            let closed = item
+                .closed_at
+                .as_deref()
+                .and_then(|c| c.parse::<jiff::Timestamp>().ok());
             // A close stamp that does not parse is kept, not lost.
             closed.is_none_or(|c| cutoff.is_none_or(|cut| c >= cut))
         };
-        let keep: Vec<&Item> = items.iter().filter(|i| i.status == Status::Open || recent(i)).collect();
+        let keep: Vec<&Item> = items
+            .iter()
+            .filter(|i| i.status == Status::Open || recent(i))
+            .collect();
         let mut text = String::new();
         for item in &keep {
             text.push_str(&encode(&item.add_event()));
@@ -368,7 +491,8 @@ impl Store {
         std::fs::create_dir_all(dir).map_err(io_at(dir))?;
         let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(io_at(dir))?;
         tmp.write_all(text.as_bytes()).map_err(io_at(&self.path))?;
-        tmp.persist(&self.path).map_err(|e| Error::Io(self.path.clone(), e.error))?;
+        tmp.persist(&self.path)
+            .map_err(|e| Error::Io(self.path.clone(), e.error))?;
         Ok((keep.len(), items.len() - keep.len()))
     }
 }
@@ -384,11 +508,22 @@ pub struct OldItem {
 /// The open items of the old file (`- [ ] 2026-10-07 · **name** · text`), and the open-looking lines
 /// that do not fit that shape. Closed lines (`- [x]`) and everything else are skipped.
 pub fn parse_old(text: &str) -> (Vec<OldItem>, Vec<String>) {
-    let shape = regex::Regex::new(r"^- \[ \] (\d{4}-\d{2}-\d{2}) · \*\*(.+?)\*\* · (.+)$").expect("a fixed pattern");
+    static SHAPE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^- \[ \] (\d{4}-\d{2}-\d{2}) · \*\*(.+?)\*\* · (.+)$")
+            .expect("a fixed pattern")
+    });
     let (mut items, mut bad) = (Vec::new(), Vec::new());
-    for line in text.lines().map(str::trim_end).filter(|l| l.starts_with("- [ ]")) {
-        match shape.captures(line) {
-            Some(c) => items.push(OldItem { date: c[1].to_string(), name: c[2].to_string(), text: c[3].to_string() }),
+    for line in text
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| l.starts_with("- [ ]"))
+    {
+        match SHAPE.captures(line) {
+            Some(c) => items.push(OldItem {
+                date: c[1].to_string(),
+                name: c[2].to_string(),
+                text: c[3].to_string(),
+            }),
             None => bad.push(line.to_string()),
         }
     }
@@ -403,7 +538,11 @@ pub fn resolve_repo(name: &str, maps: &[(String, PathBuf)], bases: &[PathBuf]) -
         return Some(path.clone());
     }
     let first = name.split('/').next().unwrap_or(name);
-    let tries = if first == name { vec![name] } else { vec![name, first] };
+    let tries = if first == name {
+        vec![name]
+    } else {
+        vec![name, first]
+    };
     let is_checkout = |p: &Path| p.join(".git").exists();
     for name in tries {
         for base in bases {
@@ -411,8 +550,11 @@ pub fn resolve_repo(name: &str, maps: &[(String, PathBuf)], bases: &[PathBuf]) -
             if is_checkout(&direct) {
                 return Some(direct);
             }
-            let Ok(children) = std::fs::read_dir(base) else { continue };
-            let mut dirs: Vec<PathBuf> = children.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            let Ok(children) = std::fs::read_dir(base) else {
+                continue;
+            };
+            let mut dirs: Vec<PathBuf> =
+                children.filter_map(|e| e.ok().map(|e| e.path())).collect();
             dirs.sort();
             let tree = |d: &PathBuf| d.join(".claude").join("worktrees").join(name);
             if let Some(found) = dirs.iter().map(tree).find(|t| is_checkout(t)) {
@@ -438,8 +580,16 @@ mod tests {
     }
 
     fn close(op: Status, id: &str, note: Option<&str>) -> Event {
-        let (id, at, note) = (id.to_string(), "2026-10-08T00:00:00Z".to_string(), note.map(str::to_string));
-        if op == Status::Done { Event::Done { id, at, note } } else { Event::Drop { id, at, note } }
+        let (id, at, note) = (
+            id.to_string(),
+            "2026-10-08T00:00:00Z".to_string(),
+            note.map(str::to_string),
+        );
+        if op == Status::Done {
+            Event::Done { id, at, note }
+        } else {
+            Event::Drop { id, at, note }
+        }
     }
 
     #[test]
@@ -455,10 +605,17 @@ mod tests {
         ]);
         assert_eq!(items.len(), 2);
         assert_eq!(
-            (items[0].status, items[0].note.as_deref(), items[0].text.as_str()),
+            (
+                items[0].status,
+                items[0].note.as_deref(),
+                items[0].text.as_str()
+            ),
             (Status::Done, Some("shipped"), "one")
         );
-        assert_eq!((items[1].status, items[1].closed_at.as_deref()), (Status::Dropped, Some("2026-10-08T00:00:00Z")));
+        assert_eq!(
+            (items[1].status, items[1].closed_at.as_deref()),
+            (Status::Dropped, Some("2026-10-08T00:00:00Z"))
+        );
     }
 
     #[test]
@@ -466,7 +623,10 @@ mod tests {
         let good = encode(&add("aaaa1111", "one"));
         assert_eq!(parse_line(good.trim()), Some(add("aaaa1111", "one")));
         assert_eq!(parse_line("not json"), None);
-        assert_eq!(parse_line(r#"{"v":1,"op":"frobnicate","id":"x","at":"y"}"#), None);
+        assert_eq!(
+            parse_line(r#"{"v":1,"op":"frobnicate","id":"x","at":"y"}"#),
+            None
+        );
         assert_eq!(parse_line(r#"{"v":2,"op":"drop","id":"x","at":"y"}"#), None);
         assert_eq!(parse_line(r#"{"op":"drop","id":"x","at":"y"}"#), None);
     }
@@ -474,13 +634,23 @@ mod tests {
     #[test]
     fn a_line_has_the_version_first_and_no_empty_note() {
         let line = encode(&close(Status::Done, "aaaa1111", None));
-        assert_eq!(line, "{\"v\":1,\"op\":\"done\",\"id\":\"aaaa1111\",\"at\":\"2026-10-08T00:00:00Z\"}\n");
-        assert!(encode(&add("aaaa1111", "x")).starts_with("{\"v\":1,\"op\":\"add\",\"id\":\"aaaa1111\",\"at\":"));
+        assert_eq!(
+            line,
+            "{\"v\":1,\"op\":\"done\",\"id\":\"aaaa1111\",\"at\":\"2026-10-08T00:00:00Z\"}\n"
+        );
+        assert!(
+            encode(&add("aaaa1111", "x"))
+                .starts_with("{\"v\":1,\"op\":\"add\",\"id\":\"aaaa1111\",\"at\":")
+        );
     }
 
     #[test]
     fn id_prefix_needs_four_hex_and_a_single_match() {
-        let items = fold([add("abcd1234", "a"), add("abcd5678", "b"), add("ef012345", "c")]);
+        let items = fold([
+            add("abcd1234", "a"),
+            add("abcd5678", "b"),
+            add("ef012345", "c"),
+        ]);
         assert_eq!(find(&items, "ef01").unwrap().text, "c");
         assert_eq!(find(&items, "abcd1234").unwrap().text, "a");
         assert!(matches!(find(&items, "abcd"), Err(Error::Ambiguous(_))));
@@ -491,17 +661,29 @@ mod tests {
 
     #[test]
     fn ids_are_eight_hex_and_differ() {
-        let (a, b) = (new_id("2026-10-07T00:00:00Z", "x"), new_id("2026-10-07T00:00:00Z", "x"));
-        assert!(a.len() == 8 && a.bytes().all(|c| c.is_ascii_hexdigit()), "{a}");
+        let (a, b) = (
+            new_id("2026-10-07T00:00:00Z", "x"),
+            new_id("2026-10-07T00:00:00Z", "x"),
+        );
+        assert!(
+            a.len() == 8 && a.bytes().all(|c| c.is_ascii_hexdigit()),
+            "{a}"
+        );
         assert_ne!(a, b);
     }
 
     #[test]
     fn list_lines_show_open_and_with_all_the_closed() {
-        let items =
-            fold([add("aaaa1111", "one\ntwo"), add("bbbb2222", "b"), close(Status::Done, "bbbb2222", Some("ok"))]);
+        let items = fold([
+            add("aaaa1111", "one\ntwo"),
+            add("bbbb2222", "b"),
+            close(Status::Done, "bbbb2222", Some("ok")),
+        ]);
         assert_eq!(list_lines(&items, false), ["aaaa1111  2026-10-07  one two"]);
-        assert_eq!(list_lines(&items, true)[1], "bbbb2222  2026-10-07  b  [done 2026-10-08: ok]");
+        assert_eq!(
+            list_lines(&items, true)[1],
+            "bbbb2222  2026-10-07  b  [done 2026-10-08: ok]"
+        );
     }
 
     #[test]
@@ -513,8 +695,16 @@ mod tests {
         assert_eq!(
             items,
             [
-                OldItem { date: "2026-10-08".into(), name: "powertools/hosts/x1".into(), text: "x1: a · b".into() },
-                OldItem { date: "2026-10-09".into(), name: "dotfiles".into(), text: "last".into() },
+                OldItem {
+                    date: "2026-10-08".into(),
+                    name: "powertools/hosts/x1".into(),
+                    text: "x1: a · b".into()
+                },
+                OldItem {
+                    date: "2026-10-09".into(),
+                    name: "dotfiles".into(),
+                    text: "last".into()
+                },
             ]
         );
         assert_eq!(bad, ["- [ ] no shape here"]);
@@ -527,16 +717,30 @@ mod tests {
         let mk = |p: PathBuf| std::fs::create_dir_all(p.join(".git")).unwrap();
         mk(home.join("alpha"));
         mk(work.join("beta"));
-        mk(home.join("alpha").join(".claude").join("worktrees").join("wt-1"));
+        mk(home
+            .join("alpha")
+            .join(".claude")
+            .join("worktrees")
+            .join("wt-1"));
         std::fs::create_dir_all(home.join("plain")).unwrap(); // not a checkout
         let bases = [home.clone(), work.clone()];
         let maps = [("alpha".to_string(), PathBuf::from("/elsewhere"))];
-        assert_eq!(resolve_repo("alpha", &maps, &bases), Some(PathBuf::from("/elsewhere")));
+        assert_eq!(
+            resolve_repo("alpha", &maps, &bases),
+            Some(PathBuf::from("/elsewhere"))
+        );
         assert_eq!(resolve_repo("alpha", &[], &bases), Some(home.join("alpha")));
         assert_eq!(resolve_repo("beta", &[], &bases), Some(work.join("beta")));
-        let wt = home.join("alpha").join(".claude").join("worktrees").join("wt-1");
+        let wt = home
+            .join("alpha")
+            .join(".claude")
+            .join("worktrees")
+            .join("wt-1");
         assert_eq!(resolve_repo("wt-1", &[], &bases), Some(wt));
-        assert_eq!(resolve_repo("alpha/hosts/x1", &[], &bases), Some(home.join("alpha")));
+        assert_eq!(
+            resolve_repo("alpha/hosts/x1", &[], &bases),
+            Some(home.join("alpha"))
+        );
         assert_eq!(resolve_repo("plain", &[], &bases), None);
         assert_eq!(resolve_repo("nope", &[], &bases), None);
     }

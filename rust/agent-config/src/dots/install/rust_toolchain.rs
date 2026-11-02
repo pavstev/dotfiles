@@ -25,7 +25,7 @@ fn toolchain_set() -> bool {
     std::fs::read_to_string(home.join("settings.toml")).is_ok_and(|t| has_default_toolchain(&t))
 }
 
-pub fn step(_repo: &Path) {
+pub(super) fn step(_repo: &Path) {
     out::step("Rust toolchain");
     os::brew_env();
     if os::have("rustup") {
@@ -40,7 +40,10 @@ pub fn step(_repo: &Path) {
         }
     } else if os::have("rustup-init") {
         info("Initialising rustup…");
-        if !run("rustup-init", &["-y", "--no-modify-path", "--default-toolchain", "stable"]) {
+        if !run(
+            "rustup-init",
+            &["-y", "--no-modify-path", "--default-toolchain", "stable"],
+        ) {
             warn("rustup-init failed (network?) — re-run: ./dotfiles");
             return;
         }
@@ -51,7 +54,10 @@ pub fn step(_repo: &Path) {
     quiet("rustup", &["component", "add", "clippy", "rust-analyzer"]);
     let v = stdout_of("rustc", &["--version"]);
     let v = v.trim_end_matches(['\n', '\r']);
-    ok_if_changed(&format!("Rust ready ({})", if v.is_empty() { "rustc pending" } else { v }));
+    ok_if_changed(&format!(
+        "Rust ready ({})",
+        if v.is_empty() { "rustc pending" } else { v }
+    ));
 }
 
 #[cfg(test)]
@@ -60,8 +66,12 @@ mod tests {
 
     #[test]
     fn default_toolchain_line() {
-        assert!(has_default_toolchain("version = \"12\"\ndefault_toolchain = \"stable\"\n"));
-        assert!(!has_default_toolchain("version = \"12\"\n [overrides]\n  default_toolchain = \"x\"\n"));
+        assert!(has_default_toolchain(
+            "version = \"12\"\ndefault_toolchain = \"stable\"\n"
+        ));
+        assert!(!has_default_toolchain(
+            "version = \"12\"\n [overrides]\n  default_toolchain = \"x\"\n"
+        ));
         assert!(!has_default_toolchain(""));
     }
 }

@@ -4,8 +4,8 @@
 
 use crate::out::{info, ok, warn};
 use crate::{
-    MANAGED, cursor_src_dir, is_guard_hook, is_symlink, load_json, read_text, remove_generated, save_json, setting,
-    tilde,
+    MANAGED, cursor_src_dir, is_guard_hook, is_symlink, load_json, read_text, remove_generated,
+    save_json, setting, tilde,
 };
 use serde_json::{Value, json};
 use std::fs;
@@ -17,7 +17,10 @@ const STATUSLINE: &str = "sh ~/.claude/hooks/rust-bin statusline";
 /// Load a JSON file, change it, save it. Not valid JSON: warn and leave it.
 fn edit_json(path: &Path, private: bool, f: impl FnOnce(&mut Value)) {
     let Some(old) = load_json(path) else {
-        warn(&format!("{} is not valid JSON, left untouched", tilde(path)));
+        warn(&format!(
+            "{} is not valid JSON, left untouched",
+            tilde(path)
+        ));
         return;
     };
     let mut new = old.clone();
@@ -35,8 +38,11 @@ fn drop_key(v: &mut Value, key: &str) {
 /// Remove every generated `*.md` in a folder.
 fn remove_generated_md(dir: &Path) {
     let Ok(rd) = fs::read_dir(dir) else { return };
-    let mut files: Vec<PathBuf> =
-        rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).collect();
+    let mut files: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
     files.sort();
     for f in files {
         remove_generated(&f, WHY);
@@ -106,7 +112,11 @@ pub fn cursor_undo(home: &Path) {
                 drop_listed(p, &managed, kind);
             }
         }
-        if v.get("statusLine").and_then(|s| s.get("command")).and_then(|c| c.as_str()) == Some(STATUSLINE) {
+        if v.get("statusLine")
+            .and_then(|s| s.get("command"))
+            .and_then(|c| c.as_str())
+            == Some(STATUSLINE)
+        {
             drop_key(v, "statusLine");
         }
     });
@@ -138,8 +148,10 @@ pub fn opencode_undo(home: &Path) {
     edit_json(&oc.join("opencode.jsonc"), false, |v| {
         if let Some(perm) = v.get_mut("permission").and_then(|p| p.as_object_mut()) {
             for (cat, was) in managed.as_object().into_iter().flatten() {
-                let (Some(have), Some(was)) = (perm.get_mut(cat).and_then(|h| h.as_object_mut()), was.as_object())
-                else {
+                let (Some(have), Some(was)) = (
+                    perm.get_mut(cat).and_then(|h| h.as_object_mut()),
+                    was.as_object(),
+                ) else {
                     continue;
                 };
                 for (pat, eff) in was {
@@ -150,7 +162,10 @@ pub fn opencode_undo(home: &Path) {
             }
             perm.retain(|_, c| c.as_object().is_none_or(|o| !o.is_empty()));
         }
-        if v.get("permission").and_then(|p| p.as_object()).is_some_and(serde_json::Map::is_empty) {
+        if v.get("permission")
+            .and_then(|p| p.as_object())
+            .is_some_and(serde_json::Map::is_empty)
+        {
             drop_key(v, "permission");
         }
         if let Some(mcp) = v.get_mut("mcp").and_then(|m| m.as_object_mut()) {
@@ -164,7 +179,10 @@ pub fn opencode_undo(home: &Path) {
                 }
             }
         }
-        if v.get("mcp").and_then(|m| m.as_object()).is_some_and(serde_json::Map::is_empty) {
+        if v.get("mcp")
+            .and_then(|m| m.as_object())
+            .is_some_and(serde_json::Map::is_empty)
+        {
             drop_key(v, "mcp");
         }
         crate::opencode_superlite(v, false);
@@ -187,7 +205,13 @@ fn projects_undo(home: &Path) {
         let dir = proj.join(".opencode");
         let agents = dir.join("agents");
         let mut links = vec![dir.join("opencode.jsonc")];
-        links.extend(fs::read_dir(&agents).into_iter().flatten().flatten().map(|e| e.path()));
+        links.extend(
+            fs::read_dir(&agents)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path()),
+        );
         for l in links {
             if is_symlink(&l) && fs::remove_file(&l).is_ok() {
                 ok(&format!("removed the link {}", l.display()));

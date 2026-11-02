@@ -39,8 +39,13 @@ pub fn ensure_brew(repo: &Path) -> bool {
     }
     // The bash ran `bash -c "$(curl ...)"`: a failed download gave an empty script and brew
     // was still missing below. Same result here.
-    let Some(script) = curl_text(&["-fsSL", INSTALLER]) else { return false };
-    let done = Command::new("/bin/bash").args(["-c", &script]).env("NONINTERACTIVE", "1").status();
+    let Some(script) = curl_text(&["-fsSL", INSTALLER]) else {
+        return false;
+    };
+    let done = Command::new("/bin/bash")
+        .args(["-c", &script])
+        .env("NONINTERACTIVE", "1")
+        .status();
     if !done.is_ok_and(|s| s.success()) {
         return false;
     }
@@ -48,7 +53,7 @@ pub fn ensure_brew(repo: &Path) -> bool {
     os::have("brew")
 }
 
-pub fn step(repo: &Path) {
+pub(super) fn step(repo: &Path) {
     if !super::only_macos("Homebrew") {
         return;
     } // Homebrew installs the Mac apps; tools come from 12-tools
@@ -64,6 +69,8 @@ pub fn step(repo: &Path) {
     if ensure_brew(repo) {
         ok("Homebrew installed");
     } else {
-        warn("Homebrew install failed. The Mac apps do not install. Fix the error above, then run dots again.");
+        warn(
+            "Homebrew install failed. The Mac apps do not install. Fix the error above, then run dots again.",
+        );
     }
 }

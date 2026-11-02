@@ -19,7 +19,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "proj", about = "Detect the project of a path and format files on edit")]
+#[command(
+    name = "proj",
+    about = "Detect the project of a path and format files on edit"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -29,16 +32,23 @@ struct Cli {
 enum Cmd {
     /// Print what the project of PATH (default: the current folder) states and what the defaults add
     Detect { path: Option<String> },
-    /// Format one file; with no FILE, read the PostToolUse hook JSON on stdin
+    /// Format one file; with no FILE, read the `PostToolUse` hook JSON on stdin
     Format { file: Option<String> },
 }
 
 fn detect(path: Option<String>) -> i32 {
     let p = path.map_or_else(|| env::current_dir().unwrap_or_default(), PathBuf::from);
-    let p = if p.is_relative() { env::current_dir().unwrap_or_default().join(p) } else { p };
+    let p = if p.is_relative() {
+        env::current_dir().unwrap_or_default().join(p)
+    } else {
+        p
+    };
     if let Some(project) = proj::detect(&p) {
         let file = p.is_file().then_some(p.as_path());
-        println!("{}", serde_json::to_string_pretty(&project.to_json(file)).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&project.to_json(file)).unwrap_or_default()
+        );
         0
     } else {
         println!("{{\"root\": null}}");
@@ -52,7 +62,10 @@ fn hook_file() -> Option<PathBuf> {
     std::io::stdin().read_to_string(&mut raw).ok()?;
     let v: Value = serde_json::from_str(&raw).ok()?;
     let ti = &v["tool_input"];
-    let f = ti["file_path"].as_str().or_else(|| ti["path"].as_str()).filter(|s| !s.is_empty())?;
+    let f = ti["file_path"]
+        .as_str()
+        .or_else(|| ti["path"].as_str())
+        .filter(|s| !s.is_empty())?;
     let f = Path::new(f);
     if f.is_absolute() {
         return Some(f.to_path_buf());
@@ -61,7 +74,10 @@ fn hook_file() -> Option<PathBuf> {
 }
 
 fn format(file: Option<String>) {
-    let budget = env::var("PROJ_FORMAT_BUDGET_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(8000);
+    let budget = env::var("PROJ_FORMAT_BUDGET_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8000);
     let file = match file {
         Some(f) => Some(PathBuf::from(f)),
         None => hook_file(),

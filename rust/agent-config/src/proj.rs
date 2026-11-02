@@ -16,7 +16,6 @@ use regex::Regex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -41,14 +40,28 @@ const MARKERS: &[&str] = &[
 ];
 
 /// Folders whose files a format hook never touches.
-const SKIP_DIRS: &[&str] = &["node_modules", ".git", ".venv", "venv", "target", "dist", "build", ".next", ".astro"];
-
-const JS_CODE: &[&str] = &["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts", "vue", "svelte", "astro"];
-const PRETTIER_EXT: &[&str] = &[
-    "js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts", "vue", "svelte", "astro", "json", "jsonc", "css", "scss",
-    "less", "md", "mdx", "html", "yaml", "yml", "graphql",
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".venv",
+    "venv",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".astro",
 ];
-const BIOME_EXT: &[&str] = &["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts", "json", "jsonc", "css"];
+
+const JS_CODE: &[&str] = &[
+    "js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts", "vue", "svelte", "astro",
+];
+const PRETTIER_EXT: &[&str] = &[
+    "js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts", "vue", "svelte", "astro", "json",
+    "jsonc", "css", "scss", "less", "md", "mdx", "html", "yaml", "yml", "graphql",
+];
+const BIOME_EXT: &[&str] = &[
+    "js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts", "json", "jsonc", "css",
+];
 
 /// One command: the program and its arguments, run in `dir`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +72,10 @@ pub struct Cmd {
 
 impl Cmd {
     fn new(argv: Vec<String>, dir: &Path) -> Self {
-        Self { argv, dir: dir.to_path_buf() }
+        Self {
+            argv,
+            dir: dir.to_path_buf(),
+        }
     }
 
     /// The command as one shell line (arguments with odd characters in single quotes).
@@ -67,8 +83,14 @@ impl Cmd {
         self.argv
             .iter()
             .map(|a| {
-                let plain = !a.is_empty() && a.chars().all(|c| c.is_alphanumeric() || "-_./:=@+,%".contains(c));
-                if plain { a.clone() } else { format!("'{}'", a.replace('\'', "'\\''")) }
+                let plain = !a.is_empty()
+                    && a.chars()
+                        .all(|c| c.is_alphanumeric() || "-_./:=@+,%".contains(c));
+                if plain {
+                    a.clone()
+                } else {
+                    format!("'{}'", a.replace('\'', "'\\''"))
+                }
             })
             .collect::<Vec<_>>()
             .join(" ")
@@ -77,31 +99,6 @@ impl Cmd {
 
 /// Which programs the machine has on PATH. A fake in a test stands in for the real lookup.
 pub type Have<'a> = &'a dyn Fn(&str) -> bool;
-
-/// True when `name` is an executable on PATH.
-pub fn on_path(name: &str) -> bool {
-    let Some(path) = env::var_os("PATH") else { return false };
-    env::split_paths(&path).any(|d| {
-        is_exe(&d.join(name))
-            || (cfg!(windows) && ["exe", "cmd"].iter().any(|e| is_exe(&d.join(format!("{name}.{e}")))))
-    })
-}
-
-fn is_exe(p: &Path) -> bool {
-    let Ok(m) = fs::metadata(p) else { return false };
-    if !m.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
 
 /// The project root of `path` (a file or a folder): the nearest folder up with a marker file. The
 /// home folder is never a root.
@@ -160,12 +157,18 @@ fn pm_name(s: &str) -> Option<&'static str> {
 
 /// Recipe or target names of a `justfile` or `Makefile`.
 fn rule_names(text: &str, make: bool) -> Vec<String> {
-    static JUST: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^@?([A-Za-z_][A-Za-z0-9_-]*)[^:=\n]*:(?:[^=]|$)").unwrap());
-    static MAKE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:(?:[^=]|$)").unwrap());
+    static JUST: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^@?([A-Za-z_][A-Za-z0-9_-]*)[^:=\n]*:(?:[^=]|$)")
+            .expect("the justfile regex literal is valid")
+    });
+    static MAKE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:(?:[^=]|$)")
+            .expect("the Makefile regex literal is valid")
+    });
     let re: &Regex = if make { &MAKE } else { &JUST };
-    text.lines().filter_map(|l| re.captures(l).map(|c| c[1].to_string())).collect()
+    text.lines()
+        .filter_map(|l| re.captures(l).map(|c| c[1].to_string()))
+        .collect()
 }
 
 /// True when a file that wires tools (scripts, hooks, CI) mentions one of `needles`.
@@ -185,7 +188,10 @@ fn mentions(root: &Path, needles: &[&str]) -> bool {
     if let Ok(rd) = fs::read_dir(root.join(".github/workflows")) {
         files.extend(rd.flatten().map(|e| e.path()));
     }
-    files.iter().filter_map(|f| fs::read_to_string(f).ok()).any(|t| needles.iter().any(|n| t.contains(n)))
+    files
+        .iter()
+        .filter_map(|f| fs::read_to_string(f).ok())
+        .any(|t| needles.iter().any(|n| t.contains(n)))
 }
 
 /// Everything the detector knows about one project.
@@ -230,18 +236,30 @@ const PROBES: &[&str] = &[
     "make",
 ];
 
+/// A `ty` entry in a `pyproject.toml` dependency list.
+static TY_DEP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""ty(?:[<>=!~\[ ;]|")"#).expect("the ty-dependency regex literal is valid")
+});
+/// The `edition` line of a `Cargo.toml`.
+static EDITION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?m)^\s*edition\s*=\s*"(\d{4})""#).expect("the edition regex literal is valid")
+});
+
 /// Detect the project of `path`, with the real PATH.
 pub fn detect(path: &Path) -> Option<Project> {
-    detect_with(path, &on_path)
+    detect_with(path, &crate::dots::os::have)
 }
 
 /// Detect the project of `path`; `have` says which programs exist on PATH.
-pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
+pub fn detect_with(path: &Path, have: Have<'_>) -> Option<Project> {
     let root = find_root(path)?;
     let dirs = ancestors_to_git(&root);
     let read = |name: &str| fs::read_to_string(root.join(name)).unwrap_or_default();
     let pkg: Value = serde_json::from_str(&read("package.json")).unwrap_or(Value::Null);
-    let scripts: Vec<String> = pkg["scripts"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+    let scripts: Vec<String> = pkg["scripts"]
+        .as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
     let pm = pm_from_lock(&dirs).or_else(|| {
         let field = pkg["packageManager"].as_str()?;
         pm_name(field.split('@').next()?)
@@ -249,34 +267,49 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
     let pm = pm.or(if pkg.is_object() { Some("npm") } else { None });
 
     let bin = |name: &str| -> Option<PathBuf> {
-        let file = if cfg!(windows) { format!("{name}.cmd") } else { name.to_string() };
-        dirs.iter().map(|d| d.join("node_modules/.bin").join(&file)).find(|p| p.is_file())
+        let file = if cfg!(windows) {
+            format!("{name}.cmd")
+        } else {
+            name.to_string()
+        };
+        dirs.iter()
+            .map(|d| d.join("node_modules/.bin").join(&file))
+            .find(|p| p.is_file())
     };
     let has_file = |pred: &dyn Fn(&str) -> bool| -> bool {
-        dirs.iter()
-            .any(|d| fs::read_dir(d).is_ok_and(|rd| rd.flatten().any(|e| pred(&e.file_name().to_string_lossy()))))
+        dirs.iter().any(|d| {
+            fs::read_dir(d)
+                .is_ok_and(|rd| rd.flatten().any(|e| pred(&e.file_name().to_string_lossy())))
+        })
     };
     let biome_cfg = has_file(&|n| n == "biome.json" || n == "biome.jsonc");
-    let prettier_cfg = has_file(&|n| n.starts_with(".prettierrc") || n.starts_with("prettier.config."))
-        || pkg.get("prettier").is_some();
+    let prettier_cfg =
+        has_file(&|n| n.starts_with(".prettierrc") || n.starts_with("prettier.config."))
+            || pkg.get("prettier").is_some();
     let eslint_cfg = has_file(&|n| n.starts_with("eslint.config.") || n.starts_with(".eslintrc"))
         || pkg.get("eslintConfig").is_some();
 
     let pyproject = read("pyproject.toml");
-    static TY_DEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""ty(?:[<>=!~\[ ;]|")"#).unwrap());
-    let ruff = root.join("ruff.toml").is_file() || root.join(".ruff.toml").is_file() || pyproject.contains("ruff");
-    let ty = root.join("ty.toml").is_file() || pyproject.contains("[tool.ty") || TY_DEP.is_match(&pyproject);
+    let ruff = root.join("ruff.toml").is_file()
+        || root.join(".ruff.toml").is_file()
+        || pyproject.contains("ruff");
+    let ty = root.join("ty.toml").is_file()
+        || pyproject.contains("[tool.ty")
+        || TY_DEP.is_match(&pyproject);
     let pytest = root.join("pytest.ini").is_file()
         || pyproject.contains("[tool.pytest")
         || (!pyproject.is_empty() && root.join("tests").is_dir());
     let uv = dirs.iter().any(|d| d.join("uv.lock").is_file()) || pyproject.contains("[tool.uv");
 
     let cargo_toml = read("Cargo.toml");
-    static EDITION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?m)^\s*edition\s*=\s*"(\d{4})""#).unwrap());
-    let edition = EDITION.captures(&cargo_toml).map_or_else(|| "2021".into(), |c| c[1].to_string());
+    let edition = EDITION
+        .captures(&cargo_toml)
+        .map_or_else(|| "2021".into(), |c| c[1].to_string());
 
     // rustfmt and shfmt have no config the project must have: format only when the project says it uses them
-    let rustfmt = dirs.iter().any(|d| d.join("rustfmt.toml").is_file() || d.join(".rustfmt.toml").is_file())
+    let rustfmt = dirs
+        .iter()
+        .any(|d| d.join("rustfmt.toml").is_file() || d.join(".rustfmt.toml").is_file())
         || mentions(&root, &["cargo fmt", "rustfmt"]);
     let shfmt = mentions(&root, &["shfmt"]);
 
@@ -296,7 +329,11 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
         biome: if biome_cfg { bin("biome") } else { None },
         prettier: if prettier_cfg { bin("prettier") } else { None },
         eslint: if eslint_cfg { bin("eslint") } else { None },
-        tsc: if root.join("tsconfig.json").is_file() { bin("tsc") } else { None },
+        tsc: if root.join("tsconfig.json").is_file() {
+            bin("tsc")
+        } else {
+            None
+        },
         pm,
         scripts,
         just,
@@ -306,9 +343,14 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
         pytest,
         uv,
         go: root.join("go.mod").is_file(),
-        golangci: [".golangci.yml", ".golangci.yaml", ".golangci.toml", ".golangci.json"]
-            .iter()
-            .any(|f| root.join(f).is_file()),
+        golangci: [
+            ".golangci.yml",
+            ".golangci.yaml",
+            ".golangci.toml",
+            ".golangci.json",
+        ]
+        .iter()
+        .any(|f| root.join(f).is_file()),
         cargo: root.join("Cargo.toml").is_file(),
         edition,
         rustfmt,
@@ -320,7 +362,9 @@ pub fn detect_with(path: &Path, have: Have) -> Option<Project> {
 }
 
 fn ext(file: &Path) -> String {
-    file.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+    file.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }
 
 impl Project {
@@ -413,7 +457,11 @@ impl Project {
     /// safe lint autofix where the project has one. Only tools the project installed and configured.
     pub fn format_cmds(&self, files: &[PathBuf]) -> Vec<Cmd> {
         let pick = |exts: &[&str]| -> Vec<String> {
-            files.iter().filter(|f| exts.contains(&ext(f).as_str())).map(|f| Self::s(f)).collect()
+            files
+                .iter()
+                .filter(|f| exts.contains(&ext(f).as_str()))
+                .map(|f| Self::s(f))
+                .collect()
         };
         let mut out = Vec::new();
         let mut add = |prefix: Vec<String>, tail: &[&str], files: Vec<String>| {
@@ -428,7 +476,11 @@ impl Project {
             add(vec![Self::s(e)], &["--fix"], pick(JS_CODE));
         }
         if let Some(b) = &self.biome {
-            add(vec![Self::s(b)], &["check", "--write", "--no-errors-on-unmatched"], pick(BIOME_EXT));
+            add(
+                vec![Self::s(b)],
+                &["check", "--write", "--no-errors-on-unmatched"],
+                pick(BIOME_EXT),
+            );
         } else if let Some(p) = &self.prettier {
             add(vec![Self::s(p)], &["--write"], pick(PRETTIER_EXT));
         }
@@ -437,14 +489,22 @@ impl Project {
             && !py.is_empty()
             && let Some(r) = self.py("ruff", false)
         {
-            add(r.clone(), &["check", "--fix", "--quiet", "--unfixable", "F401"], py.clone());
+            add(
+                r.clone(),
+                &["check", "--fix", "--quiet", "--unfixable", "F401"],
+                py.clone(),
+            );
             add(r, &["format", "--quiet"], py);
         }
         if self.go && self.has("gofmt") {
             add(vec!["gofmt".into()], &["-w"], pick(&["go"]));
         }
         if self.cargo && self.rustfmt && self.has("rustfmt") {
-            add(vec!["rustfmt".into()], &["--edition", &self.edition], pick(&["rs"]));
+            add(
+                vec!["rustfmt".into()],
+                &["--edition", &self.edition],
+                pick(&["rs"]),
+            );
         }
         if self.shfmt && self.has("shfmt") {
             add(vec!["shfmt".into()], &["-w"], pick(&["sh", "bash"]));
@@ -460,7 +520,11 @@ impl Project {
         }
         let changed = self.changed_files();
         let pick = |exts: &[&str]| -> Vec<String> {
-            changed.iter().filter(|f| exts.contains(&ext(f).as_str())).map(|f| Self::s(f)).collect()
+            changed
+                .iter()
+                .filter(|f| exts.contains(&ext(f).as_str()))
+                .map(|f| Self::s(f))
+                .collect()
         };
         let mut out = Vec::new();
         let mut add = |prefix: Vec<String>, tail: &[&str], files: Vec<String>| {
@@ -472,7 +536,11 @@ impl Project {
             }
         };
         if let Some(b) = &self.biome {
-            add(vec![Self::s(b)], &["check", "--no-errors-on-unmatched"], pick(BIOME_EXT));
+            add(
+                vec![Self::s(b)],
+                &["check", "--no-errors-on-unmatched"],
+                pick(BIOME_EXT),
+            );
         } else {
             if let Some(e) = &self.eslint {
                 add(vec![Self::s(e)], &[], pick(JS_CODE));
@@ -493,9 +561,18 @@ impl Project {
             let mut dirs: Vec<String> = pick(&["go"])
                 .iter()
                 .map(|f| {
-                    let rel = Path::new(f).strip_prefix(&self.root).unwrap_or(Path::new(f));
-                    let d = rel.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-                    if d.is_empty() { ".".to_string() } else { format!("./{d}") }
+                    let rel = Path::new(f)
+                        .strip_prefix(&self.root)
+                        .unwrap_or(Path::new(f));
+                    let d = rel
+                        .parent()
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    if d.is_empty() {
+                        ".".to_string()
+                    } else {
+                        format!("./{d}")
+                    }
                 })
                 .collect();
             dirs.sort();
@@ -503,7 +580,10 @@ impl Project {
             add(vec!["go".into()], &["vet"], dirs);
         }
         if self.cargo && self.has("cargo") && !pick(&["rs", "toml"]).is_empty() {
-            out.push(Cmd::new(vec!["cargo".into(), "check".into(), "--all-targets".into()], &self.root));
+            out.push(Cmd::new(
+                vec!["cargo".into(), "check".into(), "--all-targets".into()],
+                &self.root,
+            ));
         }
         out
     }
@@ -516,11 +596,16 @@ impl Project {
         let mut out = Vec::new();
         let has_script = |n: &str| self.scripts.iter().any(|s| s == n);
         if self.pm.is_some() {
-            let named: Vec<&str> =
-                ["lint", "typecheck", "types", "test"].into_iter().filter(|n| has_script(n)).collect();
+            let named: Vec<&str> = ["lint", "typecheck", "types", "test"]
+                .into_iter()
+                .filter(|n| has_script(n))
+                .collect();
             if named.is_empty() {
                 if let Some(b) = &self.biome {
-                    out.push(Cmd::new(vec![Self::s(b), "check".into(), ".".into()], &self.root));
+                    out.push(Cmd::new(
+                        vec![Self::s(b), "check".into(), ".".into()],
+                        &self.root,
+                    ));
                 }
                 if let Some(e) = &self.eslint {
                     out.push(Cmd::new(vec![Self::s(e), ".".into()], &self.root));
@@ -528,7 +613,10 @@ impl Project {
                 if self.biome.is_none()
                     && let Some(p) = &self.prettier
                 {
-                    out.push(Cmd::new(vec![Self::s(p), "--check".into(), ".".into()], &self.root));
+                    out.push(Cmd::new(
+                        vec![Self::s(p), "--check".into(), ".".into()],
+                        &self.root,
+                    ));
                 }
                 if let Some(t) = &self.tsc {
                     out.push(Cmd::new(vec![Self::s(t), "--noEmit".into()], &self.root));
@@ -540,8 +628,14 @@ impl Project {
         if self.ruff
             && let Some(r) = self.py("ruff", true)
         {
-            out.push(Cmd::new([r.clone(), vec!["check".into(), ".".into()]].concat(), &self.root));
-            out.push(Cmd::new([r, vec!["format".into(), "--check".into(), ".".into()]].concat(), &self.root));
+            out.push(Cmd::new(
+                [r.clone(), vec!["check".into(), ".".into()]].concat(),
+                &self.root,
+            ));
+            out.push(Cmd::new(
+                [r, vec!["format".into(), "--check".into(), ".".into()]].concat(),
+                &self.root,
+            ));
         }
         if self.ty
             && let Some(t) = self.py("ty", true)
@@ -554,19 +648,38 @@ impl Project {
             out.push(Cmd::new(p, &self.root));
         }
         if self.go && self.has("go") {
-            out.push(Cmd::new(vec!["go".into(), "vet".into(), "./...".into()], &self.root));
+            out.push(Cmd::new(
+                vec!["go".into(), "vet".into(), "./...".into()],
+                &self.root,
+            ));
             if self.golangci && self.has("golangci-lint") {
-                out.push(Cmd::new(vec!["golangci-lint".into(), "run".into()], &self.root));
+                out.push(Cmd::new(
+                    vec!["golangci-lint".into(), "run".into()],
+                    &self.root,
+                ));
             }
-            out.push(Cmd::new(vec!["go".into(), "test".into(), "./...".into()], &self.root));
+            out.push(Cmd::new(
+                vec!["go".into(), "test".into(), "./...".into()],
+                &self.root,
+            ));
         }
         if self.cargo && self.has("cargo") {
             let c = |a: &[&str]| {
-                Cmd::new(std::iter::once("cargo").chain(a.iter().copied()).map(String::from).collect(), &self.root)
+                Cmd::new(
+                    std::iter::once("cargo")
+                        .chain(a.iter().copied())
+                        .map(String::from)
+                        .collect(),
+                    &self.root,
+                )
             };
             out.push(c(&["fmt", "--check"]));
             out.push(c(&["clippy", "--all-targets", "--", "-D", "warnings"]));
-            out.push(if self.has("cargo-nextest") { c(&["nextest", "run"]) } else { c(&["test"]) });
+            out.push(if self.has("cargo-nextest") {
+                c(&["nextest", "run"])
+            } else {
+                c(&["test"])
+            });
         }
         out
     }
@@ -595,13 +708,21 @@ impl Project {
             if !o.status.success() {
                 return Vec::new();
             }
-            String::from_utf8_lossy(&o.stdout).split('\0').filter(|s| !s.is_empty()).map(String::from).collect()
+            String::from_utf8_lossy(&o.stdout)
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
         };
         let mut names = git(&["diff", "--name-only", "--relative", "-z", "HEAD"]);
         names.extend(git(&["ls-files", "-o", "--exclude-standard", "-z"]));
         names.sort();
         names.dedup();
-        names.into_iter().map(|n| self.root.join(n)).filter(|p| p.is_file()).collect()
+        names
+            .into_iter()
+            .map(|n| self.root.join(n))
+            .filter(|p| p.is_file())
+            .collect()
     }
 
     /// The `detect` answer as JSON. With `file`, it also lists the format commands for that file.
@@ -637,15 +758,23 @@ pub enum Ran {
 /// Run `cmd` silently in its folder until `deadline`. A run past the deadline is killed, with its
 /// process group on Unix.
 pub fn run(cmd: &Cmd, deadline: Instant) -> Ran {
-    let Some((prog, args)) = cmd.argv.split_first() else { return Ran::Missing };
+    let Some((prog, args)) = cmd.argv.split_first() else {
+        return Ran::Missing;
+    };
     let mut c = Command::new(prog);
-    c.args(args).current_dir(&cmd.dir).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.args(args)
+        .current_dir(&cmd.dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
-    let Ok(mut child) = c.spawn() else { return Ran::Missing };
+    let Ok(mut child) = c.spawn() else {
+        return Ran::Missing;
+    };
     loop {
         match child.try_wait() {
             Ok(Some(st)) => return if st.success() { Ran::Ok } else { Ran::Failed },
@@ -670,18 +799,25 @@ pub fn run(cmd: &Cmd, deadline: Instant) -> Ran {
 /// the number of commands that ran. A file outside a project, in a skipped folder, missing or large
 /// is left alone.
 pub fn format_file(file: &Path, budget: Duration) -> usize {
-    format_file_with(file, budget, &on_path)
+    format_file_with(file, budget, &crate::dots::os::have)
 }
 
-pub fn format_file_with(file: &Path, budget: Duration, have: Have) -> usize {
-    let Ok(meta) = fs::metadata(file) else { return 0 };
+pub fn format_file_with(file: &Path, budget: Duration, have: Have<'_>) -> usize {
+    let Ok(meta) = fs::metadata(file) else {
+        return 0;
+    };
     if !meta.is_file() || meta.len() > 1_000_000 {
         return 0;
     }
-    if file.components().any(|c| SKIP_DIRS.iter().any(|s| c.as_os_str() == *s)) {
+    if file
+        .components()
+        .any(|c| SKIP_DIRS.iter().any(|s| c.as_os_str() == *s))
+    {
         return 0;
     }
-    let Some(project) = detect_with(file, have) else { return 0 };
+    let Some(project) = detect_with(file, have) else {
+        return 0;
+    };
     let deadline = Instant::now() + budget;
     let mut ran = 0;
     for cmd in project.format_cmds(&[file.to_path_buf()]) {
@@ -713,9 +849,11 @@ pub fn plain_check(cmd: &str) -> Option<String> {
             r"|(?:just|make) (?:check|test|lint)(?:[:\-][\w:\-]+)?(?: .*)?",
             r")$"
         ))
-        .unwrap()
+        .expect("the check-command regex literal is valid")
     });
-    static ENV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:[A-Za-z_]\w*=\S*\s+)+").unwrap());
+    static ENV: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^(?:[A-Za-z_]\w*=\S*\s+)+").expect("the env-prefix regex literal is valid")
+    });
     let cmd = cmd.replace("2>&1", "");
     if cmd.contains(['|', ';', '\n', '`']) || cmd.contains("$(") {
         return None;
@@ -731,7 +869,11 @@ pub fn plain_check(cmd: &str) -> Option<String> {
         return None;
     }
     CHECK.is_match(&bare).then(|| {
-        steps.iter().map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")).collect::<Vec<_>>().join(" && ")
+        steps
+            .iter()
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect::<Vec<_>>()
+            .join(" && ")
     })
 }
 
@@ -742,8 +884,13 @@ pub fn plain_check(cmd: &str) -> Option<String> {
 /// outside git or on any error. Two small git calls, about 20 ms on a normal tree.
 pub fn tree_fingerprint(cwd: &Path) -> Option<String> {
     let git = |args: &[&str]| -> Option<Vec<u8>> {
-        let o =
-            Command::new("git").args(args).current_dir(cwd).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        let o = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
         o.status.success().then_some(o.stdout)
     };
     let top = String::from_utf8(git(&["rev-parse", "--show-toplevel"])?).ok()?;
@@ -768,7 +915,11 @@ pub fn tree_fingerprint(cwd: &Path) -> Option<String> {
         }
         let path = top.join(String::from_utf8_lossy(&entry[3..]).as_ref());
         if let Ok(m) = fs::metadata(&path) {
-            let t = m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+            let t = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
             h.update(m.len().to_le_bytes());
             h.update(t.to_le_bytes());
         }
@@ -815,7 +966,10 @@ mod tests {
         ] {
             assert!(plain_check(c).is_none(), "{c}");
         }
-        assert_eq!(plain_check("cd  a  &&  pnpm   check").as_deref(), Some("cd a && pnpm check"));
+        assert_eq!(
+            plain_check("cd  a  &&  pnpm   check").as_deref(),
+            Some("cd a && pnpm check")
+        );
     }
 
     #[test]
@@ -828,7 +982,10 @@ mod tests {
 
     #[test]
     fn line_quotes_odd_arguments() {
-        let c = Cmd::new(vec!["prettier".into(), "--write".into(), "a b.ts".into()], Path::new("/"));
+        let c = Cmd::new(
+            vec!["prettier".into(), "--write".into(), "a b.ts".into()],
+            Path::new("/"),
+        );
         assert_eq!(c.line(), "prettier --write 'a b.ts'");
     }
 }

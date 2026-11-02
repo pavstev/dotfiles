@@ -16,6 +16,7 @@ use std::time::SystemTime;
 const MARK: &str = "generated-by: dotfiles";
 
 /// One finished check: its name and `Ok`, or the reason it failed.
+#[derive(Debug)]
 pub struct Check {
     /// The check name printed after `PASS` or `FAIL`.
     pub name: &'static str,
@@ -65,8 +66,14 @@ fn points_into(dst: &Path, root: &Path) -> bool {
     if !os::is_symlink(dst) {
         return false;
     }
-    let Ok(target) = fs::read_link(dst) else { return false };
-    let target = if target.is_relative() { dst.parent().map(|p| p.join(&target)).unwrap_or(target) } else { target };
+    let Ok(target) = fs::read_link(dst) else {
+        return false;
+    };
+    let target = if target.is_relative() {
+        dst.parent().map(|p| p.join(&target)).unwrap_or(target)
+    } else {
+        target
+    };
     if !target.exists() {
         return false;
     }
@@ -88,11 +95,20 @@ fn links(repo: &Path, home: &Path) -> Result<(), String> {
     }
     let claude_src = repo.join("claude");
     for item in ["agents", "hooks", "output-styles", "CLAUDE.md"] {
-        if claude_src.join(item).exists() && !points_into(&home.join(".claude").join(item), &claude_src) {
+        if claude_src.join(item).exists()
+            && !points_into(&home.join(".claude").join(item), &claude_src)
+        {
             bad.push(format!("~/.claude/{item}"));
         }
     }
-    if bad.is_empty() { Ok(()) } else { Err(format!("not a link into the repo: {}. Run: dots", join(&bad))) }
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "not a link into the repo: {}. Run: dots",
+            join(&bad)
+        ))
+    }
 }
 
 // --- settings-built --------------------------------------------------------------
@@ -121,13 +137,16 @@ fn hook_commands(v: &Value, out: &mut Vec<String>) {
 /// checked: `dots` cannot change them.
 fn settings_built(repo: &Path, home: &Path) -> Result<(), String> {
     let p = home.join(".claude").join("settings.json");
-    let text = fs::read_to_string(&p).map_err(|_| "~/.claude/settings.json is missing. Run: dots".to_string())?;
-    let v: Value =
-        serde_json::from_str(&text).map_err(|_| "~/.claude/settings.json is not valid JSON. Run: dots".to_string())?;
+    let text = fs::read_to_string(&p)
+        .map_err(|_| "~/.claude/settings.json is missing. Run: dots".to_string())?;
+    let v: Value = serde_json::from_str(&text)
+        .map_err(|_| "~/.claude/settings.json is not valid JSON. Run: dots".to_string())?;
     let base = fs::read_to_string(repo.join("claude").join("settings.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .ok_or_else(|| "claude/settings.json of the repo is missing or not valid JSON".to_string())?;
+        .ok_or_else(|| {
+            "claude/settings.json of the repo is missing or not valid JSON".to_string()
+        })?;
     let (mut want, mut have) = (Vec::new(), Vec::new());
     if let Some(h) = base.get("hooks") {
         hook_commands(h, &mut want);
@@ -146,7 +165,10 @@ fn settings_built(repo: &Path, home: &Path) -> Result<(), String> {
     if bad.is_empty() {
         Ok(())
     } else {
-        Err(format!("a guard hook is missing or does not run rust-bin ({}). Run: dots", join(&bad)))
+        Err(format!(
+            "a guard hook is missing or does not run rust-bin ({}). Run: dots",
+            join(&bad)
+        ))
     }
 }
 
@@ -211,8 +233,14 @@ fn bins_fresh(repo: &Path) -> Result<(), String> {
     let newest = newest_source(&crate_dir);
     let (mut missing, mut stale) = (Vec::new(), Vec::new());
     for n in names {
-        let file = if os::is_windows() { format!("{n}.exe") } else { n.clone() };
-        match fs::metadata(crate_dir.join("target").join("release").join(file)).and_then(|m| m.modified()) {
+        let file = if os::is_windows() {
+            format!("{n}.exe")
+        } else {
+            n.clone()
+        };
+        match fs::metadata(crate_dir.join("target").join("release").join(file))
+            .and_then(|m| m.modified())
+        {
             Err(_) => missing.push(n),
             Ok(t) if newest.is_some_and(|s| s > t) => stale.push(n),
             Ok(_) => {}
@@ -228,7 +256,10 @@ fn bins_fresh(repo: &Path) -> Result<(), String> {
     if parts.is_empty() {
         Ok(())
     } else {
-        Err(format!("{}. Run: dots (or scripts/agent-config --bins)", parts.join("; ")))
+        Err(format!(
+            "{}. Run: dots (or scripts/agent-config --bins)",
+            parts.join("; ")
+        ))
     }
 }
 
@@ -237,7 +268,11 @@ fn bins_fresh(repo: &Path) -> Result<(), String> {
 /// `got` must be the kind `want` names; otherwise the failure text says what the guard did.
 fn expect(what: &str, got: Option<&str>, want: &str) -> Option<String> {
     let kind = got.unwrap_or("crash");
-    if kind == want { None } else { Some(format!("{what} gave {kind}, wanted {want}")) }
+    if kind == want {
+        None
+    } else {
+        Some(format!("{what} gave {kind}, wanted {want}"))
+    }
 }
 
 /// The kind of a verdict, as the self-test names it.
@@ -252,8 +287,12 @@ fn kind_of(v: &Verdict) -> &'static str {
 /// Canned calls through the guard checks. The private word is made up, so the check needs no setting.
 fn guard_selftest(repo: &Path) -> Result<(), String> {
     const WORD: &str = "doctorprivateword";
-    let run =
-        |f: &dyn Fn() -> Verdict| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok().as_ref().map(kind_of);
+    let run = |f: &dyn Fn() -> Verdict| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            .ok()
+            .as_ref()
+            .map(kind_of)
+    };
     let words = vec![WORD.to_string()];
     let send = json!({"command": format!("gh pr comment 1 --body \"{WORD}\"")});
     let ls = json!({"command": "ls"});
@@ -261,13 +300,37 @@ fn guard_selftest(repo: &Path) -> Result<(), String> {
     let cwd: PathBuf = repo.to_path_buf();
     let problems: Vec<String> = [
         // BSD sed -i (macOS rules) is denied
-        expect("sed -i on macOS", run(&|| gc::g14_sed("sed -i 's/a/b/' file.txt", true)), "deny"),
-        expect("a read of local.zsh", run(&|| gc::g15_secrets("Read", &local)), "deny"),
-        expect("a send with a private word", run(&|| gc::g16_outbound("Bash", &send, &cwd, &words)), "ask"),
+        expect(
+            "sed -i on macOS",
+            run(&|| gc::g14_sed("sed -i 's/a/b/' file.txt", true)),
+            "deny",
+        ),
+        expect(
+            "a read of local.zsh",
+            run(&|| gc::g15_secrets("Read", &local)),
+            "deny",
+        ),
+        expect(
+            "a send with a private word",
+            run(&|| gc::g16_outbound("Bash", &send, &cwd, &words)),
+            "ask",
+        ),
         expect("ls (sed check)", run(&|| gc::g14_sed("ls", true)), "allow"),
-        expect("ls (secrets check)", run(&|| gc::g15_secrets("Bash", &ls)), "allow"),
-        expect("ls (outbound check)", run(&|| gc::g16_outbound("Bash", &ls, &cwd, &words)), "allow"),
-        expect("ls (attribution check)", run(&|| gc::g17_attribution("ls", &cwd)), "allow"),
+        expect(
+            "ls (secrets check)",
+            run(&|| gc::g15_secrets("Bash", &ls)),
+            "allow",
+        ),
+        expect(
+            "ls (outbound check)",
+            run(&|| gc::g16_outbound("Bash", &ls, &cwd, &words)),
+            "allow",
+        ),
+        expect(
+            "ls (attribution check)",
+            run(&|| gc::g17_attribution("ls", &cwd)),
+            "allow",
+        ),
     ]
     .into_iter()
     .flatten()
@@ -275,7 +338,10 @@ fn guard_selftest(repo: &Path) -> Result<(), String> {
     if problems.is_empty() {
         Ok(())
     } else {
-        Err(format!("{}. Run: dots, then scripts/agent-config --bins", problems.join("; ")))
+        Err(format!(
+            "{}. Run: dots, then scripts/agent-config --bins",
+            problems.join("; ")
+        ))
     }
 }
 
@@ -287,15 +353,25 @@ fn presets(repo: &Path, home: &Path) -> Result<(), String> {
     let src = repo.join("claude").join("presets");
     // `repo` can be spelled another way than the links (a `..` in the exe path, a symlinked folder)
     let src_real = fs::canonicalize(&src).unwrap_or_else(|_| src.clone());
-    let want: BTreeSet<String> = on.into_iter().filter(|n| src.join(n).join("rules.md").is_file()).collect();
+    let want: BTreeSet<String> = on
+        .into_iter()
+        .filter(|n| src.join(n).join("rules.md").is_file())
+        .collect();
     let mut have = BTreeSet::new();
     if let Ok(entries) = fs::read_dir(home.join(".claude").join("rules")) {
         for e in entries.filter_map(Result::ok) {
             let file = e.file_name().to_string_lossy().into_owned();
-            let Some(name) = file.strip_prefix("preset-").and_then(|r| r.strip_suffix(".md")) else { continue };
+            let Some(name) = file
+                .strip_prefix("preset-")
+                .and_then(|r| r.strip_suffix(".md"))
+            else {
+                continue;
+            };
             if os::is_symlink(&e.path())
-                && fs::read_link(e.path())
-                    .is_ok_and(|t| t.starts_with(&src) || fs::canonicalize(&t).is_ok_and(|r| r.starts_with(&src_real)))
+                && fs::read_link(e.path()).is_ok_and(|t| {
+                    t.starts_with(&src)
+                        || fs::canonicalize(&t).is_ok_and(|r| r.starts_with(&src_real))
+                })
             {
                 have.insert(name.to_string());
             }
@@ -310,7 +386,11 @@ fn presets(repo: &Path, home: &Path) -> Result<(), String> {
     if !extra.is_empty() {
         parts.push(format!("links of presets that are off: {}", join(&extra)));
     }
-    if parts.is_empty() { Ok(()) } else { Err(format!("{}. Run: dots", parts.join("; "))) }
+    if parts.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{}. Run: dots", parts.join("; ")))
+    }
 }
 
 // --- generated -------------------------------------------------------------------
@@ -339,7 +419,10 @@ fn generated(repo: &Path, home: &Path) -> Result<(), String> {
     if bad.is_empty() {
         Ok(())
     } else {
-        Err(format!("{}. If the file is yours, move it away. Then run: dots", bad.join("; ")))
+        Err(format!(
+            "{}. If the file is yours, move it away. Then run: dots",
+            bad.join("; ")
+        ))
     }
 }
 
@@ -416,7 +499,10 @@ fn no_leak(repo: &Path, home: &Path) -> Result<(), String> {
     }
     let hosts = gc::public_hosts(home);
     let mut hits: Vec<String> = Vec::new();
-    for name in String::from_utf8_lossy(&out.stdout).split('\0').filter(|n| !n.is_empty()) {
+    for name in String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|n| !n.is_empty())
+    {
         let lower = name.to_lowercase();
         let shown_name = mask(name, &words);
         if words.iter().any(|w| gc::word_hit(&lower, w)) {
@@ -426,7 +512,9 @@ fn no_leak(repo: &Path, home: &Path) -> Result<(), String> {
         if fs::metadata(&path).map_or(true, |m| !m.is_file() || m.len() > 4 << 20) {
             continue;
         }
-        let Ok(text) = fs::read(&path).map(|b| String::from_utf8_lossy(&b).to_lowercase()) else { continue };
+        let Ok(text) = fs::read(&path).map(|b| String::from_utf8_lossy(&b).to_lowercase()) else {
+            continue;
+        };
         for (i, line) in text.lines().enumerate() {
             let line = gc::strip_hosts(line, &hosts);
             if words.iter().any(|w| gc::word_hit(&line, w)) {
@@ -438,6 +526,15 @@ fn no_leak(repo: &Path, home: &Path) -> Result<(), String> {
         return Ok(());
     }
     let shown: Vec<String> = hits.iter().take(5).cloned().collect();
-    let more = if hits.len() > 5 { format!(" and {} more", hits.len() - 5) } else { String::new() };
-    Err(format!("{} place(s) hold a private word: {}{}. Remove it before you commit", hits.len(), join(&shown), more))
+    let more = if hits.len() > 5 {
+        format!(" and {} more", hits.len() - 5)
+    } else {
+        String::new()
+    };
+    Err(format!(
+        "{} place(s) hold a private word: {}{}. Remove it before you commit",
+        hits.len(),
+        join(&shown),
+        more
+    ))
 }

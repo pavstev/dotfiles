@@ -23,7 +23,7 @@ Done means: nothing mandatory left, everything committed and pushed, no conflict
 3. **Scan.** Run `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin mic_check [--since <first session sha>] <every repo this session touched>`.
    It does `git fetch`, then reads only. Every line is `OK`, `FIX` (mandatory) or `WARN` (decide).
 4. **Fix every `FIX`.** See the table. For each `WARN`: fix it, or `--note` it.
-5. **Verify.** Run every command under `RUN`. Fix failures. Wait for CI on the pushed commit, up to 15 minutes. Still running after that → report it as pending and do not archive. The user said "archive this" and the scan is CLEAN → skip this step and the CI wait. "Archive when done" is not "archive this": verify first.
+5. **Verify.** Run every command under `RUN`. Fix failures. Wait for CI on the pushed commit, up to 15 minutes. Still running after that → report it as pending and do not archive. "Archive this" (or work already pushed with nothing waiting on the user, the ship-to-main preset) and the scan is CLEAN → skip this step and the CI wait: commit, push, scan once, archive. A plain "we are done" or "archive when done" is not "archive this": verify first.
 6. **Scan again.** It must print `VERDICT: CLEAN`. If not, go back to step 4. Three passes at most; after the third, stop, report what is still red, and keep the session.
 7. **Report** in the shape below, then **archive** (Claude desktop app only) when the scan is CLEAN. See "Archive".
 
@@ -43,7 +43,7 @@ Done means: nothing mandatory left, everything committed and pushed, no conflict
 | not on main | Work lands on main as one commit (the ship-to-main rule, when that preset is on). The user or the repo said PR → open a PR instead. Unsure which → ask. |
 | local-only branch, stash | Look inside. Ours and needed → push or apply. Old → `--note` it. Never delete it. |
 | extra worktree | Agent worktree, branch merged into main, tree clean → `git worktree remove <path>` (or `mcp__ccd_host__clean_up_worktrees`). Not merged → look inside, `--note` it. |
-| processes from this repo | Ours and not needed → stop. Not ours → leave. Judge by the scan line and `/bin/ps -o pid=,ppid=,user=,lstart=,ucomm= -p <pid>`. Never print a full command line (`ps` with `args`, `command` or `comm`, `pgrep -fl`): it can hold keys. |
+| processes from this repo | Ours and not needed → stop. Not ours → leave. Judge by the scan line and `/bin/ps -o pid=,ppid=,user=,lstart=,ucomm= -p <pid>`. |
 | no check command found | Read README / AGENTS.md / CI config. Run what they run. |
 
 ## Squash mode
@@ -96,7 +96,7 @@ Session: archived / kept (pinned) / kept (not clean) / kept (waiting for <side s
    - Remove merged agent worktrees.
 4. Archive when ALL are true. Do not wait for the user to ask.
    - The last scan printed `VERDICT: CLEAN`.
-   - Every check under `RUN` passed in this session and CI is green, unless the user said "archive this".
+   - Every check under `RUN` passed in this session and CI is green, unless step 5 lets you skip them.
    - No task of mine is left after the sweep, and no side session is still working.
    - "You do" says "nothing".
    Any of them false → do NOT archive. Say "kept (not clean)" and why.

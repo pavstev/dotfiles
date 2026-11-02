@@ -49,20 +49,8 @@ Opencode read that folder themselves, so nothing is linked into `~/.cursor` or
 
 The core rules in `claude/CLAUDE.md` are short and neutral. Habits that some people want and
 others do not are **presets**: one folder each under `claude/presets/`
-([README](../claude/presets/README.md)). A preset that is off costs no tokens, and its guard
-check does not run.
-
-| Preset | What it does |
-|--------|--------------|
-| `workflow` | speed over ceremony, hand-offs in files, briefs, the agent set |
-| `pace` | make the weekly budget last the work days, with helper caps |
-| `models` | effort and model picks |
-| `clock` | say the local time and an estimate with a range |
-| `plain-writing` | no em dashes, short plain sentences (sets the `ELI5` output style) |
-| `no-ai-attribution` | no assistant co-author or "generated with" line in commits and PRs |
-| `ship-to-main` | work lands on main in one commit; the "archive this" routine |
-
-A new install has every preset on except `ship-to-main`. Change them in `dots settings`. `dots`
+([README](../claude/presets/README.md) lists the seven, what each one does and which guard checks
+it owns; a preset that is off costs no tokens). Change them in `dots settings`. `dots`
 links the rules to `~/.claude/rules/preset-<name>.md`, merges the settings fragments, and
 writes the same rules into the Cursor and Opencode files. Other settings that shape the setup
 are `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME` and `GUARD_OFF` / `GUARD_SHADOW`

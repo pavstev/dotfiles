@@ -26,7 +26,7 @@ pub fn get(name: &str) -> String {
     crate::setting(&os::home(), name)
 }
 
-/// A value can't hold " \ $ ` or a line break (LF or CR): zsh sources the file.
+/// A value can't hold `"`, `\`, `$`, `` ` `` or a line break (LF or CR): zsh sources the file.
 pub fn valid_value(v: &str) -> bool {
     !v.contains(['"', '\\', '$', '`', '\n', '\r'])
 }
@@ -65,7 +65,9 @@ pub fn replaced(old: &str, name: &str, value: &str) -> String {
 /// When the file is a link, the file it points to changes and the link stays.
 pub fn set(name: &str, value: &str) -> bool {
     if !valid_value(value) {
-        warn(&format!("{name} not saved: a value can't hold \" \\ $ ` or a new line"));
+        warn(&format!(
+            "{name} not saved: a value can't hold \" \\ $ ` or a new line"
+        ));
         return false;
     }
     let conf = conf_dir();
@@ -78,8 +80,14 @@ pub fn set(name: &str, value: &str) -> bool {
         if !os::is_symlink(&dest) {
             break;
         }
-        let Some(l) = os::readlink(&dest) else { return false };
-        dest = if l.is_absolute() { l } else { dest.parent().unwrap_or(Path::new(".")).join(l) };
+        let Some(l) = os::readlink(&dest) else {
+            return false;
+        };
+        dest = if l.is_absolute() {
+            l
+        } else {
+            dest.parent().unwrap_or(Path::new(".")).join(l)
+        };
     }
     let old = if dest.is_file() {
         fs::read_to_string(&dest).unwrap_or_default()
@@ -90,7 +98,12 @@ pub fn set(name: &str, value: &str) -> bool {
     let text = replaced(&old, name, value);
     let dir = dest.parent().unwrap_or(Path::new(".")).to_path_buf();
     // The new file goes next to the old one, so the rename replaces it in one step.
-    let Ok(mut tmp) = tempfile::Builder::new().prefix(".settings.").tempfile_in(&dir) else { return false };
+    let Ok(mut tmp) = tempfile::Builder::new()
+        .prefix(".settings.")
+        .tempfile_in(&dir)
+    else {
+        return false;
+    };
     if tmp.write_all(text.as_bytes()).is_err() {
         return false;
     }
@@ -111,7 +124,7 @@ pub fn set_mode(p: &Path, mode: u32) {
 #[cfg(not(unix))]
 pub fn set_mode(_p: &Path, _mode: u32) {}
 
-/// The profile (AGENTS.md "Profiles"): DOTFILES_PROFILE, then PROFILE in the settings, then
+/// The profile (AGENTS.md "Profiles"): `DOTFILES_PROFILE`, then PROFILE in the settings, then
 /// owner when the private rules exist (saved as PROFILE), else shared.
 pub fn profile() -> Profile {
     let home = os::home();
@@ -128,9 +141,15 @@ mod tests {
     #[test]
     fn replaced_cases() {
         // the first line of a name is replaced and later ones dropped
-        assert_eq!(replaced("A=\"1\"\nB=\"2\"\nA=\"3\"\n", "A", "x"), "A=\"x\"\nB=\"2\"\n");
+        assert_eq!(
+            replaced("A=\"1\"\nB=\"2\"\nA=\"3\"\n", "A", "x"),
+            "A=\"x\"\nB=\"2\"\n"
+        );
         // a missing name is appended
-        assert_eq!(replaced("# note\nB=\"2\"", "A", "x"), "# note\nB=\"2\"\nA=\"x\"\n");
+        assert_eq!(
+            replaced("# note\nB=\"2\"", "A", "x"),
+            "# note\nB=\"2\"\nA=\"x\"\n"
+        );
         assert_eq!(replaced("", "A", ""), "A=\"\"\n");
         // a longer name with the same start is no match
         assert_eq!(replaced("AB=\"1\"\n", "A", "x"), "AB=\"1\"\nA=\"x\"\n");
@@ -146,14 +165,32 @@ mod tests {
         // Running it again changes nothing.
         assert_eq!(replaced(&new, "WORK_DAYS", "mon-sat"), new);
         // A comment that mentions the name is not a setting.
-        assert_eq!(replaced("# WORK_DAYS=\"x\"\n", "WORK_DAYS", "mon-sat"), "# WORK_DAYS=\"x\"\nWORK_DAYS=\"mon-sat\"\n");
+        assert_eq!(
+            replaced("# WORK_DAYS=\"x\"\n", "WORK_DAYS", "mon-sat"),
+            "# WORK_DAYS=\"x\"\nWORK_DAYS=\"mon-sat\"\n"
+        );
     }
     #[test]
     fn bad_values() {
-        for v in ["a\"b", "C:\\Users\\me", "$HOME", "`date`", "Europe/Vienna\nPROFILE=\"owner", "mon-sat\r"] {
+        for v in [
+            "a\"b",
+            "C:\\Users\\me",
+            "$HOME",
+            "`date`",
+            "Europe/Vienna\nPROFILE=\"owner",
+            "mon-sat\r",
+        ] {
             assert!(!valid_value(v));
         }
-        for v in ["Jane Doe", "Europe/Vienna", "mon-sat", "pro", "ghostty", "", "/home/dev/dotfiles"] {
+        for v in [
+            "Jane Doe",
+            "Europe/Vienna",
+            "mon-sat",
+            "pro",
+            "ghostty",
+            "",
+            "/home/dev/dotfiles",
+        ] {
             assert!(valid_value(v), "{v}");
         }
     }

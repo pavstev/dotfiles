@@ -8,11 +8,7 @@ use std::process::{Command, Stdio};
 
 /// stdout of a git command, trimmed, or None when it fails.
 pub fn out(args: &[&str]) -> Option<String> {
-    let o = Command::new("git").args(args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    if !o.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string())
+    crate::gitutil::git_out(None, args)
 }
 
 fn ok_run(args: &[&str]) -> bool {
@@ -70,7 +66,9 @@ fn pull_saving_to(repo: &Path, saved_dir: &Path) -> bool {
 /// reachable as the branch `before-rewrite-<time>`.
 fn heal_rewrite(repo: &Path, before: &str, saved_dir: &Path) -> bool {
     let r = repo.to_string_lossy();
-    let Some(after) = out(&["-C", &r, "rev-parse", "--verify", "-q", "@{u}"]) else { return false };
+    let Some(after) = out(&["-C", &r, "rev-parse", "--verify", "-q", "@{u}"]) else {
+        return false;
+    };
     let anc = |a: &str, b: &str| ok_run(&["-C", &r, "merge-base", "--is-ancestor", a, b]);
     let up = out(&["-C", &r, "rev-parse", "--symbolic-full-name", "@{u}"]).unwrap_or_default();
     // The raw reflog lines are "<old> <new> <who> <when>\t<what>": both columns are tips it had.
@@ -90,20 +88,34 @@ fn heal_rewrite(repo: &Path, before: &str, saved_dir: &Path) -> bool {
     let saved = if changed(repo).is_empty() {
         None
     } else {
-        let Some(p) = save_edits(repo, saved_dir, &keep) else { return false };
+        let Some(p) = save_edits(repo, saved_dir, &keep) else {
+            return false;
+        };
         Some(p)
     };
     if !ok_run(&["-C", &r, "branch", &keep, "HEAD"]) {
         return false;
     }
-    if !ok_run(&["-C", &r, "-c", "core.autocrlf=false", "reset", "--hard", "--quiet", "@{u}"]) {
+    if !ok_run(&[
+        "-C",
+        &r,
+        "-c",
+        "core.autocrlf=false",
+        "reset",
+        "--hard",
+        "--quiet",
+        "@{u}",
+    ]) {
         return false;
     }
     info(&format!(
         "the dotfiles history was rewritten upstream; this clone had no work of its own, so it moved to the new one (old state: branch {keep})"
     ));
     if let Some(p) = saved {
-        info(&format!("your edits to tracked files are saved in {} (git apply it to bring them back)", p.display()));
+        info(&format!(
+            "your edits to tracked files are saved in {} (git apply it to bring them back)",
+            p.display()
+        ));
     }
     true
 }
@@ -128,12 +140,21 @@ fn save_edits(repo: &Path, dir: &Path, name: &str) -> Option<std::path::PathBuf>
 
 /// The tracked files changed here, each followed by a space (as `tr '\n' ' '` gives).
 pub fn changed(repo: &Path) -> String {
-    let s = out(&["-C", &repo.to_string_lossy(), "status", "--porcelain", "--untracked-files=no"]).unwrap_or_default();
-    s.lines().filter(|l| l.len() > 3).fold(String::new(), |mut acc, l| {
-        acc.push_str(&l[3..]);
-        acc.push(' ');
-        acc
-    })
+    let s = out(&[
+        "-C",
+        &repo.to_string_lossy(),
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ])
+    .unwrap_or_default();
+    s.lines()
+        .filter(|l| l.len() > 3)
+        .fold(String::new(), |mut acc, l| {
+            acc.push_str(&l[3..]);
+            acc.push(' ');
+            acc
+        })
 }
 
 /// Write the name and email to ~/.gitconfig.local when they differ.
@@ -146,7 +167,8 @@ pub fn identity(name: &str, email: &str) {
         if verbose() {
             skip(&format!("git identity ({name} <{email}>)"));
         }
-    } else if ok_run(&["config", "-f", &fs_, "user.name", name]) && ok_run(&["config", "-f", &fs_, "user.email", email])
+    } else if ok_run(&["config", "-f", &fs_, "user.name", name])
+        && ok_run(&["config", "-f", &fs_, "user.email", email])
     {
         ok(&format!("git commits use: {name} <{email}>"));
     } else {
@@ -159,7 +181,8 @@ pub fn identity(name: &str, email: &str) {
 /// comes back, and ~/.gitconfig includes ~/.gitconfig.local for the identity.
 pub fn windows_gitconfig() {
     let g = os::home().join(".gitconfig");
-    let ours = os::is_symlink(&g) || fs::read_to_string(&g).is_ok_and(|t| t.contains("symlinked from this repo"));
+    let ours = os::is_symlink(&g)
+        || fs::read_to_string(&g).is_ok_and(|t| t.contains("symlinked from this repo"));
     if ours {
         let _ = fs::remove_file(&g);
         let name = ".gitconfig.bak-";
@@ -179,11 +202,18 @@ pub fn windows_gitconfig() {
     }
     let inc = out(&["config", "--global", "--get-all", "include.path"]).unwrap_or_default();
     if !inc.contains("gitconfig.local") {
-        let _ = ok_run(&["config", "--global", "--add", "include.path", "~/.gitconfig.local"]);
+        let _ = ok_run(&[
+            "config",
+            "--global",
+            "--add",
+            "include.path",
+            "~/.gitconfig.local",
+        ]);
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -215,8 +245,19 @@ mod tests {
         assert!(git(&o, &["init", "-q", "-b", "main"]));
         commit(&o, "a", "one");
         commit(&o, "a", "two");
-        assert!(Command::new("git").args(["clone", "-q"]).arg(&o).arg(&c).status().unwrap().success());
-        assert!(git(&o, &["reset", "--soft", "HEAD~1"]) && git(&o, &["commit", "--amend", "-qm", "squashed"]));
+        assert!(
+            Command::new("git")
+                .args(["clone", "-q"])
+                .arg(&o)
+                .arg(&c)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            git(&o, &["reset", "--soft", "HEAD~1"])
+                && git(&o, &["commit", "--amend", "-qm", "squashed"])
+        );
         (t, o, c)
     }
 
@@ -226,9 +267,15 @@ mod tests {
         assert!(pull(&c));
         assert_eq!(head(&c), head(&o));
         assert!(
-            out(&["-C", &c.to_string_lossy(), "branch", "--list", "before-rewrite-*"])
-                .unwrap()
-                .contains("before-rewrite-")
+            out(&[
+                "-C",
+                &c.to_string_lossy(),
+                "branch",
+                "--list",
+                "before-rewrite-*"
+            ])
+            .unwrap()
+            .contains("before-rewrite-")
         );
     }
 
@@ -257,6 +304,10 @@ mod tests {
         assert_eq!(head(&c), head(&o));
         let saved: Vec<_> = fs::read_dir(home.path()).unwrap().flatten().collect();
         assert_eq!(saved.len(), 1);
-        assert!(fs::read_to_string(saved[0].path()).unwrap().contains("+edited"));
+        assert!(
+            fs::read_to_string(saved[0].path())
+                .unwrap()
+                .contains("+edited")
+        );
     }
 }

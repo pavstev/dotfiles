@@ -65,7 +65,10 @@ enum Family {
 }
 
 fn ext_lower(path: &Path) -> String {
-    path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase()
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 fn family_of(path: &Path) -> Option<Family> {
@@ -94,6 +97,11 @@ pub fn scan_name(path: &Path) -> Option<&'static str> {
 }
 
 /// The symbols of `text`, or the reason it is not scanned. `path` picks the scanner.
+///
+/// # Errors
+///
+/// Returns a [`Refusal`] when the text is too big, is not text, has a very long line, or `path`
+/// has no scanner.
 pub fn outline(path: &Path, text: &str) -> Result<Vec<Symbol>, Refusal> {
     if text.len() > MAX_BYTES {
         return Err(Refusal::TooBig);
@@ -141,7 +149,11 @@ fn is_ident(c: char) -> bool {
 /// The text as chars, CRLF turned into LF, a leading BOM dropped.
 fn normalize(text: &str) -> Vec<char> {
     let mut out = Vec::with_capacity(text.len());
-    let mut it = text.strip_prefix('\u{feff}').unwrap_or(text).chars().peekable();
+    let mut it = text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .chars()
+        .peekable();
     while let Some(c) = it.next() {
         if c == '\r' && it.peek() == Some(&'\n') {
             continue;
@@ -176,7 +188,11 @@ struct Doc {
 impl Doc {
     fn new(orig: Vec<char>, masked: Vec<char>) -> Self {
         let lines = line_ranges(&orig);
-        Self { orig, masked, lines }
+        Self {
+            orig,
+            masked,
+            lines,
+        }
     }
     fn len(&self) -> usize {
         self.lines.len()
@@ -204,7 +220,10 @@ fn blank(out: &mut [char], from: usize, to: usize) {
 }
 
 fn line_end(chars: &[char], i: usize) -> usize {
-    chars[i..].iter().position(|&c| c == '\n').map_or(chars.len(), |p| i + p)
+    chars[i..]
+        .iter()
+        .position(|&c| c == '\n')
+        .map_or(chars.len(), |p| i + p)
 }
 
 fn skip_ws(s: &[char], mut i: usize) -> usize {
@@ -447,7 +466,12 @@ fn text_block_end(chars: &[char], i: usize) -> usize {
 
 /// Blanks a template literal segment that starts at `start` (a backtick, or the `}` that closes
 /// an interpolation). Returns the end and whether it stopped at a `${` (code follows).
-fn template_segment(chars: &[char], out: &mut [char], start: usize, interp: &mut Vec<usize>) -> (usize, bool) {
+fn template_segment(
+    chars: &[char],
+    out: &mut [char],
+    start: usize,
+    interp: &mut Vec<usize>,
+) -> (usize, bool) {
     let n = chars.len();
     let mut j = start + 1;
     loop {
@@ -485,7 +509,11 @@ fn mask_brace(chars: &[char], lang: Lang) -> Vec<char> {
             continue;
         }
         let next = chars.get(i + 1).copied();
-        if c == '/' && next == Some('/') && lang != Lang::Css && !(lang == Lang::Scss && prev.c == Some(':')) {
+        if c == '/'
+            && next == Some('/')
+            && lang != Lang::Css
+            && !(lang == Lang::Scss && prev.c == Some(':'))
+        {
             let e = line_end(chars, i);
             blank(&mut out, i, e);
             prev.ws = true;
@@ -534,7 +562,10 @@ fn mask_brace(chars: &[char], lang: Lang) -> Vec<char> {
                 continue;
             }
             '`' if lang == Lang::Go => {
-                let e = chars[i + 1..].iter().position(|&x| x == '`').map_or(n, |p| i + 2 + p);
+                let e = chars[i + 1..]
+                    .iter()
+                    .position(|&x| x == '`')
+                    .map_or(n, |p| i + 2 + p);
                 blank(&mut out, i, e);
                 prev.sig('"');
                 i = e;
@@ -584,7 +615,11 @@ fn mask_brace(chars: &[char], lang: Lang) -> Vec<char> {
 // ---------------------------------------------------------------------------------------------
 // Masking: shell
 
-fn heredoc_region(chars: &[char], i: usize, last: Option<&(usize, usize)>) -> Option<(usize, usize)> {
+fn heredoc_region(
+    chars: &[char],
+    i: usize,
+    last: Option<&(usize, usize)>,
+) -> Option<(usize, usize)> {
     let n = chars.len();
     let mut j = i + 2;
     if chars.get(j) == Some(&'-') {
@@ -612,7 +647,11 @@ fn heredoc_region(chars: &[char], i: usize, last: Option<&(usize, usize)>) -> Op
         let e = line_end(chars, from);
         let line = &chars[from..e];
         let start = line.iter().position(|&c| c != '\t').unwrap_or(line.len());
-        let end = line.iter().rposition(|c| !c.is_whitespace()).map_or(start, |p| p + 1).max(start);
+        let end = line
+            .iter()
+            .rposition(|c| !c.is_whitespace())
+            .map_or(start, |p| p + 1)
+            .max(start);
         if &line[start..end] == tag {
             return Some((body, e));
         }
@@ -638,7 +677,10 @@ fn mask_shell(chars: &[char]) -> Vec<char> {
         match c {
             '\\' => i += 2,
             '\'' => {
-                let e = chars[i + 1..].iter().position(|&x| x == '\'').map_or(n, |p| i + 2 + p);
+                let e = chars[i + 1..]
+                    .iter()
+                    .position(|&x| x == '\'')
+                    .map_or(n, |p| i + 2 + p);
                 blank(&mut out, i, e);
                 i = e;
             }
@@ -681,7 +723,11 @@ struct Cand {
 }
 
 fn cand(kind: &'static str, name: String) -> Option<Cand> {
-    (!name.is_empty()).then_some(Cand { kind, name, arrow: false })
+    (!name.is_empty()).then_some(Cand {
+        kind,
+        name,
+        arrow: false,
+    })
 }
 
 const TS_PREFIX: [&str; 5] = ["export", "default", "declare", "abstract", "async"];
@@ -722,7 +768,14 @@ fn ts_method(s: &[char], start: usize) -> Option<Cand> {
         if matches!(s.get(k).copied(), Some('(' | '<')) {
             if matches!(
                 name.as_str(),
-                "if" | "for" | "while" | "switch" | "catch" | "return" | "with" | "super" | "function"
+                "if" | "for"
+                    | "while"
+                    | "switch"
+                    | "catch"
+                    | "return"
+                    | "with"
+                    | "super"
+                    | "function"
             ) {
                 return None;
             }
@@ -765,7 +818,11 @@ fn ts_const(s: &[char], k: usize) -> Option<Cand> {
         let (w2, e2) = word(s, r2);
         !w2.is_empty() && s[skip_ws(s, e2)..].starts_with(&['=', '>'])
     };
-    arrow.then_some(Cand { kind: "const", name, arrow: true })
+    arrow.then_some(Cand {
+        kind: "const",
+        name,
+        arrow: true,
+    })
 }
 
 fn detect_ts(s: &[char], col: usize, in_class: bool) -> Option<Cand> {
@@ -786,24 +843,40 @@ fn detect_ts(s: &[char], col: usize, in_class: bool) -> Option<Cand> {
     let k = skip_ws(s, e);
     match w.as_str() {
         "function" => {
-            let k = if s.get(k) == Some(&'*') { skip_ws(s, k + 1) } else { k };
+            let k = if s.get(k) == Some(&'*') {
+                skip_ws(s, k + 1)
+            } else {
+                k
+            };
             cand("function", word(s, k).0)
         }
         "class" => {
             let name = word(s, k).0;
-            if matches!(name.as_str(), "extends" | "implements") { None } else { cand("class", name) }
+            if matches!(name.as_str(), "extends" | "implements") {
+                None
+            } else {
+                cand("class", name)
+            }
         }
         "interface" => cand("interface", word(s, k).0),
         "enum" => cand("enum", word(s, k).0),
         "const" => {
             let (w2, e2) = word(s, k);
-            if w2 == "enum" { cand("enum", word(s, skip_ws(s, e2)).0) } else { ts_const(s, k) }
+            if w2 == "enum" {
+                cand("enum", word(s, skip_ws(s, e2)).0)
+            } else {
+                ts_const(s, k)
+            }
         }
         "let" | "var" => ts_const(s, k),
         "type" => {
             let (name, ne) = word(s, k);
             let after = s.get(skip_ws(s, ne)).copied();
-            if matches!(after, Some('=' | '<')) { cand("type", name) } else { None }
+            if matches!(after, Some('=' | '<')) {
+                cand("type", name)
+            } else {
+                None
+            }
         }
         _ => None,
     }
@@ -836,7 +909,9 @@ fn detect_rust(doc: &Doc, ln: usize, col: usize) -> Option<Cand> {
         "mod" => "mod",
         "type" => "type",
         "impl" => return rust_impl(doc, ln, k),
-        "macro_rules" if s.get(e) == Some(&'!') => return cand("macro_rules", word(s, skip_ws(s, e + 1)).0),
+        "macro_rules" if s.get(e) == Some(&'!') => {
+            return cand("macro_rules", word(s, skip_ws(s, e + 1)).0);
+        }
         _ => return None,
     };
     cand(kind, word(s, k).0)
@@ -845,11 +920,19 @@ fn detect_rust(doc: &Doc, ln: usize, col: usize) -> Option<Cand> {
 /// The name of an `impl`: the text after its own generics, up to `{` or `where`.
 fn rust_impl(doc: &Doc, ln: usize, k: usize) -> Option<Cand> {
     let first = impl_text(doc, ln, k);
-    let name = if first.is_empty() && ln + 1 < doc.len() { impl_text(doc, ln + 1, 0) } else { first };
+    let name = if first.is_empty() && ln + 1 < doc.len() {
+        impl_text(doc, ln + 1, 0)
+    } else {
+        first
+    };
     if name.is_empty() {
         return None;
     }
-    Some(Cand { kind: "impl", name, arrow: false })
+    Some(Cand {
+        kind: "impl",
+        name,
+        arrow: false,
+    })
 }
 
 fn impl_text(doc: &Doc, ln: usize, from: usize) -> String {
@@ -871,9 +954,15 @@ fn impl_text(doc: &Doc, ln: usize, from: usize) -> String {
         }
     }
     let p = p.min(o.len());
-    let stop = m[p..].iter().position(|&c| c == '{').map_or(o.len(), |x| p + x);
+    let stop = m[p..]
+        .iter()
+        .position(|&c| c == '{')
+        .map_or(o.len(), |x| p + x);
     let text: String = o[p..stop].iter().collect();
-    let words: Vec<&str> = text.split_whitespace().take_while(|w| *w != "where").collect();
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .take_while(|w| *w != "where")
+        .collect();
     words.join(" ")
 }
 
@@ -888,7 +977,11 @@ fn detect_go(s: &[char], col: usize) -> Option<Cand> {
             }
             let (name, ne) = word(s, k);
             let after = s.get(skip_ws(s, ne)).copied();
-            if matches!(after, Some('(' | '[')) { cand("func", name) } else { None }
+            if matches!(after, Some('(' | '[')) {
+                cand("func", name)
+            } else {
+                None
+            }
         }
         "type" => cand("type", word(s, k).0),
         _ => None,
@@ -988,8 +1081,9 @@ fn detect_css(doc: &Doc, ln: usize, col: usize) -> Option<Cand> {
     if m.get(col) == Some(&'}') {
         return None;
     }
-    let brace_at =
-        |line: &[char], from: usize| (from..line.len()).find(|&p| line[p] == '{' && !(p > 0 && line[p - 1] == '#'));
+    let brace_at = |line: &[char], from: usize| {
+        (from..line.len()).find(|&p| line[p] == '{' && !(p > 0 && line[p - 1] == '#'))
+    };
     if let Some(p) = brace_at(m, col) {
         let prelude: String = o[col..p].iter().collect();
         let prelude = prelude.trim();
@@ -1046,7 +1140,11 @@ fn detect_shell(s: &[char], col: usize) -> Option<Cand> {
         }
         return None;
     }
-    if e > j && s.get(k) == Some(&'(') && s.get(skip_ws(s, k + 1)) == Some(&')') && !first.starts_with('-') {
+    if e > j
+        && s.get(k) == Some(&'(')
+        && s.get(skip_ws(s, k + 1)) == Some(&')')
+        && !first.starts_with('-')
+    {
         return cand("function", first);
     }
     None
@@ -1135,7 +1233,11 @@ fn find_end(doc: &Doc, lang: Lang, kind: &str, ln: usize, col: usize, budget: &m
                             open = false;
                             paren = 0;
                         } else {
-                            return End { line: l, arrow, opened: true };
+                            return End {
+                                line: l,
+                                arrow,
+                                opened: true,
+                            };
                         }
                     }
                 }
@@ -1147,7 +1249,13 @@ fn find_end(doc: &Doc, lang: Lang, kind: &str, ln: usize, col: usize, budget: &m
                         open = true;
                         brace = 1;
                     }
-                    ';' if paren == 0 => return End { line: l, arrow, opened: false },
+                    ';' if paren == 0 => {
+                        return End {
+                            line: l,
+                            arrow,
+                            opened: false,
+                        };
+                    }
                     '=' if paren == 0 && line.get(k + 1) == Some(&'>') => {
                         arrow = true;
                         k += 1;
@@ -1158,14 +1266,26 @@ fn find_end(doc: &Doc, lang: Lang, kind: &str, ln: usize, col: usize, budget: &m
             k += 1;
         }
         if !open && paren == 0 && asi && line_complete(doc, l) {
-            return End { line: l, arrow, opened: false };
+            return End {
+                line: l,
+                arrow,
+                opened: false,
+            };
         }
         if !open && l - ln >= max_head {
-            return End { line: ln, arrow, opened: false };
+            return End {
+                line: ln,
+                arrow,
+                opened: false,
+            };
         }
         l += 1;
     }
-    End { line: if open { n.saturating_sub(1) } else { ln }, arrow, opened: open }
+    End {
+        line: if open { n.saturating_sub(1) } else { ln },
+        arrow,
+        opened: open,
+    }
 }
 
 /// The end of the decorators (or annotations) that start at `(ln, col)`: the line and column of
@@ -1213,7 +1333,11 @@ fn skip_decorators(doc: &Doc, ln: usize, col: usize) -> Option<(usize, usize)> {
 
 fn scan_brace(lang: Lang, text: &str) -> Vec<Symbol> {
     let orig = normalize(text);
-    let masked = if lang == Lang::Shell { mask_shell(&orig) } else { mask_brace(&orig, lang) };
+    let masked = if lang == Lang::Shell {
+        mask_shell(&orig)
+    } else {
+        mask_brace(&orig, lang)
+    };
     let doc = Doc::new(orig, masked);
     let n = doc.len();
 
@@ -1241,7 +1365,10 @@ fn scan_brace(lang: Lang, text: &str) -> Vec<Symbol> {
     let mut stack: Vec<(usize, usize)> = Vec::new(); // (symbol index, brace depth of its line)
     let mut pending: Option<usize> = None;
     for ln in 0..n {
-        while stack.last().is_some_and(|&(si, _)| symbols[si].end < ln + 1) {
+        while stack
+            .last()
+            .is_some_and(|&(si, _)| symbols[si].end < ln + 1)
+        {
             stack.pop();
         }
         if !paren0[ln] {
@@ -1271,7 +1398,9 @@ fn scan_brace(lang: Lang, text: &str) -> Vec<Symbol> {
         }
         let host: Option<String> = stack
             .last()
-            .filter(|&&(si, base)| hosts_methods(lang, &symbols[si].kind) && brace_at[ln] == base + 1)
+            .filter(|&&(si, base)| {
+                hosts_methods(lang, &symbols[si].kind) && brace_at[ln] == base + 1
+            })
             .map(|&(si, _)| symbols[si].name.clone());
         let found = detect(lang, &doc, ln, col, host.as_deref());
         let taken = pending.take();
@@ -1446,7 +1575,9 @@ fn scan_python(text: &str) -> Vec<Symbol> {
             continue;
         }
         let taken = pending.take();
-        let Some((kind, name)) = py_header(m, c0) else { continue };
+        let Some((kind, name)) = py_header(m, c0) else {
+            continue;
+        };
         let indent = indent_width(m);
         let mut last = ln;
         for l in ln + 1..n {
@@ -1468,7 +1599,13 @@ fn scan_python(text: &str) -> Vec<Symbol> {
             start = start.max(symbols[pi].start - 1);
             last = last.min(symbols[pi].end - 1);
         }
-        symbols.push(Symbol { kind: kind.to_string(), name, start: start + 1, end: last + 1, depth: stack.len() });
+        symbols.push(Symbol {
+            kind: kind.to_string(),
+            name,
+            start: start + 1,
+            end: last + 1,
+            depth: stack.len(),
+        });
         stack.push(symbols.len() - 1);
     }
     symbols
@@ -1505,13 +1642,20 @@ fn heading_of(t: &str) -> Option<(usize, String)> {
 }
 
 fn scan_markdown(text: &str) -> Vec<Symbol> {
-    let lines: Vec<&str> = text.strip_prefix('\u{feff}').unwrap_or(text).lines().collect();
+    let lines: Vec<&str> = text
+        .strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .lines()
+        .collect();
     let n = lines.len();
     let mut heads: Vec<(usize, usize, String)> = Vec::new();
     let mut fence: Option<(char, usize)> = None;
     let mut i = 0;
     if lines.first().map(|l| l.trim_end()) == Some("---")
-        && let Some(k) = lines.iter().skip(1).position(|l| matches!(l.trim_end(), "---" | "..."))
+        && let Some(k) = lines
+            .iter()
+            .skip(1)
+            .position(|l| matches!(l.trim_end(), "---" | "..."))
     {
         i = k + 2;
     }
@@ -1523,7 +1667,9 @@ fn scan_markdown(text: &str) -> Vec<Symbol> {
             if let Some((ch, len)) = fence_marker(t) {
                 match fence {
                     None => fence = Some((ch, len)),
-                    Some((fc, fl)) if ch == fc && len >= fl && t[len..].trim().is_empty() => fence = None,
+                    Some((fc, fl)) if ch == fc && len >= fl && t[len..].trim().is_empty() => {
+                        fence = None;
+                    }
                     _ => {}
                 }
             } else if fence.is_none()
@@ -1537,7 +1683,10 @@ fn scan_markdown(text: &str) -> Vec<Symbol> {
     let mut symbols: Vec<Symbol> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     for (k, (level, ln, name)) in heads.iter().enumerate() {
-        let next = heads[k + 1..].iter().find(|h| h.0 <= *level).map_or(n, |h| h.1);
+        let next = heads[k + 1..]
+            .iter()
+            .find(|h| h.0 <= *level)
+            .map_or(n, |h| h.1);
         let mut end = next - 1;
         while end > *ln && lines[end].trim().is_empty() {
             end -= 1;

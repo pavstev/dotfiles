@@ -1,4 +1,4 @@
-//! harness_stats: measure Claude Code sessions from local transcripts.
+//! `harness_stats`: measure Claude Code sessions from local transcripts.
 
 use agent_config::guard_checks::{Fire, Gate, REGISTRY, expanduser, fire_log_path, read_fire_log};
 use agent_config::paths;
@@ -39,18 +39,30 @@ $TMPDIR/harness_stats.json. guard reads the guard's fire log instead
 
 const INTERRUPT: &str = "[Request interrupted by user";
 const POLL_TOOLS: [&str; 3] = ["ScheduleWakeup", "CronCreate", "Monitor"];
+/// Commands whose first two words name the action (`git push`, not just `git`).
+const TWO: [&str; 13] = [
+    "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node", "make",
+    "cargo",
+];
 
 static CORRECTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)\b(why did you|that'?s wrong|is wrong|again\?|you didn'?t|not what i (asked|wanted|said)|ugh|wtf|still (not|broken|wrong|failing)|as i said|i said|i told you|i already (said|told))\b",
     )
-    .unwrap()
+    .expect("the literal regex is valid")
 });
-static HANDOFF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"Read \S+\.md and do it").unwrap());
-static CD_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:cd [^&;]+(?:&&|;)\s*)+").unwrap());
-static PATHS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/private/tmp/\S+|/Users/[^\s/]+/\S*").unwrap());
-static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+").unwrap());
-static PATHS_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^paths:").unwrap());
+static HANDOFF: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Read \S+\.md and do it").expect("the literal regex is valid"));
+static CD_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:cd [^&;]+(?:&&|;)\s*)+").expect("the literal regex is valid")
+});
+static PATHS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"/private/tmp/\S+|/Users/[^\s/]+/\S*").expect("the literal regex is valid")
+});
+static DIGITS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d+").expect("the literal regex is valid"));
+static PATHS_KEY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^paths:").expect("the literal regex is valid"));
 
 static NULL: Value = Value::Null;
 static EMPTY: LazyLock<Value> = LazyLock::new(|| Value::Object(Map::new()));
@@ -65,10 +77,20 @@ macro_rules! out {
 // ---------------------------------------------------------------------------
 
 fn default_out() -> String {
-    let tmp = std::env::var("TMPDIR").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        if cfg!(windows) { std::env::temp_dir().to_string_lossy().into_owned() } else { "/tmp".to_string() }
-    });
-    Path::new(&tmp).join("harness_stats.json").to_string_lossy().into_owned()
+    let tmp = std::env::var("TMPDIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                std::env::temp_dir().to_string_lossy().into_owned()
+            } else {
+                "/tmp".to_string()
+            }
+        });
+    Path::new(&tmp)
+        .join("harness_stats.json")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
@@ -77,7 +99,11 @@ fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
 
 /// `x or {}` for an object-ish value.
 fn or_empty(v: &Value) -> &Value {
-    if truthy(v) && v.is_object() { v } else { &EMPTY }
+    if truthy(v) && v.is_object() {
+        v
+    } else {
+        &EMPTY
+    }
 }
 
 fn key_str(v: &Value) -> String {
@@ -87,9 +113,20 @@ fn key_str(v: &Value) -> String {
     }
 }
 
+/// A float as an `i64`; out of range values saturate and NaN gives 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float to int cast saturates and maps NaN to 0, which is the wanted result"
+)]
+fn f64_to_i64(x: f64) -> i64 {
+    x as i64
+}
+
 fn as_i(v: &Value) -> i64 {
     match v {
-        Value::Number(n) => n.as_i64().unwrap_or_else(|| n.as_f64().unwrap_or(0.0) as i64),
+        Value::Number(n) => n
+            .as_i64()
+            .unwrap_or_else(|| f64_to_i64(n.as_f64().unwrap_or(0.0))),
         _ => 0,
     }
 }
@@ -100,7 +137,11 @@ fn pychars(s: &str, n: usize) -> String {
 
 /// Python `s[:n]` for a signed n.
 fn slice_end(len: usize, n: i64) -> usize {
-    if n >= 0 { (n as usize).min(len) } else { (len as i64 + n).max(0) as usize }
+    if n >= 0 {
+        usize::try_from(n).map_or(len, |n| n.min(len))
+    } else {
+        len.saturating_sub(usize::try_from(n.unsigned_abs()).unwrap_or(usize::MAX))
+    }
 }
 
 /// Python round(x, nd) for nd >= 0 (correctly rounded, ties to even on the exact value).
@@ -110,7 +151,7 @@ fn pyround(x: f64, nd: usize) -> f64 {
 
 /// Python round(x) -> int.
 fn pyround0(x: f64) -> i64 {
-    x.round_ties_even() as i64
+    f64_to_i64(x.round_ties_even())
 }
 
 /// bytes -> str like open(errors="ignore"): invalid sequences are dropped.
@@ -125,7 +166,9 @@ fn decode_ignore(bytes: &[u8]) -> String {
             }
             Err(e) => {
                 let (ok, after) = rest.split_at(e.valid_up_to());
-                out.push_str(std::str::from_utf8(ok).unwrap());
+                out.push_str(
+                    std::str::from_utf8(ok).expect("valid_up_to marks a valid UTF-8 prefix"),
+                );
                 let skip = e.error_len().unwrap_or(after.len());
                 rest = &after[skip..];
             }
@@ -153,7 +196,9 @@ impl Dt {
     fn isoformat(&self) -> String {
         let local = self.micros + self.off * 1_000_000;
         let us = local.rem_euclid(1_000_000);
-        let wall = jiff::Timestamp::from_microsecond(local).unwrap_or_default().to_zoned(jiff::tz::TimeZone::UTC);
+        let wall = jiff::Timestamp::from_microsecond(local)
+            .unwrap_or_default()
+            .to_zoned(jiff::tz::TimeZone::UTC);
         let mut s = wall.datetime().strftime("%Y-%m-%dT%H:%M:%S").to_string();
         if us != 0 {
             let _ = write!(s, ".{us:06}");
@@ -255,8 +300,12 @@ struct Scan {
 
 fn scan(path: &Path, is_sub: bool) -> Scan {
     let mut r: Counter<String> = Counter::new();
-    let (mut tools, mut skills, mut bash, mut errors) =
-        (Counter::new(), Counter::new(), Counter::new(), Counter::new());
+    let (mut tools, mut skills, mut bash, mut errors) = (
+        Counter::new(),
+        Counter::new(),
+        Counter::new(),
+        Counter::new(),
+    );
     let mut agents: Vec<Value> = vec![];
     let mut times: Vec<Dt> = vec![];
     let mut seen: HashSet<String> = HashSet::new();
@@ -264,7 +313,8 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
     let (mut first_ctx, mut peak): (Option<i64>, i64) = (None, 0);
     let mut names: HashMap<String, String> = HashMap::new();
     let mut version = Value::Null;
-    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let src: Box<dyn Read> =
+        fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
     let mut reader = BufReader::new(src);
     let mut buf: Vec<u8> = Vec::new();
     loop {
@@ -273,7 +323,9 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
             break;
         }
         let text = decode_line(&buf);
-        let Some(o) = Line::parse_str(text.strip_suffix('\n').unwrap_or(&text)) else { continue };
+        let Some(o) = Line::parse_str(text.strip_suffix('\n').unwrap_or(&text)) else {
+            continue;
+        };
         if let Some(d) = o.timestamp.as_str().and_then(parse_ts) {
             times.push(d);
         }
@@ -288,7 +340,12 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                 _ => {}
             },
             "assistant" => {
-                for c in msg.content.blocks().iter().filter(|c| c.kind.as_str() == Some("tool_use")) {
+                for c in msg
+                    .content
+                    .blocks()
+                    .iter()
+                    .filter(|c| c.kind.as_str() == Some("tool_use"))
+                {
                     let n = c.name.or_empty().to_string();
                     let inp = or_empty(&c.input);
                     names.insert(c.id.or_empty().to_string(), n.clone());
@@ -302,7 +359,11 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                         skills.add(sk, 1);
                     } else if n == "Agent" || n == "Task" {
                         let st = get(inp, "subagent_type");
-                        let ty = if truthy(st) { st.clone() } else { Value::from("general-purpose") };
+                        let ty = if truthy(st) {
+                            st.clone()
+                        } else {
+                            Value::from("general-purpose")
+                        };
                         let plen = match get(inp, "prompt") {
                             Value::String(s) => s.chars().count(),
                             Value::Array(a) => a.len(),
@@ -316,13 +377,13 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                         m.insert("plen".into(), Value::from(plen));
                         agents.push(Value::Object(m));
                     } else if n == "Bash" {
-                        let cmd_s = get(inp, "command").as_str().unwrap_or("").trim().to_string();
+                        let cmd_s = get(inp, "command")
+                            .as_str()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
                         let stripped = CD_PREFIX.replace(&cmd_s, "").into_owned();
                         let cmd: Vec<&str> = stripped.split_whitespace().collect();
-                        const TWO: [&str; 13] = [
-                            "git", "npm", "pnpm", "bun", "go", "uv", "npx", "gh", "wrangler", "python3", "node",
-                            "make", "cargo",
-                        ];
                         if !cmd.is_empty() {
                             let k = if TWO.contains(&cmd[0]) {
                                 cmd.iter().take(2).copied().collect::<Vec<_>>().join(" ")
@@ -334,19 +395,21 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                     }
                 }
                 let mid = msg.id.or_empty();
-                let Some(u) = msg.usage.0.as_ref().filter(|u| !u.is_empty()) else { continue };
+                let Some(u) = msg.usage.0.as_ref().filter(|u| !u.is_empty()) else {
+                    continue;
+                };
                 if seen.contains(mid) || msg.model.as_str() == Some("<synthetic>") {
                     continue;
                 }
                 seen.insert(mid.to_string());
-                let inp_t = u.input_tokens.get() as i64;
-                let cr = u.cache_read_input_tokens.get() as i64;
-                let cc = u.cache_creation_input_tokens.get() as i64;
+                let inp_t = f64_to_i64(u.input_tokens.get());
+                let cr = f64_to_i64(u.cache_read_input_tokens.get());
+                let cc = f64_to_i64(u.cache_creation_input_tokens.get());
                 let ctx = inp_t + cr + cc;
                 let mk = msg.model.as_str().map(str::to_string);
                 models.add(mk, 1);
                 r.add("calls".into(), 1);
-                r.add("out".into(), u.output_tokens.get() as i64);
+                r.add("out".into(), f64_to_i64(u.output_tokens.get()));
                 r.add("fresh_in".into(), inp_t + cc);
                 r.add("cache_read".into(), cr);
                 if first_ctx.is_none() && ctx != 0 {
@@ -356,10 +419,12 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
             }
             "user" => {
                 let blocks = msg.content.blocks();
-                let is_result = |x: &&Block| x.kind.as_str() == Some("tool_result");
+                let is_result = |x: &&Block<'_>| x.kind.as_str() == Some("tool_result");
                 if blocks.iter().any(|x| is_result(&x)) {
                     for x in blocks.iter().filter(is_result).filter(|x| x.is_error.0) {
-                        let nm = names.get(x.tool_use_id.or_empty()).map_or("?", String::as_str);
+                        let nm = names
+                            .get(x.tool_use_id.or_empty())
+                            .map_or("?", String::as_str);
                         let e = match &x.content {
                             Body::Text(s) => norm_text(nm, s),
                             Body::Json(v) => norm_error(nm, v),
@@ -381,7 +446,9 @@ fn scan(path: &Path, is_sub: bool) -> Scan {
                     r.add("interrupts".into(), 1);
                     continue;
                 }
-                if t.trim().is_empty() || (t.trim_start().starts_with('<') && !t.contains("command-name")) {
+                if t.trim().is_empty()
+                    || (t.trim_start().starts_with('<') && !t.contains("command-name"))
+                {
                     continue;
                 }
                 r.add("prompts".into(), 1);
@@ -430,9 +497,17 @@ fn fail(msg: &str) -> ! {
 }
 
 fn cmd_collect(a: &CollectArgs) {
-    let since =
-        if a.since.contains('T') { parse_ts(&a.since) } else { parse_ts(&format!("{}T00:00:00+00:00", a.since)) }
-            .unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{}'", a.since)));
+    let since = if a.since.contains('T') {
+        parse_ts(&a.since)
+    } else {
+        parse_ts(&format!("{}T00:00:00+00:00", a.since))
+    }
+    .unwrap_or_else(|| {
+        fail(&format!(
+            "ValueError: Invalid isoformat string: '{}'",
+            a.since
+        ))
+    });
     let h = paths::home();
     let projects = h.join(".claude").join("projects");
     let meta = desktop_meta(&desktop_dir(Path::new(&h)));
@@ -444,20 +519,26 @@ fn cmd_collect(a: &CollectArgs) {
                 continue;
             }
             let sid = n[..n.len() - 6].to_string();
-            let mtime = fs::metadata(&f).and_then(|m| m.modified()).ok().map(|t| match t.duration_since(UNIX_EPOCH) {
-                Ok(d) => d.as_secs_f64(),
-                Err(e) => -e.duration().as_secs_f64(),
+            let mtime = fs::metadata(&f).and_then(|m| m.modified()).ok().map(|t| {
+                match t.duration_since(UNIX_EPOCH) {
+                    Ok(d) => d.as_secs_f64(),
+                    Err(e) => -e.duration().as_secs_f64(),
+                }
             });
             let Some(mtime) = mtime else { continue };
             if a.exclude.contains(&sid) || mtime < since.timestamp() {
                 continue;
             }
             let s = scan(&f, false);
-            if s.times.is_empty() || s.times[0].micros < since.micros || s.r.get(&"calls".to_string()) == 0 {
+            if s.times.is_empty()
+                || s.times[0].micros < since.micros
+                || s.r.get(&"calls".to_string()) == 0
+            {
                 continue;
             }
             let folder = fname(&pdir);
-            let (mut sn, mut scalls, mut sfresh, mut scache, mut sout, mut serr) = (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
+            let (mut sn, mut scalls, mut sfresh, mut scache, mut sout, mut serr) =
+                (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
             let mut smodels: Counter<String> = Counter::new();
             let mut seffort: Counter<String> = Counter::new();
             let mut spawns: Vec<Value> = vec![];
@@ -475,19 +556,40 @@ fn cmd_collect(a: &CollectArgs) {
                 serr += ss.r.get(&"tool_errors".to_string());
                 errors.update(&ss.errors);
                 let mut md = Value::Object(Map::new());
-                let mp = format!("{}.meta.json", &sf.to_string_lossy()[..sf.to_string_lossy().len() - 6]);
+                let mp = format!(
+                    "{}.meta.json",
+                    &sf.to_string_lossy()[..sf.to_string_lossy().len() - 6]
+                );
                 if let Ok(b) = fs::read(&mp)
                     && let Ok(v) = serde_json::from_slice::<Value>(&b)
                 {
                     let m = get(&v, "model");
-                    smodels.add(if truthy(m) { key_str(m) } else { "inherit".into() }, 1);
+                    smodels.add(
+                        if truthy(m) {
+                            key_str(m)
+                        } else {
+                            "inherit".into()
+                        },
+                        1,
+                    );
                     let e = get(&v, "effort");
-                    seffort.add(if truthy(e) { key_str(e) } else { "unset".into() }, 1);
+                    seffort.add(
+                        if truthy(e) {
+                            key_str(e)
+                        } else {
+                            "unset".into()
+                        },
+                        1,
+                    );
                     md = v;
                 }
                 if ss.first_ctx != 0 {
                     let at = get(&md, "agentType");
-                    let at = if truthy(at) { at.clone() } else { Value::from("?") };
+                    let at = if truthy(at) {
+                        at.clone()
+                    } else {
+                        Value::from("?")
+                    };
                     spawns.push(Value::Array(vec![at, Value::from(ss.first_ctx)]));
                 }
             }
@@ -503,30 +605,52 @@ fn cmd_collect(a: &CollectArgs) {
             sub.insert("effort".into(), counter_to_json(&seffort, None));
             sub.insert("spawns".into(), Value::Array(spawns));
             let first = s.times[0];
-            let last = *s.times.last().unwrap();
+            let last = *s
+                .times
+                .last()
+                .expect("sessions without times were skipped above");
             let mut row = Map::new();
             row.insert("sid".into(), Value::from(sid.clone()));
-            row.insert("project".into(), Value::from(project_name(&paths::home().to_string_lossy(), &folder)));
+            row.insert(
+                "project".into(),
+                Value::from(project_name(&paths::home().to_string_lossy(), &folder)),
+            );
             row.insert("folder".into(), Value::from(folder.clone()));
             row.insert("start".into(), Value::from(first.isoformat()));
             row.insert("end".into(), Value::from(last.isoformat()));
             row.insert("title".into(), m.map_or(Value::Null, |m| m.title.clone()));
-            row.insert("archived".into(), m.map_or(Value::Null, |m| Value::Bool(m.archived)));
+            row.insert(
+                "archived".into(),
+                m.map_or(Value::Null, |m| Value::Bool(m.archived)),
+            );
             row.insert("effort".into(), m.map_or(Value::Null, |m| m.effort.clone()));
             row.insert("cli".into(), s.version.clone());
             row.insert(
                 "model".into(),
-                s.models.most_common(Some(1)).first().and_then(|(k, _)| k.clone()).map_or(Value::Null, Value::from),
+                s.models
+                    .most_common(Some(1))
+                    .first()
+                    .and_then(|(k, _)| k.clone())
+                    .map_or(Value::Null, Value::from),
             );
             row.insert("first_ctx".into(), Value::from(s.first_ctx));
             row.insert("peak_ctx".into(), Value::from(s.peak));
             row.insert("active_min".into(), fnum(pyround(s.active_s / 60.0, 1)));
-            row.insert("wall_min".into(), fnum(pyround((last.micros - first.micros) as f64 / 1e6 / 60.0, 1)));
+            row.insert(
+                "wall_min".into(),
+                fnum(pyround((last.micros - first.micros) as f64 / 1e6 / 60.0, 1)),
+            );
             row.insert("stats".into(), counter_to_json(&s.r, None));
             row.insert("tools".into(), counter_to_json(&s.tools, None));
             row.insert("skills".into(), counter_to_json(&s.skills, None));
-            row.insert("bash".into(), counter_to_json(&s.bash, Some(&s.bash.most_common(Some(15)))));
-            row.insert("errors".into(), counter_to_json(&errors, Some(&errors.most_common(Some(20)))));
+            row.insert(
+                "bash".into(),
+                counter_to_json(&s.bash, Some(&s.bash.most_common(Some(15)))),
+            );
+            row.insert(
+                "errors".into(),
+                counter_to_json(&errors, Some(&errors.most_common(Some(20)))),
+            );
             row.insert("agent_calls".into(), Value::Array(s.agents.clone()));
             row.insert("sub".into(), Value::Object(sub));
             rows.push(Value::Object(row));
@@ -553,24 +677,70 @@ fn sv(a: &[&str]) -> Vec<String> {
 fn cmd_cuts(a: &CutsArgs) {
     let outp: String;
     if let Some(gh) = &a.gh {
-        let since = if a.since.contains('T') { a.since.clone() } else { format!("{}T00:00:00Z", a.since) };
+        let since = if a.since.contains('T') {
+            a.since.clone()
+        } else {
+            format!("{}T00:00:00Z", a.since)
+        };
         let args = vec![
             "api".to_string(),
-            format!("repos/{}/commits?since={}&path={}&per_page=100", gh, since, a.path),
+            format!(
+                "repos/{}/commits?since={}&path={}&per_page=100",
+                gh, since, a.path
+            ),
             "--paginate".into(),
             "--jq".into(),
-            r#".[] | "\(.commit.committer.date) \(.sha[0:7]) \(.commit.message|split("\n")[0])""#.into(),
+            r#".[] | "\(.commit.committer.date) \(.sha[0:7]) \(.commit.message|split("\n")[0])""#
+                .into(),
         ];
         outp = run_lines("gh", &args);
     } else {
         let repo = expanduser(&a.repo);
-        outp = run_lines("git", &sv(&["-C", &repo, "log", "--since", &a.since, "--format=%cI %h %s", "--", &a.path]));
-        let root0 = run_lines("git", &sv(&["-C", &repo, "log", "--reverse", "--format=%cI", "--max-count=1"]));
-        let first_s = run_lines("git", &sv(&["-C", &repo, "rev-list", "--max-parents=0", "--format=%cI", "HEAD"]));
+        outp = run_lines(
+            "git",
+            &sv(&[
+                "-C",
+                &repo,
+                "log",
+                "--since",
+                &a.since,
+                "--format=%cI %h %s",
+                "--",
+                &a.path,
+            ]),
+        );
+        let root0 = run_lines(
+            "git",
+            &sv(&[
+                "-C",
+                &repo,
+                "log",
+                "--reverse",
+                "--format=%cI",
+                "--max-count=1",
+            ]),
+        );
+        let first_s = run_lines(
+            "git",
+            &sv(&[
+                "-C",
+                &repo,
+                "rev-list",
+                "--max-parents=0",
+                "--format=%cI",
+                "HEAD",
+            ]),
+        );
         let first: Vec<&str> = first_s.lines().collect();
         let root = first.last().map_or(root0, ToString::to_string);
-        out!("Repo history starts {}. If that is inside your window, the older pushes are in another repo:", root);
-        out!("  gh repo list --limit 50   then   harness_stats cuts --gh OWNER/REPO --since {}\n", a.since);
+        out!(
+            "Repo history starts {}. If that is inside your window, the older pushes are in another repo:",
+            root
+        );
+        out!(
+            "  gh repo list --limit 50   then   harness_stats cuts --gh OWNER/REPO --since {}\n",
+            a.since
+        );
     }
     let mut commits: Vec<(Dt, String)> = vec![];
     for l in outp.lines() {
@@ -589,17 +759,29 @@ fn cmd_cuts(a: &CutsArgs) {
     let mut groups: Vec<Vec<(Dt, String)>> = vec![];
     for (t, s) in commits {
         match groups.last_mut() {
-            Some(g) if t.micros - g.last().unwrap().0.micros < 3 * 3600 * 1_000_000 => g.push((t, s)),
+            Some(g)
+                if g.last()
+                    .is_some_and(|l| t.micros - l.0.micros < 3 * 3600 * 1_000_000) =>
+            {
+                g.push((t, s));
+            }
             _ => groups.push(vec![(t, s)]),
         }
     }
     for g in &groups {
-        out!("{}  {:>2} commits  {}", g[0].0.isoformat(), g.len(), pychars(&g[0].1, 70));
+        out!(
+            "{}  {:>2} commits  {}",
+            g[0].0.isoformat(),
+            g.len(),
+            pychars(&g[0].1, 70)
+        );
         for (_, s) in g.iter().skip(1).take(3) {
             out!("    {}", pychars(s, 76));
         }
     }
-    out!("\nUse the first time of a group as --cut. Commits from an older history are missing here.");
+    out!(
+        "\nUse the first time of a group as --cut. Commits from an older history are missing here."
+    );
 }
 
 fn load(inp: &str) -> Vec<Value> {
@@ -634,7 +816,11 @@ impl Num {
 
 fn num_of(v: &Value) -> Option<Num> {
     match v {
-        Value::Number(n) => Some(if let Some(i) = n.as_i64() { Num::I(i) } else { Num::F(n.as_f64().unwrap_or(0.0)) }),
+        Value::Number(n) => Some(if let Some(i) = n.as_i64() {
+            Num::I(i)
+        } else {
+            Num::F(n.as_f64().unwrap_or(0.0))
+        }),
         _ => None,
     }
 }
@@ -645,9 +831,17 @@ fn med(xs: &[Num]) -> Num {
         return Num::I(0);
     }
     let mut v = xs.to_vec();
-    v.sort_by(|a, b| a.f().partial_cmp(&b.f()).unwrap_or(std::cmp::Ordering::Equal));
+    v.sort_by(|a, b| {
+        a.f()
+            .partial_cmp(&b.f())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let n = v.len();
-    if n % 2 == 1 { v[n / 2] } else { Num::F(f64::midpoint(v[n / 2 - 1].f(), v[n / 2].f())) }
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        Num::F(f64::midpoint(v[n / 2 - 1].f(), v[n / 2].f()))
+    }
 }
 
 fn nums<'a, F: Fn(&'a Value) -> &'a Value>(rows: &[&'a Value], f: F) -> Vec<Num> {
@@ -675,54 +869,127 @@ fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
     } as f64;
     let agents: Vec<&Value> = rows
         .iter()
-        .flat_map(|r| get(r, "agent_calls").as_array().map(|a| a.iter().collect::<Vec<_>>()).unwrap_or_default())
+        .flat_map(|r| {
+            get(r, "agent_calls")
+                .as_array()
+                .map(|a| a.iter().collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
         .collect();
     let (fresh, cread) = (g("fresh_in"), g("cache_read"));
     let sub_calls: i64 = rows.iter().map(|r| as_i(get(get(r, "sub"), "calls"))).sum();
-    let ask: i64 = rows.iter().map(|r| as_i(get(get(r, "tools"), "AskUserQuestion"))).sum();
+    let ask: i64 = rows
+        .iter()
+        .map(|r| as_i(get(get(r, "tools"), "AskUserQuestion")))
+        .sum();
     let non0 = |x: usize| if x == 0 { 1.0 } else { x as f64 };
     let non0i = |x: i64| if x == 0 { 1.0 } else { x as f64 };
     let r1 = |x: f64| Num::F(pyround(x, 1)).show();
     let r0 = |x: f64| pyround0(x).to_string();
     let with_effort = agents.iter().filter(|c| truthy(get(c, "effort"))).count();
     let typed = agents.iter().filter(|c| truthy(get(c, "type"))).count();
-    let gp = agents.iter().filter(|c| get(c, "type").as_str() == Some("general-purpose")).count();
-    let vs: Vec<String> =
-        rows.iter().filter_map(|r| get(r, "cli").as_str().filter(|s| !s.is_empty()).map(ToString::to_string)).collect();
-    let versions = if vs.is_empty() {
-        "?".to_string()
-    } else {
-        format!("{}..{}", vs.iter().min().unwrap(), vs.iter().max().unwrap())
+    let gp = agents
+        .iter()
+        .filter(|c| get(c, "type").as_str() == Some("general-purpose"))
+        .count();
+    let vs: Vec<String> = rows
+        .iter()
+        .filter_map(|r| {
+            get(r, "cli")
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+        })
+        .collect();
+    let versions = match (vs.iter().min(), vs.iter().max()) {
+        (Some(lo), Some(hi)) => format!("{lo}..{hi}"),
+        _ => "?".to_string(),
     };
     let first_ctx = nums(rows, |r| get(r, "first_ctx"));
     let peak_ctx = nums(rows, |r| get(r, "peak_ctx"));
-    let prompts_per: Vec<Num> =
-        rows.iter().map(|r| num_of(get(get(r, "stats"), "prompts")).unwrap_or(Num::I(0))).collect();
+    let prompts_per: Vec<Num> = rows
+        .iter()
+        .map(|r| num_of(get(get(r, "stats"), "prompts")).unwrap_or(Num::I(0)))
+        .collect();
     vec![
         ("sessions", rows.len().to_string()),
-        ("archived", rows.iter().filter(|r| truthy(get(r, "archived"))).count().to_string()),
+        (
+            "archived",
+            rows.iter()
+                .filter(|r| truthy(get(r, "archived")))
+                .count()
+                .to_string(),
+        ),
         ("start ctx med K", r0(med(&first_ctx).f() / 1000.0)),
         ("peak ctx med K", r0(med(&peak_ctx).f() / 1000.0)),
-        ("peak > 500K", rows.iter().filter(|r| as_i(get(r, "peak_ctx")) > 500000).count().to_string()),
+        (
+            "peak > 500K",
+            rows.iter()
+                .filter(|r| as_i(get(r, "peak_ctx")) > 500_000)
+                .count()
+                .to_string(),
+        ),
         ("compactions", g("compactions").to_string()),
         ("prompts/session med", med(&prompts_per).show()),
-        ("questions/session", Num::F(pyround(ask as f64 / n, 2)).show()),
+        (
+            "questions/session",
+            Num::F(pyround(ask as f64 / n, 2)).show(),
+        ),
         ("questions/100 prompts", r1((100 * ask) as f64 / prompts)),
-        ("stops/100 prompts", r1((100 * g("interrupts")) as f64 / prompts)),
-        ("corrections/100 prompts", r1((100 * g("corrections")) as f64 / prompts)),
-        ("tool errors/100 calls", r1((100 * g("tool_errors")) as f64 / tools)),
+        (
+            "stops/100 prompts",
+            r1((100 * g("interrupts")) as f64 / prompts),
+        ),
+        (
+            "corrections/100 prompts",
+            r1((100 * g("corrections")) as f64 / prompts),
+        ),
+        (
+            "tool errors/100 calls",
+            r1((100 * g("tool_errors")) as f64 / tools),
+        ),
         ("hook denials", g("hook_denials").to_string()),
-        ("cache hit %", r0((100 * cread) as f64 / non0i(cread + fresh))),
-        ("wall min med", r0(med(&nums(rows, |r| get(r, "wall_min"))).f())),
-        ("active min med", r0(med(&nums(rows, |r| get(r, "active_min"))).f())),
-        ("subagents/session", r1(rows.iter().map(|r| as_i(get(get(r, "sub"), "n"))).sum::<i64>() as f64 / n)),
-        ("subagent share of calls %", r0((100 * sub_calls) as f64 / non0i(sub_calls + g("calls")))),
-        ("agent calls w/ effort %", r0((100 * with_effort) as f64 / non0(agents.len()))),
-        ("general-purpose spawns %", r0((100 * gp) as f64 / non0(typed))),
+        (
+            "cache hit %",
+            r0((100 * cread) as f64 / non0i(cread + fresh)),
+        ),
+        (
+            "wall min med",
+            r0(med(&nums(rows, |r| get(r, "wall_min"))).f()),
+        ),
+        (
+            "active min med",
+            r0(med(&nums(rows, |r| get(r, "active_min"))).f()),
+        ),
+        (
+            "subagents/session",
+            r1(rows
+                .iter()
+                .map(|r| as_i(get(get(r, "sub"), "n")))
+                .sum::<i64>() as f64
+                / n),
+        ),
+        (
+            "subagent share of calls %",
+            r0((100 * sub_calls) as f64 / non0i(sub_calls + g("calls"))),
+        ),
+        (
+            "agent calls w/ effort %",
+            r0((100 * with_effort) as f64 / non0(agents.len())),
+        ),
+        (
+            "general-purpose spawns %",
+            r0((100 * gp) as f64 / non0(typed)),
+        ),
         (
             "wait calls (Monitor, Cron, Wakeup)",
             rows.iter()
-                .map(|r| POLL_TOOLS.iter().map(|t| as_i(get(get(r, "tools"), t))).sum::<i64>())
+                .map(|r| {
+                    POLL_TOOLS
+                        .iter()
+                        .map(|t| as_i(get(get(r, "tools"), t)))
+                        .sum::<i64>()
+                })
                 .sum::<i64>()
                 .to_string(),
         ),
@@ -733,10 +1000,17 @@ fn summarize(rows: &[&Value]) -> Vec<(&'static str, String)> {
 
 type Groups<'a> = Vec<(String, Vec<&'a Value>)>;
 
-fn table(groups: &Groups) {
+fn table(groups: &Groups<'_>) {
     let keys: Vec<&String> = groups.iter().map(|(k, _)| k).collect();
-    let stats: Vec<Vec<(&'static str, String)>> = groups.iter().map(|(_, v)| summarize(v)).collect();
-    out!("| metric | {} |", keys.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" | "));
+    let stats: Vec<Vec<(&'static str, String)>> =
+        groups.iter().map(|(_, v)| summarize(v)).collect();
+    out!(
+        "| metric | {} |",
+        keys.iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ")
+    );
     out!("|---|{}", "---|".repeat(keys.len()));
     if let Some(first) = stats.first() {
         for (i, (m, _)) in first.iter().enumerate() {
@@ -749,10 +1023,15 @@ fn table(groups: &Groups) {
 fn periods<'a>(rows: &'a [Value], cut: &[String]) -> (Vec<Dt>, Groups<'a>) {
     let mut cuts: Vec<Dt> = cut
         .iter()
-        .map(|c| parse_ts(c).unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{c}'"))))
+        .map(|c| {
+            parse_ts(c)
+                .unwrap_or_else(|| fail(&format!("ValueError: Invalid isoformat string: '{c}'")))
+        })
         .collect();
     cuts.sort_by_key(|d| d.micros);
-    let mut groups: Groups = (0..=cuts.len()).map(|i| (format!("P{i}"), vec![])).collect();
+    let mut groups: Groups<'_> = (0..=cuts.len())
+        .map(|i| (format!("P{i}"), vec![]))
+        .collect();
     for r in rows {
         let st = parse_ts(get(r, "start").as_str().unwrap_or(""))
             .unwrap_or_else(|| fail("ValueError: Invalid isoformat string in row start"));
@@ -765,14 +1044,18 @@ fn periods<'a>(rows: &'a [Value], cut: &[String]) -> (Vec<Dt>, Groups<'a>) {
 fn periods_line(cuts: &[Dt]) -> String {
     format!(
         "Periods: P0 < {}\n",
-        cuts.iter().enumerate().map(|(i, c)| format!("P{} {}", i + 1, c.isoformat())).collect::<Vec<_>>().join(" <= ")
+        cuts.iter()
+            .enumerate()
+            .map(|(i, c)| format!("P{} {}", i + 1, c.isoformat()))
+            .collect::<Vec<_>>()
+            .join(" <= ")
     )
 }
 
 fn cmd_report(a: &ReportArgs) {
     let rows = load(&a.inp);
-    let groups: Groups = if a.by == "project" {
-        let mut g: Groups = vec![];
+    let groups: Groups<'_> = if a.by == "project" {
+        let mut g: Groups<'_> = vec![];
         for r in &rows {
             let p = key_str(get(r, "project"));
             match g.iter_mut().find(|(k, _)| *k == p) {
@@ -789,10 +1072,19 @@ fn cmd_report(a: &ReportArgs) {
         g
     };
     table(&groups);
-    out!("\nHigher is better: cache hit %, agent calls w/ effort %, from hand-off. Lower is better for the rest.");
-    let small: Vec<&str> = groups.iter().filter(|(_, v)| v.len() < 20).map(|(k, _)| k.as_str()).collect();
+    out!(
+        "\nHigher is better: cache hit %, agent calls w/ effort %, from hand-off. Lower is better for the rest."
+    );
+    let small: Vec<&str> = groups
+        .iter()
+        .filter(|(_, v)| v.len() < 20)
+        .map(|(k, _)| k.as_str())
+        .collect();
     if !small.is_empty() {
-        out!("\nEarly (under 20 sessions): {}. Read their numbers as a hint, not a result.", small.join(", "));
+        out!(
+            "\nEarly (under 20 sessions): {}. Read their numbers as a hint, not a result.",
+            small.join(", ")
+        );
     }
 }
 
@@ -806,7 +1098,10 @@ fn cmd_agents(a: &AgentsArgs) {
     for (k, rs) in &groups {
         let mut by: SpawnCtxByType = vec![];
         for r in rs {
-            let spawns = get(or_empty(get(r, "sub")), "spawns").as_array().cloned().unwrap_or_default();
+            let spawns = get(or_empty(get(r, "sub")), "spawns")
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
             for sp in spawns {
                 let Some(pair) = sp.as_array() else { continue };
                 if pair.len() < 2 {
@@ -823,7 +1118,10 @@ fn cmd_agents(a: &AgentsArgs) {
         data.push((k.clone(), by));
     }
     let find = |by: &Vec<(String, Vec<Num>)>, t: &str| -> Vec<Num> {
-        by.iter().find(|(k, _)| k == t).map(|(_, v)| v.clone()).unwrap_or_default()
+        by.iter()
+            .find(|(k, _)| k == t)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
     };
     let mut types: Vec<String> = vec![];
     for (_, by) in &data {
@@ -840,7 +1138,10 @@ fn cmd_agents(a: &AgentsArgs) {
     out!("{}", periods_line(&cuts));
     out!(
         "| agent type | {} |",
-        data.iter().map(|(k, _)| format!("{k} spawns (share) | {k} start K")).collect::<Vec<_>>().join(" | ")
+        data.iter()
+            .map(|(k, _)| format!("{k} spawns (share) | {k} start K"))
+            .collect::<Vec<_>>()
+            .join(" | ")
     );
     out!("|---|{}", "---|---|".repeat(data.len()));
     let n = slice_end(types.len(), a.top);
@@ -851,24 +1152,50 @@ fn cmd_agents(a: &AgentsArgs) {
             let total = if total == 0 { 1 } else { total };
             let xs = find(by, t);
             let share = pyround0(100.0 * xs.len() as f64 / total as f64);
-            let k = if xs.is_empty() { "-".to_string() } else { pyround0(med(&xs).f() / 1000.0).to_string() };
+            let k = if xs.is_empty() {
+                "-".to_string()
+            } else {
+                pyround0(med(&xs).f() / 1000.0).to_string()
+            };
             cells.push(format!("{} ({}%) | {}", xs.len(), share, k));
         }
         out!("| {} | {} |", t, cells.join(" | "));
     }
-    out!("\nSessions: {}", groups.iter().map(|(k, v)| format!("{} {}", k, v.len())).collect::<Vec<_>>().join(", "));
-    out!("Start K = median first-turn context of the spawn. Watch: general-purpose share should fall and");
-    out!("task-implementer / worker should rise after a dispatch change. Agents with a tools: list start near 15K.");
-    let small: Vec<&str> = groups.iter().filter(|(_, v)| v.len() < 20).map(|(k, _)| k.as_str()).collect();
+    out!(
+        "\nSessions: {}",
+        groups
+            .iter()
+            .map(|(k, v)| format!("{} {}", k, v.len()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    out!(
+        "Start K = median first-turn context of the spawn. Watch: general-purpose share should fall and"
+    );
+    out!(
+        "task-implementer / worker should rise after a dispatch change. Agents with a tools: list start near 15K."
+    );
+    let small: Vec<&str> = groups
+        .iter()
+        .filter(|(_, v)| v.len() < 20)
+        .map(|(k, _)| k.as_str())
+        .collect();
     if !small.is_empty() {
-        out!("Early (under 20 sessions): {}. Read their numbers as a hint, not a result.", small.join(", "));
+        out!(
+            "Early (under 20 sessions): {}. Read their numbers as a hint, not a result.",
+            small.join(", ")
+        );
     }
 }
 
 fn cmd_errors(a: &ErrorsArgs) {
     let rows: Vec<Value> = load(&a.inp)
         .into_iter()
-        .filter(|r| a.project.as_deref().is_none_or(|p| get(r, "project").as_str() == Some(p)))
+        .filter(|r| {
+            a.project
+                .as_deref()
+                .is_none_or(|p| get(r, "project").as_str() == Some(p))
+        })
         .collect();
     if a.daily {
         let mut days: Vec<(String, Counter<String>)> = vec![];
@@ -882,14 +1209,25 @@ fn cmd_errors(a: &ErrorsArgs) {
             }
             total.update(&e);
         }
-        let top: Vec<String> = total.most_common(Some(a.top)).into_iter().map(|(e, _)| e).collect();
+        let top: Vec<String> = total
+            .most_common(Some(a.top))
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect();
         days.sort_by(|x, y| x.0.cmp(&y.0));
-        let dates: Vec<String> = days.iter().map(|(d, _)| d.chars().skip(5).collect()).collect();
+        let dates: Vec<String> = days
+            .iter()
+            .map(|(d, _)| d.chars().skip(5).collect())
+            .collect();
         out!("| cluster | {} |", dates.join(" | "));
         out!("|---|{}", "---|".repeat(days.len()));
         for e in top {
             let cells: Vec<String> = days.iter().map(|(_, c)| c.get(&e).to_string()).collect();
-            out!("| {} | {} |", pychars(&e, 70).replace('|', "/"), cells.join(" | "));
+            out!(
+                "| {} | {} |",
+                pychars(&e, 70).replace('|', "/"),
+                cells.join(" | ")
+            );
         }
         return;
     }
@@ -947,9 +1285,13 @@ fn cmd_skills(a: &SimpleArgs) {
     for (s, n) in used.most_common(None) {
         out!("{:>5}  {}", n, s);
     }
-    out!("\nNames above that no longer exist were renamed or removed; check the skills repo history.");
+    out!(
+        "\nNames above that no longer exist were renamed or removed; check the skills repo history."
+    );
     out!("Plugin skills and skillOverrides are not covered.");
-    out!("\nInstalled in ~/.claude/skills, ~/*/.claude/skills or ~/work/*/.claude/skills, never called:");
+    out!(
+        "\nInstalled in ~/.claude/skills, ~/*/.claude/skills or ~/work/*/.claude/skills, never called:"
+    );
     let mut left: Vec<&String> = installed.iter().filter(|s| !used.contains(*s)).collect();
     left.sort();
     for s in left {
@@ -973,7 +1315,10 @@ fn guard_report(fires: &[Fire], now: u64, days: u64, gate: &Gate) -> String {
     let first = fires.iter().map(|f| f.at).min();
     match first {
         None => {
-            let _ = writeln!(s, "The fire log is empty: no check fired yet, or the guard is older than the log.");
+            let _ = writeln!(
+                s,
+                "The fire log is empty: no check fired yet, or the guard is older than the log."
+            );
         }
         Some(t) if t > from => {
             let _ = writeln!(
@@ -984,7 +1329,10 @@ fn guard_report(fires: &[Fire], now: u64, days: u64, gate: &Gate) -> String {
         }
         Some(_) => {}
     }
-    let _ = writeln!(s, "| check | preset | on | fires ({days} d) | kinds | last fire |");
+    let _ = writeln!(
+        s,
+        "| check | preset | on | fires ({days} d) | kinds | last fire |"
+    );
     let _ = writeln!(s, "|---|---|---|---|---|---|");
     let mut quiet: Vec<&str> = vec![];
     for (check, preset) in REGISTRY {
@@ -995,8 +1343,17 @@ fn guard_report(fires: &[Fire], now: u64, days: u64, gate: &Gate) -> String {
         for f in &recent {
             kinds.add(f.kind.as_str(), 1);
         }
-        let kinds = kinds.most_common(None).into_iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ");
-        let last = mine.iter().map(|f| f.at).max().map_or_else(|| "never".into(), day);
+        let kinds = kinds
+            .most_common(None)
+            .into_iter()
+            .map(|(k, n)| format!("{k} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let last = mine
+            .iter()
+            .map(|f| f.at)
+            .max()
+            .map_or_else(|| "never".into(), day);
         let on = gate.enabled(*check);
         let _ = writeln!(
             s,
@@ -1015,27 +1372,55 @@ fn guard_report(fires: &[Fire], now: u64, days: u64, gate: &Gate) -> String {
     let _ = writeln!(
         s,
         "\nOn and never fired in {days} days: {}",
-        if quiet.is_empty() { "none".into() } else { quiet.join(", ") }
+        if quiet.is_empty() {
+            "none".into()
+        } else {
+            quiet.join(", ")
+        }
     );
-    let _ =
-        writeln!(s, "Read each one's doc comment in guard.rs before you cut it: some guard a rare, costly mistake.");
+    let _ = writeln!(
+        s,
+        "Read each one's doc comment in guard.rs before you cut it: some guard a rare, costly mistake."
+    );
     s
 }
 
 fn cmd_guard(a: &GuardArgs) {
-    let path = a.log.as_deref().map_or_else(fire_log_path, |p| PathBuf::from(expanduser(p)));
+    let path = a
+        .log
+        .as_deref()
+        .map_or_else(fire_log_path, |p| PathBuf::from(expanduser(p)));
     let now = u64::try_from(jiff::Timestamp::now().as_second()).unwrap_or(0);
-    out!("{}", guard_report(&read_fire_log(&path), now, a.days, &Gate::load(&paths::home())).trim_end());
+    out!(
+        "{}",
+        guard_report(
+            &read_fire_log(&path),
+            now,
+            a.days,
+            &Gate::load(&paths::home())
+        )
+        .trim_end()
+    );
 }
 
 fn count_lines(p: &Path) -> usize {
-    let t = read_text_ignore(p).unwrap_or_default().replace("\r\n", "\n").replace('\r', "\n");
+    let t = read_text_ignore(p)
+        .unwrap_or_default()
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let n = t.matches('\n').count();
-    if !t.is_empty() && !t.ends_with('\n') { n + 1 } else { n }
+    if !t.is_empty() && !t.ends_with('\n') {
+        n + 1
+    } else {
+        n
+    }
 }
 
 fn glob_ext(dir: &Path, suffix: &str) -> Vec<PathBuf> {
-    list_dir(dir).into_iter().filter(|p| fname(p).ends_with(suffix)).collect()
+    list_dir(dir)
+        .into_iter()
+        .filter(|p| fname(p).ends_with(suffix))
+        .collect()
 }
 
 fn cmd_inventory(a: &InvArgs) {
@@ -1044,7 +1429,9 @@ fn cmd_inventory(a: &InvArgs) {
     for r in &rows {
         count.add(key_str(get(r, "project")), 1);
     }
-    out!("| project | sessions | CLAUDE.md lines | rules (paths/all) | agents | skills | project hooks |");
+    out!(
+        "| project | sessions | CLAUDE.md lines | rules (paths/all) | agents | skills | project hooks |"
+    );
     out!("|---|---|---|---|---|---|---|");
     let h = paths::home();
     let n = count.most_common(None);
@@ -1053,41 +1440,73 @@ fn cmd_inventory(a: &InvArgs) {
         if p == "tmp" || p == "scratch" {
             continue;
         }
-        let cands: Vec<PathBuf> = if p == "~" { vec![h.clone()] } else { vec![h.join("work").join(p), h.join(p)] };
+        let cands: Vec<PathBuf> = if p == "~" {
+            vec![h.clone()]
+        } else {
+            vec![h.join("work").join(p), h.join(p)]
+        };
         let Some(root) = cands.into_iter().find(|c| is_dir(c)) else {
             out!("| {} | {} | (folder gone) | | | | |", p, c);
             continue;
         };
-        let md = if p == "~" { h.join(".claude").join("CLAUDE.md") } else { root.join("CLAUDE.md") };
+        let md = if p == "~" {
+            h.join(".claude").join("CLAUDE.md")
+        } else {
+            root.join("CLAUDE.md")
+        };
         let lines = if md.is_file() { count_lines(&md) } else { 0 };
-        let rules = if p == "~" { vec![] } else { glob_ext(&root.join(".claude").join("rules"), ".md") };
+        let rules = if p == "~" {
+            vec![]
+        } else {
+            glob_ext(&root.join(".claude").join("rules"), ".md")
+        };
         let scoped = rules
             .iter()
             .filter(|f| {
-                let t: String = read_text_ignore(f).unwrap_or_default().chars().take(600).collect();
+                let t: String = read_text_ignore(f)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(600)
+                    .collect();
                 PATHS_KEY.is_match(&t)
             })
             .count();
-        let agents = if p == "~" { 0 } else { glob_ext(&root.join(".claude").join("agents"), ".md").len() };
+        let agents = if p == "~" {
+            0
+        } else {
+            glob_ext(&root.join(".claude").join("agents"), ".md").len()
+        };
         let skills = if p == "~" {
             0
         } else {
-            list_dir(&root.join(".claude").join("skills")).iter().filter(|d| lexists(&d.join("SKILL.md"))).count()
+            list_dir(&root.join(".claude").join("skills"))
+                .iter()
+                .filter(|d| lexists(&d.join("SKILL.md")))
+                .count()
         };
         let mut hooks = String::new();
         let sj = root.join(".claude").join("settings.json");
         if p != "~" && sj.is_file() {
-            hooks = match fs::read(&sj).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+            hooks = match fs::read(&sj)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            {
                 Some(v) => {
-                    let mut ks: Vec<String> =
-                        get(&v, "hooks").as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+                    let mut ks: Vec<String> = get(&v, "hooks")
+                        .as_object()
+                        .map(|o| o.keys().cloned().collect())
+                        .unwrap_or_default();
                     ks.sort();
                     ks.join(",")
                 }
                 None => "(bad json)".to_string(),
             };
         }
-        let lines_s = if lines == 0 { "none".to_string() } else { lines.to_string() };
+        let lines_s = if lines == 0 {
+            "none".to_string()
+        } else {
+            lines.to_string()
+        };
         out!(
             "| {} | {} | {} | {}/{} | {} | {} | {} |",
             p,
@@ -1211,8 +1630,12 @@ struct InvArgs {
 
 fn default_since() -> String {
     let two_weeks = jiff::SignedDuration::from_hours(14 * 24);
-    let then = jiff::Timestamp::now().checked_sub(two_weeks).unwrap_or_default();
-    then.to_zoned(jiff::tz::TimeZone::UTC).strftime("%F").to_string()
+    let then = jiff::Timestamp::now()
+        .checked_sub(two_weeks)
+        .unwrap_or_default();
+    then.to_zoned(jiff::tz::TimeZone::UTC)
+        .strftime("%F")
+        .to_string()
 }
 
 fn main() {
@@ -1271,23 +1694,55 @@ mod tests {
     fn guard_report_counts_fires_and_lists_quiet_checks() {
         let now = 1_800_000_000;
         let old = now - 40 * 86_400;
-        let log = format!("{old} G2 deny\n{} G12 stop\n{} G12 stop\n{} H1 hint\n", now - 60, now - 50, now - 40);
+        let log = format!(
+            "{old} G2 deny\n{} G12 stop\n{} G12 stop\n{} H1 hint\n",
+            now - 60,
+            now - 50,
+            now - 40
+        );
         let gate = Gate {
             off: vec![Check::G11],
-            presets: agent_config::presets::ALL.iter().map(ToString::to_string).collect(),
+            presets: agent_config::presets::ALL
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
         };
         let r = guard_report(&read_fires(&log), now, 30, &gate);
         assert!(r.contains("| G12 | workflow | yes | 2 | stop 2 |"), "{r}");
-        assert!(r.contains("| G2 | workflow | yes | 0 | - |"), "an old fire is outside the window: {r}");
-        assert!(r.contains("| G11 | clock | no | 0 | - | never |"), "{r}");
-        let quiet = r.lines().find(|l| l.starts_with("On and never fired")).unwrap();
-        assert!(quiet.contains("G2") && !quiet.contains("G12") && !quiet.contains("H1"), "{quiet}");
-        assert!(!quiet.contains("G11"), "a check that is off is not listed: {quiet}");
-        assert!(!r.contains("The log starts"), "the log is older than the window: {r}");
-        let empty = guard_report(&[], now, 30, &gate);
-        assert!(empty.starts_with("The fire log is empty") && !empty.contains("never fired"), "{empty}");
         assert!(
-            guard_report(&read_fires(&format!("{} G1 deny\n", now - 10)), now, 30, &gate).starts_with("The log starts")
+            r.contains("| G2 | workflow | yes | 0 | - |"),
+            "an old fire is outside the window: {r}"
+        );
+        assert!(r.contains("| G11 | clock | no | 0 | - | never |"), "{r}");
+        let quiet = r
+            .lines()
+            .find(|l| l.starts_with("On and never fired"))
+            .unwrap();
+        assert!(
+            quiet.contains("G2") && !quiet.contains("G12") && !quiet.contains("H1"),
+            "{quiet}"
+        );
+        assert!(
+            !quiet.contains("G11"),
+            "a check that is off is not listed: {quiet}"
+        );
+        assert!(
+            !r.contains("The log starts"),
+            "the log is older than the window: {r}"
+        );
+        let empty = guard_report(&[], now, 30, &gate);
+        assert!(
+            empty.starts_with("The fire log is empty") && !empty.contains("never fired"),
+            "{empty}"
+        );
+        assert!(
+            guard_report(
+                &read_fires(&format!("{} G1 deny\n", now - 10)),
+                now,
+                30,
+                &gate
+            )
+            .starts_with("The log starts")
         );
     }
 }

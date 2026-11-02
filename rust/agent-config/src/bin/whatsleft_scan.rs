@@ -7,7 +7,9 @@
 use agent_config::guard_checks::expanduser;
 use agent_config::leftovers::{self, Store};
 use agent_config::paths;
-use agent_config::pycompat::{basename, dirname, fname, list_dir, mtime, parse_ts, py_splitlines, py_str, truthy};
+use agent_config::pycompat::{
+    basename, dirname, fname, list_dir, mtime, parse_ts, py_splitlines, py_str, truthy,
+};
 use agent_config::scan::{Search, find_session, py_dumps};
 use agent_config::transcript::{Body, Line};
 use clap::Parser;
@@ -20,8 +22,8 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 const DOC: &str = "whatsleft-scan: collect proof of what is still open in a Claude Code session.
 
@@ -43,7 +45,8 @@ Last line: VERDICT: ...";
 
 macro_rules! rx {
     ($name:ident, $re:expr) => {
-        static $name: LazyLock<Regex> = LazyLock::new(|| Regex::new($re).unwrap());
+        static $name: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new($re).expect("the literal regex is valid"));
     };
 }
 
@@ -57,8 +60,14 @@ rx!(
     r"(?i)\bTODO:|\bFIXME\b|\bfollow[- ]?ups?\b|\bnext steps?\b|\bnot (?:\w+ )?yet\b|\bskipped\b|\bstill (?:need|needs|have|has) to\b|\byou(?:'ll| will)? (?:need|have|must|should) to\b|\bleft to do\b|\b(?:I|we) (?:could not|couldn't|can't|cannot|did not|didn't)\b|\bblocked (?:by|on)\b|\bwaiting (?:for|on)\b|\b(?:is|are|was|were|still) (?:failing|broken|pending|missing)\b"
 );
 rx!(LATER, r"(?i)\blater\b");
-rx!(MARKER, r"(?:#|//|/\*|<!--|--|;|^\s*\*)\s*(?:TODO|FIXME|XXX|HACK)\b|\b(?:TODO|FIXME|XXX|HACK)\b(?:\([^)]*\))?:");
-rx!(DENIED, r"(?i)doesn't want to proceed|was denied|permission .{0,40}denied|rejected by the user");
+rx!(
+    MARKER,
+    r"(?:#|//|/\*|<!--|--|;|^\s*\*)\s*(?:TODO|FIXME|XXX|HACK)\b|\b(?:TODO|FIXME|XXX|HACK)\b(?:\([^)]*\))?:"
+);
+rx!(
+    DENIED,
+    r"(?i)doesn't want to proceed|was denied|permission .{0,40}denied|rejected by the user"
+);
 rx!(
     BG_RESULT,
     r"^\s*(?:Command running in background with ID: (\w+)|Command did not complete[^\n]{0,80}moved to the background \(ID: (\w+)\))"
@@ -80,26 +89,44 @@ rx!(PIPE_WORD, r"^(tail|tee|head)\b");
 rx!(TRUE_WORD, r"^true\b");
 rx!(ECHO_WORD, r"^(echo|true)\b");
 rx!(HEREDOC_HEAD, r#"<<-?\s*['"]?(\w+)['"]?[^\n]*\n"#);
-rx!(OUTFILE, r"(?:Output is being written to:|output_file:)\s*(\S+?\.output)");
+rx!(
+    OUTFILE,
+    r"(?:Output is being written to:|output_file:)\s*(\S+?\.output)"
+);
 rx!(AGENT_ID, r"agentId:\s*(\w+)");
-rx!(ANY_ID, r"(?i)\b(?:task[_ ]?id|id)[:=\s]+([A-Za-z0-9_-]{6,})");
-rx!(DEADLINE, r"(?i)(?:deadline|done in|within)[^\d\n]{0,20}(\d+)\s*(h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?)\b");
+rx!(
+    ANY_ID,
+    r"(?i)\b(?:task[_ ]?id|id)[:=\s]+([A-Za-z0-9_-]{6,})"
+);
+rx!(
+    DEADLINE,
+    r"(?i)(?:deadline|done in|within)[^\d\n]{0,20}(\d+)\s*(h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?)\b"
+);
 rx!(
     ENDLESS,
     r"next dev|vite|webpack|wrangler dev|(?:npm|pnpm|yarn|bun) (?:run )?dev\b|--watch|tail -f|http\.server|\bserve\b"
 );
 rx!(BIG_AGENT, r"(?i)research|refactor|thorough|migrate|audit");
-rx!(ARTIFACT_URL, r"https://claude\.ai/(?:code/)?artifact/[\w-]+");
+rx!(
+    ARTIFACT_URL,
+    r"https://claude\.ai/(?:code/)?artifact/[\w-]+"
+);
 rx!(WS, r"\s+");
 rx!(SYS_REMINDER, r"(?s)<system-reminder>.*?</system-reminder>");
 rx!(PASTED, r"(?s)<pasted_content[^>]*>.*?</pasted_content>");
 rx!(CMD_NAME, r"<command-name>([^<]*)</command-name>");
 rx!(CMD_ARGS, r"<command-args>([^<]*)</command-args>");
-rx!(ASK_SKIP, r"^\s*(<(task-notification|local-command|bash-|command-message)|\[Request interrupted)");
+rx!(
+    ASK_SKIP,
+    r"^\s*(<(task-notification|local-command|bash-|command-message)|\[Request interrupted)"
+);
 rx!(FENCE, r"(?s)```.*?```");
 rx!(TASK_NUM, r"#?(\d+)");
 rx!(CRON_ID, r"\b(?:id|ID|job)[:\s]+([\w-]+)");
-rx!(GIT_DIR_REF, r#"(?:git -C|cd)\s+("[^"]+"|'[^']+'|[^\s;&|]+)"#);
+rx!(
+    GIT_DIR_REF,
+    r#"(?:git -C|cd)\s+("[^"]+"|'[^']+'|[^\s;&|]+)"#
+);
 
 static NULL: Value = Value::Null;
 static QUIET: AtomicBool = AtomicBool::new(false);
@@ -112,7 +139,32 @@ struct State {
     later: usize,
     rows: Vec<(String, String)>,
 }
-static STATE: Mutex<State> = Mutex::new(State { me: 0, you: 0, check: 0, later: 0, rows: Vec::new() });
+static STATE: Mutex<State> = Mutex::new(State {
+    me: 0,
+    you: 0,
+    check: 0,
+    later: 0,
+    rows: Vec::new(),
+});
+
+/// The shared counters. A lock left poisoned by a panic is still usable here.
+fn state() -> MutexGuard<'static, State> {
+    STATE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A count as an `i64`; a count too big for it saturates.
+fn to_i64(n: usize) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
+}
+
+/// A float as an `i64`; out of range values saturate and NaN gives 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float to int cast saturates and maps NaN to 0, which is the wanted result"
+)]
+fn f64_to_i64(x: f64) -> i64 {
+    x as i64
+}
 
 fn emit(s: &str) {
     if !QUIET.load(Ordering::Relaxed) {
@@ -127,7 +179,7 @@ macro_rules! pl {
 
 fn line(tag: &str, text: &str) {
     {
-        let mut st = STATE.lock().unwrap();
+        let mut st = state();
         let counted = match tag {
             "ME" => {
                 st.me += 1;
@@ -186,11 +238,15 @@ fn clen(s: &str) -> usize {
     s.chars().count()
 }
 
-/// short(): collapse whitespace, trim, cut at n characters with an ellipsis.
+/// `short()`: collapse whitespace, trim, cut at n characters with an ellipsis.
 fn short(s: &str, n: usize) -> String {
     let t = WS.replace_all(s, " ");
     let t = t.trim();
-    if clen(t) <= n { t.to_string() } else { format!("{}…", pychars(t, 0, n - 1)) }
+    if clen(t) <= n {
+        t.to_string()
+    } else {
+        format!("{}…", pychars(t, 0, n - 1))
+    }
 }
 
 fn vshort(v: &Value, n: usize) -> String {
@@ -199,16 +255,24 @@ fn vshort(v: &Value, n: usize) -> String {
 
 fn tilde(p: &str) -> String {
     let h = paths::home().to_string_lossy().into_owned();
-    if p.starts_with(&h) { p.replacen(&h, "~", 1) } else { p.to_string() }
+    if p.starts_with(&h) {
+        p.replacen(&h, "~", 1)
+    } else {
+        p.to_string()
+    }
 }
 
 /// open(path, errors="replace") with universal newlines.
 fn read_text(p: &Path) -> Option<String> {
-    fs::read(p).ok().map(|b| String::from_utf8_lossy(&b).replace("\r\n", "\n").replace('\r', "\n"))
+    fs::read(p).ok().map(|b| {
+        String::from_utf8_lossy(&b)
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+    })
 }
 
 fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+    paths::unix_now_f64()
 }
 
 /// The local wall-clock time of a unix time in microseconds.
@@ -219,9 +283,9 @@ fn local_datetime(micros: i64) -> jiff::civil::DateTime {
         .datetime()
 }
 
-/// datetime.fromtimestamp(ts).isoformat(): microseconds only when not zero.
+/// `datetime.fromtimestamp(ts).isoformat()`: microseconds only when not zero.
 fn local_iso(ts: f64) -> String {
-    let at = local_datetime((ts * 1e6).round_ties_even() as i64);
+    let at = local_datetime(f64_to_i64((ts * 1e6).round_ties_even()));
     let mut o = at.strftime("%Y-%m-%dT%H:%M:%S").to_string();
     if at.subsec_nanosecond() != 0 {
         let _ = write!(o, ".{:06}", at.subsec_nanosecond() / 1000);
@@ -231,7 +295,9 @@ fn local_iso(ts: f64) -> String {
 
 /// datetime.fromtimestamp(ts).strftime("%H:%M")
 fn local_hm(ts: f64) -> String {
-    local_datetime((ts.floor() * 1e6) as i64).strftime("%H:%M").to_string()
+    local_datetime(f64_to_i64(ts.floor() * 1e6))
+        .strftime("%H:%M")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -248,8 +314,10 @@ fn run(args: &[&str], cwd: Option<&str>, timeout: u64) -> (i32, String) {
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
-    let Ok(mut child) = cmd.spawn() else { return (1, String::new()) };
-    let mut so = child.stdout.take().unwrap();
+    let Ok(mut child) = cmd.spawn() else {
+        return (1, String::new());
+    };
+    let mut so = child.stdout.take().expect("stdout was set to piped above");
     let reader = std::thread::spawn(move || {
         let mut buf = vec![];
         let _ = so.read_to_end(&mut buf);
@@ -271,9 +339,17 @@ fn run(args: &[&str], cwd: Option<&str>, timeout: u64) -> (i32, String) {
         }
     };
     let buf = reader.join().unwrap_or_default();
-    let Some(st) = status else { return (1, String::new()) };
+    let Some(st) = status else {
+        return (1, String::new());
+    };
     match String::from_utf8(buf) {
-        Ok(s) => (st.code().unwrap_or(-1), s.replace("\r\n", "\n").replace('\r', "\n").trim_end().to_string()),
+        Ok(s) => (
+            st.code().unwrap_or(-1),
+            s.replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .trim_end()
+                .to_string(),
+        ),
         Err(_) => (1, String::new()),
     }
 }
@@ -289,7 +365,9 @@ fn git(root: &str, args: &[&str], t: u64) -> (i32, String) {
 // ---------------------------------------------------------------------------
 
 fn cwd_string() -> String {
-    std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 // Differs from the other `text_of` copies on purpose (newline join, empty string); see stores/claude.rs.
@@ -310,7 +388,10 @@ fn clean_ask(t: &str) -> String {
     let t = SYS_REMINDER.replace_all(t, " ");
     let t = PASTED.replace_all(&t, " [pasted text] ").into_owned();
     if let Some(m) = CMD_NAME.captures(&t) {
-        let args = CMD_ARGS.captures(&t).map(|a| a[1].to_string()).unwrap_or_default();
+        let args = CMD_ARGS
+            .captures(&t)
+            .map(|a| a[1].to_string())
+            .unwrap_or_default();
         return format!("{} {}", &m[1], args).trim().to_string();
     }
     if ASK_SKIP.is_match(&t) {
@@ -319,7 +400,7 @@ fn clean_ask(t: &str) -> String {
     short(&t, 150)
 }
 
-fn is_human(line: &Line) -> bool {
+fn is_human(line: &Line<'_>) -> bool {
     if line.is_meta.0 || line.is_sidechain.0 {
         return false;
     }
@@ -329,7 +410,11 @@ fn is_human(line: &Line) -> bool {
         return false;
     }
     let content = &line.msg().content;
-    if content.blocks().iter().any(|b| b.kind.as_str() == Some("tool_result")) {
+    if content
+        .blocks()
+        .iter()
+        .any(|b| b.kind.as_str() == Some("tool_result"))
+    {
         return false;
     }
     !content.text("\n").trim().is_empty()
@@ -383,13 +468,19 @@ impl Session {
     /// Record the task notices in every string of a line that holds one. The line is read as plain
     /// JSON again, because a notice can sit anywhere in it.
     fn read_notices(&mut self, raw: &str) {
-        let Ok(obj) = serde_json::from_str::<Value>(raw) else { return };
+        let Ok(obj) = serde_json::from_str::<Value>(raw) else {
+            return;
+        };
         let mut strs = vec![];
         strings(&obj, &mut strs);
         for txt in strs {
             for n in NOTICE.captures_iter(txt) {
-                let summary = n.name("summary").map(|m| m.as_str().to_string()).unwrap_or_default();
-                self.notices.insert(n["tool"].to_string(), (n["status"].to_string(), summary));
+                let summary = n
+                    .name("summary")
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
+                self.notices
+                    .insert(n["tool"].to_string(), (n["status"].to_string(), summary));
             }
         }
     }
@@ -404,7 +495,8 @@ impl Session {
 
 fn read_session(path: &Path) -> Session {
     let mut s = Session::default();
-    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let src: Box<dyn Read> =
+        fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
     let mut reader = BufReader::new(src);
     let mut buf: Vec<u8> = Vec::new();
     loop {
@@ -414,7 +506,9 @@ fn read_session(path: &Path) -> Session {
         }
         let text = String::from_utf8_lossy(&buf);
         let raw = text.strip_suffix('\n').unwrap_or(&text);
-        let Some(o) = Line::parse_str(raw) else { continue };
+        let Some(o) = Line::parse_str(raw) else {
+            continue;
+        };
         if raw.contains("<task-notification>") {
             s.read_notices(raw);
         }
@@ -442,19 +536,28 @@ fn read_session(path: &Path) -> Session {
                     s.asks.push((ts, ask, s.order.len()));
                 }
             }
-            for b in content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_result")) {
+            for b in content
+                .blocks()
+                .iter()
+                .filter(|b| b.kind.as_str() == Some("tool_result"))
+            {
                 let body = match &b.content {
                     Body::Text(x) => x.to_string(),
                     Body::Json(other) => {
                         let t = text_of(other);
-                        if t.is_empty() { pychars(&py_dumps(other), 0, 2000) } else { t }
+                        if t.is_empty() {
+                            pychars(&py_dumps(other), 0, 2000)
+                        } else {
+                            t
+                        }
                     }
                 };
                 let id = b.tool_use_id.or_empty().to_string();
                 if !s.results.contains_key(&id) {
                     s.results_keys.push(id.clone());
                 }
-                s.results.insert(id, (b.is_error.0, pychars(&body, 0, 2000)));
+                s.results
+                    .insert(id, (b.is_error.0, pychars(&body, 0, 2000)));
             }
         } else if typ == "assistant" && !sidechain {
             for b in content.blocks() {
@@ -462,8 +565,11 @@ fn read_session(path: &Path) -> Session {
                 if bt == "text" && b.text.as_str().is_some_and(|t| !t.trim().is_empty()) {
                     s.texts.push(b.text.or_empty().to_string());
                 } else if bt == "tool_use" {
-                    let inp =
-                        if truthy(&b.input) { b.input.clone() } else { Value::Object(serde_json::Map::default()) };
+                    let inp = if truthy(&b.input) {
+                        b.input.clone()
+                    } else {
+                        Value::Object(serde_json::Map::default())
+                    };
                     let id = b.id.or_empty().to_string();
                     let name = b.name.or_empty().to_string();
                     if !s.uses.contains_key(&id) {
@@ -502,10 +608,16 @@ fn read_session(path: &Path) -> Session {
         };
         let res = s.result(uid).1.to_string();
         if name == "TaskCreate" {
-            let key = TASK_NUM.captures(&res).map_or_else(|| uid.clone(), |m| m[1].to_string());
+            let key = TASK_NUM
+                .captures(&res)
+                .map_or_else(|| uid.clone(), |m| m[1].to_string());
             let subj = {
                 let v = first_truthy(&inp, &["subject", "title", "description"]);
-                if truthy(v) { py_str(v) } else { "?".to_string() }
+                if truthy(v) {
+                    py_str(v)
+                } else {
+                    "?".to_string()
+                }
             };
             match s.tasks.iter_mut().find(|t| t.0 == key) {
                 Some(t) => {
@@ -522,10 +634,16 @@ fn read_session(path: &Path) -> Session {
                 t.2 = py_str(get(&inp, "status"));
             }
         } else if name == "CronCreate" {
-            let key = CRON_ID.captures(&res).map_or_else(|| uid.clone(), |m| m[1].to_string());
+            let key = CRON_ID
+                .captures(&res)
+                .map_or_else(|| uid.clone(), |m| m[1].to_string());
             let val = {
                 let v = first_truthy(&inp, &["prompt", "cron"]);
-                if truthy(v) { py_str(v) } else { "?".to_string() }
+                if truthy(v) {
+                    py_str(v)
+                } else {
+                    "?".to_string()
+                }
             };
             match s.crons.iter_mut().find(|c| c.0 == key) {
                 Some(c) => c.1 = val,
@@ -547,24 +665,34 @@ fn describe(name: &str, inp: &Value) -> String {
 
 /// Python `lst[-limit:]` start index.
 fn tail_start(len: usize, limit: i64) -> usize {
-    let start = -limit;
-    if start < 0 { (len as i64 + start).max(0) as usize } else { (start as usize).min(len) }
+    if limit > 0 {
+        len.saturating_sub(usize::try_from(limit).unwrap_or(usize::MAX))
+    } else {
+        usize::try_from(limit.unsigned_abs()).map_or(len, |n| n.min(len))
+    }
 }
 
 fn section_asks(s: &Session, limit: i64) {
     let asks = &s.asks;
-    pl!("== ASKS ({}) — check each one: done, with proof from this session? ==", asks.len());
-    if asks.len() as i64 > limit {
-        pl!("  …     {} older ask(s) not shown (--asks N)", asks.len() as i64 - limit);
+    pl!(
+        "== ASKS ({}) — check each one: done, with proof from this session? ==",
+        asks.len()
+    );
+    let count = to_i64(asks.len());
+    if count > limit {
+        pl!(
+            "  …     {} older ask(s) not shown (--asks N)",
+            count - limit
+        );
     }
     let from = tail_start(asks.len(), limit);
-    let first_no = (asks.len() as i64 - limit + 1).max(1);
+    let first_no = (count - limit + 1).max(1);
     for (i, (ts, ask, _)) in asks[from..].iter().enumerate() {
         let when = match ts {
             Some(t) if *t != 0.0 => local_hm(*t),
             _ => "--:--".to_string(),
         };
-        pl!("  ASK   #{} {}  {}", first_no + i as i64, when, ask);
+        pl!("  ASK   #{} {}  {}", first_no + to_i64(i), when, ask);
     }
     if asks.is_empty() {
         pl!("  ASK   none found — ask the user what they wanted");
@@ -579,7 +707,11 @@ fn section_todos(s: &Session) {
     {
         for t in todos {
             let c = first_truthy(t, &["content", "activeForm"]);
-            let c = if truthy(c) { py_str(c) } else { "?".to_string() };
+            let c = if truthy(c) {
+                py_str(c)
+            } else {
+                "?".to_string()
+            };
             let st = match get(t, "status") {
                 Value::Null => {
                     if t.get("status").is_some() {
@@ -600,8 +732,10 @@ fn section_todos(s: &Session) {
         return;
     }
     pl!("== TODO LIST ==");
-    let open: Vec<&(String, String)> =
-        items.iter().filter(|(_, st)| !["completed", "deleted", "cancelled"].contains(&st.as_str())).collect();
+    let open: Vec<&(String, String)> = items
+        .iter()
+        .filter(|(_, st)| !["completed", "deleted", "cancelled"].contains(&st.as_str()))
+        .collect();
     for (c, st) in &open {
         line("ME", &format!("{}: {}", st, short(c, 120)));
     }
@@ -635,7 +769,12 @@ fn background_tasks(s: &Session) -> Vec<Bg> {
         let m = BG_RESULT.captures(res);
         let mut task_id = m
             .as_ref()
-            .map(|m| m.get(1).or_else(|| m.get(2)).map(|x| x.as_str().to_string()).unwrap_or_default())
+            .map(|m| {
+                m.get(1)
+                    .or_else(|| m.get(2))
+                    .map(|x| x.as_str().to_string())
+                    .unwrap_or_default()
+            })
             .unwrap_or_default();
         let is_bg = m.is_some()
             || res.trim_start().starts_with("Async agent launched")
@@ -676,14 +815,18 @@ fn background_tasks(s: &Session) -> Vec<Bg> {
     rows
 }
 
-/// STOP or KEEP for one running task, with the reason. Sets run_min, out_age and endless.
+/// STOP or KEEP for one running task, with the reason. Sets `run_min`, `out_age` and endless.
 fn advise(t: &mut Bg) -> (bool, String) {
     let n = now();
     t.run_min = match t.ts {
         Some(ts) if ts != 0.0 => (n - ts) / 60.0,
         _ => 0.0,
     };
-    let mt = if !t.out.is_empty() && Path::new(&t.out).exists() { mtime(Path::new(&t.out)) } else { None };
+    let mt = if !t.out.is_empty() && Path::new(&t.out).exists() {
+        mtime(Path::new(&t.out))
+    } else {
+        None
+    };
     t.out_age = mt.map(|m| (n - m) / 60.0);
     let cmd = or_blank(get(&t.inp, "command"));
     t.endless = ENDLESS.is_match(&cmd);
@@ -696,7 +839,13 @@ fn advise(t: &mut Bg) -> (bool, String) {
     }
     if t.endless {
         if let Some(q) = quiet.filter(|q| *q >= 30.0) {
-            return (false, format!("idle server ({}m quiet), stop it when work ends", q as i64));
+            return (
+                false,
+                format!(
+                    "idle server ({}m quiet), stop it when work ends",
+                    f64_to_i64(q)
+                ),
+            );
         }
         return (false, "server, stop it when work ends".into());
     }
@@ -704,12 +853,25 @@ fn advise(t: &mut Bg) -> (bool, String) {
         && q >= 20.0
         && run >= 20.0
     {
-        return (false, format!("quiet for {}m, read its output before stopping", q as i64));
+        return (
+            false,
+            format!(
+                "quiet for {}m, read its output before stopping",
+                f64_to_i64(q)
+            ),
+        );
     }
     if run < 5.0 {
         return (false, "just started".into());
     }
-    (false, if quiet.is_some_and(|q| q < 20.0) { "output is recent".into() } else { "inside its time".into() })
+    (
+        false,
+        if quiet.is_some_and(|q| q < 20.0) {
+            "output is recent".into()
+        } else {
+            "inside its time".into()
+        },
+    )
 }
 
 fn section_background(s: &Session) {
@@ -730,45 +892,68 @@ fn section_background(s: &Session) {
             "Monitor" => "monitor".to_string(),
             other => other.to_lowercase(),
         };
-        let what = vshort(first_truthy(&t.inp, &["description", "command", "prompt"]), 50);
+        let what = vshort(
+            first_truthy(&t.inp, &["description", "command", "prompt"]),
+            50,
+        );
         let last = match t.out_age {
             None => "no file".to_string(),
-            Some(a) => format!("{}m ago", a as i64),
+            Some(a) => format!("{}m ago", f64_to_i64(a)),
         };
         pl!(
             "  TASK  {} | {} | {} | {}m | {} | {}: {}",
             t.id,
             kind,
             what,
-            t.run_min as i64,
+            f64_to_i64(t.run_min),
             last,
             if stop { "STOP" } else { "KEEP" },
             why
         );
     }
     if stops > 0 {
-        line("ME", &format!("stop {stops} dead task(s) marked STOP above (TaskStop)"));
+        line(
+            "ME",
+            &format!("stop {stops} dead task(s) marked STOP above (TaskStop)"),
+        );
     }
     for t in &rows {
         if t.status == "failed" {
             line(
                 "CHECK",
-                &format!("failed: {} — {} — still needed?", describe(&t.name, &t.inp), short(&t.summary, 90)),
+                &format!(
+                    "failed: {} — {} — still needed?",
+                    describe(&t.name, &t.inp),
+                    short(&t.summary, 90)
+                ),
             );
         }
     }
     for (_, what) in &s.crons {
-        line("CHECK", &format!("scheduled job still set: {} — keep it?", short(what, 90)));
+        line(
+            "CHECK",
+            &format!("scheduled job still set: {} — keep it?", short(what, 90)),
+        );
     }
-    let done = rows.iter().filter(|t| ["completed", "killed", "stopped"].contains(&t.status.as_str())).count();
+    let done = rows
+        .iter()
+        .filter(|t| ["completed", "killed", "stopped"].contains(&t.status.as_str()))
+        .count();
     if done > 0 {
-        line("OK", &format!("{done} background task(s) finished or stopped"));
+        line(
+            "OK",
+            &format!("{done} background task(s) finished or stopped"),
+        );
     }
     pl!();
 }
 
 fn hurry_binary() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "hurry_scan.exe" } else { "hurry_scan" };
+    let exe = if cfg!(windows) {
+        "hurry_scan.exe"
+    } else {
+        "hurry_scan"
+    };
     if let Ok(me) = std::env::current_exe()
         && let Some(dir) = me.parent()
     {
@@ -781,8 +966,15 @@ fn hurry_binary() -> Option<PathBuf> {
 }
 
 fn section_speed(path: &Path) {
-    let bin = hurry_binary().map_or_else(|| "hurry_scan".to_string(), |p| p.to_string_lossy().into_owned());
-    let (rc, out) = run(&[&bin, "--brief", "--session", &path.to_string_lossy()], None, 30);
+    let bin = hurry_binary().map_or_else(
+        || "hurry_scan".to_string(),
+        |p| p.to_string_lossy().into_owned(),
+    );
+    let (rc, out) = run(
+        &[&bin, "--brief", "--session", &path.to_string_lossy()],
+        None,
+        30,
+    );
     if rc == 0 && !out.trim().is_empty() {
         pl!("== SPEED (slow session? [ME] rows are mine, [YOU] rows are yours) ==");
         pl!("{}", out);
@@ -791,8 +983,16 @@ fn section_speed(path: &Path) {
 }
 
 fn section_deliverable(s: &Session, roots: &[String]) {
-    let joined = s.results_keys.iter().map(|k| s.results[k].1.as_str()).collect::<Vec<_>>().join("\n");
-    let urls: Vec<&str> = ARTIFACT_URL.find_iter(&joined).map(|m| m.as_str()).collect();
+    let joined = s
+        .results_keys
+        .iter()
+        .map(|k| s.results[k].1.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let urls: Vec<&str> = ARTIFACT_URL
+        .find_iter(&joined)
+        .map(|m| m.as_str())
+        .collect();
     let what: String;
     if let Some(u) = urls.last() {
         what = u.to_string();
@@ -803,7 +1003,11 @@ fn section_deliverable(s: &Session, roots: &[String]) {
                 Some(st) if st != 0.0 => local_iso(st),
                 _ => "1 day ago".to_string(),
             };
-            let (_, sha) = git(r, &["log", &format!("--since={since}"), "--format=%h", "-1"], 10);
+            let (_, sha) = git(
+                r,
+                &["log", &format!("--since={since}"), "--format=%h", "-1"],
+                10,
+            );
             if !sha.is_empty() {
                 w = format!("{} ({})", sha, basename(r));
                 break;
@@ -826,17 +1030,20 @@ fn section_deliverable(s: &Session, roots: &[String]) {
         }
         what = w;
     }
-    pl!("DELIVERABLE  {}\n", if what.is_empty() { "none yet" } else { &what });
+    pl!(
+        "DELIVERABLE  {}\n",
+        if what.is_empty() { "none yet" } else { &what }
+    );
 }
 
 fn up5(x: f64) -> i64 {
-    ((x / 5.0).ceil() * 5.0) as i64
+    f64_to_i64((x / 5.0).ceil() * 5.0)
 }
 
 /// One ETA estimate: (mid, low, high) in minutes, from the counted rows and the running tasks.
 fn estimate(s: &Session) -> (i64, i64, i64) {
     let mut serial = 0i64;
-    let rows = STATE.lock().unwrap().rows.clone();
+    let rows = state().rows.clone();
     for (tag, text) in &rows {
         let t = text.to_lowercase();
         if tag == "YOU" || t.starts_with("stop ") {
@@ -854,7 +1061,11 @@ fn estimate(s: &Session) -> (i64, i64, i64) {
             serial += 1;
         } else {
             let head = t.split(':').next().unwrap_or("");
-            serial += if head == "pending" || head == "in_progress" { 3 } else { 2 };
+            serial += if head == "pending" || head == "in_progress" {
+                3
+            } else {
+                2
+            };
         }
     }
     let mut parallel = 0.0f64;
@@ -882,12 +1093,20 @@ fn estimate(s: &Session) -> (i64, i64, i64) {
 
 fn eta_line(s: &Session) -> String {
     let (mid, low, high) = estimate(s);
-    if mid == 0 { "ETA ~0 min (nothing open)".to_string() } else { format!("ETA ~{mid} min ({low}-{high})") }
+    if mid == 0 {
+        "ETA ~0 min (nothing open)".to_string()
+    } else {
+        format!("ETA ~{mid} min ({low}-{high})")
+    }
 }
 
 fn section_recent(s: &Session) {
     let asks = &s.asks;
-    let start = if asks.len() >= 2 { asks[asks.len() - 2].2 } else { 0 };
+    let start = if asks.len() >= 2 {
+        asks[asks.len() - 2].2
+    } else {
+        0
+    };
     let mut errs: Vec<(String, String)> = vec![];
     let mut denials: Vec<(String, String)> = vec![];
     let mut seen: HashSet<String> = HashSet::new();
@@ -903,14 +1122,21 @@ fn section_recent(s: &Session) {
         }
         seen.insert(key);
         let item = (describe(&u.name, &u.inp), short(res, 100));
-        if DENIED.is_match(res) { denials.push(item) } else { errs.push(item) }
+        if DENIED.is_match(res) {
+            denials.push(item);
+        } else {
+            errs.push(item);
+        }
     }
     if errs.is_empty() && denials.is_empty() {
         return;
     }
     pl!("== RECENT ERRORS (last work turn) ==");
     for (desc, _) in &denials[denials.len().saturating_sub(5)..] {
-        line("YOU", &format!("you said no to: {desc} — do it yourself, or tell me another way"));
+        line(
+            "YOU",
+            &format!("you said no to: {desc} — do it yourself, or tell me another way"),
+        );
     }
     for (desc, res) in &errs[errs.len().saturating_sub(5)..] {
         line("CHECK", &format!("error: {desc} → {res} — fixed later?"));
@@ -918,7 +1144,7 @@ fn section_recent(s: &Session) {
     pl!();
 }
 
-/// OPEN_WORDS.search(ln), including the `\blater\b` case that needs a lookahead in Python.
+/// `OPEN_WORDS.search(ln)`, including the `\blater\b` case that needs a lookahead in Python.
 fn has_open_words(ln: &str) -> bool {
     if OPEN_WORDS.is_match(ln) {
         return true;
@@ -997,7 +1223,8 @@ fn touched_repos(s: &Session) -> Vec<String> {
 }
 
 fn in_repo(path: &str, root: &str) -> bool {
-    !path.is_empty() && (path == root || path.starts_with(&format!("{}{}", root, std::path::MAIN_SEPARATOR)))
+    !path.is_empty()
+        && (path == root || path.starts_with(&format!("{}{}", root, std::path::MAIN_SEPARATOR)))
 }
 
 /// HEREDOC.sub(" ", cmd): the regex needs a backreference, so this is done by hand.
@@ -1006,9 +1233,13 @@ fn strip_heredocs(cmd: &str) -> String {
     let mut pos = 0usize; // start of the text not yet copied
     let mut scan = 0usize; // where to look for the next head
     while scan <= cmd.len() {
-        let Some(h) = HEREDOC_HEAD.captures_at(cmd, scan) else { break };
-        let hm = h.get(0).unwrap();
-        let tag = h.get(1).unwrap().as_str();
+        let Some(h) = HEREDOC_HEAD.captures_at(cmd, scan) else {
+            break;
+        };
+        let (Some(hm), Some(tag)) = (h.get(0), h.get(1)) else {
+            break;
+        };
+        let tag = tag.as_str();
         match heredoc_end(cmd, hm.end(), tag) {
             Some(end) => {
                 out.push_str(&cmd[pos..hm.start()]);
@@ -1056,11 +1287,17 @@ fn masked_exit(bare: &str, check_end: usize) -> String {
     let rest = tail.split("&&").next().unwrap_or("");
     let rest = REDIRECT.replace_all(rest, " ").into_owned(); // 2>&1 is a redirect, not a separator
     // ([^;|\n]*)(\|\||;|\n|\|)?\s*(.*) with re.S
-    let Some(at) = rest.find([';', '|', '\n']) else { return String::new() };
+    let Some(at) = rest.find([';', '|', '\n']) else {
+        return String::new();
+    };
     let after_sep = |n: usize| rest[at + n..].trim_start();
     let b = rest.as_bytes();
     if b[at] == b'|' && b.get(at + 1) == Some(&b'|') {
-        return if TRUE_WORD.is_match(after_sep(2)) { "|| true".to_string() } else { String::new() };
+        return if TRUE_WORD.is_match(after_sep(2)) {
+            "|| true".to_string()
+        } else {
+            String::new()
+        };
     }
     if b[at] == b'|' {
         return match PIPE_WORD.captures(after_sep(1)) {
@@ -1081,7 +1318,9 @@ fn check_state(s: &Session, uid: &str, bare: &str, check_end: usize) -> String {
         return "failed".into();
     }
     if get(&s.uses[uid].inp, "run_in_background") == &Value::Bool(true) || BG_RESULT.is_match(res) {
-        let Some((status, summary)) = s.notices.get(uid) else { return "running".into() };
+        let Some((status, summary)) = s.notices.get(uid) else {
+            return "running".into();
+        };
         if status.is_empty() {
             return "running".into();
         }
@@ -1091,7 +1330,11 @@ fn check_state(s: &Session, uid: &str, bare: &str, check_end: usize) -> String {
         }
     }
     let mask = masked_exit(bare, check_end);
-    if mask.is_empty() { "passed".into() } else { format!("hidden: {mask}") }
+    if mask.is_empty() {
+        "passed".into()
+    } else {
+        format!("hidden: {mask}")
+    }
 }
 
 fn check_freshness(s: &Session, root: &str) {
@@ -1100,13 +1343,16 @@ fn check_freshness(s: &Session, root: &str) {
     for uid in &s.order {
         let u = &s.uses[uid];
         let fp = first_truthy(&u.inp, &["file_path", "notebook_path"]);
-        if ["Edit", "Write", "MultiEdit", "NotebookEdit"].contains(&u.name.as_str()) && in_repo(&or_blank(fp), root) {
+        if ["Edit", "Write", "MultiEdit", "NotebookEdit"].contains(&u.name.as_str())
+            && in_repo(&or_blank(fp), root)
+        {
             last_edit = Some(u.idx);
         }
         let cmd = or_blank(get(&u.inp, "command"));
         let bare = strip_heredocs(&cmd);
         let here = u.name == "Bash"
-            && (in_repo(u.cwd.as_deref().unwrap_or(""), root) || expanduser_text(&bare).contains(root));
+            && (in_repo(u.cwd.as_deref().unwrap_or(""), root)
+                || expanduser_text(&bare).contains(root));
         if here && IN_PLACE_EDIT.is_match(&bare) {
             last_edit = Some(u.idx);
         }
@@ -1117,15 +1363,30 @@ fn check_freshness(s: &Session, root: &str) {
     }
     let Some(le) = last_edit else { return };
     match last_check {
-        None => line("ME", "files edited, but no test/lint/check ran in this repo this session"),
-        Some(lc) if lc < le => line("ME", "files edited after the last check run — run the checks again"),
-        _ if state == "failed" => line("ME", "the last check run failed — fix it, then run it again"),
+        None => line(
+            "ME",
+            "files edited, but no test/lint/check ran in this repo this session",
+        ),
+        Some(lc) if lc < le => line(
+            "ME",
+            "files edited after the last check run — run the checks again",
+        ),
+        _ if state == "failed" => line(
+            "ME",
+            "the last check run failed — fix it, then run it again",
+        ),
         _ if state == "running" => {
-            line("ME", "the last check is still running: wait for its notice, then read its exit line");
+            line(
+                "ME",
+                "the last check is still running: wait for its notice, then read its exit line",
+            );
         }
         _ if state.starts_with("hidden: ") => line(
             "ME",
-            &format!("the last check's exit code is hidden ({}): read its log or run it again without it", &state[8..]),
+            &format!(
+                "the last check's exit code is hidden ({}): read its log or run it again without it",
+                &state[8..]
+            ),
         ),
         _ => line("OK", "a check ran after the last edit, and it passed"),
     }
@@ -1133,18 +1394,34 @@ fn check_freshness(s: &Session, root: &str) {
 
 /// os.path.expanduser applied to a whole string (only a leading "~" counts).
 fn expanduser_text(s: &str) -> String {
-    if s == "~" || s.starts_with("~/") { expanduser(s) } else { s.to_string() }
+    if s == "~" || s.starts_with("~/") {
+        expanduser(s)
+    } else {
+        s.to_string()
+    }
 }
 
 fn new_markers(root: &str, since: Option<f64>) -> Vec<String> {
     let mut out: Vec<String> = vec![];
-    let mut cmds: Vec<Vec<String>> = vec![vec!["git".into(), "diff".into(), "HEAD".into(), "-U0".into()]];
+    let mut cmds: Vec<Vec<String>> = vec![vec![
+        "git".into(),
+        "diff".into(),
+        "HEAD".into(),
+        "-U0".into(),
+    ]];
     if let Some(st) = since.filter(|s| *s != 0.0) {
         cmds.push(
-            ["git", "log", &format!("--since={}", local_iso(st)), "-p", "-U0", "--format="]
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
+            [
+                "git",
+                "log",
+                &format!("--since={}", local_iso(st)),
+                "-p",
+                "-U0",
+                "--format=",
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         );
     }
     for args in cmds {
@@ -1153,13 +1430,25 @@ fn new_markers(root: &str, since: Option<f64>) -> Vec<String> {
         let mut f = "?".to_string();
         for ln in py_splitlines(&diff) {
             if ln.starts_with("+++ ") {
-                f = if ln.starts_with("+++ b/") { pychars(&ln, 6, usize::MAX) } else { pychars(&ln, 4, usize::MAX) };
+                f = if ln.starts_with("+++ b/") {
+                    pychars(&ln, 6, usize::MAX)
+                } else {
+                    pychars(&ln, 4, usize::MAX)
+                };
             } else if ln.starts_with('+') && MARKER.is_match(&ln) {
-                out.push(format!("{}: {}", f, short(pychars(&ln, 1, usize::MAX).trim(), 90)));
+                out.push(format!(
+                    "{}: {}",
+                    f,
+                    short(pychars(&ln, 1, usize::MAX).trim(), 90)
+                ));
             }
         }
     }
-    let (_, untracked) = run(&["git", "ls-files", "--others", "--exclude-standard"], Some(root), 20);
+    let (_, untracked) = run(
+        &["git", "ls-files", "--others", "--exclude-standard"],
+        Some(root),
+        20,
+    );
     for f in py_splitlines(&untracked).into_iter().take(50) {
         let p = Path::new(root).join(&f);
         if let Some(text) = read_text(&p) {
@@ -1182,14 +1471,16 @@ fn new_markers(root: &str, since: Option<f64>) -> Vec<String> {
 
 /// glob(".github/workflows/*.y*ml")
 fn workflow_files(root: &str) -> bool {
-    list_dir(&Path::new(root).join(".github").join("workflows")).iter().any(|p| {
-        let n = fname(p);
-        let b = n.as_bytes();
-        if b.len() < 4 || !n.ends_with("ml") {
-            return false;
-        }
-        (0..=b.len().saturating_sub(4)).any(|i| &b[i..i + 2] == b".y" && i + 2 <= b.len() - 2)
-    })
+    list_dir(&Path::new(root).join(".github").join("workflows"))
+        .iter()
+        .any(|p| {
+            let n = fname(p);
+            let b = n.as_bytes();
+            if b.len() < 4 || !n.ends_with("ml") {
+                return false;
+            }
+            (0..=b.len().saturating_sub(4)).any(|i| &b[i..i + 2] == b".y" && i + 2 <= b.len() - 2)
+        })
 }
 
 fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
@@ -1203,9 +1494,21 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     }
     let (_, gd) = g(&["rev-parse", "--absolute-git-dir"], 20);
     let (_, branch) = g(&["symbolic-ref", "--quiet", "--short", "HEAD"], 20);
-    let (_, main0) = g(&["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], 20);
+    let (_, main0) = g(
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+        20,
+    );
     let main = main0.replacen("origin/", "", 1);
-    let main = if main.is_empty() { "main".to_string() } else { main };
+    let main = if main.is_empty() {
+        "main".to_string()
+    } else {
+        main
+    };
 
     for (marker, what) in [
         ("MERGE_HEAD", "merge"),
@@ -1221,13 +1524,22 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     }
     let (_, conflicts) = g(&["diff", "--name-only", "--diff-filter=U"], 20);
     if !conflicts.is_empty() {
-        line("ME", &format!("merge conflicts in: {}", short(&py_splitlines(&conflicts).join(" "), 100)));
+        line(
+            "ME",
+            &format!(
+                "merge conflicts in: {}",
+                short(&py_splitlines(&conflicts).join(" "), 100)
+            ),
+        );
     }
 
     if branch.is_empty() {
         line("ME", "detached HEAD — put the work on a branch");
     } else if branch != main {
-        line("YOU", &format!("on branch '{branch}', not '{main}' — merge it, or open a PR? (your call)"));
+        line(
+            "YOU",
+            &format!("on branch '{branch}', not '{main}' — merge it, or open a PR? (your call)"),
+        );
     }
 
     let (_, status) = g(&["status", "--porcelain"], 20);
@@ -1236,7 +1548,14 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     } else {
         let st = py_splitlines(&status);
         let new = st.iter().filter(|x| x.starts_with("??")).count();
-        line("ME", &format!("not committed: {} changed, {} new file(s)", st.len() - new, new));
+        line(
+            "ME",
+            &format!(
+                "not committed: {} changed, {} new file(s)",
+                st.len() - new,
+                new
+            ),
+        );
         for x in st.iter().take(6) {
             pl!("          {}", x);
         }
@@ -1246,16 +1565,33 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     }
 
     if !branch.is_empty() {
-        let (rc, up) = g(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 20);
+        let (rc, up) = g(
+            &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+            20,
+        );
         if rc != 0 || up.is_empty() {
-            line("ME", &format!("branch '{branch}' was never pushed (no upstream)"));
+            line(
+                "ME",
+                &format!("branch '{branch}' was never pushed (no upstream)"),
+            );
         } else {
-            let (_, lr) = g(&["rev-list", "--left-right", "--count", &format!("{up}...HEAD")], 20);
+            let (_, lr) = g(
+                &[
+                    "rev-list",
+                    "--left-right",
+                    "--count",
+                    &format!("{up}...HEAD"),
+                ],
+                20,
+            );
             let parts: Vec<&str> = lr.split_whitespace().collect();
             let (behind, ahead): (i64, i64) = if parts.is_empty() {
                 (0, 0)
             } else {
-                (parts[0].parse().unwrap_or(0), parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0))
+                (
+                    parts[0].parse().unwrap_or(0),
+                    parts.get(1).and_then(|x| x.parse().ok()).unwrap_or(0),
+                )
             };
             if ahead != 0 {
                 line("ME", &format!("{ahead} commit(s) not pushed to {up}"));
@@ -1273,7 +1609,14 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
     let (_, stash) = g(&["stash", "list"], 20);
     if !stash.is_empty() {
         let l = py_splitlines(&stash);
-        line("CHECK", &format!("{} stash(es) — forgotten work? ({})", l.len(), short(&l[0], 70)));
+        line(
+            "CHECK",
+            &format!(
+                "{} stash(es) — forgotten work? ({})",
+                l.len(),
+                short(&l[0], 70)
+            ),
+        );
     }
 
     check_freshness(s, root);
@@ -1298,14 +1641,17 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
         if rc != 0 {
             line("CHECK", "could not read CI (gh missing or not logged in)");
         } else if !runs.is_empty() {
-            let rows: Vec<Vec<String>> =
-                py_splitlines(&runs).iter().map(|r| r.splitn(3, '|').map(ToString::to_string).collect()).collect();
+            let rows: Vec<Vec<String>> = py_splitlines(&runs)
+                .iter()
+                .map(|r| r.splitn(3, '|').map(ToString::to_string).collect())
+                .collect();
             let mut bad: Vec<String> = rows
                 .iter()
                 .filter(|r| {
                     r.len() >= 3
                         && r[0] == "completed"
-                        && ["failure", "cancelled", "timed_out", "startup_failure"].contains(&r[1].as_str())
+                        && ["failure", "cancelled", "timed_out", "startup_failure"]
+                            .contains(&r[1].as_str())
                 })
                 .map(|r| r[2].clone())
                 .collect();
@@ -1316,7 +1662,10 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
                 line("ME", &format!("CI failed on HEAD: {}", bad.join(", ")));
             }
             if pending > 0 {
-                line("CHECK", &format!("{pending} CI run(s) still running on HEAD — wait, then look again"));
+                line(
+                    "CHECK",
+                    &format!("{pending} CI run(s) still running on HEAD — wait, then look again"),
+                );
             }
             if bad.is_empty() && pending == 0 {
                 line("OK", "CI green on HEAD");
@@ -1333,8 +1682,10 @@ fn section_repo(s: &Session, root: &str, fetch: bool, ci: bool) {
 /// The open leftovers of the projects the session touched (one store per main checkout).
 fn section_leftovers(roots: &[String]) {
     let mut seen = HashSet::new();
-    let stores =
-        roots.iter().filter_map(|r| Store::at(Path::new(r)).ok()).filter(|s| seen.insert(s.path().to_path_buf()));
+    let stores = roots
+        .iter()
+        .filter_map(|r| Store::at(Path::new(r)).ok())
+        .filter(|s| seen.insert(s.path().to_path_buf()));
     let (mut places, mut rows) = (Vec::new(), Vec::new());
     for store in stores {
         let open = store.open_items();
@@ -1344,7 +1695,11 @@ fn section_leftovers(roots: &[String]) {
         places.push(tilde(&store.path().to_string_lossy()));
         for item in open {
             let text = item.text.replace(['\n', '\r'], " ");
-            rows.push(format!("{} · **{}** · {text}", leftovers::date_of(&item.at), item.from));
+            rows.push(format!(
+                "{} · **{}** · {text}",
+                leftovers::date_of(&item.at),
+                item.from
+            ));
         }
     }
     if rows.is_empty() {
@@ -1398,7 +1753,7 @@ fn main() {
         pl!("{}", eta_line(&s));
         return;
     }
-    let dur = ((s.end.unwrap_or(0.0) - s.start.unwrap_or(0.0)) / 60.0) as i64;
+    let dur = f64_to_i64((s.end.unwrap_or(0.0) - s.start.unwrap_or(0.0)) / 60.0);
     let sid: String = fname(&path).chars().take(8).collect();
     pl!(
         "WHATSLEFT  session {} · {}h{:02}m · {} asks · {} tool calls\n",
@@ -1427,12 +1782,20 @@ fn main() {
 
     pl!("{}", eta_line(&s));
     let (me, you, check, later) = {
-        let st = STATE.lock().unwrap();
+        let st = state();
         (st.me, st.you, st.check, st.later)
     };
     let total = me + you + check;
-    let later_s = if later > 0 { format!(" · LATER {later}") } else { String::new() };
-    let head = if total > 0 { format!("{total} open") } else { "NOTHING OPEN FOUND".to_string() };
+    let later_s = if later > 0 {
+        format!(" · LATER {later}")
+    } else {
+        String::new()
+    };
+    let head = if total > 0 {
+        format!("{total} open")
+    } else {
+        "NOTHING OPEN FOUND".to_string()
+    };
     pl!(
         "VERDICT: {} — ME {} · YOU {} · CHECK {}{} (+ {} asks to cross-check)",
         head,
@@ -1457,11 +1820,20 @@ mod tests {
 
     #[test]
     fn clean_ask_rules() {
-        assert_eq!(clean_ask("<system-reminder>x</system-reminder>fix it"), "fix it");
-        assert_eq!(clean_ask("<command-name>/foo</command-name><command-args>bar</command-args>"), "/foo bar");
+        assert_eq!(
+            clean_ask("<system-reminder>x</system-reminder>fix it"),
+            "fix it"
+        );
+        assert_eq!(
+            clean_ask("<command-name>/foo</command-name><command-args>bar</command-args>"),
+            "/foo bar"
+        );
         assert_eq!(clean_ask("<task-notification>x</task-notification>"), "");
         assert_eq!(clean_ask("[Request interrupted by user]"), "");
-        assert_eq!(clean_ask("see <pasted_content a=\"1\">big</pasted_content> now"), "see [pasted text] now");
+        assert_eq!(
+            clean_ask("see <pasted_content a=\"1\">big</pasted_content> now"),
+            "see [pasted text] now"
+        );
     }
 
     #[test]

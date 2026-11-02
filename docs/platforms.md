@@ -50,9 +50,8 @@ password prompts and sign-in step are not covered. What each test checks:
 [AGENTS.md](../AGENTS.md#tests).
 
 To test on another Linux machine, set `TEST_HOST` (an SSH host name) in `dots settings` and run
-`scripts/os-check.sh linux`. When that host is off, `scripts/os-check.sh linux --local` uses
-local podman or docker instead. With no OS, `scripts/os-check.sh` checks every OS whose files
-changed. It is manual only. In Claude Code, run `/os-check`.
+`scripts/os-check.sh linux`. In Claude Code, run `/os-check`. The flags, the local fallback and
+what it checks: [AGENTS.md](../AGENTS.md#tests).
 
 The Windows check needs the VM `win11-golden` once:
 

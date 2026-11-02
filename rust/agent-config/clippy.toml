@@ -1,0 +1,16 @@
+# Tests may unwrap and expect: a panic is how a test fails.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# Product names that are not code; ".." keeps Clippy's own list.
+doc-valid-idents = [
+    "..",
+    "macOS",
+    "GitHub",
+    "OpenRouter",
+    "WebKit",
+    "WebSearch",
+    "WebFetch",
+    "PowerShell",
+    "OpenCode",
+    "YouTube",
+]

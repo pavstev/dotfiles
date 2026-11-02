@@ -25,10 +25,13 @@ use tantivy::directory::MmapDirectory;
 use tantivy::directory::error::LockError;
 use tantivy::query::{BooleanQuery, Occur, Query, QueryParser, RangeQuery, TermQuery};
 use tantivy::schema::{
-    Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value,
+    Field, IndexRecordOption, NumericOptions, STORED, STRING, Schema, TextFieldIndexing,
+    TextOptions, Value,
 };
 use tantivy::snippet::SnippetGenerator;
-use tantivy::tokenizer::{Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer};
+use tantivy::tokenizer::{
+    Language, LowerCaser, RemoveLongFilter, SimpleTokenizer, Stemmer, TextAnalyzer,
+};
 use tantivy::{Index, IndexWriter, TantivyDocument, TantivyError, Term};
 
 type Res<T> = Result<T, Box<dyn Error>>;
@@ -38,7 +41,9 @@ const HEAP: usize = 50_000_000;
 /// How long `index` and `find` wait for the writer lock held by another run: 5 s, or
 /// `SESSIONS_LOCK_WAIT_MS` (the tests set it).
 fn lock_wait() -> Duration {
-    let ms = std::env::var("SESSIONS_LOCK_WAIT_MS").ok().and_then(|v| v.parse().ok());
+    let ms = std::env::var("SESSIONS_LOCK_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok());
     ms.map_or(Duration::from_secs(5), Duration::from_millis)
 }
 const STATE_VERSION: u64 = 1;
@@ -97,7 +102,9 @@ fn build_schema() -> (Schema, Fields) {
     let mut b = Schema::builder();
     let words = || {
         TextOptions::default().set_stored().set_indexing_options(
-            TextFieldIndexing::default().set_tokenizer(TOKENIZER).set_index_option(IndexRecordOption::WithFreqs),
+            TextFieldIndexing::default()
+                .set_tokenizer(TOKENIZER)
+                .set_index_option(IndexRecordOption::WithFreqs),
         )
     };
     let f = Fields {
@@ -107,14 +114,23 @@ fn build_schema() -> (Schema, Fields) {
         project: b.add_text_field("project", STRING | STORED),
         title: b.add_text_field("title", words()),
         text: b.add_text_field("text", words()),
-        time: b.add_i64_field("time", NumericOptions::default().set_indexed().set_stored().set_fast()),
+        time: b.add_i64_field(
+            "time",
+            NumericOptions::default()
+                .set_indexed()
+                .set_stored()
+                .set_fast(),
+        ),
         role: b.add_text_field("role", STRING | STORED),
     };
     (b.build(), f)
 }
 
 fn index_dir() -> PathBuf {
-    dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("dots").join("sessions")
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("dots")
+        .join("sessions")
 }
 
 fn open_index(dir: &Path) -> Res<(Index, Fields)> {
@@ -165,7 +181,11 @@ struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self { version: STATE_VERSION, claude: Stamps::new(), docs: BTreeMap::new() }
+        Self {
+            version: STATE_VERSION,
+            claude: Stamps::new(),
+            docs: BTreeMap::new(),
+        }
     }
 }
 
@@ -175,13 +195,16 @@ mod path_keys {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::path::PathBuf;
 
-    pub fn serialize<S: Serializer>(map: &Stamps, s: S) -> Result<S::Ok, S::Error> {
+    pub(crate) fn serialize<S: Serializer>(map: &Stamps, s: S) -> Result<S::Ok, S::Error> {
         s.collect_map(map.iter().map(|(p, v)| (p.to_string_lossy(), v)))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Stamps, D::Error> {
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Stamps, D::Error> {
         let map = std::collections::BTreeMap::<String, (u64, i64)>::deserialize(d)?;
-        Ok(map.into_iter().map(|(k, v)| (PathBuf::from(k), v)).collect())
+        Ok(map
+            .into_iter()
+            .map(|(k, v)| (PathBuf::from(k), v))
+            .collect())
     }
 }
 
@@ -192,8 +215,12 @@ fn state_path(dir: &Path) -> PathBuf {
 /// The saved state. A missing, unreadable, malformed or other-version file gives an empty state,
 /// which reads every transcript again.
 fn load_state(dir: &Path) -> State {
-    let state = fs::read(state_path(dir)).ok().and_then(|b| serde_json::from_slice::<State>(&b).ok());
-    state.filter(|s| s.version == STATE_VERSION).unwrap_or_default()
+    let state = fs::read(state_path(dir))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<State>(&b).ok());
+    state
+        .filter(|s| s.version == STATE_VERSION)
+        .unwrap_or_default()
 }
 
 fn save_state(dir: &Path, s: &State) -> Res<()> {
@@ -218,7 +245,13 @@ fn to_tantivy(f: &Fields, d: &Doc) -> TantivyDocument {
 
 /// Read what changed since `state` into the writer and commit once. Returns the number of new
 /// documents, or the reason the source was skipped. The state is saved after the commit.
-fn update(home: &Path, dir: &Path, f: &Fields, writer: &mut IndexWriter, state: &mut State) -> Res<Result<u64, Skip>> {
+fn update(
+    home: &Path,
+    dir: &Path,
+    f: &Fields,
+    writer: &mut IndexWriter,
+    state: &mut State,
+) -> Res<Result<u64, Skip>> {
     let mut added: BTreeMap<String, u64> = BTreeMap::new();
     let mut last = String::new();
     let mut failed: Option<TantivyError> = None;
@@ -269,7 +302,11 @@ fn update(home: &Path, dir: &Path, f: &Fields, writer: &mut IndexWriter, state: 
     let mut docs = BTreeMap::new();
     for path in fresh.keys() {
         let key = path.to_string_lossy().into_owned();
-        let before = if state.claude.contains_key(path) { state.docs.get(&key).copied().unwrap_or(0) } else { 0 };
+        let before = if state.claude.contains_key(path) {
+            state.docs.get(&key).copied().unwrap_or(0)
+        } else {
+            0
+        };
         let count = match added.get(&key) {
             Some(&n) => {
                 new_docs += n.saturating_sub(before);
@@ -283,7 +320,11 @@ fn update(home: &Path, dir: &Path, f: &Fields, writer: &mut IndexWriter, state: 
     if dirty {
         writer.commit()?;
     }
-    let next = State { claude: fresh, docs, ..State::default() };
+    let next = State {
+        claude: fresh,
+        docs,
+        ..State::default()
+    };
     let changed = next.claude != state.claude || next.docs != state.docs;
     *state = next;
     if changed {
@@ -298,8 +339,16 @@ fn finish(writer: IndexWriter) {
 }
 
 /// Open the index, take the lock, optionally empty it, read new transcripts. None: lock busy.
-fn refresh(home: &Path, dir: &Path, index: &Index, f: &Fields, rebuild: bool) -> Res<Option<Result<u64, Skip>>> {
-    let Some(mut writer) = lock_writer(index)? else { return Ok(None) };
+fn refresh(
+    home: &Path,
+    dir: &Path,
+    index: &Index,
+    f: &Fields,
+    rebuild: bool,
+) -> Res<Option<Result<u64, Skip>>> {
+    let Some(mut writer) = lock_writer(index)? else {
+        return Ok(None);
+    };
     let mut state = load_state(dir);
     let empty = index.reader()?.searcher().num_docs() == 0;
     if rebuild {
@@ -314,7 +363,12 @@ fn refresh(home: &Path, dir: &Path, index: &Index, f: &Fields, rebuild: bool) ->
 }
 
 fn one_line(s: &str, n: usize) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(n).collect()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(n)
+        .collect()
 }
 
 /// Run `job`; when it fails, the index is a cache we can build again: wipe it, say so, retry once.
@@ -322,7 +376,10 @@ fn guarded<T>(dir: &Path, mut job: impl FnMut() -> Res<T>) -> Res<T> {
     match job() {
         Ok(v) => Ok(v),
         Err(e) => {
-            println!("• sessions: index rebuilt: {}", one_line(&e.to_string(), 100));
+            println!(
+                "• sessions: index rebuilt: {}",
+                one_line(&e.to_string(), 100)
+            );
             let _ = fs::remove_dir_all(dir);
             job()
         }
@@ -385,7 +442,13 @@ fn parse_day(s: &str) -> Option<i64> {
 fn plain_words(q: &str) -> String {
     // Lower case: the tokenizer lowers anyway, and upper-case NOT, AND, OR are query syntax.
     q.chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -393,7 +456,10 @@ fn plain_words(q: &str) -> String {
 }
 
 fn str_of(d: &TantivyDocument, f: Field) -> String {
-    d.get_first(f).and_then(|v| v.as_str()).unwrap_or("").to_string()
+    d.get_first(f)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn search(index: &Index, f: &Fields, a: &FindArgs) -> Res<Vec<Hit>> {
@@ -406,18 +472,27 @@ fn search(index: &Index, f: &Fields, a: &FindArgs) -> Res<Vec<Hit>> {
     let mut filters: Vec<(Occur, Box<dyn Query>)> = Vec::new();
     filters.push((
         Occur::Must,
-        Box::new(TermQuery::new(Term::from_field_text(f.source, "claude"), IndexRecordOption::Basic)),
+        Box::new(TermQuery::new(
+            Term::from_field_text(f.source, "claude"),
+            IndexRecordOption::Basic,
+        )),
     ));
     if let Some(p) = &a.project {
         filters.push((
             Occur::Must,
-            Box::new(TermQuery::new(Term::from_field_text(f.project, p), IndexRecordOption::Basic)),
+            Box::new(TermQuery::new(
+                Term::from_field_text(f.project, p),
+                IndexRecordOption::Basic,
+            )),
         ));
     }
     if let Some(t) = a.since {
         filters.push((
             Occur::Must,
-            Box::new(RangeQuery::new(Bound::Included(Term::from_field_i64(f.time, t)), Bound::Unbounded)),
+            Box::new(RangeQuery::new(
+                Bound::Included(Term::from_field_i64(f.time, t)),
+                Bound::Unbounded,
+            )),
         ));
     }
     // Several documents of one session match; take enough to fill `limit` sessions.
@@ -430,7 +505,8 @@ fn search(index: &Index, f: &Fields, a: &FindArgs) -> Res<Vec<Hit>> {
             parser = QueryParser::for_index(index, vec![f.text, f.title]);
         }
         let text_q = parser.parse_query(&words)?;
-        let mut clauses: Vec<(Occur, Box<dyn Query>)> = filters.iter().map(|(o, q)| (*o, q.box_clone())).collect();
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> =
+            filters.iter().map(|(o, q)| (*o, q.box_clone())).collect();
         clauses.push((Occur::Must, text_q));
         let query = BooleanQuery::new(clauses);
         let top = searcher.search(&query, &TopDocs::with_limit(take).order_by_score())?;
@@ -496,8 +572,18 @@ fn run_find(home: &Path, a: &FindArgs) -> Res<()> {
         println!("• sessions: no hits");
     }
     for h in &hits {
-        let title = if h.title.is_empty() { "(no title)" } else { &h.title };
-        println!("{}  claude  {}  {}  {}", date_of(h.time), h.project, h.session, title);
+        let title = if h.title.is_empty() {
+            "(no title)"
+        } else {
+            &h.title
+        };
+        println!(
+            "{}  claude  {}  {}  {}",
+            date_of(h.time),
+            h.project,
+            h.session,
+            title
+        );
         println!("  {}", h.snippet);
     }
     Ok(())
@@ -511,7 +597,13 @@ fn main() -> ExitCode {
     };
     let result = match cli.cmd {
         Cmd::Index { rebuild } => run_index(&home, rebuild),
-        Cmd::Find { query, project, since, source, limit } => {
+        Cmd::Find {
+            query,
+            project,
+            since,
+            source,
+            limit,
+        } => {
             if let Some(s) = source.as_deref().filter(|s| *s != "claude") {
                 println!("• sessions: {s} skipped: not supported yet");
                 return ExitCode::SUCCESS;
@@ -528,7 +620,15 @@ fn main() -> ExitCode {
             if wanted > MAX_LIMIT {
                 println!("• sessions: --limit cut to {MAX_LIMIT}");
             }
-            run_find(&home, &FindArgs { query: query.join(" "), project, since, limit: wanted.min(MAX_LIMIT) })
+            run_find(
+                &home,
+                &FindArgs {
+                    query: query.join(" "),
+                    project,
+                    since,
+                    limit: wanted.min(MAX_LIMIT),
+                },
+            )
         }
     };
     match result {

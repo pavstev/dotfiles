@@ -21,7 +21,13 @@ fn sync_git() {
 }
 
 fn edit_git_name() {
-    let Some(v) = ask::value("👤 Your name, for git commits", &settings::get("GIT_NAME"), "Jane Doe") else { return };
+    let Some(v) = ask::value(
+        "👤 Your name, for git commits",
+        &settings::get("GIT_NAME"),
+        "Jane Doe",
+    ) else {
+        return;
+    };
     if v.is_empty() {
         warn("a git name can't be empty, so it is not changed");
         return;
@@ -32,8 +38,11 @@ fn edit_git_name() {
 }
 
 fn edit_git_email() {
-    let Some(v) = ask::value("✉️  Your email, for git commits", &settings::get("GIT_EMAIL"), "jane@example.com")
-    else {
+    let Some(v) = ask::value(
+        "✉️  Your email, for git commits",
+        &settings::get("GIT_EMAIL"),
+        "jane@example.com",
+    ) else {
         return;
     };
     if !ask::looks_like_email(&v) {
@@ -48,8 +57,13 @@ fn edit_git_email() {
 /// A menu of labels, each saving one value. `now` picks the start label.
 fn pick_value(header: &str, name: &str, now: &str, opts: &[(&str, &str, &str)]) {
     let labels: Vec<String> = opts.iter().map(|o| s(o.0)).collect();
-    let start = opts.iter().find(|o| o.1 == now).map_or(opts[opts.len() - 1].0, |o| o.0);
-    let Some(v) = ask::menu(header, start, &labels) else { return };
+    let start = opts
+        .iter()
+        .find(|o| o.1 == now)
+        .map_or(opts[opts.len() - 1].0, |o| o.0);
+    let Some(v) = ask::menu(header, start, &labels) else {
+        return;
+    };
     if let Some(o) = opts.iter().find(|o| o.0 == v)
         && settings::set(name, o.1)
     {
@@ -63,7 +77,11 @@ fn edit_profile() {
         "PROFILE",
         settings::profile().as_str(),
         &[
-            ("🔒 owner: your private rules load", "owner", "profile: owner"),
+            (
+                "🔒 owner: your private rules load",
+                "owner",
+                "profile: owner",
+            ),
             ("🌍 shared: no private rules", "shared", "profile: shared"),
         ],
     );
@@ -71,12 +89,20 @@ fn edit_profile() {
 
 /// The presets that are on: a toggle list (Space marks one). Saved as `all`, `none` or the names.
 fn edit_presets() {
-    let all: Vec<String> = crate::presets::ALL.iter().map(ToString::to_string).collect();
+    let all: Vec<String> = crate::presets::ALL
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     let profile = settings::profile();
     let home = super::os::home();
     let on = crate::presets::enabled_quiet(&home, profile);
     let picked: Vec<String> = if ask::fancy() {
-        let marked: Vec<usize> = all.iter().enumerate().filter(|(_, n)| on.contains(n)).map(|(i, _)| i).collect();
+        let marked: Vec<usize> = all
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| on.contains(n))
+            .map(|(i, _)| i)
+            .collect();
         if let Some(v) = ask::many(
             "🧰 Presets (working habits) that are on: Space marks one · Enter saves · Esc keeps",
             &all,
@@ -89,9 +115,11 @@ fn edit_presets() {
         }
     } else {
         info(&format!("presets: {} (or all, or none)", all.join(" ")));
-        let Some(v) =
-            ask::value("🧰 Presets that are on, split by spaces", &crate::presets::summary(&home, profile), "all")
-        else {
+        let Some(v) = ask::value(
+            "🧰 Presets that are on, split by spaces",
+            &crate::presets::summary(&home, profile),
+            "all",
+        ) else {
             return;
         };
         let w = words(&v);
@@ -142,13 +170,18 @@ fn edit_plan() {
 
 /// An IANA zone name such as Europe/Berlin: letters, digits and `_ + - /`, no `..`.
 pub fn valid_zone(v: &str) -> bool {
-    !v.contains("..") && !v.starts_with('/') && v.chars().all(|c| c.is_ascii_alphanumeric() || "_+-/".contains(c))
+    !v.contains("..")
+        && !v.starts_with('/')
+        && v.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_+-/".contains(c))
 }
 
 fn edit_zone() {
-    let Some(v) =
-        ask::value("🕒 Time zone (an IANA name; empty: the system zone)", &settings::get("TIMEZONE"), "Europe/Berlin")
-    else {
+    let Some(v) = ask::value(
+        "🕒 Time zone (an IANA name; empty: the system zone)",
+        &settings::get("TIMEZONE"),
+        "Europe/Berlin",
+    ) else {
         return;
     };
     if !valid_zone(v.trim()) {
@@ -156,7 +189,10 @@ fn edit_zone() {
         return;
     }
     if settings::set("TIMEZONE", v.trim()) {
-        ok(&format!("time zone: {}", or(v.trim().to_string(), "the system zone")));
+        ok(&format!(
+            "time zone: {}",
+            or(v.trim().to_string(), "the system zone")
+        ));
     }
 }
 
@@ -169,19 +205,25 @@ pub fn valid_work_days(v: &str) -> bool {
         && w.split(' ').all(|part| {
             let mut it = part.split('-');
             let (a, b, rest) = (it.next(), it.next(), it.next());
-            rest.is_none() && a.is_some_and(|x| DAYS.contains(&x)) && b.is_none_or(|x| DAYS.contains(&x))
+            rest.is_none()
+                && a.is_some_and(|x| DAYS.contains(&x))
+                && b.is_none_or(|x| DAYS.contains(&x))
         })
 }
 
 fn edit_work_days() {
-    let Some(v) =
-        ask::value("📅 Work days, e.g. mon-fri or mon-sat (empty: mon-fri)", &settings::get("WORK_DAYS"), "mon-fri")
-    else {
+    let Some(v) = ask::value(
+        "📅 Work days, e.g. mon-fri or mon-sat (empty: mon-fri)",
+        &settings::get("WORK_DAYS"),
+        "mon-fri",
+    ) else {
         return;
     };
     let v = v.trim().to_lowercase();
     if !v.is_empty() && !valid_work_days(&v) {
-        warn("those are not work days (use mon, tue, ... or a range like mon-fri), so it is not changed");
+        warn(
+            "those are not work days (use mon, tue, ... or a range like mon-fri), so it is not changed",
+        );
         return;
     }
     if settings::set("WORK_DAYS", &v) {
@@ -194,13 +236,23 @@ fn edit_theme() {
         "🎨 Theme for the status line, dots output and Opencode",
         "THEME",
         &or(settings::get("THEME"), "copper"),
-        &[("🟠 copper: warm colors", "copper", "theme: copper"), ("⚪ plain: no colors", "plain", "theme: plain")],
+        &[
+            ("🟠 copper: warm colors", "copper", "theme: copper"),
+            ("⚪ plain: no colors", "plain", "theme: plain"),
+        ],
     );
 }
 
 /// on or off. Like agent-config: 1, on, yes or true is on.
 fn on_off(name: &str) -> &'static str {
-    if matches!(settings::get(name).to_lowercase().as_str(), "1" | "on" | "yes" | "true") { "on" } else { "off" }
+    if matches!(
+        settings::get(name).to_lowercase().as_str(),
+        "1" | "on" | "yes" | "true"
+    ) {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 fn edit_mcp() {
@@ -209,7 +261,11 @@ fn edit_mcp() {
         "CURSOR_MCP",
         on_off("CURSOR_MCP"),
         &[
-            ("🔌 on: Cloudflare docs search in Cursor", "on", "Cursor MCP: on"),
+            (
+                "🔌 on: Cloudflare docs search in Cursor",
+                "on",
+                "Cursor MCP: on",
+            ),
             ("⛔ off: no MCP servers from dots", "off", "Cursor MCP: off"),
         ],
     );
@@ -221,15 +277,26 @@ fn edit_opencode_mcp() {
         "OPENCODE_MCP",
         on_off("OPENCODE_MCP"),
         &[
-            ("🔌 on: Cloudflare docs search in Opencode", "on", "Opencode MCP: on"),
-            ("⛔ off: no MCP servers from dots", "off", "Opencode MCP: off"),
+            (
+                "🔌 on: Cloudflare docs search in Opencode",
+                "on",
+                "Opencode MCP: on",
+            ),
+            (
+                "⛔ off: no MCP servers from dots",
+                "off",
+                "Opencode MCP: off",
+            ),
         ],
     );
 }
 
 fn save_java(h: &Path) {
     if settings::set("JAVA_HOME", &h.to_string_lossy()) {
-        ok(&format!("Java set: {}. New terminal windows use it.", java::label(h)));
+        ok(&format!(
+            "Java set: {}. New terminal windows use it.",
+            java::label(h)
+        ));
     }
 }
 
@@ -254,24 +321,40 @@ fn edit_java(repo: &Path) {
     let mut labels: Vec<String> = Vec::new();
     let mut homes: Vec<PathBuf> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
-    let mut add = |label: String, h: PathBuf, labels: &mut Vec<String>, homes: &mut Vec<PathBuf>| {
-        let r = java::real(&h);
-        if seen.contains(&r) {
-            return;
-        }
-        seen.push(r);
-        labels.push(label);
-        homes.push(h);
-    };
+    let mut add =
+        |label: String, h: PathBuf, labels: &mut Vec<String>, homes: &mut Vec<PathBuf>| {
+            let r = java::real(&h);
+            if seen.contains(&r) {
+                return;
+            }
+            seen.push(r);
+            labels.push(label);
+            homes.push(h);
+        };
     if !now.is_empty() {
         let h = PathBuf::from(&now);
-        add(format!("⏭️  Keep it: Java {}", java::label(&h)), h, &mut labels, &mut homes);
+        add(
+            format!("⏭️  Keep it: Java {}", java::label(&h)),
+            h,
+            &mut labels,
+            &mut homes,
+        );
     }
     if let Some(u) = used {
-        add(format!("☕ Java {} (in use now)", java::label(&u)), u, &mut labels, &mut homes);
+        add(
+            format!("☕ Java {} (in use now)", java::label(&u)),
+            u,
+            &mut labels,
+            &mut homes,
+        );
     }
     for h in java::ranked() {
-        add(format!("☕ Java {}", java::label(&h)), h, &mut labels, &mut homes);
+        add(
+            format!("☕ Java {}", java::label(&h)),
+            h,
+            &mut labels,
+            &mut homes,
+        );
     }
     let typed = s("✏️  Type a path");
     let none = if now.is_empty() && gone.is_empty() {
@@ -287,13 +370,23 @@ fn edit_java(repo: &Path) {
         labels.push(none.clone());
     }
     let local = repo.join("home/.config/zsh/local.zsh");
-    if fs::read_to_string(&local)
-        .is_ok_and(|t| t.lines().any(|l| l.split('#').next().unwrap_or("").contains("JAVA_HOME=")))
-    {
-        info("Your own lines in local.zsh also set JAVA_HOME. The setting from here runs after them, so it wins.");
+    if fs::read_to_string(&local).is_ok_and(|t| {
+        t.lines()
+            .any(|l| l.split('#').next().unwrap_or("").contains("JAVA_HOME="))
+    }) {
+        info(
+            "Your own lines in local.zsh also set JAVA_HOME. The setting from here runs after them, so it wins.",
+        );
     }
-    let pick = ask::one("☕ Which Java should this machine use? (sets JAVA_HOME)", &labels).unwrap_or_default();
-    let chosen = labels.iter().position(|l| *l == pick).and_then(|i| homes.get(i).cloned());
+    let pick = ask::one(
+        "☕ Which Java should this machine use? (sets JAVA_HOME)",
+        &labels,
+    )
+    .unwrap_or_default();
+    let chosen = labels
+        .iter()
+        .position(|l| *l == pick)
+        .and_then(|i| homes.get(i).cloned());
     let had = !now.is_empty() || !gone.is_empty();
     if let Some(j) = chosen {
         if j == Path::new(&now) {
@@ -315,7 +408,9 @@ fn edit_java(repo: &Path) {
         } else if let Some(h) = java::home_of(Path::new(&p)) {
             save_java(&h);
         } else {
-            warn(&format!("no bin/java in {p}, so the Java setting is not changed"));
+            warn(&format!(
+                "no bin/java in {p}, so the Java setting is not changed"
+            ));
         }
     } else if pick == none && had {
         if settings::set("JAVA_HOME", "") {
@@ -339,7 +434,11 @@ fn edit_steps() {
             .filter(|(_, n)| now.split_whitespace().any(|w| w == n.as_str()))
             .map(|(i, _)| i)
             .collect();
-        if let Some(v) = ask::many("⏩ Steps to skip: Space marks one · Enter saves · Esc keeps", &all, &marked) {
+        if let Some(v) = ask::many(
+            "⏩ Steps to skip: Space marks one · Enter saves · Esc keeps",
+            &all,
+            &marked,
+        ) {
             v
         } else {
             info("steps to skip: not changed");
@@ -347,7 +446,9 @@ fn edit_steps() {
         }
     } else {
         info(&format!("steps: {}", all.join(" ")));
-        let Some(v) = ask::value("⏩ Steps to skip, split by spaces", &now, "") else { return };
+        let Some(v) = ask::value("⏩ Steps to skip, split by spaces", &now, "") else {
+            return;
+        };
         v.split_whitespace().map(String::from).collect()
     };
     let mut out: Vec<String> = Vec::new();
@@ -360,27 +461,43 @@ fn edit_steps() {
     }
     let v = out.join(" ");
     if settings::set("SKIP_STEPS", &v) {
-        ok(&format!("steps to skip: {}", if v.is_empty() { "none" } else { &v }));
+        ok(&format!(
+            "steps to skip: {}",
+            if v.is_empty() { "none" } else { &v }
+        ));
     }
 }
 
 /// Words, split by spaces (commas count as spaces).
 pub fn words(v: &str) -> String {
-    v.replace(',', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+    v.replace(',', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn edit_words(name: &str, header: &str, example: &str, what: &str) {
-    let Some(v) = ask::value(header, &settings::get(name), example) else { return };
+    let Some(v) = ask::value(header, &settings::get(name), example) else {
+        return;
+    };
     let v = words(&v);
     if settings::set(name, &v) {
-        ok(&format!("{}: {}", what, if v.is_empty() { "none" } else { &v }));
+        ok(&format!(
+            "{}: {}",
+            what,
+            if v.is_empty() { "none" } else { &v }
+        ));
     }
 }
 
 /// "1 line" or "N lines" (new lines counted, as wc -l does).
 fn lines_of(p: &Path) -> String {
     let n = fs::read_to_string(p).map_or(0, |t| t.matches('\n').count());
-    if n == 1 { s("1 line") } else { format!("{n} lines") }
+    if n == 1 {
+        s("1 line")
+    } else {
+        format!("{n} lines")
+    }
 }
 
 /// The private rules, free text for Claude, Cursor and Opencode. Empty removes them.
@@ -421,7 +538,10 @@ fn write_private(p: &Path, text: &str) -> bool {
         use std::os::unix::fs::OpenOptionsExt;
         o.mode(0o600);
     }
-    let good = o.open(p).and_then(|mut f| f.write_all(text.as_bytes())).is_ok();
+    let good = o
+        .open(p)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .is_ok();
     settings::set_mode(p, 0o600);
     good
 }
@@ -429,7 +549,11 @@ fn write_private(p: &Path, text: &str) -> bool {
 /// One menu line: emoji, name padded to 18, the value (no commas, at most 48 characters).
 pub fn row(emoji: &str, name: &str, value: &str) -> String {
     let v = value.replace(", ", " ").replace(',', " ");
-    let v = if v.chars().count() > 48 { format!("{}…", v.chars().take(47).collect::<String>()) } else { v };
+    let v = if v.chars().count() > 48 {
+        format!("{}…", v.chars().take(47).collect::<String>())
+    } else {
+        v
+    };
     format!("{emoji}{name:<18} {v}")
 }
 
@@ -450,7 +574,11 @@ fn java_value() -> String {
 
 fn rules_value() -> String {
     let md = settings::owner_md();
-    if fs::metadata(&md).is_ok_and(|m| m.len() > 0) { lines_of(&md) } else { s("none") }
+    if fs::metadata(&md).is_ok_and(|m| m.len() > 0) {
+        lines_of(&md)
+    } else {
+        s("none")
+    }
 }
 
 /// One line of the menu: how it is named, how it shows the value now, and what Enter on it runs.
@@ -475,14 +603,24 @@ const ROWS: [MenuRow; 19] = [
         value: || or(settings::get("GIT_EMAIL"), "not set"),
         edit: |_| edit_git_email(),
     },
-    MenuRow { emoji: "🧩 ", name: "Profile", value: || settings::profile().to_string(), edit: |_| edit_profile() },
+    MenuRow {
+        emoji: "🧩 ",
+        name: "Profile",
+        value: || settings::profile().to_string(),
+        edit: |_| edit_profile(),
+    },
     MenuRow {
         emoji: "🧰 ",
         name: "Presets",
         value: || crate::presets::summary(&super::os::home(), settings::profile()),
         edit: |_| edit_presets(),
     },
-    MenuRow { emoji: "📊 ", name: "Plan", value: || or(settings::get("PLAN"), "unknown"), edit: |_| edit_plan() },
+    MenuRow {
+        emoji: "📊 ",
+        name: "Plan",
+        value: || or(settings::get("PLAN"), "unknown"),
+        edit: |_| edit_plan(),
+    },
     MenuRow {
         emoji: "🕒 ",
         name: "Time zone",
@@ -495,13 +633,36 @@ const ROWS: [MenuRow; 19] = [
         value: || or(settings::get("WORK_DAYS"), "mon-fri"),
         edit: |_| edit_work_days(),
     },
-    MenuRow { emoji: "🎨 ", name: "Theme", value: || or(settings::get("THEME"), "copper"), edit: |_| edit_theme() },
-    MenuRow { emoji: "🖌️ ", name: "Looks", value: super::looks::summary, edit: |_| super::looks::edit() },
-    MenuRow { emoji: "🔌 ", name: "Cursor MCP", value: || s(on_off("CURSOR_MCP")), edit: |_| edit_mcp() },
     MenuRow {
-        emoji: "🔌 ", name: "Opencode MCP", value: || s(on_off("OPENCODE_MCP")), edit: |_| edit_opencode_mcp()
+        emoji: "🎨 ",
+        name: "Theme",
+        value: || or(settings::get("THEME"), "copper"),
+        edit: |_| edit_theme(),
     },
-    MenuRow { emoji: "☕ ", name: "Java", value: java_value, edit: edit_java },
+    MenuRow {
+        emoji: "🖌️ ",
+        name: "Looks",
+        value: super::looks::summary,
+        edit: |_| super::looks::edit(),
+    },
+    MenuRow {
+        emoji: "🔌 ",
+        name: "Cursor MCP",
+        value: || s(on_off("CURSOR_MCP")),
+        edit: |_| edit_mcp(),
+    },
+    MenuRow {
+        emoji: "🔌 ",
+        name: "Opencode MCP",
+        value: || s(on_off("OPENCODE_MCP")),
+        edit: |_| edit_opencode_mcp(),
+    },
+    MenuRow {
+        emoji: "☕ ",
+        name: "Java",
+        value: java_value,
+        edit: edit_java,
+    },
     MenuRow {
         emoji: "⏩ ",
         name: "Steps to skip",
@@ -573,7 +734,12 @@ const ROWS: [MenuRow; 19] = [
             );
         },
     },
-    MenuRow { emoji: "🔒 ", name: "Private rules", value: rules_value, edit: |_| edit_rules() },
+    MenuRow {
+        emoji: "🔒 ",
+        name: "Private rules",
+        value: rules_value,
+        edit: |_| edit_rules(),
+    },
 ];
 
 /// The `dots settings` menu: shows each setting, asks for changes and saves each one at once.
@@ -586,17 +752,26 @@ pub fn run(repo: &Path) {
     let mut start = if first { done.clone() } else { String::new() };
     let mut last: Option<usize> = None;
     loop {
-        let rows: Vec<String> = ROWS.iter().map(|r| row(r.emoji, r.name, &(r.value)())).collect();
+        let rows: Vec<String> = ROWS
+            .iter()
+            .map(|r| row(r.emoji, r.name, &(r.value)()))
+            .collect();
         // The cursor goes back to the row just changed (its value may be new).
         if let Some(l) = last {
             start.clone_from(&rows[l]);
         }
         let mut all = rows.clone();
         all.push(done.clone());
-        let Some(pick) = ask::menu("⚙️  Pick a setting to change, or Done (↑ ↓, Enter)", &start, &all) else {
+        let Some(pick) = ask::menu(
+            "⚙️  Pick a setting to change, or Done (↑ ↓, Enter)",
+            &start,
+            &all,
+        ) else {
             break;
         };
-        let Some(i) = rows.iter().position(|r| *r == pick) else { break };
+        let Some(i) = rows.iter().position(|r| *r == pick) else {
+            break;
+        };
         (ROWS[i].edit)(repo);
         last = Some(i);
     }
@@ -610,8 +785,14 @@ mod tests {
     fn zones_and_days() {
         assert!(valid_zone("Europe/Berlin") && valid_zone("") && valid_zone("Etc/GMT+1"));
         assert!(!valid_zone("../etc") && !valid_zone("a b") && !valid_zone("/x"));
-        assert!(valid_work_days("mon-fri") && valid_work_days("Mon, tue wed") && valid_work_days("sun-thu"));
-        assert!(!valid_work_days("") && !valid_work_days("monday") && !valid_work_days("mon-fri-sat"));
+        assert!(
+            valid_work_days("mon-fri")
+                && valid_work_days("Mon, tue wed")
+                && valid_work_days("sun-thu")
+        );
+        assert!(
+            !valid_work_days("") && !valid_work_days("monday") && !valid_work_days("mon-fri-sat")
+        );
     }
     #[test]
     fn word_lists() {

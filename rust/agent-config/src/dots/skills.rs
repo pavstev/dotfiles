@@ -32,7 +32,9 @@ fn prune(root: &Path, src: &Path) {
         if !os::is_symlink(&link) {
             continue;
         }
-        let Some(t) = os::readlink(&link) else { continue };
+        let Some(t) = os::readlink(&link) else {
+            continue;
+        };
         if !t.starts_with(src) || t == src || t.exists() {
             continue;
         }
@@ -41,14 +43,21 @@ fn prune(root: &Path, src: &Path) {
         }
     }
     if n > 0 {
-        plain(&format!("·  removed {} old skill links from {}", n, root.display()));
+        plain(&format!(
+            "·  removed {} old skill links from {}",
+            n,
+            root.display()
+        ));
     }
 }
 
 /// Link every skill into `root`. Returns false when something could not be linked.
 pub fn link_each(root: &Path, src: &Path) -> bool {
     if os::is_symlink(root) {
-        plain_err(&format!("!  {} is a symlink, left untouched (no skills added there)", root.display()));
+        plain_err(&format!(
+            "!  {} is a symlink, left untouched (no skills added there)",
+            root.display()
+        ));
         return true;
     }
     if fs::create_dir_all(root).is_err() {
@@ -70,7 +79,10 @@ pub fn link_each(root: &Path, src: &Path) -> bool {
             let _ = fs::remove_dir_all(&link);
         }
         if os::exists_or_link(&link) {
-            plain(&format!("·  {} exists (not ours) — left untouched", link.display()));
+            plain(&format!(
+                "·  {} exists (not ours) — left untouched",
+                link.display()
+            ));
             continue;
         }
         if os::symlink(&target, &link).is_ok() {

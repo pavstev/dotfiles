@@ -1,5 +1,7 @@
 //! Tests of the `guard` hook. Most run the binary (`CARGO_BIN_EXE_guard`); the later sections call
 //! `guard_checks` in process. Pure helpers are tested in `src/bin/guard.rs` and `src/guard_checks.rs`.
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 mod common;
 
 use std::fmt::Write as _;
@@ -15,7 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 type R = (i32, String, String);
 
 const GUARD: &str = env!("CARGO_BIN_EXE_guard");
-const BRIEF: &str = "Build it. Deadline: 25 min. Hand back at most 4,000 chars; write the rest to a file.";
+const BRIEF: &str =
+    "Build it. Deadline: 25 min. Hand back at most 4,000 chars; write the rest to a file.";
 const WEEK: i64 = 7 * 86400;
 /// The hook runs with a HOME that is not under the temp dir: `~` must resolve outside the scratch roots.
 const SCRATCH_HOME: &str = "/home/tester";
@@ -27,7 +30,18 @@ fn next_sid() -> usize {
 }
 
 fn now_secs() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+}
+
+fn now_int() -> i64 {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    i64::try_from(secs).unwrap()
 }
 
 /// Python's `dict(base, **extra)`: keys of `extra` replace those of `base`.
@@ -74,13 +88,17 @@ fn say(text: &str) -> Value {
 }
 
 fn agent_data(sid: &str, extra_ti: Value) -> Value {
-    let base = json!({"subagent_type": "worker", "model": "sonnet", "effort": "high", "prompt": BRIEF});
+    let base =
+        json!({"subagent_type": "worker", "model": "sonnet", "effort": "high", "prompt": BRIEF});
     json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": "Agent",
         "tool_input": merge(base, extra_ti)})
 }
 
 fn stop_data(sid: &str, extra: Value) -> Value {
-    merge(json!({"hook_event_name": "SubagentStop", "session_id": sid, "last_assistant_message": "done"}), extra)
+    merge(
+        json!({"hook_event_name": "SubagentStop", "session_id": sid, "last_assistant_message": "done"}),
+        extra,
+    )
 }
 
 fn failure_data(sid: &str, tid: Value, extra: Value) -> Value {
@@ -97,7 +115,7 @@ fn write_file(repo: &str, name: &str, text: &str) -> String {
 }
 
 /// A stand-in for the pace module: the binary reads the statusline cache first, so a fake pace is a
-/// fresh cache file whose week offset gives the wanted budget (tools/hook_test_shim.py does the same).
+/// fresh cache file whose week offset gives the wanted budget (`tools/hook_test_shim.py` does the same).
 #[derive(Clone, Copy)]
 struct Pace {
     state: &'static str,
@@ -106,7 +124,11 @@ struct Pace {
 }
 
 fn fake_pace(state: &'static str, used: f64, budget: f64) -> Pace {
-    Pace { state, used, budget }
+    Pace {
+        state,
+        used,
+        budget,
+    }
 }
 
 fn pace_default(state: &'static str) -> Pace {
@@ -117,7 +139,11 @@ fn write_pace_cache(cache_dir: &Path, pace: Option<Pace>) {
     let path = cache_dir.join("claude-pace.json");
     match pace {
         Some(p) if p.state != "unknown" => {
-            let now = now_secs() as i64;
+            let now = now_int();
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a percent of 6 days fits in i64"
+            )]
             let idx = ((p.budget / 100.0 * 6.0).round() as i64 - 1).clamp(0, 5);
             let ws = now - idx * 86400;
             fs::create_dir_all(cache_dir).unwrap();
@@ -168,13 +194,20 @@ struct G {
 
 impl G {
     fn new() -> Self {
-        let tmp = tempfile::Builder::new().prefix("guard-test-").tempdir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("guard-test-")
+            .tempdir()
+            .unwrap();
         let dir = tmp.path().to_path_buf();
         // the G6 hand-off must exist on disk: Stop and archive skip a deleted one
         let ho = dir.join("repo/.agents/handoffs/2026-10-14-x.md");
         fs::create_dir_all(ho.parent().unwrap()).unwrap();
         fs::write(&ho, "# Task").unwrap();
-        let g = Self { _tmp: tmp, dir, ho: ho.to_string_lossy().into_owned() };
+        let g = Self {
+            _tmp: tmp,
+            dir,
+            ho: ho.to_string_lossy().into_owned(),
+        };
         g.set(""); // the fake pace below assumes the old fixed plan and week
         g
     }
@@ -214,7 +247,7 @@ impl G {
     }
 
     /// Run the hook. HOME, TMPDIR and the cache point at the temp dir: pace finds no data there and
-    /// answers "unknown". `scratch` keeps a HOME outside the temp dir (see SCRATCH_HOME).
+    /// answers "unknown". `scratch` keeps a HOME outside the temp dir (see `SCRATCH_HOME`).
     fn run_env(&self, mode: &str, stdin: &str, env: &[(&str, &str)]) -> R {
         let d = self.d();
         let cache = self.join("cache");
@@ -257,7 +290,11 @@ impl G {
     }
 
     fn pre_x(&self, tool: &str, mut ti: Value, ctx: i64, extra: Value) -> R {
-        let path = if ctx > 0 { Some(self.transcript(&[human("hi"), assistant(ctx)])) } else { None };
+        let path = if ctx > 0 {
+            Some(self.transcript(&[human("hi"), assistant(ctx)]))
+        } else {
+            None
+        };
         if tool == "Agent" && ti.is_object() && ti.get("subagent_type").is_none() {
             ti["subagent_type"] = json!("worker"); // not a refused type
         }
@@ -271,11 +308,16 @@ impl G {
     }
 
     // --- router ---
-    fn route(&self, kind: &str, model: Option<&str>, effort: Option<&str>) -> (Value, Option<Value>) {
+    fn route(
+        &self,
+        kind: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> (Value, Option<Value>) {
         self.route_full(kind, model, effort, "Do it", BRIEF, None, json!({}))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "one argument per router input")]
     fn route_full(
         &self,
         kind: &str,
@@ -296,10 +338,48 @@ impl G {
         let ti = merge(ti, more);
         let data = json!({"hook_event_name": "PreToolUse", "session_id": format!("r{}", next_sid()),
             "tool_name": "Agent", "tool_input": ti});
-        let res = if pace.is_some() { self.inproc("pretool", &data, pace) } else { self.run("pretool", &data) };
+        let res = if pace.is_some() {
+            self.inproc("pretool", &data, pace)
+        } else {
+            self.run("pretool", &data)
+        };
         assert_eq!(res.0, 0, "{res:?}");
         assert_eq!(res.2, "", "{res:?}");
-        let out = if res.1.is_empty() { None } else { Some(json_out(&res)["hookSpecificOutput"].clone()) };
+        let out = if res.1.is_empty() {
+            None
+        } else {
+            Some(json_out(&res)["hookSpecificOutput"].clone())
+        };
+        (ti, out)
+    }
+
+    /// A route in a critical week with G8 off: G8 alone denies every spawn there (the cap is 0).
+    fn route_critical(
+        &self,
+        kind: &str,
+        model: Option<&str>,
+        desc: &str,
+        prompt: &str,
+    ) -> (Value, Option<Value>) {
+        let mut ti = json!({"subagent_type": kind, "description": desc, "prompt": prompt});
+        if let Some(m) = model {
+            ti["model"] = json!(m);
+            ti["effort"] = json!("high");
+        }
+        let data = json!({"hook_event_name": "PreToolUse", "session_id": format!("r{}", next_sid()),
+            "tool_name": "Agent", "tool_input": ti});
+        write_pace_cache(
+            &self.dir.join("cache"),
+            Some(fake_pace("critical", 96.0, 50.0)),
+        );
+        let res = self.run_with("pretool", &data, &[("GUARD_OFF", "G8")]);
+        assert_eq!(res.0, 0, "{res:?}");
+        assert_eq!(res.2, "", "{res:?}");
+        let out = if res.1.is_empty() {
+            None
+        } else {
+            Some(json_out(&res)["hookSpecificOutput"].clone())
+        };
         (ti, out)
     }
 
@@ -328,7 +408,12 @@ impl G {
 
     fn browser_turn(&self, n: usize, older: usize, name: &str) -> String {
         let mut recs = vec![human("old")];
-        let tu = |id: String| assistant_b(1000, json!([{"type": "tool_use", "id": id, "name": name, "input": {}}]));
+        let tu = |id: String| {
+            assistant_b(
+                1000,
+                json!([{"type": "tool_use", "id": id, "name": name, "input": {}}]),
+            )
+        };
         for i in 0..older {
             recs.push(tu(format!("o{i}")));
         }
@@ -378,7 +463,10 @@ impl G {
             recs.push(user_rec(json!(p)));
         }
         recs.push(assistant(1000));
-        Self::lines(&self.join(&format!("main/subagents/agent-{agent_id}.jsonl")), &recs);
+        Self::lines(
+            &self.join(&format!("main/subagents/agent-{agent_id}.jsonl")),
+            &recs,
+        );
         main
     }
 
@@ -414,7 +502,14 @@ impl G {
     }
 
     fn handback_p(&self, msg: &str, prompt: &str, agent_id: &str) -> R {
-        self.handback_full(json!(msg), Some(prompt), None, agent_id, "pretool", json!({}))
+        self.handback_full(
+            json!(msg),
+            Some(prompt),
+            None,
+            agent_id,
+            "pretool",
+            json!({}),
+        )
     }
 
     fn handback_stop(&self, msg: Value, agent_id: &str, extra: Value) -> R {
@@ -437,7 +532,10 @@ impl G {
     }
 
     fn good_reply_text(&self) -> String {
-        format!("Done. [2026-10-14-x.md](.agents/handoffs/2026-10-14-x.md)\n```\nRead {} and do it.\n```", self.ho)
+        format!(
+            "Done. [2026-10-14-x.md](.agents/handoffs/2026-10-14-x.md)\n```\nRead {} and do it.\n```",
+            self.ho
+        )
     }
 
     fn good_reply(&self) -> Value {
@@ -531,7 +629,11 @@ fn test_heavy_agents_denied() {
 fn test_router_table() {
     let g = G::new();
     // opus rows get opus at high, whatever the caller asked for
-    for (model, effort) in [(Some("sonnet"), Some("high")), (Some("sonnet"), Some("low")), (Some("haiku"), None)] {
+    for (model, effort) in [
+        (Some("sonnet"), Some("high")),
+        (Some("sonnet"), Some("low")),
+        (Some("haiku"), None),
+    ] {
         let (ti, out) = g.route("Plan", model, effort);
         assert_routed(out.as_ref(), &ti, "opus", Some("high"));
     }
@@ -574,14 +676,33 @@ fn test_router_review_cases() {
         ("code-reviewer", "Review commit abc", BRIEF.to_string()),
         ("task-reviewer", "Review task 3", final_brief.clone()),
         ("code-reviewer", "panel: simplify", final_brief),
-        ("code-reviewer", "Re-review blocking findings", format!("Final review. {BRIEF}")),
+        (
+            "code-reviewer",
+            "Re-review blocking findings",
+            format!("Final review. {BRIEF}"),
+        ),
     ];
     for (kind, desc, prompt) in cases {
-        let (ti, out) = g.route_full(kind, Some("opus"), Some("high"), desc, &prompt, None, json!({}));
+        let (ti, out) = g.route_full(
+            kind,
+            Some("opus"),
+            Some("high"),
+            desc,
+            &prompt,
+            None,
+            json!({}),
+        );
         assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     }
-    let (ti, out) =
-        g.route_full("worker", Some("opus"), Some("high"), "final review of the branch", BRIEF, None, json!({}));
+    let (ti, out) = g.route_full(
+        "worker",
+        Some("opus"),
+        Some("high"),
+        "final review of the branch",
+        BRIEF,
+        None,
+        json!({}),
+    );
     assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
     // "final review" deep in an implementer brief is not a review call
     let (ti, out) = g.route_full(
@@ -626,12 +747,225 @@ fn test_router_never_raises_cost() {
 #[test]
 fn test_router_silent_when_nothing_changes() {
     let g = G::new();
-    for (kind, model, effort) in
-        [("worker", "sonnet", Some("high")), ("Plan", "opus", Some("high")), ("Explore", "haiku", None)]
-    {
+    for (kind, model, effort) in [
+        ("worker", "sonnet", Some("high")),
+        ("Plan", "opus", Some("high")),
+        ("Explore", "haiku", None),
+    ] {
         let (_, out) = g.route(kind, Some(model), effort);
         assert!(out.is_none(), "{kind}");
     }
+}
+
+// --- router: an agent file's own pin ---
+
+/// Write an agent file with the given front matter lines (`name:` is added).
+fn agent_file(path: &str, name: &str, pins: &[&str]) {
+    let mut text = format!("---\nname: {name}\ndescription: A test agent.\n");
+    for p in pins {
+        text.push_str(p);
+        text.push('\n');
+    }
+    text.push_str("---\nBody.\n");
+    G::write(path, &text);
+}
+
+impl G {
+    /// A project folder (a `.git` folder marks the root) with a nested working folder. Returns (root, cwd).
+    fn project(&self) -> (String, String) {
+        let root = self.join("proj");
+        fs::create_dir_all(format!("{root}/.git")).unwrap();
+        let cwd = format!("{root}/sub/deep");
+        fs::create_dir_all(&cwd).unwrap();
+        (root, cwd)
+    }
+
+    /// Route a call from `cwd`, like `route` but with the hook input's `cwd` set.
+    fn route_at(
+        &self,
+        cwd: &str,
+        kind: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> (Value, Option<Value>) {
+        let mut ti = json!({"subagent_type": kind, "description": "Do it", "prompt": BRIEF});
+        if let Some(m) = model {
+            ti["model"] = json!(m);
+        }
+        if let Some(e) = effort {
+            ti["effort"] = json!(e);
+        }
+        let data = json!({"hook_event_name": "PreToolUse", "session_id": format!("r{}", next_sid()),
+            "tool_name": "Agent", "cwd": cwd, "tool_input": ti});
+        let res = self.run("pretool", &data);
+        assert_eq!(res.0, 0, "{res:?}");
+        assert_eq!(res.2, "", "{res:?}");
+        let out = if res.1.is_empty() {
+            None
+        } else {
+            Some(json_out(&res)["hookSpecificOutput"].clone())
+        };
+        (ti, out)
+    }
+}
+
+#[test]
+fn test_router_keeps_project_agent_haiku_pin() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    agent_file(
+        &format!("{root}/.claude/agents/live-checker.md"),
+        "live-checker",
+        &["model: haiku"],
+    );
+    let (ti, out) = g.route_at(&cwd, "live-checker", None, None);
+    assert_routed(out.as_ref(), &ti, "haiku", None);
+}
+
+#[test]
+fn test_router_keeps_user_agent_haiku_pin() {
+    let g = G::new();
+    let (_, cwd) = g.project();
+    agent_file(
+        &g.join(".claude/agents/lookup-agent.md"),
+        "lookup-agent",
+        &["model: haiku"],
+    );
+    let (ti, out) = g.route_at(&cwd, "lookup-agent", None, None);
+    assert_routed(out.as_ref(), &ti, "haiku", None);
+}
+
+#[test]
+fn test_router_file_pin_never_raises_cost() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    agent_file(
+        &format!("{root}/.claude/agents/big.md"),
+        "big",
+        &["model: opus"],
+    );
+    let (ti, out) = g.route_at(&cwd, "big", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
+    agent_file(
+        &format!("{root}/.claude/agents/same.md"),
+        "same",
+        &["model: inherit"],
+    );
+    let (ti, out) = g.route_at(&cwd, "same", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
+}
+
+#[test]
+fn test_router_project_agent_shadows_user_agent() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    agent_file(
+        &format!("{root}/.claude/agents/twin.md"),
+        "twin",
+        &["model: haiku"],
+    );
+    agent_file(
+        &g.join(".claude/agents/twin.md"),
+        "twin",
+        &["model: sonnet", "effort: medium"],
+    );
+    let (ti, out) = g.route_at(&cwd, "twin", None, None);
+    assert_routed(out.as_ref(), &ti, "haiku", None);
+    // the nearest project folder wins over a parent one inside the same repo
+    let inner = format!("{root}/sub/.claude/agents/twin2.md");
+    agent_file(&inner, "twin2", &["model: sonnet", "effort: low"]);
+    agent_file(
+        &format!("{root}/.claude/agents/twin2.md"),
+        "twin2",
+        &["model: haiku"],
+    );
+    let (ti, out) = g.route_at(&cwd, "twin2", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("low"));
+}
+
+#[test]
+fn test_router_file_effort_pin() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    agent_file(
+        &format!("{root}/.claude/agents/calm.md"),
+        "calm",
+        &["effort: medium"],
+    );
+    let (ti, out) = g.route_at(&cwd, "calm", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("medium"));
+    agent_file(
+        &format!("{root}/.claude/agents/loud.md"),
+        "loud",
+        &["effort: xhigh"],
+    );
+    let (ti, out) = g.route_at(&cwd, "loud", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
+    // the caller's low beats the file's medium
+    let (ti, out) = g.route_at(&cwd, "calm", None, Some("low"));
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("low"));
+}
+
+#[test]
+fn test_router_unknown_agent_name_gets_the_table() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    agent_file(
+        &format!("{root}/.claude/agents/other.md"),
+        "other",
+        &["model: haiku"],
+    );
+    let (ti, out) = g.route_at(&cwd, "no-such-agent", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
+    // no cwd at all: the same
+    let (ti, out) = g.route("no-such-agent", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
+}
+
+#[test]
+fn test_router_broken_front_matter_gets_the_table() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    // an unclosed `[` and no closing fence: no panic, the plain table result
+    G::write(
+        &format!("{root}/.claude/agents/broken.md"),
+        "---\nname: broken\ndescription: [oops\nmodel: haiku\neffort: low\ntools: [Bash, Read\nBody.\n",
+    );
+    let (ti, out) = g.route_at(&cwd, "broken", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
+}
+
+#[test]
+fn test_router_callers_cheaper_model_beats_file_pin() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    agent_file(
+        &format!("{root}/.claude/agents/mid.md"),
+        "mid",
+        &["model: sonnet"],
+    );
+    let (ti, out) = g.route_at(&cwd, "mid", Some("haiku"), Some("high"));
+    assert_routed(out.as_ref(), &ti, "haiku", None);
+}
+
+#[test]
+fn test_router_matches_agent_name_not_file_name() {
+    let g = G::new();
+    let (root, cwd) = g.project();
+    agent_file(
+        &format!("{root}/.claude/agents/deep/dir/file-one.md"),
+        "renamed-agent",
+        &["model: haiku"],
+    );
+    agent_file(
+        &format!("{root}/.claude/agents/live-checker.md"),
+        "something-else",
+        &["model: haiku"],
+    );
+    let (ti, out) = g.route_at(&cwd, "renamed-agent", None, None);
+    assert_routed(out.as_ref(), &ti, "haiku", None);
+    let (ti, out) = g.route_at(&cwd, "live-checker", None, None);
+    assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
 }
 
 #[test]
@@ -649,47 +983,92 @@ fn test_router_skips_fork_and_subagents() {
 }
 
 #[test]
-fn test_router_pace_ahead_downgrades_opus() {
+fn test_router_pace_critical_downgrades_opus() {
     let g = G::new();
-    let pace = Some(fake_pace("ahead", 60.0, 50.0));
-    let (ti, out) = g.route_full("Plan", Some("opus"), Some("high"), "Do it", BRIEF, pace, json!({}));
+    let (ti, out) = g.route_critical("Plan", Some("opus"), "Do it", BRIEF);
     assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
-    assert!(out.unwrap()["additionalContext"].as_str().unwrap().contains("ahead"));
-    let (ti, out) = g.route_full("code-reviewer", Some("opus"), Some("high"), "Final review", BRIEF, pace, json!({}));
+    assert!(
+        out.unwrap()["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("critical")
+    );
+    let (ti, out) = g.route_critical("code-reviewer", Some("opus"), "Final review", BRIEF);
     assert_routed(out.as_ref(), &ti, "sonnet", Some("high"));
-    let (ti, out) = g.route_full("Explore", Some("sonnet"), Some("high"), "Do it", BRIEF, pace, json!({}));
+    let (ti, out) = g.route_critical("Explore", Some("sonnet"), "Do it", BRIEF);
     assert_routed(out.as_ref(), &ti, "haiku", None);
-    // at ok the same Plan call is opus
-    let (ti, out) =
-        g.route_full("Plan", Some("sonnet"), Some("high"), "Do it", BRIEF, Some(pace_default("ok")), json!({}));
-    assert_routed(out.as_ref(), &ti, "opus", Some("high"));
+    // ahead is a note only (since 2026-11-02): the same Plan call is opus, as at ok
+    for state in ["ahead", "ok"] {
+        let (ti, out) = g.route_full(
+            "Plan",
+            Some("sonnet"),
+            Some("high"),
+            "Do it",
+            BRIEF,
+            Some(fake_pace(state, 60.0, 50.0)),
+            json!({}),
+        );
+        assert_routed(out.as_ref(), &ti, "opus", Some("high"));
+    }
 }
 
 #[test]
 fn test_superlite_agents_keep_their_own_brief_and_model() {
     let g = G::new();
     // superlite's `sl` writes the brief (no deadline or cap) and the agent file pins the model
-    let res = g.pre("Agent", json!({"subagent_type": "superlite:implementer", "prompt": "Task T1. Reply READY."}));
+    let res = g.pre(
+        "Agent",
+        json!({"subagent_type": "superlite:implementer", "prompt": "Task T1. Reply READY."}),
+    );
     assert_allow(&res);
-    let (_, out) = g.route_full("superlite:final-reviewer", None, None, "Final review", "Review.", None, json!({}));
+    let (_, out) = g.route_full(
+        "superlite:final-reviewer",
+        None,
+        None,
+        "Final review",
+        "Review.",
+        None,
+        json!({}),
+    );
     assert!(out.is_none());
-    // a tight week lowers only the opus-pinned ones
-    let pace = Some(fake_pace("ahead", 60.0, 50.0));
-    let (ti, out) = g.route_full("superlite:final-reviewer", None, None, "Final review", "Review.", pace, json!({}));
+    // a critical week lowers only the opus-pinned ones; ahead leaves them alone
+    let ahead = Some(fake_pace("ahead", 60.0, 50.0));
+    let (_, out) = g.route_full(
+        "superlite:final-reviewer",
+        None,
+        None,
+        "Final review",
+        "Review.",
+        ahead,
+        json!({}),
+    );
+    assert!(out.is_none());
+    let (ti, out) = g.route_critical("superlite:final-reviewer", None, "Final review", "Review.");
     let out = out.expect("a routed call");
     assert_eq!(out["updatedInput"]["model"], "sonnet");
     assert!(out["updatedInput"].get("effort").is_none(), "{ti}");
-    let (_, out) = g.route_full("superlite:implementer", None, None, "T1", "Task.", pace, json!({}));
+    let (_, out) = g.route_critical("superlite:implementer", None, "T1", "Task.");
     assert!(out.is_none());
     // other agents still need the brief
-    assert_eq!(g.pre("Agent", json!({"subagent_type": "worker", "prompt": "Task T1."})).0, 2);
+    assert_eq!(
+        g.pre(
+            "Agent",
+            json!({"subagent_type": "worker", "prompt": "Task T1."})
+        )
+        .0,
+        2
+    );
 }
 
 #[test]
 fn test_g19_skips_superlite_agents() {
     let g = G::new();
     let repo = g.make_repo(false);
-    write_file(&repo, "package.json", r#"{"scripts": {"check:fast": "true"}}"#);
+    write_file(
+        &repo,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
     let file = write_file(&repo, "a.txt", "x");
     for (agent, held) in [("superlite:implementer", false), ("worker", true)] {
         let sid = format!("g19-{held}");
@@ -699,7 +1078,11 @@ fn test_g19_skips_superlite_agents() {
         let stop = json!({"session_id": sid, "agent_id": "h1", "agent_type": agent, "cwd": repo,
             "last_assistant_message": "Done."});
         let res = g.run("subagentstop", &stop);
-        assert_eq!(res.1.contains("G19") || res.2.contains("G19"), held, "{agent}: {res:?}");
+        assert_eq!(
+            res.1.contains("G19") || res.2.contains("G19"),
+            held,
+            "{agent}: {res:?}"
+        );
     }
 }
 
@@ -715,7 +1098,12 @@ fn test_router_merges_with_warnings() {
     assert_eq!((rc, err.as_str(), out.matches('\n').count()), (0, "", 1));
     let hso = &serde_json::from_str::<Value>(&out).unwrap()["hookSpecificOutput"];
     assert_eq!(hso["updatedInput"]["model"], "sonnet");
-    assert!(hso["additionalContext"].as_str().unwrap().contains("spawned 15 agents"));
+    assert!(
+        hso["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("spawned 15 agents")
+    );
 }
 
 // --- W3 browser calls in a main window ---
@@ -723,11 +1111,20 @@ fn test_router_merges_with_warnings() {
 fn test_w3_browser() {
     let g = G::new();
     assert_allow(&g.browser_call(Some(&g.browser(4)), json!({})));
-    assert_warn(&g.browser_call(Some(&g.browser(5)), json!({})), "`ui-verifier`");
+    assert_warn(
+        &g.browser_call(Some(&g.browser(5)), json!({})),
+        "`ui-verifier`",
+    );
     assert_allow(&g.browser_call(Some(&g.browser(6)), json!({})));
-    assert_warn(&g.browser_call(Some(&g.browser(25)), json!({})), "26 browser calls");
+    assert_warn(
+        &g.browser_call(Some(&g.browser(25)), json!({})),
+        "26 browser calls",
+    );
     // last turn does not count
-    assert_allow(&g.browser_call(Some(&g.browser_turn(2, 10, "mcp__Claude_Browser__get_page_text")), json!({})));
+    assert_allow(&g.browser_call(
+        Some(&g.browser_turn(2, 10, "mcp__Claude_Browser__get_page_text")),
+        json!({}),
+    ));
     let chrome = g.browser_turn(5, 0, "mcp__claude-in-chrome__computer");
     assert_warn(&g.browser_call(Some(&chrome), json!({})), "");
     // inside ui-verifier
@@ -740,10 +1137,16 @@ fn test_w3_browser() {
 fn test_w4_budget() {
     let g = G::new();
     assert_allow(&g.spawn(&g.spawn_session(14, 0), "new"));
-    assert_warn(&g.spawn(&g.spawn_session(15, 0), "new"), "spawned 15 agents");
+    assert_warn(
+        &g.spawn(&g.spawn_session(15, 0), "new"),
+        "spawned 15 agents",
+    );
     assert_allow(&g.spawn(&g.spawn_session(16, 0), "new"));
     assert_warn(&g.spawn(&g.spawn_session(20, 0), "new"), "get_usage");
-    assert_warn(&g.spawn(&g.spawn_session(5, 400_000), "new"), "2000K subagent tokens");
+    assert_warn(
+        &g.spawn(&g.spawn_session(5, 400_000), "new"),
+        "2000K subagent tokens",
+    );
     assert_allow(&g.spawn(&g.spawn_session(6, 400_000), "new"));
     assert_allow(&g.spawn(&g.spawn_session(5, 100_000), "new"));
     // background agents report in task-notification attachments, once per task id
@@ -759,7 +1162,10 @@ fn test_w4_budget() {
     G::write(&path, &text);
     assert_warn(&g.spawn(&path, "new"), "1600K subagent tokens");
     // the current call already written to the transcript is not counted twice
-    assert_warn(&g.spawn(&g.spawn_session(16, 0), "a15"), "spawned 15 agents");
+    assert_warn(
+        &g.spawn(&g.spawn_session(16, 0), "a15"),
+        "spawned 15 agents",
+    );
 }
 
 #[test]
@@ -769,13 +1175,19 @@ fn test_w4_counts_each_agent_call_once() {
     let path = g.spawn_session(9, 0);
     let mut text = fs_read(&path);
     for i in 0..9 {
-        let rec = assistant_b(1000, json!([{"type": "tool_use", "id": format!("a{i}"), "name": "Agent", "input": {}}]));
+        let rec = assistant_b(
+            1000,
+            json!([{"type": "tool_use", "id": format!("a{i}"), "name": "Agent", "input": {}}]),
+        );
         let _ = writeln!(text, "{rec}");
     }
     G::write(&path, &text);
     assert_allow(&g.spawn(&path, "new"));
     // 15 distinct calls still warn
-    assert_warn(&g.spawn(&g.spawn_session(15, 0), "new"), "spawned 15 agents");
+    assert_warn(
+        &g.spawn(&g.spawn_session(15, 0), "new"),
+        "spawned 15 agents",
+    );
 }
 
 fn fs_read(path: &str) -> String {
@@ -794,7 +1206,10 @@ fn test_g1_missing_effort_or_model_is_filled_by_router() {
         let res = g.pre("Agent", ti);
         assert_eq!(res.0, 0, "{res:?}");
         let new = &json_out(&res)["hookSpecificOutput"]["updatedInput"];
-        assert_eq!((new["model"].as_str(), new["effort"].as_str()), (Some("sonnet"), Some("high")));
+        assert_eq!(
+            (new["model"].as_str(), new["effort"].as_str()),
+            (Some("sonnet"), Some("high"))
+        );
     }
     // the brief check still runs
     assert_deny(&g.pre("Agent", json!({})), "a deadline and a hand-back cap");
@@ -808,7 +1223,11 @@ fn test_g1_brief_needs_deadline_and_cap() {
     let res = g.pre("Agent", with("build"));
     assert_deny(&res, "a deadline and a hand-back cap");
     assert!(res.2.contains("Deadline: 25 min."), "{res:?}");
-    assert!(res.2.contains("Hand back at most 4,000 chars; write the rest to a file."), "{res:?}");
+    assert!(
+        res.2
+            .contains("Hand back at most 4,000 chars; write the rest to a file."),
+        "{res:?}"
+    );
     let res = g.pre("Agent", with("Build it. Hand back at most 4,000 chars."));
     assert_deny(&res, "needs a deadline");
     assert!(!res.2.contains("hand-back cap"), "{res:?}");
@@ -821,7 +1240,13 @@ fn test_g1_brief_needs_deadline_and_cap() {
 fn test_g1_brief_accepted_forms() {
     let g = G::new();
     let with = |p: &str| json!({"model": "sonnet", "effort": "high", "prompt": p});
-    for deadline in ["Deadline 30m", "finish in 20 minutes", "within 15 min", "time box 1h", "stop at 5pm"] {
+    for deadline in [
+        "Deadline 30m",
+        "finish in 20 minutes",
+        "within 15 min",
+        "time box 1h",
+        "stop at 5pm",
+    ] {
         assert_allow(&g.pre("Agent", with(&format!("{deadline}. Hand back one line."))));
     }
     for cap in [
@@ -838,7 +1263,13 @@ fn test_g1_brief_accepted_forms() {
         assert_allow(&g.pre("Agent", with(&format!("Do it. Deadline: 25 min. {cap}"))));
     }
     assert_allow(&g.pre("Agent", with("DEADLINE 20 MIN. HAND BACK 3,000 CHARS")));
-    for deadline in ["You have 1 hour.", "Time limit: 2 hours.", "a 25-minute budget", "within 30m", "ETA 1h"] {
+    for deadline in [
+        "You have 1 hour.",
+        "Time limit: 2 hours.",
+        "a 25-minute budget",
+        "within 30m",
+        "ETA 1h",
+    ] {
         assert_allow(&g.pre("Agent", with(&format!("{deadline} Hand back one line."))));
     }
     assert_allow(&g.pre("Agent", with("Hand-back: 3000 chars. Time box: yes.")));
@@ -848,11 +1279,16 @@ fn test_g1_brief_accepted_forms() {
 fn test_g1_max_effort_is_clamped_not_denied() {
     let g = G::new();
     for effort in ["max", "xhigh"] {
-        let res =
-            g.pre("Agent", json!({"model": "opus", "effort": effort, "prompt": BRIEF, "description": "build it"}));
+        let res = g.pre(
+            "Agent",
+            json!({"model": "opus", "effort": effort, "prompt": BRIEF, "description": "build it"}),
+        );
         assert_eq!(res.0, 0, "{res:?}");
         let new = &json_out(&res)["hookSpecificOutput"]["updatedInput"];
-        assert_eq!((new["model"].as_str(), new["effort"].as_str()), (Some("sonnet"), Some("high")));
+        assert_eq!(
+            (new["model"].as_str(), new["effort"].as_str()),
+            (Some("sonnet"), Some("high"))
+        );
     }
 }
 
@@ -860,23 +1296,52 @@ fn test_g1_max_effort_is_clamped_not_denied() {
 #[test]
 fn test_g2_cron() {
     let g = G::new();
-    assert_deny(&g.pre_ctx("CronCreate", json!({"cron": "*/5 * * * *", "prompt": "p"}), 150_000), "no polling");
-    assert_allow(&g.pre_ctx("CronCreate", json!({"cron": "7 * * * *", "prompt": "p"}), 150_000));
-    assert_allow(&g.pre_ctx("CronCreate", json!({"cron": "*/5 * * * *", "prompt": "p"}), 50_000));
+    assert_deny(
+        &g.pre_ctx(
+            "CronCreate",
+            json!({"cron": "*/5 * * * *", "prompt": "p"}),
+            150_000,
+        ),
+        "no polling",
+    );
+    assert_allow(&g.pre_ctx(
+        "CronCreate",
+        json!({"cron": "7 * * * *", "prompt": "p"}),
+        150_000,
+    ));
+    assert_allow(&g.pre_ctx(
+        "CronCreate",
+        json!({"cron": "*/5 * * * *", "prompt": "p"}),
+        50_000,
+    ));
     assert_allow(&g.pre("CronCreate", json!({"cron": "*/5 * * * *", "prompt": "p"}))); // no transcript
 }
 
 #[test]
 fn test_g2_cron_one_shot() {
     let g = G::new();
-    assert_allow(&g.pre_ctx("CronCreate", json!({"cron": "* * * * *", "prompt": "p", "recurring": false}), 150_000));
-    assert_deny(&g.pre_ctx("CronCreate", json!({"cron": "* * * * *", "prompt": "p", "recurring": true}), 150_000), "");
+    assert_allow(&g.pre_ctx(
+        "CronCreate",
+        json!({"cron": "* * * * *", "prompt": "p", "recurring": false}),
+        150_000,
+    ));
+    assert_deny(
+        &g.pre_ctx(
+            "CronCreate",
+            json!({"cron": "* * * * *", "prompt": "p", "recurring": true}),
+            150_000,
+        ),
+        "",
+    );
 }
 
 #[test]
 fn test_g2_wakeup() {
     let g = G::new();
-    assert_deny(&g.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 600}), 150_000), "no polling");
+    assert_deny(
+        &g.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 600}), 150_000),
+        "no polling",
+    );
     assert_allow(&g.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 1800}), 150_000));
     assert_allow(&g.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 600}), 50_000));
 }
@@ -886,8 +1351,14 @@ fn test_g2_loop_skill() {
     let g = G::new();
     // the intervals themselves are tested in `loop_intervals` (src/bin/guard.rs)
     let skill = |ti: Value, ctx: i64| g.pre_ctx("Skill", ti, ctx);
-    assert_deny(&skill(json!({"skill": "loop", "args": "5m check deploy"}), 150_000), "no polling");
-    assert_allow(&skill(json!({"skill": "loop", "args": "45m check deploy"}), 150_000));
+    assert_deny(
+        &skill(json!({"skill": "loop", "args": "5m check deploy"}), 150_000),
+        "no polling",
+    );
+    assert_allow(&skill(
+        json!({"skill": "loop", "args": "45m check deploy"}),
+        150_000,
+    ));
     assert_allow(&skill(json!({"skill": "loop"}), 150_000));
     assert_allow(&skill(json!({"skill": "other", "args": "5m x"}), 150_000));
     assert_allow(&skill(json!({"skill": "loop", "args": "5m x"}), 50_000));
@@ -898,28 +1369,34 @@ fn test_g2_loop_skill() {
 #[test]
 fn test_g3_prompt_cadence() {
     let g = G::new();
-    let (rc, out, err) = g.prompt_run(350_000, "sess");
+    let (rc, out, err) = g.prompt_run(450_000, "sess");
     assert_eq!((rc, err.as_str()), (0, ""));
     let payload = &serde_json::from_str::<Value>(&out).unwrap()["hookSpecificOutput"];
     assert_eq!(payload["hookEventName"], "UserPromptSubmit");
-    assert!(payload["additionalContext"].as_str().unwrap().contains("350K"), "{payload}");
+    assert!(
+        payload["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("450K"),
+        "{payload}"
+    );
     for _ in 0..4 {
-        assert_allow(&g.prompt_run(350_000, "sess"));
+        assert_allow(&g.prompt_run(450_000, "sess"));
     }
-    let (rc, out, _) = g.prompt_run(350_000, "sess"); // 6th
+    let (rc, out, _) = g.prompt_run(450_000, "sess"); // 6th
     assert_eq!(rc, 0);
     assert!(out.contains("additionalContext"), "{out}");
-    assert_allow(&g.prompt_run(350_000, "sess"));
+    assert_allow(&g.prompt_run(450_000, "sess"));
 }
 
 #[test]
 fn test_g3_prompt_below_threshold_and_sessions_independent() {
     let g = G::new();
-    assert_allow(&g.prompt_run(299_000, "sess"));
-    let (_, out, _) = g.prompt_run(300_000, "a");
-    assert!(out.contains("300K"), "{out}");
-    let (_, out, _) = g.prompt_run(300_000, "b");
-    assert!(out.contains("300K"), "{out}");
+    assert_allow(&g.prompt_run(399_000, "sess"));
+    let (_, out, _) = g.prompt_run(400_000, "a");
+    assert!(out.contains("400K"), "{out}");
+    let (_, out, _) = g.prompt_run(400_000, "b");
+    assert!(out.contains("400K"), "{out}");
     assert!(g.state_dir().join("a.json").is_file());
 }
 
@@ -927,10 +1404,12 @@ fn test_g3_prompt_below_threshold_and_sessions_independent() {
 fn test_g3_agent_ceiling() {
     let g = G::new();
     let res = g.pre_ctx("Agent", ok_agent(), 600_000);
-    assert_deny(&res, "context is 600K (> 350K)");
+    assert_deny(&res, "context is 600K (> 475K)");
     assert!(!res.2.contains("/ps:handoff"), "{res:?}");
-    assert_deny(&g.pre_ctx("Agent", ok_agent(), 351_000), "context is 351K");
-    assert_allow(&g.pre_ctx("Agent", ok_agent(), 340_000));
+    assert_deny(&g.pre_ctx("Agent", ok_agent(), 476_000), "context is 476K");
+    // between the nudge and the 500K auto-compact a session still spawns
+    assert_allow(&g.pre_ctx("Agent", ok_agent(), 401_000));
+    assert_allow(&g.pre_ctx("Agent", ok_agent(), 475_000));
     // ceiling runs before G1
     assert_deny(&g.pre_ctx("Agent", json!({}), 600_000), "context is 600K");
 }
@@ -939,7 +1418,10 @@ fn test_g3_agent_ceiling() {
 #[test]
 fn test_g4_first_ask_allowed_even_if_written() {
     let g = G::new();
-    let recs = [human("start"), assistant_b(1000, json!([ask_block("a1", "which?")]))];
+    let recs = [
+        human("start"),
+        assistant_b(1000, json!([ask_block("a1", "which?")])),
+    ];
     assert_allow(&g.ask(&recs, Some("a1"), "which?"));
     assert_allow(&g.ask(&recs, None, "which?")); // no id: matched by input
     assert_allow(&g.ask(&[human("start"), assistant(1000)], Some("a1"), "which?")); // not yet written
@@ -989,7 +1471,13 @@ fn test_g4_second_ask_denied() {
 #[test]
 fn test_g4_parallel_asks_first_allowed() {
     let g = G::new();
-    let recs = [human("start"), assistant_b(1000, json!([ask_block("a1", "which?"), ask_block("a2", "other?")]))];
+    let recs = [
+        human("start"),
+        assistant_b(
+            1000,
+            json!([ask_block("a1", "which?"), ask_block("a2", "other?")]),
+        ),
+    ];
     assert_allow(&g.ask(&recs, Some("a1"), "which?"));
     assert_deny(&g.ask(&recs, Some("a2"), "other?"), "answer");
 }
@@ -1021,8 +1509,10 @@ fn test_g4_askme_interview_exempt() {
     let mut recs = vec![human("/ps:askme plan the move")];
     recs.extend(two());
     assert_allow(&g.ask(&recs, Some("a2"), "which?"));
-    let skill =
-        assistant_b(1000, json!([{"type": "tool_use", "id": "s1", "name": "Skill", "input": {"skill": "ps:askme"}}]));
+    let skill = assistant_b(
+        1000,
+        json!([{"type": "tool_use", "id": "s1", "name": "Skill", "input": {"skill": "ps:askme"}}]),
+    );
     let mut recs = vec![human("grill me"), skill];
     recs.extend(two());
     assert_allow(&g.ask(&recs, Some("a2"), "which?"));
@@ -1044,8 +1534,7 @@ fn test_g4_new_human_prompt_resets() {
 #[test]
 fn test_g4_list_content_human_and_meta_skipped() {
     let g = G::new();
-    let list_prompt =
-        json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "hey"}]}});
+    let list_prompt = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "hey"}]}});
     let recs = [
         human("start"),
         assistant_b(1000, json!([ask_block("a1", "which?")])),
@@ -1069,20 +1558,30 @@ fn test_g4_list_content_human_and_meta_skipped() {
 #[test]
 fn test_g5_default_cap_and_message() {
     let g = G::new();
-    assert_allow(&g.handback(&"x".repeat(4400))); // 4,000 + 10%
-    let res = g.handback(&"x".repeat(4401));
-    assert_deny(&res, "guard: hand-back is 4401 chars; the cap is 4000.");
+    assert_allow(&g.handback(&"x".repeat(8000))); // 4,000 x 2
+    let res = g.handback(&"x".repeat(8001));
+    assert_deny(&res, "guard: hand-back is 8001 chars; the cap is 4000.");
     assert!(res.2.contains("Write the full text to a file"), "{res:?}");
-    assert!(res.2.contains("status on line 1, key results, the file path"), "{res:?}");
-    assert!(res.2.contains("No Write tool: cut to the top findings."), "{res:?}");
+    assert!(
+        res.2
+            .contains("status on line 1, key results, the file path"),
+        "{res:?}"
+    );
+    assert!(
+        res.2.contains("No Write tool: cut to the top findings."),
+        "{res:?}"
+    );
 }
 
 #[test]
 fn test_g5_cap_from_prompt() {
     let g = G::new();
     let prompt = "Review it. Hand back at most 1,000 chars; write the rest to a file.";
-    assert_allow(&g.handback_p(&"x".repeat(1100), prompt, "a1"));
-    assert_deny(&g.handback_p(&"x".repeat(1101), prompt, "a1"), "the cap is 1000");
+    assert_allow(&g.handback_p(&"x".repeat(2000), prompt, "a1"));
+    assert_deny(
+        &g.handback_p(&"x".repeat(2001), prompt, "a1"),
+        "the cap is 1000",
+    );
 }
 
 #[test]
@@ -1090,8 +1589,7 @@ fn test_g5_counter_write_fails_allows() {
     let g = G::new();
     let bad = g.join("not-a-dir");
     G::write(&bad, "x");
-    let data =
-        json!({"session_id": "s", "hook_event_name": "SubagentStop", "last_assistant_message": "x".repeat(5000)});
+    let data = json!({"session_id": "s", "hook_event_name": "SubagentStop", "last_assistant_message": "x".repeat(9000)});
     for _ in 0..3 {
         let (rc, _, err) = g.run_with("subagentstop", &data, &[("TMPDIR", &bad)]);
         assert_eq!((rc, err.as_str()), (0, ""));
@@ -1112,11 +1610,24 @@ fn test_g5_defaults_by_agent_type() {
         ("general-purpose", 4000),
         ("Explore", 4000),
     ] {
-        let big = (f64::from(cap) * 1.1) as usize;
-        let res = g.handback_full(json!("x".repeat(big + 1)), None, Some(kind), kind, "pretool", json!({}));
+        let big = usize::try_from(cap * 2).unwrap();
+        let res = g.handback_full(
+            json!("x".repeat(big + 1)),
+            None,
+            Some(kind),
+            kind,
+            "pretool",
+            json!({}),
+        );
         assert_deny(&res, &format!("the cap is {cap}"));
-        let res =
-            g.handback_full(json!("x".repeat(big)), None, Some(kind), &format!("{kind}-ok"), "pretool", json!({}));
+        let res = g.handback_full(
+            json!("x".repeat(big)),
+            None,
+            Some(kind),
+            &format!("{kind}-ok"),
+            "pretool",
+            json!({}),
+        );
         assert_allow(&res);
     }
 }
@@ -1124,21 +1635,23 @@ fn test_g5_defaults_by_agent_type() {
 #[test]
 fn test_g5_two_denies_then_allow() {
     let g = G::new();
-    let big = "x".repeat(5000);
+    let big = "x".repeat(9000);
     assert_deny(&g.handback(&big), "");
     assert_deny(&g.handback(&big), "");
     assert_allow(&g.handback(&big));
     assert_allow(&g.handback(&big));
     // another agent has its own counter
-    assert_deny(&g.handback_full(json!(big), None, None, "a2", "pretool", json!({})), "");
+    assert_deny(
+        &g.handback_full(json!(big), None, None, "a2", "pretool", json!({})),
+        "",
+    );
     assert!(g.state_dir().join("handback-a1.json").is_file());
 }
 
 #[test]
 fn test_g5_counter_keyed_by_session_without_agent_id() {
     let g = G::new();
-    let data =
-        json!({"session_id": "sess9", "hook_event_name": "SubagentStop", "last_assistant_message": "x".repeat(5000)});
+    let data = json!({"session_id": "sess9", "hook_event_name": "SubagentStop", "last_assistant_message": "x".repeat(9000)});
     assert_deny(&g.run("subagentstop", &data), "");
     assert!(g.state_dir().join("handback-sess9.json").is_file());
 }
@@ -1147,10 +1660,24 @@ fn test_g5_counter_keyed_by_session_without_agent_id() {
 fn test_g5_subagentstop() {
     let g = G::new();
     let stop = |msg: Value, id: &str, extra: Value| g.handback_stop(msg, id, extra);
-    assert_deny(&stop(json!("x".repeat(5000)), "a1", json!({})), "hand-back is 5000 chars");
+    assert_deny(
+        &stop(json!("x".repeat(9000)), "a1", json!({})),
+        "hand-back is 9000 chars",
+    );
     assert_allow(&stop(json!("x".repeat(100)), "a1", json!({})));
-    assert_allow(&stop(json!("x".repeat(5000)), "b1", json!({"stop_hook_active": true})));
-    assert_deny(&stop(json!("x".repeat(5000)), "b2", json!({"stop_hook_active": false})), "");
+    assert_allow(&stop(
+        json!("x".repeat(9000)),
+        "b1",
+        json!({"stop_hook_active": true}),
+    ));
+    assert_deny(
+        &stop(
+            json!("x".repeat(9000)),
+            "b2",
+            json!({"stop_hook_active": false}),
+        ),
+        "",
+    );
     // missing or wrong-typed text allows
     assert_allow(&stop(Value::Null, "b3", json!({})));
     assert_allow(&stop(json!(12345), "b4", json!({})));
@@ -1162,7 +1689,7 @@ fn test_g5_transcript_path_variants() {
     let g = G::new();
     let main = g.sub(Some("Hand back at most 500 chars."), "v1");
     let sub = g.join("main/subagents/agent-v1.jsonl");
-    let msg = "x".repeat(1000);
+    let msg = "x".repeat(1200);
     // agent_transcript_path wins
     let d = json!({"session_id": "s", "agent_id": "zz", "transcript_path": "/no/such.jsonl",
         "agent_transcript_path": sub, "last_assistant_message": msg});
@@ -1187,7 +1714,7 @@ fn test_g5_prompt_as_text_blocks_and_first_user_record_only() {
             user_rec(json!("Hand back at most 300 chars.")),
         ],
     );
-    let d = json!({"session_id": "s", "agent_id": "t1", "transcript_path": main, "last_assistant_message": "x".repeat(600)});
+    let d = json!({"session_id": "s", "agent_id": "t1", "transcript_path": main, "last_assistant_message": "x".repeat(900)});
     assert_deny(&g.run("subagentstop", &d), "the cap is 400");
 }
 
@@ -1198,7 +1725,7 @@ fn test_g5_prompt_read_from_start_limited_to_200_lines() {
     let mut recs: Vec<Value> = (0..200).map(|_| assistant(1000)).collect();
     recs.push(user_rec(json!("Hand back at most 300 chars.")));
     G::lines(&g.join("m3/subagents/agent-l1.jsonl"), &recs);
-    let d = json!({"session_id": "s", "agent_id": "l1", "transcript_path": main, "last_assistant_message": "x".repeat(600)});
+    let d = json!({"session_id": "s", "agent_id": "l1", "transcript_path": main, "last_assistant_message": "x".repeat(900)});
     assert_allow(&g.run("subagentstop", &d)); // prompt past line 200 ignored: default cap 4000
 }
 
@@ -1206,11 +1733,14 @@ fn test_g5_prompt_read_from_start_limited_to_200_lines() {
 fn test_g5_missing_transcript_falls_back_to_default() {
     let g = G::new();
     let mut d = json!({"session_id": "s", "agent_id": "q", "transcript_path": "/no/such/main.jsonl",
-        "agent_type": "repo-scanner", "last_assistant_message": "x".repeat(2300)});
+        "agent_type": "repo-scanner", "last_assistant_message": "x".repeat(4100)});
     assert_deny(&g.run("subagentstop", &d), "the cap is 2000");
     d["last_assistant_message"] = json!("x".repeat(100));
     assert_allow(&g.run("subagentstop", &d));
-    assert_allow(&g.run("subagentstop", &json!({"agent_id": "q2", "last_assistant_message": "x".repeat(100)})));
+    assert_allow(&g.run(
+        "subagentstop",
+        &json!({"agent_id": "q2", "last_assistant_message": "x".repeat(100)}),
+    ));
 }
 
 #[test]
@@ -1219,7 +1749,10 @@ fn test_g5_pretool_ignores_other_tools_and_bad_input() {
     assert_allow(&g.pre("Read", json!({"message": "x".repeat(9000)})));
     assert_allow(&g.pre("SubagentHandback", json!({})));
     assert_allow(&g.pre("SubagentHandback", json!({"message": 42})));
-    assert_allow(&g.run("pretool", &json!({"tool_name": "SubagentHandback", "tool_input": "oops"})));
+    assert_allow(&g.run(
+        "pretool",
+        &json!({"tool_name": "SubagentHandback", "tool_input": "oops"}),
+    ));
 }
 
 // --- G6 hand-off ---
@@ -1232,29 +1765,84 @@ fn test_g6_stop_needs_link_and_block() {
     let g = G::new();
     let base = vec![human("hand off"), g.write_ho("w1", None), tool_result("w1")];
     let with = |r: Value| cat(&[&base, &[r]]);
-    assert_deny(&g.stop_run(&with(say("The hand-off is written.")), json!({})), &format!("Read {}", g.ho));
-    assert_deny(&g.stop_run(&with(say(&format!("Read {} and do it.", g.ho))), json!({})), "file link");
+    assert_deny(
+        &g.stop_run(&with(say("The hand-off is written.")), json!({})),
+        &format!("Read {}", g.ho),
+    );
+    assert_deny(
+        &g.stop_run(&with(say(&format!("Read {} and do it.", g.ho))), json!({})),
+        "file link",
+    );
     assert_allow(&g.stop_run(&with(g.good_reply()), json!({})));
     // last_assistant_message counts when the transcript is not flushed yet
-    assert_allow(&g.stop_run(&base, json!({"last_assistant_message": g.good_reply_text()})));
+    assert_allow(&g.stop_run(
+        &base,
+        json!({"last_assistant_message": g.good_reply_text()}),
+    ));
 }
 
 #[test]
 fn test_g6_stop_one_deny_and_scope() {
     let g = G::new();
-    let base = vec![human("hand off"), g.write_ho("w1", None), tool_result("w1"), say("written")];
+    let base = vec![
+        human("hand off"),
+        g.write_ho("w1", None),
+        tool_result("w1"),
+        say("written"),
+    ];
     assert_allow(&g.stop_run(&base, json!({"stop_hook_active": true})));
     assert_allow(&g.stop_run(&[human("x"), say("no hand-off here")], json!({})));
     // written in an earlier turn: the user already got it
     assert_allow(&g.stop_run(&cat(&[&base, &[human("thanks"), say("ok")]]), json!({})));
     // a Write elsewhere is not a hand-off
-    assert_allow(&g.stop_run(&[human("x"), g.write_ho("w1", Some("/repo/notes.md")), say("ok")], json!({})));
+    assert_allow(&g.stop_run(
+        &[
+            human("x"),
+            g.write_ho("w1", Some("/repo/notes.md")),
+            say("ok"),
+        ],
+        json!({}),
+    ));
+}
+
+#[test]
+fn test_g6_fires_only_for_handoff_prompts() {
+    let g = G::new();
+    let write = |name: &str, body: &str| {
+        let path = g.join(&format!("repo/.agents/handoffs/{name}"));
+        G::write(&path, body);
+        let w = assistant_b(
+            1000,
+            json!([{"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": path, "content": body}}]),
+        );
+        [human("write it"), w, tool_result("w1"), say("Written.")]
+    };
+    // a report, a brief or a review in handoffs/ is read by the parent: no deny
+    for name in [
+        "2026-11-02-guard-report.md",
+        "x-BRIEF.md",
+        "2026-11-02-review-1.md",
+    ] {
+        assert_allow(&g.stop_run(&write(name, "# Findings\nAll fine."), json!({})));
+    }
+    // a hand-off prompt fires, also when the name says report but the body is the paste line
+    assert_deny(
+        &g.stop_run(&write("2026-11-02-guard.md", "# Task"), json!({})),
+        "Read ",
+    );
+    let body = "Do the work.\n\nRead /x/handoffs/y-report.md and do it.";
+    assert_deny(&g.stop_run(&write("y-report.md", body), json!({})), "Read ");
 }
 
 #[test]
 fn test_g6_archive_same_turn_denied() {
     let g = G::new();
-    let base = vec![human("hand off and archive"), g.write_ho("w1", None), tool_result("w1"), g.good_reply()];
+    let base = vec![
+        human("hand off and archive"),
+        g.write_ho("w1", None),
+        tool_result("w1"),
+        g.good_reply(),
+    ];
     assert_deny(&g.archive(&base, "self"), "Do not archive yet");
     assert_allow(&g.archive(&cat(&[&base, &[human("ok, archive")]]), "self"));
     assert_allow(&g.archive(&base, "other-session"));
@@ -1299,7 +1887,10 @@ fn test_scratch_denied_paths() {
             "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superlite/.",
         );
     }
-    assert_deny(&g.scratch("/etc/x.ipynb", "notebook_path", json!({})), "scratch files");
+    assert_deny(
+        &g.scratch("/etc/x.ipynb", "notebook_path", json!({})),
+        "scratch files",
+    );
 }
 
 #[cfg(unix)]
@@ -1311,14 +1902,23 @@ fn symlink(target: &str, link: &str) {
 #[cfg(unix)] // symlinks
 fn test_scratch_tilde_symlink_and_relative() {
     let g = G::new();
-    assert_deny(&g.scratch("~/x.py", "file_path", json!({})), "scratch files");
+    assert_deny(
+        &g.scratch("~/x.py", "file_path", json!({})),
+        "scratch files",
+    );
     // a symlink inside the temp dir that points outside is denied
     let link = g.join("link");
     symlink("/etc", &link);
-    assert_deny(&g.scratch(&format!("{link}/hosts"), "file_path", json!({})), "scratch files");
+    assert_deny(
+        &g.scratch(&format!("{link}/hosts"), "file_path", json!({})),
+        "scratch files",
+    );
     // a relative path resolves against cwd
     assert_allow(&g.scratch("s.py", "file_path", json!({"cwd": g.d()})));
-    assert_deny(&g.scratch("s.py", "file_path", json!({"cwd": "/Users/someone/proj"})), "scratch files");
+    assert_deny(
+        &g.scratch("s.py", "file_path", json!({"cwd": "/Users/someone/proj"})),
+        "scratch files",
+    );
 }
 
 #[test]
@@ -1326,8 +1926,14 @@ fn test_scratch_fail_open() {
     let g = G::new();
     assert_allow(&g.run_raw("scratch", "not json"));
     assert_allow(&g.run("scratch", &json!({"tool_name": "Write", "tool_input": {}})));
-    assert_allow(&g.run("scratch", &json!({"tool_name": "Write", "tool_input": "oops"})));
-    assert_allow(&g.run("scratch", &json!({"tool_name": "Write", "tool_input": {"file_path": 5}})));
+    assert_allow(&g.run(
+        "scratch",
+        &json!({"tool_name": "Write", "tool_input": "oops"}),
+    ));
+    assert_allow(&g.run(
+        "scratch",
+        &json!({"tool_name": "Write", "tool_input": {"file_path": 5}}),
+    ));
 }
 
 // --- transcript reading ---
@@ -1342,7 +1948,10 @@ fn test_cap_three_at_once_then_stop_frees_a_slot() {
     }
     let res = g.agent("c1");
     assert_deny(&res, "3 helpers");
-    for text in ["cap is 3", "Wait for one to finish, or do the step yourself"] {
+    for text in [
+        "cap is 3",
+        "The cap is the pace preset's setting (3 at once). Wait for a running helper to finish, then send the rest. There is no switch to raise it in a session.",
+    ] {
         assert!(res.2.contains(text), "{res:?}");
     }
     // another session has its own count
@@ -1379,7 +1988,10 @@ fn test_cap_failed_spawn_frees_its_own_slot() {
 fn test_cap_failure_ignores_other_tools_and_bad_input() {
     let g = G::new();
     assert_allow(&g.spawn_with_id("f2", "a"));
-    assert_allow(&g.run("posttoolfailure", &failure_data("f2", json!("a"), json!({"tool_name": "Bash"}))));
+    assert_allow(&g.run(
+        "posttoolfailure",
+        &failure_data("f2", json!("a"), json!({"tool_name": "Bash"})),
+    ));
     assert_allow(&g.run_raw("posttoolfailure", "not json"));
     for _ in 0..2 {
         assert_allow(&g.spawn_with_id("f2", "b"));
@@ -1411,7 +2023,10 @@ fn test_cap_other_denies_do_not_take_a_slot() {
     let g = G::new();
     for _ in 0..5 {
         // no deadline: denied by G1 before the cap
-        assert_deny(&g.run("pretool", &agent_data("c4", json!({"prompt": "build"}))), "a deadline");
+        assert_deny(
+            &g.run("pretool", &agent_data("c4", json!({"prompt": "build"}))),
+            "a deadline",
+        );
     }
     for _ in 0..3 {
         assert_allow(&g.agent("c4"));
@@ -1424,7 +2039,7 @@ fn test_cap_stop_with_denied_handback_keeps_the_slot() {
     for _ in 0..3 {
         g.agent("c5");
     }
-    let big = stop_data("c5", json!({"last_assistant_message": "x".repeat(5000)}));
+    let big = stop_data("c5", json!({"last_assistant_message": "x".repeat(9000)}));
     assert_deny(&g.run("subagentstop", &big), "");
     assert_deny(&g.agent("c5"), "cap is 3");
 }
@@ -1433,7 +2048,10 @@ fn test_cap_stop_with_denied_handback_keeps_the_slot() {
 fn test_cap_entries_older_than_90_minutes_are_dropped() {
     let g = G::new();
     let old = now_secs() - 91.0 * 60.0;
-    G::write(&g.state_dir().join("c6.json").to_string_lossy(), &json!({"spawns": [old, old, old]}).to_string());
+    G::write(
+        &g.state_dir().join("c6.json").to_string_lossy(),
+        &json!({"spawns": [old, old, old]}).to_string(),
+    );
     for _ in 0..3 {
         assert_allow(&g.agent("c6"));
     }
@@ -1443,7 +2061,12 @@ fn test_cap_entries_older_than_90_minutes_are_dropped() {
 #[test]
 fn test_cap_superlite_has_its_own_pool_of_10() {
     let g = G::new();
-    let sl = |sid: &str| g.run("pretool", &agent_data(sid, json!({"subagent_type": "superlite:implementer"})));
+    let sl = |sid: &str| {
+        g.run(
+            "pretool",
+            &agent_data(sid, json!({"subagent_type": "superlite:implementer"})),
+        )
+    };
     for _ in 0..10 {
         assert_allow(&sl("c9"));
     }
@@ -1454,26 +2077,35 @@ fn test_cap_superlite_has_its_own_pool_of_10() {
     }
     assert_deny(&g.agent("c9"), "cap is 3");
     // a superlite stop frees a superlite slot, not a helper slot
-    assert_allow(&g.run("subagentstop", &stop_data("c9", json!({"agent_type": "superlite:implementer"}))));
+    assert_allow(&g.run(
+        "subagentstop",
+        &stop_data("c9", json!({"agent_type": "superlite:implementer"})),
+    ));
     assert_deny(&g.agent("c9"), "cap is 3");
     assert_allow(&sl("c9"));
-    // a tight week: 3 superlite agents
+    // an ahead week keeps all 10 superlite slots; a critical one has none
     let ahead = Some(fake_pace("ahead", 60.0, 50.0));
     let d = agent_data("c10", json!({"subagent_type": "superlite:implementer"}));
-    for _ in 0..3 {
+    for _ in 0..10 {
         assert_allow(&g.inproc("pretool", &d, ahead));
     }
-    assert_deny(&g.inproc("pretool", &d, ahead), "cap is 3");
+    assert_deny(&g.inproc("pretool", &d, ahead), "cap is 10");
+    let crit = Some(fake_pace("critical", 96.0, 50.0));
+    let d = agent_data("c11", json!({"subagent_type": "superlite:implementer"}));
+    assert_deny(&g.inproc("pretool", &d, crit), "cap is 0");
 }
 
 #[test]
 fn test_cap_by_pace() {
     let g = G::new();
+    // ahead keeps the 3 slots of ok (since 2026-11-02)
     let ahead = Some(fake_pace("ahead", 60.0, 50.0));
-    assert_allow(&g.inproc("pretool", &agent_data("p1", json!({})), ahead));
+    for _ in 0..3 {
+        assert_allow(&g.inproc("pretool", &agent_data("p1", json!({})), ahead));
+    }
     let res = g.inproc("pretool", &agent_data("p1", json!({})), ahead);
-    assert_deny(&res, "1 helper");
-    for text in ["cap is 1", "60%", "50%"] {
+    assert_deny(&res, "3 helpers");
+    for text in ["cap is 3", "60%", "50%"] {
         assert!(res.2.contains(text), "{res:?}"); // the pace numbers
     }
     let crit = Some(fake_pace("critical", 90.0, 100.0));
@@ -1483,9 +2115,20 @@ fn test_cap_by_pace() {
     for state in ["ok", "unknown"] {
         let sid = format!("p3{state}");
         for _ in 0..3 {
-            assert_allow(&g.inproc("pretool", &agent_data(&sid, json!({})), Some(pace_default(state))));
+            assert_allow(&g.inproc(
+                "pretool",
+                &agent_data(&sid, json!({})),
+                Some(pace_default(state)),
+            ));
         }
-        assert_deny(&g.inproc("pretool", &agent_data(&sid, json!({})), Some(pace_default(state))), "cap is 3");
+        assert_deny(
+            &g.inproc(
+                "pretool",
+                &agent_data(&sid, json!({})),
+                Some(pace_default(state)),
+            ),
+            "cap is 3",
+        );
     }
 }
 
@@ -1576,7 +2219,11 @@ impl G {
             data["transcript_path"] = json!(self.plan_transcript(s.model, s.entry));
         }
         let data = merge(data, s.extra);
-        if s.pace.is_some() { self.inproc("pretool", &data, s.pace) } else { self.run("pretool", &data) }
+        if s.pace.is_some() {
+            self.inproc("pretool", &data, s.pace)
+        } else {
+            self.run("pretool", &data)
+        }
     }
 }
 
@@ -1588,13 +2235,40 @@ fn test_plan_gate_denies_planning_skills_outside_plan_mode() {
     // CLI + Sonnet or Haiku: opusplan applies, so plans go through plan mode
     for name in PLAN_SKILLS {
         for model in ["claude-sonnet-5-5", "claude-haiku-4-5"] {
-            let res = g.skill(name, S { model: Some(model), ..S::new() });
+            let res = g.skill(
+                name,
+                S {
+                    model: Some(model),
+                    ..S::new()
+                },
+            );
             assert_deny(&res, "EnterPlanMode");
             assert!(res.2.contains("plan mode"), "{res:?}");
-            assert!(res.2.contains("(autopilot: send a `Plan` helper instead)"), "{res:?}");
+            assert!(
+                res.2.contains("(autopilot: send a `Plan` helper instead)"),
+                "{res:?}"
+            );
         }
-        assert_deny(&g.skill(name, S { mode: None, ..S::new() }), "EnterPlanMode");
-        assert_deny(&g.skill(name, S { mode: Some("acceptEdits"), ..S::new() }), "EnterPlanMode");
+        assert_deny(
+            &g.skill(
+                name,
+                S {
+                    mode: None,
+                    ..S::new()
+                },
+            ),
+            "EnterPlanMode",
+        );
+        assert_deny(
+            &g.skill(
+                name,
+                S {
+                    mode: Some("acceptEdits"),
+                    ..S::new()
+                },
+            ),
+            "EnterPlanMode",
+        );
     }
 }
 
@@ -1602,12 +2276,35 @@ fn test_plan_gate_denies_planning_skills_outside_plan_mode() {
 fn test_plan_gate_desktop_sonnet_points_to_plan_helper_or_opus() {
     let g = G::new();
     for name in PLAN_SKILLS {
-        let res = g.skill(name, S { entry: Some("claude-desktop"), ..S::new() });
-        assert_deny(&res, "send a `Plan` helper (Opus by the router), or pick Opus in the model menu");
+        let res = g.skill(
+            name,
+            S {
+                entry: Some("claude-desktop"),
+                ..S::new()
+            },
+        );
+        assert_deny(
+            &res,
+            "send a `Plan` helper (Opus by the router), or pick Opus in the model menu",
+        );
         assert!(!res.2.contains("EnterPlanMode"), "{res:?}");
-        let res = g.skill(name, S { entry: Some("claude-desktop"), pace: Some(pace_default("ok")), ..S::new() });
+        let res = g.skill(
+            name,
+            S {
+                entry: Some("claude-desktop"),
+                pace: Some(pace_default("ok")),
+                ..S::new()
+            },
+        );
         assert_deny(&res, "pick Opus");
-        assert_allow(&g.skill(name, S { entry: Some("claude-desktop"), mode: Some("plan"), ..S::new() }));
+        assert_allow(&g.skill(
+            name,
+            S {
+                entry: Some("claude-desktop"),
+                mode: Some("plan"),
+                ..S::new()
+            },
+        ));
     }
 }
 
@@ -1616,10 +2313,23 @@ fn test_plan_gate_allows_opus_and_fable_mains() {
     let g = G::new();
     for (skill, model, entry, pace) in [
         ("superlite:writing-plans", "claude-opus-5-5", "cli", None),
-        ("superlite:brainstorming", "claude-fable-5-1", "claude-desktop", Some(pace_default("ok"))),
+        (
+            "superlite:brainstorming",
+            "claude-fable-5-1",
+            "claude-desktop",
+            Some(pace_default("ok")),
+        ),
         ("superlite:writing-plans", "opus", "claude-desktop", None),
     ] {
-        assert_allow(&g.skill(skill, S { model: Some(model), entry: Some(entry), pace, ..S::new() }));
+        assert_allow(&g.skill(
+            skill,
+            S {
+                model: Some(model),
+                entry: Some(entry),
+                pace,
+                ..S::new()
+            },
+        ));
     }
 }
 
@@ -1627,12 +2337,50 @@ fn test_plan_gate_allows_opus_and_fable_mains() {
 fn test_plan_gate_unknown_model_or_entrypoint_allows() {
     let g = G::new();
     let name = "superlite:writing-plans";
-    assert_allow(&g.skill(name, S { model: None, entry: None, ..S::new() })); // no transcript at all
-    assert_allow(&g.skill(name, S { model: None, entry: Some("cli"), ..S::new() })); // no assistant record
-    assert_allow(&g.skill(name, S { entry: None, ..S::new() })); // no entrypoint
-    assert_allow(&g.skill(name, S { entry: Some("sdk-cli"), ..S::new() })); // not cli or desktop
-    assert_allow(&g.skill(name, S { model: Some("mystery-model"), ..S::new() }));
-    assert_allow(&g.skill(name, S { extra: json!({"transcript_path": "/no/such/file.jsonl"}), ..S::new() }));
+    assert_allow(&g.skill(
+        name,
+        S {
+            model: None,
+            entry: None,
+            ..S::new()
+        },
+    )); // no transcript at all
+    assert_allow(&g.skill(
+        name,
+        S {
+            model: None,
+            entry: Some("cli"),
+            ..S::new()
+        },
+    )); // no assistant record
+    assert_allow(&g.skill(
+        name,
+        S {
+            entry: None,
+            ..S::new()
+        },
+    )); // no entrypoint
+    assert_allow(&g.skill(
+        name,
+        S {
+            entry: Some("sdk-cli"),
+            ..S::new()
+        },
+    )); // not cli or desktop
+    assert_allow(&g.skill(
+        name,
+        S {
+            model: Some("mystery-model"),
+            ..S::new()
+        },
+    ));
+    assert_allow(&g.skill(
+        name,
+        S {
+            extra: json!({"transcript_path": "/no/such/file.jsonl"}),
+            ..S::new()
+        },
+    ));
 }
 
 #[test]
@@ -1656,34 +2404,86 @@ fn test_plan_gate_uses_the_newest_assistant_model() {
 #[test]
 fn test_plan_gate_allows() {
     let g = G::new();
-    assert_allow(&g.skill("superlite:writing-plans", S { mode: Some("plan"), ..S::new() }));
-    assert_allow(&g.skill("superlite:brainstorming", S { mode: Some("plan"), ..S::new() }));
-    assert_allow(&g.skill("superlite:test-driven-development", S::new()));
-    assert_allow(&g.skill("ps:handoff", S::new()));
-    assert_allow(&g.skill("superlite:writing-plans", S { extra: json!({"agent_id": "a1"}), ..S::new() })); // a subagent
     assert_allow(&g.skill(
         "superlite:writing-plans",
-        S { extra: json!({"transcript_path": "/x/subagents/agent-1.jsonl"}), ..S::new() },
+        S {
+            mode: Some("plan"),
+            ..S::new()
+        },
     ));
-    for state in ["ahead", "critical"] {
-        // Sonnet plans without plan mode
-        assert_allow(&g.skill("superlite:writing-plans", S { pace: Some(fake_pace(state, 90.0, 50.0)), ..S::new() }));
-        assert_allow(&g.skill("superlite:brainstorming", S { pace: Some(fake_pace(state, 90.0, 50.0)), ..S::new() }));
+    assert_allow(&g.skill(
+        "superlite:brainstorming",
+        S {
+            mode: Some("plan"),
+            ..S::new()
+        },
+    ));
+    assert_allow(&g.skill("superlite:test-driven-development", S::new()));
+    assert_allow(&g.skill("ps:handoff", S::new()));
+    assert_allow(&g.skill(
+        "superlite:writing-plans",
+        S {
+            extra: json!({"agent_id": "a1"}),
+            ..S::new()
+        },
+    )); // a subagent
+    assert_allow(&g.skill(
+        "superlite:writing-plans",
+        S {
+            extra: json!({"transcript_path": "/x/subagents/agent-1.jsonl"}),
+            ..S::new()
+        },
+    ));
+    // a critical week: Sonnet plans without plan mode
+    assert_allow(&g.skill(
+        "superlite:writing-plans",
+        S {
+            pace: Some(fake_pace("critical", 96.0, 50.0)),
+            ..S::new()
+        },
+    ));
+    assert_allow(&g.skill(
+        "superlite:brainstorming",
+        S {
+            pace: Some(fake_pace("critical", 96.0, 50.0)),
+            ..S::new()
+        },
+    ));
+    // an ahead week gates the same as an ok one
+    for skill in ["superlite:writing-plans", "superlite:brainstorming"] {
+        let ahead = g.skill(
+            skill,
+            S {
+                pace: Some(fake_pace("ahead", 60.0, 50.0)),
+                ..S::new()
+            },
+        );
+        let ok = g.skill(
+            skill,
+            S {
+                pace: Some(fake_pace("ok", 40.0, 50.0)),
+                ..S::new()
+            },
+        );
+        assert_eq!(ahead.0, ok.0, "{skill}: {ahead:?} vs {ok:?}");
     }
 }
 
 #[test]
-fn test_enter_plan_mode_denied_when_ahead() {
+fn test_enter_plan_mode_denied_when_critical() {
     let g = G::new();
     let enter = |pace: Option<Pace>| {
         let data = json!({"hook_event_name": "PreToolUse", "session_id": "g2", "tool_name": "EnterPlanMode", "tool_input": {}});
-        if pace.is_some() { g.inproc("pretool", &data, pace) } else { g.run("pretool", &data) }
+        if pace.is_some() {
+            g.inproc("pretool", &data, pace)
+        } else {
+            g.run("pretool", &data)
+        }
     };
-    for state in ["ahead", "critical"] {
-        let res = enter(Some(fake_pace(state, 90.0, 50.0)));
-        assert_deny(&res, "Plan without plan mode");
-        assert!(res.2.contains("90%"), "{res:?}");
-    }
+    let res = enter(Some(fake_pace("critical", 96.0, 50.0)));
+    assert_deny(&res, "Plan without plan mode");
+    assert!(res.2.contains("96%"), "{res:?}");
+    assert_allow(&enter(Some(fake_pace("ahead", 60.0, 50.0))));
     assert_allow(&enter(Some(pace_default("ok"))));
     assert_allow(&enter(Some(pace_default("unknown"))));
     assert_allow(&enter(None));
@@ -1693,15 +2493,19 @@ fn test_enter_plan_mode_denied_when_ahead() {
 impl G {
     fn prompt_pace(&self, pace: Option<Pace>, sid: &str, ctx: i64) -> Option<String> {
         let path = self.transcript_named(&[human("hi"), assistant(ctx)], &format!("{sid}.jsonl"));
-        let data =
-            json!({"hook_event_name": "UserPromptSubmit", "session_id": sid, "transcript_path": path, "prompt": "go"});
+        let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": sid, "transcript_path": path, "prompt": "go"});
         let (rc, out, err) = self.inproc("prompt", &data, pace);
         assert_eq!((rc, err.as_str()), (0, ""));
         if out.is_empty() {
             None
         } else {
             let v: Value = serde_json::from_str(&out).unwrap();
-            Some(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string())
+            Some(
+                v["hookSpecificOutput"]["additionalContext"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            )
         }
     }
 }
@@ -1711,30 +2515,59 @@ fn test_pace_note_once_when_ahead() {
     let g = G::new();
     let ahead = Some(fake_pace("ahead", 62.0, 50.0));
     let note = g.prompt_pace(ahead, "n1", 1000).expect("a note");
-    for text in ["62%", "50%", "Sonnet", "max 1 at once", "without plan mode", "pick Sonnet"] {
+    for text in [
+        "62%",
+        "50%",
+        "ahead of pace",
+        "Nothing is limited",
+        "critical",
+        "Tell the user once",
+    ] {
         assert!(note.contains(text), "{note:?} lacks {text:?}");
     }
     assert!(g.prompt_pace(ahead, "n1", 1000).is_none()); // only once
-    assert!(g.prompt_pace(Some(pace_default("unknown")), "n1", 1000).is_none());
+    assert!(
+        g.prompt_pace(Some(pace_default("unknown")), "n1", 1000)
+            .is_none()
+    );
     assert!(g.prompt_pace(ahead, "n1", 1000).is_none()); // unknown does not reset the memory
 }
 
 #[test]
 fn test_pace_note_critical_and_return_to_ok() {
     let g = G::new();
-    let p = |state, used, budget, ctx| g.prompt_pace(Some(fake_pace(state, used, budget)), "n1", ctx);
-    assert!(g.prompt_pace(Some(pace_default("ok")), "n1", 1000).is_none());
-    assert!(p("ahead", 60.0, 50.0, 1000).unwrap().contains("Sonnet"));
+    let p =
+        |state, used, budget, ctx| g.prompt_pace(Some(fake_pace(state, used, budget)), "n1", ctx);
+    assert!(
+        g.prompt_pace(Some(pace_default("ok")), "n1", 1000)
+            .is_none()
+    );
+    assert!(
+        p("ahead", 60.0, 50.0, 1000)
+            .unwrap()
+            .contains("ahead of pace")
+    );
     let note = p("critical", 90.0, 100.0, 1000).unwrap();
     for text in ["90%", "Sonnet only", "no helpers", "Tell the user"] {
         assert!(note.contains(text), "{note:?} lacks {text:?}");
     }
     // critical repeats on every prompt, ahead does not
     for used in [91.0, 92.0] {
-        assert!(p("critical", used, 100.0, 1000).unwrap().contains("Sonnet only"));
+        assert!(
+            p("critical", used, 100.0, 1000)
+                .unwrap()
+                .contains("Sonnet only")
+        );
     }
-    assert!(g.prompt_pace(Some(pace_default("ok")), "n1", 1000).is_none());
-    assert!(p("ahead", 60.0, 50.0, 1000).unwrap().contains("Sonnet")); // ahead again after ok
+    assert!(
+        g.prompt_pace(Some(pace_default("ok")), "n1", 1000)
+            .is_none()
+    );
+    assert!(
+        p("ahead", 60.0, 50.0, 1000)
+            .unwrap()
+            .contains("ahead of pace")
+    ); // ahead again after ok
 }
 
 #[test]
@@ -1743,8 +2576,10 @@ fn test_pace_note_sessions_independent_and_joined_with_nudge() {
     let ahead = Some(fake_pace("ahead", 60.0, 50.0));
     assert!(g.prompt_pace(ahead, "n2", 1000).is_some());
     assert!(g.prompt_pace(ahead, "n3", 1000).is_some());
-    let both = g.prompt_pace(Some(fake_pace("critical", 90.0, 100.0)), "n4", 350_000).unwrap();
-    assert!(both.contains("Context is 350K"), "{both}");
+    let both = g
+        .prompt_pace(Some(fake_pace("critical", 90.0, 100.0)), "n4", 450_000)
+        .unwrap();
+    assert!(both.contains("Context is 450K"), "{both}");
     assert!(both.contains("Sonnet only"), "{both}");
 }
 
@@ -1754,8 +2589,7 @@ fn test_pace_note_fail_open() {
     // a pace read that fails: an unreadable statusline cache
     G::write(&g.join("cache/claude-pace.json"), "{not json");
     let path = g.transcript_named(&[human("hi"), assistant(1000)], "n5.jsonl");
-    let data =
-        json!({"hook_event_name": "UserPromptSubmit", "session_id": "n5", "transcript_path": path, "prompt": "go"});
+    let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "n5", "transcript_path": path, "prompt": "go"});
     assert_allow(&g.run("prompt", &data));
     assert!(g.prompt_pace(None, "n6", 1000).is_none());
 }
@@ -1765,8 +2599,14 @@ fn test_pace_note_fail_open() {
 fn test_check_off() {
     // check_off is private to the binary: drive it through G14 (macOS sed -i) with the list forms.
     let g = G::new();
-    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
-    let run = |off: &str| g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", off)]);
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": G14_DENIED}});
+    let run = |off: &str| {
+        g.run_with(
+            "pretool",
+            &data,
+            &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", off)],
+        )
+    };
     assert_deny(&run(""), "G14");
     assert_allow(&run("g14, G13")); // lower case, comma and space
     assert_allow(&run("G13 G14"));
@@ -1776,7 +2616,7 @@ fn test_check_off() {
 
 // --- G10 to G12 Stop checks and the G6 fix ---
 fn stamp(ago_s: i64) -> String {
-    common::iso_utc(now_secs() as i64 - ago_s)
+    common::iso_utc(now_int() - ago_s)
 }
 
 fn human_at(ago_s: i64, text: &str) -> Value {
@@ -1794,7 +2634,12 @@ fn tu(name: &str, tool_input: Value, tid: &str) -> Value {
 fn test_g6_deleted_handoff_is_skipped() {
     let g = G::new();
     let gone = g.join("handoffs/gone.md");
-    let base = vec![human("hand off"), g.write_ho("w1", Some(&gone)), tool_result("w1"), say("written")];
+    let base = vec![
+        human("hand off"),
+        g.write_ho("w1", Some(&gone)),
+        tool_result("w1"),
+        say("written"),
+    ];
     assert_allow(&g.stop_run(&base, json!({})));
     assert_allow(&g.archive(&base, "self"));
     G::write(&gone, "# Task");
@@ -1805,16 +2650,14 @@ fn test_g6_deleted_handoff_is_skipped() {
 // G10 commit check
 impl G {
     fn git(&self, repo: &str, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "-C", repo])
-            .args(args)
-            .env("HOME", &self.dir)
-            .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" })
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .expect("run git");
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        let home = self.dir.to_string_lossy().into_owned();
+        let none = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let env = [
+            ("HOME", home.as_str()),
+            ("GIT_CONFIG_GLOBAL", none),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ];
+        common::git_env(Path::new(repo), &env, args)
     }
 
     fn real_dir(&self) -> PathBuf {
@@ -1837,15 +2680,106 @@ impl G {
             self.git(&bare, &["init", "-q", "--bare"]);
             self.git(&work, &["remote", "add", "origin", &bare]);
             self.git(&work, &["push", "-q", "-u", "origin", "main"]);
+            // G10 reads the owner from the origin URL; pushes still go to the bare repo
+            self.git(&work, &["config", "remote.origin.pushurl", &bare]);
+            self.git(
+                &work,
+                &[
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "git@github.com:acme/work.git",
+                ],
+            );
         }
         work
     }
 
     fn g10(&self, recs: &[Value], repo: &str, extra: Value) -> R {
+        self.g10_env(recs, repo, extra, &[("SHIP_OWNERS", "acme")])
+    }
+
+    fn g10_env(&self, recs: &[Value], repo: &str, extra: Value, env: &[(&str, &str)]) -> R {
         // a fresh session per call, so the once-per-repo-state rule does not hide a repeat
         let base = json!({"cwd": repo, "session_id": format!("g10-{}", next_sid())});
-        self.stop_msg(recs, merge(base, extra), &[])
+        self.stop_msg(recs, merge(base, extra), env)
     }
+}
+
+#[test]
+fn test_g10_push_scope_follows_ship_owners() {
+    let g = G::new();
+    let repo = g.make_repo(true);
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [
+        human("build"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        tool_result("u1"),
+        say("done"),
+    ];
+    let ship = "commit and push now";
+    let pr = "open a PR";
+    let run = |env: &[(&str, &str)]| g.g10_env(&recs, &repo, json!({}), env);
+    // the origin owner is in the list (case and extra owners do not matter)
+    assert_deny(&run(&[("SHIP_OWNERS", "acme")]), ship);
+    assert_deny(&run(&[("SHIP_OWNERS", "other, ACME")]), ship);
+    assert_deny(&run(&[("SHIP_OWNERS", "other acme")]), ship);
+    // another owner, an empty list: a branch and a PR, never a push to main
+    for owners in ["other", "acme-corp", "", "  "] {
+        let res = run(&[("SHIP_OWNERS", owners)]);
+        assert_deny(&res, pr);
+        assert!(!res.2.contains(ship), "{res:?}");
+        assert!(res.2.contains("not push to main"), "{res:?}");
+    }
+    // the setting counts when the env var is not set; the env var wins, even empty
+    g.set("SHIP_OWNERS=\"acme\"\n");
+    assert_deny(&run(&[]), ship);
+    assert_deny(&run(&[("SHIP_OWNERS", "")]), pr);
+    g.set("SHIP_OWNERS=\"other\"\n");
+    assert_deny(&run(&[]), pr);
+    assert_deny(&run(&[("SHIP_OWNERS", "acme")]), ship);
+}
+
+#[test]
+fn test_g10_origin_url_shapes() {
+    let g = G::new();
+    let repo = g.make_repo(true);
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [
+        human("build"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        tool_result("u1"),
+        say("done"),
+    ];
+    let env = [("SHIP_OWNERS", "acme")];
+    let check = |url: &str, ships: bool| {
+        g.git(&repo, &["remote", "set-url", "origin", url]);
+        let res = g.g10_env(&recs, &repo, json!({}), &env);
+        let word = if ships {
+            "commit and push now"
+        } else {
+            "open a PR"
+        };
+        assert_deny(&res, word);
+        assert_eq!(
+            res.2.contains("commit and push now"),
+            ships,
+            "{url}: {res:?}"
+        );
+    };
+    check("https://github.com/acme/work.git", true);
+    check("https://github.com/acme/work", true);
+    check("https://user@github.com/acme/work.git", true);
+    check("ssh://git@github.com/acme/work.git", true);
+    check("git@github.com:ACME/work.git", true);
+    check("https://github.com/other/work.git", false);
+    check("https://github.com/acme-corp/work.git", false);
+    check("https://gitlab.com/acme/work.git", false); // only GitHub owners count
+    check("https://evil.example/github.com/acme/work.git", false);
+    check("/srv/git/acme/work.git", false);
+    // no origin at all
+    g.git(&repo, &["remote", "remove", "origin"]);
+    assert_deny(&g.g10_env(&recs, &repo, json!({}), &env), "open a PR");
 }
 
 #[test]
@@ -1853,7 +2787,12 @@ fn test_g10_fires_once_per_repo_state() {
     let g = G::new();
     let repo = g.make_repo(true);
     let p = write_file(&repo, "new.txt", "x");
-    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), say("done")];
+    let recs = [
+        human("build"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        tool_result("u1"),
+        say("done"),
+    ];
     let same = json!({"session_id": "once"});
     assert_deny(
         &g.g10(&recs, &repo, same.clone()),
@@ -1880,7 +2819,11 @@ fn test_g10_fires_once_per_repo_state() {
     g.git(&repo, &["push", "-q"]);
     assert_allow(&g.g10(&more, &repo, same.clone()));
     let r = write_file(&repo, "third.txt", "z");
-    let third = [human("build"), tu("Write", json!({"file_path": r}), "u1"), say("done")];
+    let third = [
+        human("build"),
+        tu("Write", json!({"file_path": r}), "u1"),
+        say("done"),
+    ];
     assert_deny(&g.g10(&third, &repo, same.clone()), "1 uncommitted file(s)");
     assert_allow(&g.g10(&third, &repo, same));
 }
@@ -1890,20 +2833,44 @@ fn test_g10_dirty_file_touched_this_turn() {
     let g = G::new();
     let repo = g.make_repo(true);
     let p = write_file(&repo, "new.txt", "x");
-    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), tool_result("u1"), say("done")];
+    let recs = [
+        human("build"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        tool_result("u1"),
+        say("done"),
+    ];
     let res = g.g10(&recs, &repo, json!({}));
-    assert_deny(&res, "G10: this turn left work in work: 1 uncommitted file(s), 0 unpushed commit(s).");
+    assert_deny(
+        &res,
+        "G10: this turn left work in work: 1 uncommitted file(s), 0 unpushed commit(s).",
+    );
     assert!(
-        res.2.contains("The ship-to-main preset asks: commit and push now, unless the user said not to."),
+        res.2.contains(
+            "The ship-to-main preset asks: commit and push now, unless the user said not to"
+        ),
         "{res:?}"
     );
     assert!(!res.2.contains("Rule "), "{res:?}");
     // Edit and NotebookEdit count as well
     let q = write_file(&repo, "base.txt", "changed");
-    assert_deny(&g.g10(&[human("x"), tu("Edit", json!({"file_path": q}), "u1")], &repo, json!({})), "1 uncommitted");
+    assert_deny(
+        &g.g10(
+            &[human("x"), tu("Edit", json!({"file_path": q}), "u1")],
+            &repo,
+            json!({}),
+        ),
+        "1 uncommitted",
+    );
     let n = write_file(&repo, "nb.ipynb", "{}");
     assert_deny(
-        &g.g10(&[human("x"), tu("NotebookEdit", json!({"notebook_path": n}), "u1")], &repo, json!({})),
+        &g.g10(
+            &[
+                human("x"),
+                tu("NotebookEdit", json!({"notebook_path": n}), "u1"),
+            ],
+            &repo,
+            json!({}),
+        ),
         "1 uncommitted",
     );
 }
@@ -1917,14 +2884,31 @@ fn test_g10_untouched_files_stay_quiet() {
     g.git(&repo, &["add", "mine.txt"]);
     g.git(&repo, &["commit", "-q", "-m", "mine"]);
     g.git(&repo, &["push", "-q"]);
-    assert_allow(&g.g10(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), say("ok")], &repo, json!({})));
+    assert_allow(&g.g10(
+        &[
+            human("x"),
+            tu("Write", json!({"file_path": p}), "u1"),
+            say("ok"),
+        ],
+        &repo,
+        json!({}),
+    ));
     // touched in an earlier turn only
     let d = write_file(&repo, "old.txt", "x");
-    let recs = [human("a"), tu("Write", json!({"file_path": d}), "u1"), human("b"), say("chat")];
+    let recs = [
+        human("a"),
+        tu("Write", json!({"file_path": d}), "u1"),
+        human("b"),
+        say("chat"),
+    ];
     assert_allow(&g.g10(&recs, &repo, json!({})));
     // a file outside the repo is not in its status
     let outside = write_file(&g.d(), "elsewhere.txt", "x");
-    assert_allow(&g.g10(&[human("x"), tu("Write", json!({"file_path": outside}), "u1")], &repo, json!({})));
+    assert_allow(&g.g10(
+        &[human("x"), tu("Write", json!({"file_path": outside}), "u1")],
+        &repo,
+        json!({}),
+    ));
 }
 
 #[test]
@@ -1935,11 +2919,23 @@ fn test_g10_unpushed_needs_a_commit_this_turn() {
     g.git(&repo, &["add", "-A"]);
     g.git(&repo, &["commit", "-q", "-m", "a"]);
     let commit = tu("Bash", json!({"command": "git commit -m \"a\""}), "u1");
-    let res =
-        g.g10(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), commit.clone(), say("ok")], &repo, json!({}));
+    let res = g.g10(
+        &[
+            human("x"),
+            tu("Write", json!({"file_path": p}), "u1"),
+            commit.clone(),
+            say("ok"),
+        ],
+        &repo,
+        json!({}),
+    );
     assert_deny(&res, "0 uncommitted file(s), 1 unpushed commit(s).");
     // an unpushed commit from an earlier turn is not this turn's work
-    assert_allow(&g.g10(&[human("x"), commit, human("y"), say("chat")], &repo, json!({})));
+    assert_allow(&g.g10(
+        &[human("x"), commit, human("y"), say("chat")],
+        &repo,
+        json!({}),
+    ));
     assert_allow(&g.g10(&[human("x"), say("chat")], &repo, json!({})));
 }
 
@@ -1949,15 +2945,27 @@ fn test_g10_user_said_not_to_push() {
     let repo = g.make_repo(true);
     let p = write_file(&repo, "new.txt", "x");
     let work = vec![tu("Write", json!({"file_path": p}), "u1"), say("done")];
-    for phrase in ["do not push", "Don't push please", "NO PUSH", "keep it local only", "don't commit", "Do Not Commit"]
-    {
+    for phrase in [
+        "do not push",
+        "Don't push please",
+        "NO PUSH",
+        "keep it local only",
+        "don't commit",
+        "Do Not Commit",
+    ] {
         let recs = cat(&[&[human(&format!("first. {phrase}")), human("more")], &work]);
         assert_allow(&g.g10(&recs, &repo, json!({})));
     }
-    let list =
-        json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "local only"}]}});
+    let list = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "local only"}]}});
     assert_allow(&g.g10(&cat(&[&[list, human("go")], &work]), &repo, json!({})));
-    assert_deny(&g.g10(&cat(&[&[human("please push when done")], &work]), &repo, json!({})), "G10");
+    assert_deny(
+        &g.g10(
+            &cat(&[&[human("please push when done")], &work]),
+            &repo,
+            json!({}),
+        ),
+        "G10",
+    );
 }
 
 #[test]
@@ -2003,12 +3011,26 @@ fn test_g10_quiet_while_a_helper_is_live() {
     let g = G::new();
     let repo = g.make_repo(true);
     let p = write_file(&repo, "new.txt", "x");
-    let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
+    let recs = [
+        human("build"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        say("done"),
+    ];
     let extra = json!({"session_id": "g10-live"});
-    let state = g.state_dir().join("g10-live.json").to_string_lossy().into_owned();
-    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    let state = g
+        .state_dir()
+        .join("g10-live.json")
+        .to_string_lossy()
+        .into_owned();
+    G::write(
+        &state,
+        &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string(),
+    );
     assert_allow(&g.g10(&recs, &repo, extra.clone()));
-    G::write(&state, &json!({"sl_spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    G::write(
+        &state,
+        &json!({"sl_spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string(),
+    );
     assert_allow(&g.g10(&recs, &repo, extra.clone()));
     // the helper is gone: the reminder comes back
     G::write(&state, &json!({"spawns": []}).to_string());
@@ -2020,7 +3042,11 @@ fn test_g10_no_upstream_and_git_failures_are_quiet() {
     let g = G::new();
     let repo = g.make_repo(false);
     let p = write_file(&repo, "new.txt", "x");
-    let recs = [human("x"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
+    let recs = [
+        human("x"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        say("done"),
+    ];
     // no upstream: unpushed counts as 0, but a dirty file of this turn still fires
     assert_deny(
         &g.g10(&recs, &repo, json!({})),
@@ -2043,13 +3069,20 @@ fn test_g10_fails_open_when_git_cannot_start() {
     let g = G::new();
     let repo = g.make_repo(true);
     let p = write_file(&repo, "new.txt", "x");
-    let path = g.transcript(&[human("x"), tu("Write", json!({"file_path": p}), "u1"), say("done")]);
+    let path = g.transcript(&[
+        human("x"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        say("done"),
+    ]);
     let data = json!({"transcript_path": path, "cwd": repo});
     assert_ne!(g.run("stop", &data).2, ""); // sanity: fires with a working git
     // a git that cannot start: an empty PATH
     let empty = g.join("nopath");
     fs::create_dir_all(&empty).unwrap();
-    assert_eq!(g.run_with("stop", &data, &[("PATH", &empty)]), (0, String::new(), String::new()));
+    assert_eq!(
+        g.run_with("stop", &data, &[("PATH", &empty)]),
+        (0, String::new(), String::new())
+    );
 }
 
 #[test]
@@ -2057,7 +3090,11 @@ fn test_g10_switches() {
     let g = G::new();
     let repo = g.make_repo(true);
     let p = write_file(&repo, "new.txt", "x");
-    let recs = [human("x"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
+    let recs = [
+        human("x"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        say("done"),
+    ];
     assert_deny(&g.g10(&recs, &repo, json!({})), "G10");
     assert_allow(&g.g10(&recs, &repo, json!({"stop_hook_active": true})));
     assert_allow(&g.stop_msg(&recs, json!({"cwd": repo}), &[("GUARD_OFF", "G10")]));
@@ -2070,16 +3107,51 @@ fn test_g10_switches() {
 }
 
 // G11 clock check
+
+/// The message holds "It is HH:MM in <zone>." and HH:MM is the time now in that zone (2 minutes of slack).
+fn assert_clock(msg: &str, zone: &str) {
+    let at = msg
+        .find("It is ")
+        .unwrap_or_else(|| panic!("no clock in {msg:?}"))
+        + "It is ".len();
+    let hhmm = &msg[at..at + 5];
+    assert_eq!(
+        &msg[at + 5..at + 10 + zone.len()],
+        format!(" in {zone}."),
+        "{msg:?}"
+    );
+    let minutes = |s: &str| s[..2].parse::<i64>().unwrap() * 60 + s[3..5].parse::<i64>().unwrap();
+    let now = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::get(zone).unwrap())
+        .strftime("%H:%M")
+        .to_string();
+    let diff = (minutes(hhmm) - minutes(&now)).rem_euclid(1440);
+    assert!(
+        diff <= 2 || diff >= 1438,
+        "{hhmm} is not the time now ({now}) in {zone}"
+    );
+}
+
 #[test]
 fn test_g11_long_turn_without_a_clock() {
     let g = G::new();
-    let res = g.stop_run(&[human_at(12 * 60 + 10, "go"), say("All done.")], json!({}));
+    // no TIMEZONE setting: the message carries the clock of the system zone (TZ here) and asks for no zone
+    let res = g.stop_msg(
+        &[human_at(12 * 60 + 10, "go"), say("All done.")],
+        json!({}),
+        &[("TZ", "UTC")],
+    );
+    assert_deny(&res, "G11: this turn ran 12 min. It is ");
     assert_deny(
         &res,
-        "G11: this turn ran 12 min. The clock preset asks: give the clock as a local time (HH:MM) and one estimate with a range.",
+        " in UTC. The clock preset asks: give the clock as a local time (HH:MM) and one estimate with a range. No `date` call is needed.",
     );
+    assert_clock(&res.2, "UTC");
     assert!(!res.2.contains("Rule "), "{res:?}");
-    assert!(!res.2.contains("Asia/") && !res.2.contains("Europe/"), "{res:?}"); // no zone set, none named
+    assert!(
+        !res.2.contains("Asia/") && !res.2.contains("Europe/"),
+        "{res:?}"
+    ); // no zone set, none asked for
     assert_allow(&g.stop_run(&[human_at(5 * 60, "go"), say("All done.")], json!({})));
     assert_allow(&g.stop_run(&[human("no stamp"), say("All done.")], json!({})));
 }
@@ -2088,19 +3160,29 @@ fn test_g11_long_turn_without_a_clock() {
 fn test_g11_a_clock_or_duration_in_the_reply_is_enough() {
     let g = G::new();
     let base = vec![human_at(20 * 60, "go")];
-    for reply in
-        ["Done at 14:05.", "That took 20 min.", "About 2 hours left.", "Roughly 1 h more.", "Estimate: 15-30 minutes."]
-    {
+    for reply in [
+        "Done at 14:05.",
+        "That took 20 min.",
+        "About 2 hours left.",
+        "Roughly 1 h more.",
+        "Estimate: 15-30 minutes.",
+    ] {
         assert_allow(&g.stop_run(&cat(&[&base, &[say(reply)]]), json!({})));
         assert_allow(&g.stop_run(&base, json!({"last_assistant_message": reply})));
     }
     assert_deny(
-        &g.stop_run(&cat(&[&base, &[say("Done at 14:05.")]]), json!({"last_assistant_message": "Done."})),
+        &g.stop_run(
+            &cat(&[&base, &[say("Done at 14:05.")]]),
+            json!({"last_assistant_message": "Done."}),
+        ),
         "G11",
     );
     // G11 fires once per human turn: the next case runs in a session of its own
     assert_deny(
-        &g.stop_run(&cat(&[&base, &[say("Version 3 is out, 5 files changed.")]]), json!({"session_id": "s2"})),
+        &g.stop_run(
+            &cat(&[&base, &[say("Version 3 is out, 5 files changed.")]]),
+            json!({"session_id": "s2"}),
+        ),
         "G11",
     );
 }
@@ -2112,11 +3194,28 @@ fn test_g11_switches_and_missing_transcript() {
     assert_allow(&g.stop_run(&recs, json!({"stop_hook_active": true})));
     assert_allow(&g.stop_msg(&recs, json!({}), &[("GUARD_OFF", "G11")]));
     assert_allow(&g.stop_run(&recs, json!({"agent_id": "a1"})));
-    assert_allow(&g.run("stop", &json!({"hook_event_name": "Stop", "transcript_path": g.join("missing.jsonl")})));
+    assert_allow(&g.run(
+        "stop",
+        &json!({"hook_event_name": "Stop", "transcript_path": g.join("missing.jsonl")}),
+    ));
     // the turn start is the LAST human prompt, not an earlier one
-    assert_allow(&g.stop_run(&[human_at(60 * 60, "go"), say("a"), human_at(60, "go"), say("b")], json!({})));
+    assert_allow(&g.stop_run(
+        &[
+            human_at(60 * 60, "go"),
+            say("a"),
+            human_at(60, "go"),
+            say("b"),
+        ],
+        json!({}),
+    ));
     // a tool_result is not a prompt
-    assert_deny(&g.stop_run(&[human_at(15 * 60, "go"), tool_result("t1"), say("b")], json!({})), "G11");
+    assert_deny(
+        &g.stop_run(
+            &[human_at(15 * 60, "go"), tool_result("t1"), say("b")],
+            json!({}),
+        ),
+        "G11",
+    );
 }
 
 /// The user record the app writes when a background helper ends: not a human prompt.
@@ -2132,12 +3231,23 @@ fn test_g11_fires_once_per_human_turn() {
     let first = [prompt.clone(), say("Waiting for the helpers.")];
     assert_deny(&g.stop_run(&first, json!({})), "G11");
     // a task notification starts a new segment of the same human turn: quiet
-    let second = [prompt.clone(), say("Waiting for the helpers."), task_notification(), say("One helper is back.")];
+    let second = [
+        prompt.clone(),
+        say("Waiting for the helpers."),
+        task_notification(),
+        say("One helper is back."),
+    ];
     assert_allow(&g.stop_run(&second, json!({})));
     assert_allow(&g.stop_run(&second, json!({})));
     // G12 shares the one reminder of the turn
     let steps = plan(json!({"items": items(&[("A", "pending")])}));
-    let open = [prompt, steps.clone(), say("x"), task_notification(), say("y")];
+    let open = [
+        prompt,
+        steps.clone(),
+        say("x"),
+        task_notification(),
+        say("y"),
+    ];
     assert_allow(&g.stop_run(&open, json!({})));
     // a new human prompt resets it
     let next = [human_at(15 * 60, "next"), say("Still going.")];
@@ -2152,18 +3262,27 @@ fn test_g11_fires_once_per_human_turn() {
 #[test]
 fn test_g11_quiet_while_a_helper_is_live() {
     let g = G::new();
-    let recs = [human_at(12 * 60 + 10, "go"), say("Waiting for the helpers.")];
+    let recs = [
+        human_at(12 * 60 + 10, "go"),
+        say("Waiting for the helpers."),
+    ];
     let state = g.state_dir().join("s.json").to_string_lossy().into_owned();
-    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    G::write(
+        &state,
+        &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string(),
+    );
     assert_allow(&g.stop_run(&recs, json!({})));
-    G::write(&state, &json!({"sl_spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    G::write(
+        &state,
+        &json!({"sl_spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string(),
+    );
     assert_allow(&g.stop_run(&recs, json!({})));
     // quiet means the turn was not used up: once the helper ends, the reminder fires
     G::write(&state, &json!({"spawns": []}).to_string());
     assert_deny(&g.stop_run(&recs, json!({})), "G11");
 }
 
-/// The tool_result record of a `run_in_background` Bash call, as the app writes it.
+/// The `tool_result` record of a `run_in_background` Bash call, as the app writes it.
 fn bg_launch(id: &str) -> Value {
     json!({"type": "user", "toolUseResult": {"backgroundTaskId": id}, "message": {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "b", "content": format!("Command running in background with ID: {id}.")}]}})
@@ -2180,42 +3299,330 @@ fn test_stop_checks_quiet_while_background_work_runs() {
     let g = G::new();
     let steps = plan(json!({"items": items(&[("A", "pending")])}));
     // a background Bash with no end yet keeps G12 quiet
-    assert_allow(&g.stop_run(&[human("go"), steps.clone(), bg_launch("b1"), say("Waiting for the check.")], json!({})));
+    assert_allow(&g.stop_run(
+        &[
+            human("go"),
+            steps.clone(),
+            bg_launch("b1"),
+            say("Waiting for the check."),
+        ],
+        json!({}),
+    ));
     // its notification with a final status ends it, and G12 fires
-    let ended =
-        [human("go"), steps.clone(), bg_launch("b1"), say("Waiting."), bg_note("b1", "completed"), say("It passed.")];
+    let ended = [
+        human("go"),
+        steps.clone(),
+        bg_launch("b1"),
+        say("Waiting."),
+        bg_note("b1", "completed"),
+        say("It passed."),
+    ];
     assert_deny(&g.stop_run(&ended, json!({})), "G12");
     // a running status does not end it
-    let still = [human("go"), steps.clone(), bg_launch("b1"), bg_note("b1", "running"), say("Still going.")];
+    let still = [
+        human("go"),
+        steps.clone(),
+        bg_launch("b1"),
+        bg_note("b1", "running"),
+        say("Still going."),
+    ];
     assert_allow(&g.stop_run(&still, json!({})));
     // TaskStop ends it
     let stop = tu("TaskStop", json!({"task_id": "b1"}), "u9");
-    assert_deny(&g.stop_run(&[human("go"), steps.clone(), bg_launch("b1"), stop, say("Stopped.")], json!({})), "G12");
+    assert_deny(
+        &g.stop_run(
+            &[
+                human("go"),
+                steps.clone(),
+                bg_launch("b1"),
+                stop,
+                say("Stopped."),
+            ],
+            json!({}),
+        ),
+        "G12",
+    );
     // a Monitor counts too, and so does a wakeup
     let monitor = json!({"type": "user", "toolUseResult": {"taskId": "m1", "timeoutMs": 900_000}, "message": {"role": "user",
         "content": [{"type": "tool_result", "tool_use_id": "m", "content": "Monitor started (task m1)"}]}});
-    assert_allow(&g.stop_run(&[human("go"), steps.clone(), monitor, say("Watching.")], json!({})));
+    assert_allow(&g.stop_run(
+        &[human("go"), steps.clone(), monitor, say("Watching.")],
+        json!({}),
+    ));
     let wake = tu("ScheduleWakeup", json!({"delaySeconds": 1200}), "w1");
-    assert_allow(&g.stop_run(&[human("go"), steps.clone(), wake.clone(), say("Back later.")], json!({})));
+    assert_allow(&g.stop_run(
+        &[human("go"), steps.clone(), wake.clone(), say("Back later.")],
+        json!({}),
+    ));
     // a refused wakeup sets nothing
     let refused = json!({"type": "user", "message": {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "w1", "is_error": true, "content": "Permission denied."}]}});
-    assert_deny(&g.stop_run(&[human("go"), steps.clone(), wake, refused, say("Hm.")], json!({})), "G12");
+    assert_deny(
+        &g.stop_run(
+            &[human("go"), steps.clone(), wake, refused, say("Hm.")],
+            json!({}),
+        ),
+        "G12",
+    );
     // a notice that arrives mid-turn is a queued_command attachment, and it ends the task too
     let queued = json!({"type": "attachment", "attachment": {"type": "queued_command", "prompt":
         "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"}});
-    let mid = [human("go"), steps.clone(), bg_launch("b1"), tu("Edit", json!({"file_path": "/x"}), "e1"), queued];
-    assert_deny(&g.stop_run(&[&mid[..], &[say("Done.")]].concat(), json!({})), "G12");
+    let mid = [
+        human("go"),
+        steps.clone(),
+        bg_launch("b1"),
+        tu("Edit", json!({"file_path": "/x"}), "e1"),
+        queued,
+    ];
+    assert_deny(
+        &g.stop_run(&[&mid[..], &[say("Done.")]].concat(), json!({})),
+        "G12",
+    );
     // a Monitor past its timeout has ended, with or without a notice
     let old_monitor = json!({"type": "user", "timestamp": stamp(20 * 60), "toolUseResult": {"taskId": "m2",
         "timeoutMs": 900_000}, "message": {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "m", "content": "Monitor started (task m2)"}]}});
-    assert_deny(&g.stop_run(&[human("go"), steps, old_monitor, say("Done.")], json!({})), "G12");
+    assert_deny(
+        &g.stop_run(&[human("go"), steps, old_monitor, say("Done.")], json!({})),
+        "G12",
+    );
     // G11 is quiet while a background Bash runs, and fires once it ended
-    let long = [human_at(12 * 60 + 10, "go"), bg_launch("b2"), say("Waiting for the check.")];
+    let long = [
+        human_at(12 * 60 + 10, "go"),
+        bg_launch("b2"),
+        say("Waiting for the check."),
+    ];
     assert_allow(&g.stop_run(&long, json!({})));
-    let done = [human_at(12 * 60 + 10, "go"), bg_launch("b2"), bg_note("b2", "failed"), say("It failed.")];
+    let done = [
+        human_at(12 * 60 + 10, "go"),
+        bg_launch("b2"),
+        bg_note("b2", "failed"),
+        say("It failed."),
+    ];
     assert_deny(&g.stop_run(&done, json!({})), "G11");
+}
+
+#[test]
+fn test_stop_checks_quiet_while_an_earlier_turns_background_task_runs() {
+    let g = G::new();
+    let steps = plan(json!({"items": items(&[("A", "pending")])}));
+    // a background Bash of an earlier turn that nothing ended keeps G12 quiet
+    let started = [
+        human("start the check"),
+        bg_launch("b0"),
+        say("Started."),
+        human("go"),
+        steps.clone(),
+        say("Waiting."),
+    ];
+    assert_allow(&g.stop_run(&started, json!({})));
+    // its notification came before the new turn: G12 fires
+    let ended = [
+        human("start the check"),
+        bg_launch("b0"),
+        bg_note("b0", "completed"),
+        human("go"),
+        steps.clone(),
+        say("Done."),
+    ];
+    assert_deny(&g.stop_run(&ended, json!({})), "G12");
+    // a TaskStop in the earlier turn ended it too
+    let stop = tu("TaskStop", json!({"task_id": "b0"}), "u8");
+    let stopped = [
+        human("start the check"),
+        bg_launch("b0"),
+        stop,
+        human("go"),
+        steps.clone(),
+        say("Done."),
+    ];
+    assert_deny(&g.stop_run(&stopped, json!({})), "G12");
+    // a launch older than the spawn TTL has expired: a task that never reports must not mute the checks for good
+    let old = merge(bg_launch("b0"), json!({"timestamp": stamp(100 * 60)}));
+    let expired = [
+        human("start the check"),
+        old,
+        human("go"),
+        steps.clone(),
+        say("Done."),
+    ];
+    assert_deny(&g.stop_run(&expired, json!({})), "G12");
+    // the same launch 80 min ago is still open
+    let recent = merge(bg_launch("b0"), json!({"timestamp": stamp(80 * 60)}));
+    let open = [
+        human("start the check"),
+        recent,
+        human("go"),
+        steps,
+        say("Waiting."),
+    ];
+    assert_allow(&g.stop_run(&open, json!({})));
+}
+
+/// The `tool_result` record of an Agent call that starts a helper in the background.
+fn async_launch(agent_id: &str) -> Value {
+    json!({"type": "user", "toolUseResult": {"isAsync": true, "status": "async_launched", "agentId": agent_id},
+        "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "a", "content": "Async agent launched."}]}})
+}
+
+#[test]
+fn test_stop_checks_quiet_while_an_async_helper_runs() {
+    let g = G::new();
+    let steps = plan(json!({"items": items(&[("A", "pending")])}));
+    // the launch record alone keeps G12 quiet, with no slot in the state file
+    let run = [
+        human("go"),
+        steps.clone(),
+        async_launch("ag1"),
+        say("The helper builds it."),
+    ];
+    assert_allow(&g.stop_run(&run, json!({})));
+    // its notification ends it, and G12 fires again
+    let ended = [&run[..], &[bg_note("ag1", "completed"), say("It is back.")]].concat();
+    assert_deny(&g.stop_run(&ended, json!({})), "G12");
+    // the waiting wording alone mutes nothing: no live launch, no helper
+    for text in [
+        "I wait for the notification.",
+        "Waiting for the task notice.",
+        "You will be notified when it ends.",
+    ] {
+        assert_deny(
+            &g.stop_run(&[human("go"), steps.clone(), say(text)], json!({})),
+            "G12",
+        );
+    }
+    // the same wording with a live launch is quiet
+    let live = [
+        human("go"),
+        steps,
+        async_launch("ag2"),
+        say("Waiting for the notification."),
+    ];
+    assert_allow(&g.stop_run(&live, json!({})));
+}
+
+#[test]
+fn test_async_launch_older_than_the_ttl_does_not_mute() {
+    let g = G::new();
+    let steps = plan(json!({"items": items(&[("A", "pending")])}));
+    let at = |secs_ago: i64| {
+        let mut rec = async_launch("ag9");
+        rec["timestamp"] = json!(stamp(secs_ago));
+        rec
+    };
+    // a launch from 10 minutes ago, with no notice yet, still mutes G12
+    let fresh = [
+        human("go"),
+        steps.clone(),
+        at(600),
+        say("The helper builds it."),
+    ];
+    assert_allow(&g.stop_run(&fresh, json!({})));
+    // one from 100 minutes ago (past the 90 minute TTL) has expired: G12 fires
+    let old = [
+        human("go"),
+        steps,
+        at(100 * 60),
+        say("The helper builds it."),
+    ];
+    assert_deny(&g.stop_run(&old, json!({})), "G12");
+    // and so does G11 for a long turn
+    let long = [human_at(12 * 60 + 10, "go"), at(100 * 60), say("Waiting.")];
+    assert_deny(&g.stop_run(&long, json!({})), "G11");
+}
+
+/// An autopilot session with one edit in `repo` and no check since; `tail` follows the edit.
+fn g19_main(g: &G, repo: &str, tail: Vec<Value>) -> R {
+    let file = write_file(repo, "a.txt", "x");
+    g.run(
+        "posttool",
+        &json!({"session_id": "s", "tool_name": "Edit", "cwd": repo,
+            "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}}),
+    );
+    let mut recs = vec![
+        human("go"),
+        tu("Skill", json!({"skill": "ps:autopilot"}), "k1"),
+    ];
+    recs.extend(tail);
+    g.stop_run(&recs, json!({"cwd": repo}))
+}
+
+#[test]
+fn test_g19_stop_quiet_while_work_runs() {
+    let g = G::new();
+    let repo = g.make_repo(false);
+    write_file(
+        &repo,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
+    // nothing runs: the stop is held and names the project's fast check
+    let held = g19_main(&g, &repo, vec![say("Done.")]);
+    assert_deny(&held, "G19");
+    assert!(held.2.contains("check:fast"), "{held:?}");
+    // a background check that has not ended keeps G19 quiet
+    let g2 = G::new();
+    let repo2 = g2.make_repo(false);
+    write_file(
+        &repo2,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
+    assert_allow(&g19_main(
+        &g2,
+        &repo2,
+        vec![bg_launch("c1"), say("Checking.")],
+    ));
+    // a reply that only says it waits for a notice does not: nothing runs
+    let g3 = G::new();
+    let repo3 = g3.make_repo(false);
+    write_file(
+        &repo3,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
+    assert_deny(
+        &g19_main(
+            &g3,
+            &repo3,
+            vec![say("Waiting for the notification of the check.")],
+        ),
+        "G19",
+    );
+}
+
+#[test]
+fn test_g19_ignores_edits_outside_the_project_repo() {
+    let g = G::new();
+    let repo = g.make_repo(false);
+    write_file(
+        &repo,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
+    let other = g.real_dir().join("other");
+    fs::create_dir_all(&other).unwrap();
+    let other = other.to_string_lossy().into_owned();
+    write_file(
+        &other,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
+    let file = write_file(&other, "b.txt", "x");
+    let edit = json!({"session_id": "o", "agent_id": "h1", "tool_name": "Edit", "cwd": repo,
+        "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}});
+    g.run("posttool", &edit);
+    let stop = json!({"session_id": "o", "agent_id": "h1", "cwd": repo, "last_assistant_message": "Done."});
+    let res = g.run("subagentstop", &stop);
+    assert!(!res.1.contains("G19") && !res.2.contains("G19"), "{res:?}");
+    // the same edit inside the helper's own repo is held
+    let own = write_file(&repo, "c.txt", "x");
+    let edit = json!({"session_id": "o2", "agent_id": "h1", "tool_name": "Edit", "cwd": repo,
+        "tool_input": {"file_path": own, "old_string": "a", "new_string": "b"}});
+    g.run("posttool", &edit);
+    let stop = json!({"session_id": "o2", "agent_id": "h1", "cwd": repo, "last_assistant_message": "Done."});
+    assert_deny(&g.run("subagentstop", &stop), "G19");
 }
 
 // G12 open steps check
@@ -2225,7 +3632,12 @@ fn plan(kw: Value) -> Value {
 }
 
 fn items(specs: &[(&str, &str)]) -> Value {
-    Value::Array(specs.iter().map(|(c, s)| json!({"content": c, "status": s})).collect())
+    Value::Array(
+        specs
+            .iter()
+            .map(|(c, s)| json!({"content": c, "status": s}))
+            .collect(),
+    )
 }
 
 #[test]
@@ -2263,19 +3675,27 @@ fn test_g12_quiet_while_a_step_runs_in_another_session() {
     ];
     assert_deny(&g.stop_run(&recs, json!({})), "G12");
     // an empty session name is no session
-    let recs =
-        [human("go"), plan(json!({"items": [{"content": "Build", "status": "pending", "session": " "}]})), say("ok")];
+    let recs = [
+        human("go"),
+        plan(json!({"items": [{"content": "Build", "status": "pending", "session": " "}]})),
+        say("ok"),
+    ];
     assert_deny(&g.stop_run(&recs, json!({})), "G12");
 }
 
 #[test]
 fn test_g12_replays_advance_done_and_start() {
     let g = G::new();
-    let base =
-        vec![human("go"), plan(json!({"items": items(&[("A", "in_progress"), ("B", "pending"), ("C", "pending")])}))];
+    let base = vec![
+        human("go"),
+        plan(json!({"items": items(&[("A", "in_progress"), ("B", "pending"), ("C", "pending")])})),
+    ];
     let run = |tail: Vec<Value>| g.stop_run(&cat(&[&base, &tail]), json!({}));
     let x = || say("x");
-    assert_deny(&run(vec![plan(json!({"advance": true})), x()]), "steps (B, C)");
+    assert_deny(
+        &run(vec![plan(json!({"advance": true})), x()]),
+        "steps (B, C)",
+    );
     assert_allow(&run(vec![
         plan(json!({"advance": true})),
         plan(json!({"advance": true})),
@@ -2285,14 +3705,27 @@ fn test_g12_replays_advance_done_and_start() {
     assert_deny(&run(vec![plan(json!({"done": [1]})), x()]), "steps (B, C)");
     assert_deny(&run(vec![plan(json!({"done": [1, 3]})), x()]), "steps (B)");
     assert_allow(&run(vec![plan(json!({"done": [1, 2, 3]})), x()]));
-    assert_deny(&run(vec![plan(json!({"done": [1], "start": 3})), x()]), "steps (B, C)");
-    assert_deny(&run(vec![plan(json!({"done": [1, 2], "start": 3})), x()]), "steps (C)");
+    assert_deny(
+        &run(vec![plan(json!({"done": [1], "start": 3})), x()]),
+        "steps (B, C)",
+    );
+    assert_deny(
+        &run(vec![plan(json!({"done": [1, 2], "start": 3})), x()]),
+        "steps (C)",
+    );
     // an items call replaces the list
     assert_deny(
-        &run(vec![plan(json!({"advance": true})), plan(json!({"items": items(&[("Z", "pending")])})), x()]),
+        &run(vec![
+            plan(json!({"advance": true})),
+            plan(json!({"items": items(&[("Z", "pending")])})),
+            x(),
+        ]),
         "steps (Z)",
     );
-    assert_allow(&run(vec![plan(json!({"items": items(&[("Z", "completed"), ("Y", "done")])})), x()]));
+    assert_allow(&run(vec![
+        plan(json!({"items": items(&[("Z", "completed"), ("Y", "done")])})),
+        x(),
+    ]));
 }
 
 #[test]
@@ -2313,15 +3746,31 @@ fn test_g12_stays_quiet_when_asked_wrapped_or_questioned() {
     let g = G::new();
     let lst = || plan(json!({"items": items(&[("A", "in_progress"), ("B", "pending")])}));
     assert_allow(&g.stop_run(
-        &[human("go"), lst(), tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"), say("Waiting.")],
+        &[
+            human("go"),
+            lst(),
+            tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"),
+            say("Waiting."),
+        ],
         json!({}),
     ));
     assert_allow(&g.stop_run(
-        &[human("go"), lst(), tu("mcp__ccd_turn__wrap_up", json!({"recap": "r"}), "w1"), say("Done.")],
+        &[
+            human("go"),
+            lst(),
+            tu("mcp__ccd_turn__wrap_up", json!({"recap": "r"}), "w1"),
+            say("Done."),
+        ],
         json!({}),
     ));
-    assert_allow(&g.stop_run(&[human("go"), lst(), say("Done A. B is left. Shall I go on?")], json!({})));
-    assert_allow(&g.stop_run(&[human("go"), lst(), say("x")], json!({"last_assistant_message": "Shall I go on?  "})));
+    assert_allow(&g.stop_run(
+        &[human("go"), lst(), say("Done A. B is left. Shall I go on?")],
+        json!({}),
+    ));
+    assert_allow(&g.stop_run(
+        &[human("go"), lst(), say("x")],
+        json!({"last_assistant_message": "Shall I go on?  "}),
+    ));
     // a wrap_up after the last update_plan closes every step, also from an earlier turn
     let wrapped = vec![
         human("go"),
@@ -2333,10 +3782,19 @@ fn test_g12_stays_quiet_when_asked_wrapped_or_questioned() {
     ];
     assert_allow(&g.stop_run(&wrapped, json!({})));
     // but a later update_plan reopens the list
-    let reopen = cat(&[&wrapped, &[plan(json!({"items": items(&[("C", "pending")])})), say("x")]]);
+    let reopen = cat(&[
+        &wrapped,
+        &[plan(json!({"items": items(&[("C", "pending")])})), say("x")],
+    ]);
     assert_deny(&g.stop_run(&reopen, json!({})), "steps (C)");
     // an AskUserQuestion from an earlier turn does not count
-    let old = [human("go"), tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"), lst(), human("ok"), say("x")];
+    let old = [
+        human("go"),
+        tu("AskUserQuestion", json!({"questions": ["q"]}), "q1"),
+        lst(),
+        human("ok"),
+        say("x"),
+    ];
     assert_deny(&g.stop_run(&old, json!({})), "G12");
     assert_allow(&g.stop_run(&[human("go"), say("no plan at all")], json!({})));
 }
@@ -2344,32 +3802,168 @@ fn test_g12_stays_quiet_when_asked_wrapped_or_questioned() {
 #[test]
 fn test_g12_quiet_while_a_helper_slot_is_live() {
     let g = G::new();
-    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
+    let recs = [
+        human("go"),
+        plan(json!({"items": items(&[("A", "pending")])})),
+        say("x"),
+    ];
     assert_deny(&g.stop_run(&recs, json!({})), "G12"); // no slot: reminder
     let state = g.state_dir().join("s.json").to_string_lossy().into_owned();
-    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string());
+    G::write(
+        &state,
+        &json!({"spawns": [{"id": "a1", "t": now_secs() - 30.0}]}).to_string(),
+    );
     assert_allow(&g.stop_run(&recs, json!({}))); // live slot: a helper still runs
-    G::write(&state, &json!({"spawns": [{"id": "a1", "t": now_secs() - 10.0 * 5400.0}]}).to_string());
+    G::write(
+        &state,
+        &json!({"spawns": [{"id": "a1", "t": now_secs() - 10.0 * 5400.0}]}).to_string(),
+    );
     assert_deny(&g.stop_run(&recs, json!({})), "G12"); // expired slot does not count
     G::write(&state, "not json {{{");
     assert_deny(&g.stop_run(&recs, json!({})), "G12"); // broken state file = no slot
 }
 
 #[test]
+fn test_stop_checks_in_shadow_mode_log_and_let_the_stop_through() {
+    let g = G::new();
+    let clock = [human_at(15 * 60, "go"), say("Done.")];
+    assert_deny(&g.stop_run(&clock, json!({"session_id": "sh1"})), "G11");
+    assert_allow(&g.stop_msg(
+        &clock,
+        json!({"session_id": "sh2"}),
+        &[("GUARD_SHADOW", "G11")],
+    ));
+    let steps = [
+        human("go"),
+        plan(json!({"items": items(&[("A", "pending")])})),
+        say("x"),
+    ];
+    assert_allow(&g.stop_msg(
+        &steps,
+        json!({"session_id": "sh3"}),
+        &[("GUARD_SHADOW", "G11 G12")],
+    ));
+    // a helper's G19 hold
+    let repo = g.make_repo(false);
+    write_file(
+        &repo,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
+    let file = write_file(&repo, "a.txt", "x");
+    let edit = json!({"session_id": "sh4", "agent_id": "h1", "agent_type": "worker", "tool_name": "Edit", "cwd": repo,
+        "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}});
+    g.run("posttool", &edit);
+    let stop = json!({"session_id": "sh4", "agent_id": "h1", "agent_type": "worker", "cwd": repo,
+        "last_assistant_message": "Done."});
+    let res = g.run_with("subagentstop", &stop, &[("GUARD_SHADOW", "G19")]);
+    assert!(!res.1.contains("G19") && !res.2.contains("G19"), "{res:?}");
+    let log = g.shadow_log();
+    for id in [" G11 ", " G12 ", " G19 "] {
+        assert!(log.contains(id), "{id:?} missing in {log:?}");
+    }
+}
+
+#[test]
+fn test_shadowed_stop_check_leaves_the_others_and_logs_once_per_turn() {
+    let g = G::new();
+    // G11 in shadow does not hide a real G12 hold in the same turn
+    let both = [
+        human_at(15 * 60, "go"),
+        plan(json!({"items": items(&[("A", "pending")])})),
+        say("x"),
+    ];
+    assert_deny(
+        &g.stop_msg(
+            &both,
+            json!({"session_id": "sd1"}),
+            &[("GUARD_SHADOW", "G11")],
+        ),
+        "G12",
+    );
+    // a second Stop segment of the same turn logs no second G11 line
+    let clock = [human_at(15 * 60, "go"), say("Done.")];
+    for _ in 0..2 {
+        assert_allow(&g.stop_msg(
+            &clock,
+            json!({"session_id": "sd2"}),
+            &[("GUARD_SHADOW", "G11")],
+        ));
+    }
+    assert_eq!(
+        g.shadow_log().matches(" G11 ").count(),
+        2,
+        "{}",
+        g.shadow_log()
+    ); // sd1 once, sd2 once
+    // G10 in shadow
+    let repo = g.make_repo(true);
+    let p = write_file(&repo, "new.txt", "x");
+    let recs = [
+        human("x"),
+        tu("Write", json!({"file_path": p}), "u1"),
+        say("done"),
+    ];
+    assert_deny(&g.g10(&recs, &repo, json!({})), "G10");
+    let shadowed = g.stop_msg(
+        &recs,
+        json!({"cwd": repo, "session_id": "sd3"}),
+        &[("GUARD_SHADOW", "G10")],
+    );
+    assert_allow(&shadowed);
+    assert!(g.shadow_log().contains(" G10 "), "{}", g.shadow_log());
+}
+
+#[test]
+fn test_g19_main_thread_in_shadow_mode() {
+    let g = G::new();
+    let repo = g.make_repo(false);
+    write_file(
+        &repo,
+        "package.json",
+        r#"{"scripts": {"check:fast": "true"}}"#,
+    );
+    let file = write_file(&repo, "a.txt", "x");
+    g.run(
+        "posttool",
+        &json!({"session_id": "s", "tool_name": "Edit", "cwd": repo,
+            "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}}),
+    );
+    let recs = [
+        human("go"),
+        tu("Skill", json!({"skill": "ps:autopilot"}), "k1"),
+        say("Done."),
+    ];
+    assert_allow(&g.stop_msg(&recs, json!({"cwd": repo}), &[("GUARD_SHADOW", "G19")]));
+    assert!(g.shadow_log().contains(" G19 "), "{}", g.shadow_log());
+}
+
+#[test]
 fn test_g12_switches_and_missing_transcript() {
     let g = G::new();
-    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
+    let recs = [
+        human("go"),
+        plan(json!({"items": items(&[("A", "pending")])})),
+        say("x"),
+    ];
     assert_deny(&g.stop_run(&recs, json!({})), "G12");
     assert_allow(&g.stop_run(&recs, json!({"stop_hook_active": true})));
     assert_allow(&g.stop_msg(&recs, json!({}), &[("GUARD_OFF", "G12")]));
     assert_allow(&g.stop_run(&recs, json!({"agent_id": "a1"})));
-    assert_allow(&g.run("stop", &json!({"hook_event_name": "Stop", "transcript_path": g.join("missing.jsonl")})));
+    assert_allow(&g.run(
+        "stop",
+        &json!({"hook_event_name": "Stop", "transcript_path": g.join("missing.jsonl")}),
+    ));
 }
 
 /// Where the Stop pass keeps the "what is left" file for session `sid` in this world (unix only).
 #[cfg(unix)]
 fn status_file(g: &G, sid: &str) -> PathBuf {
-    let base = if cfg!(target_os = "macos") { g.dir.join("Library/Caches") } else { g.dir.join("cache") };
+    let base = if cfg!(target_os = "macos") {
+        g.dir.join("Library/Caches")
+    } else {
+        g.dir.join("cache")
+    };
     base.join("dots/status").join(format!("{sid}.txt"))
 }
 
@@ -2380,7 +3974,9 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
     let file = status_file(&g, "s");
     let open = [
         human("go"),
-        plan(json!({"items": items(&[("Done one", "completed"), ("Run tests", "in_progress"), ("Ship", "pending")])})),
+        plan(
+            json!({"items": items(&[("Done one", "completed"), ("Run tests", "in_progress"), ("Ship", "pending")])}),
+        ),
         say("Working on it."),
     ];
     assert_deny(&g.stop_run(&open, json!({})), "G12");
@@ -2405,7 +4001,10 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
     assert_eq!(fs::read_to_string(&file).unwrap(), "2\tA\n");
     // a session id keeps only [A-Za-z0-9_-] in the file name
     assert_allow(&g.stop_run(&asked, json!({"session_id": "a/../b c"})));
-    assert_eq!(fs::read_to_string(status_file(&g, "abc")).unwrap(), "2\tA\n");
+    assert_eq!(
+        fs::read_to_string(status_file(&g, "abc")).unwrap(),
+        "2\tA\n"
+    );
 }
 
 #[cfg(unix)]
@@ -2413,9 +4012,16 @@ fn test_stop_writes_the_open_steps_for_the_statusline() {
 fn test_stop_status_ignores_helpers_and_missing_plans() {
     let g = G::new();
     let file = status_file(&g, "s");
-    let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
+    let recs = [
+        human("go"),
+        plan(json!({"items": items(&[("A", "pending")])})),
+        say("x"),
+    ];
     assert_allow(&g.stop_run(&recs, json!({"agent_id": "a1"})));
-    assert!(!file.exists(), "a helper's Stop never writes the main session's file");
+    assert!(
+        !file.exists(),
+        "a helper's Stop never writes the main session's file"
+    );
     assert_allow(&g.stop_run(&[human("go"), say("no plan")], json!({})));
     assert!(!file.exists());
 }
@@ -2449,7 +4055,10 @@ fn test_fail_open() {
     assert_allow(&g.run("", &json!({})));
     let bad = json!({"tool_name": "AskUserQuestion", "transcript_path": g.join("missing.jsonl")});
     assert_allow(&g.run("pretool", &bad));
-    assert_allow(&g.run("pretool", &json!({"tool_name": "Agent", "tool_input": "oops-string"})));
+    assert_allow(&g.run(
+        "pretool",
+        &json!({"tool_name": "Agent", "tool_input": "oops-string"}),
+    ));
     assert_allow(&g.run("pretool", &json!({"tool_name": "Read", "tool_input": {}})));
 }
 
@@ -2469,6 +4078,9 @@ fn test_missing_transcript_means_zero_context() {
 // G14 sed -i
 const G14_MSG: &str = "G14: bare sed -i on macOS eats the script as the backup suffix. Give a suffix: `sed -i '' 's/a/b/' f` (or `-i.bak`). Or use the Edit tool.";
 
+/// A bare `sed -i` that G14 cannot rewrite (it sits in `bash -c`): the deny canary of the switch tests.
+const G14_DENIED: &str = "bash -c \"sed -i s/a/b/ f\"";
+
 impl G {
     fn g14_data(&self, data: &Value, platform: &str, env: &[(&str, &str)]) -> Option<String> {
         let mut e = vec![("GUARD_PLATFORM", platform)];
@@ -2478,31 +4090,185 @@ impl G {
     }
 
     fn g14(&self, cmd: &str, platform: &str, env: &[(&str, &str)]) -> Option<String> {
-        self.g14_data(&json!({"tool_name": "Bash", "tool_input": {"command": cmd}}), platform, env)
+        self.g14_data(
+            &json!({"tool_name": "Bash", "tool_input": {"command": cmd}}),
+            platform,
+            env,
+        )
+    }
+
+    /// Run a Bash call through the guard and read an allow-with-updatedInput answer: the new
+    /// command and the context note. None when the call was denied, passed unchanged or had no command.
+    fn rewrite_data(&self, data: &Value, env: &[(&str, &str)]) -> Option<(String, String)> {
+        let r = self.run_with("pretool", data, env);
+        if r.0 != 0 || r.1.is_empty() {
+            return None;
+        }
+        let out = &json_out(&r)["hookSpecificOutput"];
+        if out["permissionDecision"] != "allow" {
+            return None;
+        }
+        let cmd = out["updatedInput"]["command"].as_str()?.to_string();
+        Some((
+            cmd,
+            out["additionalContext"].as_str().unwrap_or("").to_string(),
+        ))
+    }
+
+    fn rewrite(&self, cmd: &str, platform: &str) -> Option<String> {
+        let data = json!({"tool_name": "Bash", "tool_input": {"command": cmd}});
+        self.rewrite_data(&data, &[("GUARD_PLATFORM", platform)])
+            .map(|(c, _)| c)
+    }
+}
+
+const G14_NOTE: &str = "G14: rewrote `sed -i` to `sed -i ''`";
+
+#[test]
+fn test_g14_rewrites_bare_in_place() {
+    let g = G::new();
+    for (before, after) in [
+        ("sed -i 's/a/b/' f", "sed -i '' 's/a/b/' f"),
+        ("sed -ni 's/a/b/p' f", "sed -ni '' 's/a/b/p' f"),
+        ("sed -Ei 's/a/b/' f", "sed -Ei '' 's/a/b/' f"),
+        ("sed -i -E 's/a/b/' f", "sed -i '' -E 's/a/b/' f"),
+        ("sed -n -i p f", "sed -n -i '' p f"),
+        ("sed -e s/a/b/ -i f", "sed -e s/a/b/ -i '' f"),
+        ("sed s/a/b/ -i f", "sed s/a/b/ -i '' f"),
+        ("/usr/bin/sed -i s/a/b/ f", "/usr/bin/sed -i '' s/a/b/ f"),
+        ("FOO=1 sed -i s/a/b/ f", "FOO=1 sed -i '' s/a/b/ f"),
+        ("sed -i -e 's/a/b/' f", "sed -i '' -e 's/a/b/' f"),
+        ("sed -i 'p' f", "sed -i '' 'p' f"),
+        ("sed -i s/.a/b/ f", "sed -i '' s/.a/b/ f"),
+        // a script that holds the text -i
+        ("sed -i 's/ -i /x/' f", "sed -i '' 's/ -i /x/' f"),
+        ("sed -i \"s/a;b/c/\" f", "sed -i '' \"s/a;b/c/\" f"),
+        // chains, pipes, wrappers and sub-shells
+        ("cd x && sed -i s/a/b/ f", "cd x && sed -i '' s/a/b/ f"),
+        ("echo a; sed -i s/a/b/ f", "echo a; sed -i '' s/a/b/ f"),
+        ("false || sed -i s/a/b/ f", "false || sed -i '' s/a/b/ f"),
+        ("ls | sed -i s/a/b/", "ls | sed -i '' s/a/b/"),
+        (
+            "echo f | xargs sed -i s/a/b/",
+            "echo f | xargs sed -i '' s/a/b/",
+        ),
+        (
+            "echo f | xargs -I {} sed -i s/a/b/ {}",
+            "echo f | xargs -I {} sed -i '' s/a/b/ {}",
+        ),
+        ("sudo sed -i s/a/b/ f", "sudo sed -i '' s/a/b/ f"),
+        (
+            "sudo -u root sed -i s/a/b/ f",
+            "sudo -u root sed -i '' s/a/b/ f",
+        ),
+        ("env FOO=1 sed -i s/a/b/ f", "env FOO=1 sed -i '' s/a/b/ f"),
+        ("env -i sed -i s/a/b/ f", "env -i sed -i '' s/a/b/ f"),
+        ("echo a\nsed -i s/a/b/ f", "echo a\nsed -i '' s/a/b/ f"),
+        ("(cd x; sed -i s/a/b/ f)", "(cd x; sed -i '' s/a/b/ f)"),
+        ("echo $(sed -i s/a/b/ f)", "echo $(sed -i '' s/a/b/ f)"),
+        // every bare flag of the line, and a suffix already there stays
+        (
+            "sed -i s/a/b/ f && sed -i s/c/d/ g",
+            "sed -i '' s/a/b/ f && sed -i '' s/c/d/ g",
+        ),
+        (
+            "sed -i '' s/a/b/ f && sed -i s/a/b/ g",
+            "sed -i '' s/a/b/ f && sed -i '' s/a/b/ g",
+        ),
+        (
+            "sed -i.bak s/a/b/ f; sed -i s/a/b/ g",
+            "sed -i.bak s/a/b/ f; sed -i '' s/a/b/ g",
+        ),
+    ] {
+        assert_eq!(
+            g.rewrite(before, "darwin").as_deref(),
+            Some(after),
+            "{before}"
+        );
+        assert_eq!(g.g14(before, "darwin", &[]), None, "{before}: not a deny");
+    }
+}
+
+/// Run a Bash call through `pretool` on macOS and return its `hookSpecificOutput` after the checks
+/// every rewrite answer must pass: exit 0, no stderr, the event name and `allow`.
+fn rewrite_answer(g: &G, data: &Value) -> Value {
+    let r = g.run_with("pretool", data, &[("GUARD_PLATFORM", "darwin")]);
+    assert_eq!((r.0, r.2.as_str()), (0, ""), "{r:?}");
+    let out = json_out(&r)["hookSpecificOutput"].clone();
+    assert_eq!(out["hookEventName"], "PreToolUse");
+    assert_eq!(out["permissionDecision"], "allow");
+    out
+}
+
+#[test]
+fn test_g14_rewrite_answer_shape() {
+    let g = G::new();
+    let data = json!({"tool_name": "Bash", "tool_input": {
+        "command": "sed -i 's/a/b/' f", "description": "swap a for b", "timeout": 5000, "run_in_background": true}});
+    let out = rewrite_answer(&g, &data);
+    // the other fields of the call ride along
+    assert_eq!(
+        out["updatedInput"],
+        json!({"command": "sed -i '' 's/a/b/' f", "description": "swap a for b", "timeout": 5000, "run_in_background": true})
+    );
+    assert_eq!(
+        out["additionalContext"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .filter(|l| l.starts_with("G14"))
+            .count(),
+        1
+    );
+    assert!(
+        out["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains(G14_NOTE),
+        "{out}"
+    );
+}
+
+#[test]
+fn test_g14_denies_forms_it_cannot_rewrite() {
+    let g = G::new();
+    for cmd in [
+        "sed --in-place s/a/b/ f",
+        "sed --in-place=.bak s/a/b/ f",
+        "sed \"-i\" s/a/b/ f",
+        "bash -c \"sed -i s/a/b/ f\"",
+        "find . -name '*.md' -exec sed -i s/a/b/ {} \\;",
+        "find . -name '*.md' -exec sed -i s/a/b/ {} +",
+        "sed -i s/a/b/ f <<EOF\nhi\nEOF",
+        // one fixable sed and one that is not: the line is denied
+        "sed -i s/a/b/ f && bash -c 'sed -i s/a/b/ g'",
+    ] {
+        assert_eq!(g.g14(cmd, "darwin", &[]).as_deref(), Some(G14_MSG), "{cmd}");
+        assert_eq!(g.rewrite(cmd, "darwin"), None, "{cmd}");
     }
 }
 
 #[test]
-fn test_g14_denies_in_place_forms() {
+fn test_g14_leaves_alone_what_it_does_not_deny() {
     let g = G::new();
     for cmd in [
-        "sed -i 's/a/b/' f",
-        "sed -ni 's/a/b/p' f",
-        "sed -Ei 's/a/b/' f",
-        "sed -i -E 's/a/b/' f",
-        "sed --in-place s/a/b/ f",
-        "sed --in-place=.bak s/a/b/ f",
-        "sed -n -i p f",
-        "sed -e s/a/b/ -i f",
-        "sed s/a/b/ -i f",
-        "/usr/bin/sed -i s/a/b/ f",
-        "FOO=1 sed -i s/a/b/ f",
-        "sed -i -e 's/a/b/' f",
-        "sed -i 'p' f",
-        "sed -i s/.a/b/ f",
+        "sed -i '' s/a/b/ f",
+        "sed -i.bak s/a/b/ f",
+        "sed -i .bak s/a/b/ f",
+        "gsed -i s/a/b/ f",
+        "sed -n '1,5p' f",
+        "echo \"sed -i\"",
     ] {
-        assert_eq!(g.g14(cmd, "darwin", &[]).as_deref(), Some(G14_MSG), "{cmd}");
+        assert_eq!(g.rewrite(cmd, "darwin"), None, "{cmd}: no change");
     }
+    // on Linux sed -i takes no suffix word: no change
+    assert_eq!(g.rewrite("sed -i s/a/b/ f", "linux"), None);
+    // GUARD_OFF turns the rewrite off too
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
+    assert_eq!(
+        g.rewrite_data(&data, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "G14")]),
+        None
+    );
 }
 
 #[test]
@@ -2524,32 +4290,13 @@ fn test_g14_allows_bsd_forms_with_a_suffix() {
     ] {
         assert_eq!(g.g14(cmd, "darwin", &[]), None, "{cmd}");
     }
-    // a bare -i in a second command still denies
-    assert_eq!(g.g14("sed -i '' s/a/b/ f && sed -i s/a/b/ g", "darwin", &[]).as_deref(), Some(G14_MSG));
-}
-
-#[test]
-fn test_g14_denies_after_separators_and_wrappers() {
-    let g = G::new();
-    for cmd in [
-        "cd x && sed -i s/a/b/ f",
-        "echo a; sed -i s/a/b/ f",
-        "false || sed -i s/a/b/ f",
-        "ls | sed -i s/a/b/",
-        "echo f | xargs sed -i s/a/b/",
-        "echo f | xargs -I {} sed -i s/a/b/ {}",
-        "find . -name '*.md' -exec sed -i s/a/b/ {} \\;",
-        "find . -name '*.md' -exec sed -i s/a/b/ {} +",
-        "sudo sed -i s/a/b/ f",
-        "sudo -u root sed -i s/a/b/ f",
-        "env FOO=1 sed -i s/a/b/ f",
-        "env -i sed -i s/a/b/ f",
-        "bash -c \"sed -i s/a/b/ f\"",
-        "echo a\nsed -i s/a/b/ f",
-        "(cd x; sed -i s/a/b/ f)",
-    ] {
-        assert_eq!(g.g14(cmd, "darwin", &[]).as_deref(), Some(G14_MSG), "{cmd}");
-    }
+    // a bare -i in a second command is rewritten, not denied
+    let both = "sed -i '' s/a/b/ f && sed -i s/a/b/ g";
+    assert_eq!(g.g14(both, "darwin", &[]), None);
+    assert_eq!(
+        g.rewrite(both, "darwin").as_deref(),
+        Some("sed -i '' s/a/b/ f && sed -i '' s/a/b/ g")
+    );
 }
 
 #[test]
@@ -2580,9 +4327,13 @@ fn test_g14_allows() {
 #[test]
 fn test_g14_macos_only_off_switch_and_fail_open() {
     let g = G::new();
-    assert_eq!(g.g14("sed -i s/a/b/ f", "linux", &[]), None);
-    assert_eq!(g.g14("sed -i s/a/b/ f", "darwin", &[("GUARD_OFF", "G14")]), None);
-    assert_eq!(g.g14("sed -i s/a/b/ f", "darwin", &[("GUARD_OFF", "G13")]).as_deref(), Some(G14_MSG));
+    assert_eq!(g.g14(G14_DENIED, "linux", &[]), None);
+    assert_eq!(g.g14(G14_DENIED, "darwin", &[("GUARD_OFF", "G14")]), None);
+    assert_eq!(
+        g.g14(G14_DENIED, "darwin", &[("GUARD_OFF", "G13")])
+            .as_deref(),
+        Some(G14_MSG)
+    );
     for data in [
         json!({"tool_name": "Bash"}),
         json!({"tool_name": "Bash", "tool_input": "oops"}),
@@ -2599,16 +4350,12 @@ fn test_g14_macos_only_off_switch_and_fail_open() {
 const G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
 const G15_SEARCH_RG: &str =
     "G15: this search can reach local.zsh (API keys). Exclude it with `rg -g '!local.zsh' ...`.";
-const G15_SEARCH_GREP: &str =
-    "G15: this search can reach local.zsh (API keys). Exclude it with `grep --exclude=local.zsh ...`.";
+const G15_SEARCH_GREP: &str = "G15: this search can reach local.zsh (API keys). Exclude it with `grep --exclude=local.zsh ...`.";
 const G15_SEARCH_AG: &str =
     "G15: this search can reach local.zsh (API keys). Exclude it with `ag --ignore local.zsh ...`.";
-const G15_SEARCH_ACK: &str =
-    "G15: this search can reach local.zsh (API keys). Exclude it with `ack --ignore-file=is:local.zsh ...`.";
-const G15_PS: &str =
-    "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
-const G15_PGREP: &str =
-    "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
+const G15_SEARCH_ACK: &str = "G15: this search can reach local.zsh (API keys). Exclude it with `ack --ignore-file=is:local.zsh ...`.";
+const G15_PS: &str = "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.\nIf the output feeds awk, cut, grep, rg, xargs, kill, sed or a $(), use `pgrep -f <pattern>` (pids only) or `ps -o pid=,etime=,ucomm= -p <pid>`: a ps that feeds a command is not rewritten, because its columns would change.";
+const G15_PGREP: &str = "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
 const G15_PROCS: &str = "G15: procs prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, then `ps -o pid=,etime=,ucomm= -p <pid>`.";
 
 impl G {
@@ -2641,11 +4388,23 @@ impl G {
     }
 
     fn g15bash_on(&self, cmd: &str, platform: &str) -> Option<String> {
-        self.g15x("Bash", json!({"command": cmd}), &[], Some(platform), json!({}))
+        self.g15x(
+            "Bash",
+            json!({"command": cmd}),
+            &[],
+            Some(platform),
+            json!({}),
+        )
     }
 
     fn g15bash_in(&self, cmd: &str, cwd: &str) -> Option<String> {
-        self.g15x("Bash", json!({"command": cmd}), &[], None, json!({"cwd": cwd}))
+        self.g15x(
+            "Bash",
+            json!({"command": cmd}),
+            &[],
+            None,
+            json!({"cwd": cwd}),
+        )
     }
 
     /// A temp HOME whose ~/.config/zsh links into a dotfiles repo, like the real machine. Returns the repo.
@@ -2673,17 +4432,47 @@ fn test_g15_read_tool() {
     G::write(&target, "export KEY=1\n");
     let link = g.join("link.zsh");
     symlink(&target, &link);
-    for path in ["~/.config/zsh/local.zsh", target.as_str(), link.as_str(), &format!("{zsh}/../zsh/local.zsh")] {
-        assert_eq!(g.g15("Read", json!({"file_path": path})).as_deref(), Some(G15_FILE), "{path}");
+    for path in [
+        "~/.config/zsh/local.zsh",
+        target.as_str(),
+        link.as_str(),
+        &format!("{zsh}/../zsh/local.zsh"),
+    ] {
+        assert_eq!(
+            g.g15("Read", json!({"file_path": path})).as_deref(),
+            Some(G15_FILE),
+            "{path}"
+        );
     }
-    for path in ["~/.config/zsh/aliases.zsh", &g.join("README.md"), "/etc/hosts", ""] {
+    for path in [
+        "~/.config/zsh/aliases.zsh",
+        &g.join("README.md"),
+        "/etc/hosts",
+        "",
+    ] {
         assert_eq!(g.g15("Read", json!({"file_path": path})), None, "{path}");
     }
     assert_eq!(
-        g.g15x("Read", json!({"file_path": "local.zsh"}), &[], None, json!({"cwd": zsh})).as_deref(),
+        g.g15x(
+            "Read",
+            json!({"file_path": "local.zsh"}),
+            &[],
+            None,
+            json!({"cwd": zsh})
+        )
+        .as_deref(),
         Some(G15_FILE)
     );
-    assert_eq!(g.g15x("Read", json!({"file_path": "local.zsh"}), &[], None, json!({"cwd": g.d()})), None);
+    assert_eq!(
+        g.g15x(
+            "Read",
+            json!({"file_path": "local.zsh"}),
+            &[],
+            None,
+            json!({"cwd": g.d()})
+        ),
+        None
+    );
 }
 
 #[test]
@@ -2718,8 +4507,14 @@ fn test_g15_bash_readers_denied() {
     ] {
         assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_FILE), "{cmd}");
     }
-    assert_eq!(g.g15bash("rg KEY ~/.config/zsh").as_deref(), Some(G15_SEARCH_RG));
-    assert_eq!(g.g15bash("grep KEY ~/.config/zsh").as_deref(), Some(G15_SEARCH_GREP));
+    assert_eq!(
+        g.g15bash("rg KEY ~/.config/zsh").as_deref(),
+        Some(G15_SEARCH_RG)
+    );
+    assert_eq!(
+        g.g15bash("grep KEY ~/.config/zsh").as_deref(),
+        Some(G15_SEARCH_GREP)
+    );
 }
 
 #[test]
@@ -2746,47 +4541,161 @@ fn test_g15_bash_allowed() {
 }
 
 #[test]
-fn test_g15_process_command_lines_denied() {
+fn test_g15_process_command_lines_rewritten() {
+    let g = G::new();
+    let f = "pid=,etime=,ucomm=";
+    for (before, after) in [
+        // a full listing becomes one safe listing
+        ("ps aux", format!("ps -axo {f}")),
+        ("ps auxww", format!("ps -axo {f}")),
+        ("ps aux | head -3", format!("ps -axo {f} | head -3")),
+        (
+            "ps aux | sort | tail -2",
+            format!("ps -axo {f} | sort | tail -2"),
+        ),
+        ("ps aux | wc -l", format!("ps -axo {f} | wc -l")),
+        ("ps -ef", format!("ps -axo {f}")),
+        ("ps ax", format!("ps -axo {f}")),
+        ("ps -e", format!("ps -axo {f}")),
+        ("ps -A", format!("ps -axo {f}")),
+        ("/bin/ps aux", format!("/bin/ps -axo {f}")),
+        ("sudo ps aux", format!("sudo ps -axo {f}")),
+        ("ps aux 2>/dev/null", format!("ps -axo {f} 2>/dev/null")),
+        ("ps aux > out.txt", format!("ps -axo {f} > out.txt")),
+        (
+            "echo go; ps aux && echo done",
+            format!("echo go; ps -axo {f} && echo done"),
+        ),
+        // a format list with a command column: only the list changes
+        ("ps -o args", format!("ps -o {f}")),
+        ("ps -o command -p 1", format!("ps -o {f} -p 1")),
+        ("ps -p 1 -o pid,command", format!("ps -p 1 -o {f}")),
+        ("ps -p 1 -o pid,args=", format!("ps -p 1 -o {f}")),
+        ("ps -p 1 -opid,args", format!("ps -p 1 -o {f}")),
+        ("ps -axo pid,command", format!("ps -axo {f}")),
+        ("ps -eo pid,args", format!("ps -eo {f}")),
+        ("ps --format pid,args", format!("ps --format {f}")),
+        ("ps --format=pid,args -p 3", format!("ps --format={f} -p 3")),
+        ("ps -o 'pid,args' -p 1", format!("ps -o {f} -p 1")),
+        // other flags that print them: the pid list stays, the rest goes
+        ("ps -f -p 12", format!("ps -o {f} -p 12")),
+        ("ps -ww", format!("ps -o {f}")),
+        ("ps -p 1 -ww", format!("ps -o {f} -p 1")),
+        ("ps eww", format!("ps -o {f}")),
+        ("ps eww -p 1", format!("ps -o {f} -p 1")),
+        ("ps -ef -o pid,args", format!("ps -axo {f}")),
+    ] {
+        assert_eq!(
+            g.rewrite(before, "darwin").as_deref(),
+            Some(after.as_str()),
+            "{before}"
+        );
+        assert_eq!(g.g15bash_on(before, "darwin"), None, "{before}: not a deny");
+    }
+    for (before, after) in [
+        ("pgrep -fl node", "pgrep -f node"),
+        ("pgrep -af node", "pgrep -f node"),
+        ("pgrep -lf node", "pgrep -f node"),
+        ("pgrep -f -l node", "pgrep -f node"),
+        ("pgrep -f -a node", "pgrep -f node"),
+        ("pgrep --list-full node", "pgrep -f node"),
+        ("pgrep -fl -u me node", "pgrep -f -u me node"),
+        (
+            "sudo pgrep -fl node | head -3",
+            "sudo pgrep -f node | head -3",
+        ),
+    ] {
+        assert_eq!(
+            g.rewrite(before, "darwin").as_deref(),
+            Some(after),
+            "{before}"
+        );
+        assert_eq!(g.g15bash_on(before, "darwin"), None, "{before}: not a deny");
+    }
+}
+
+#[test]
+fn test_g15_ps_read_by_another_command_is_denied_not_rewritten() {
     let g = G::new();
     for cmd in [
-        "ps aux",
-        "ps auxww",
-        "ps aux | grep node",
-        "ps -ef",
+        "ps aux | grep vite",
+        "ps aux | awk '{print $2}'",
         "ps -ef | grep x",
-        "ps ax",
-        "ps -e",
-        "ps -A",
-        "ps -f -p 12",
-        "ps -o args",
-        "ps -o command -p 1",
-        "ps -p 1 -o pid,command",
-        "ps -p 1 -o pid,args=",
-        "ps -p 1 -opid,args",
-        "ps -axo pid,command",
-        "ps -eo pid,args",
-        "ps --format pid,args",
-        "ps -ww",
-        "ps -p 1 -ww",
-        "ps eww",
-        "ps eww -p 1",
-        "/bin/ps aux",
-        "sudo ps aux",
+        "ps aux | cut -c1-20",
+        "ps aux | rg node",
+        "ps aux | sed 1d",
+        "ps aux | head -3 | awk '{print $1}'",
+        "ps aux | xargs echo",
+        "kill $(ps aux | awk '{print $2}')",
+        "kill $(ps aux)",
+        "echo `ps aux`",
     ] {
-        assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_PS), "{cmd}");
+        assert_eq!(g.rewrite(cmd, "darwin"), None, "{cmd}: not rewritten");
+        assert_eq!(
+            g.g15bash_on(cmd, "darwin").as_deref(),
+            Some(G15_PS),
+            "{cmd}: denied with the pgrep line"
+        );
     }
-    for cmd in [
-        "pgrep -fl node",
-        "pgrep -af node",
-        "pgrep -lf node",
-        "pgrep -f -l node",
-        "pgrep -f -a node",
-        "pgrep --list-full node",
-    ] {
-        assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_PGREP), "{cmd}");
-    }
+    assert!(G15_PS.contains("pgrep -f <pattern>"));
+}
+
+#[test]
+fn test_g15_rewrite_answer_shape() {
+    let g = G::new();
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": "ps aux", "description": "list", "timeout": 9000}});
+    let out = rewrite_answer(&g, &data);
+    assert_eq!(
+        out["updatedInput"],
+        json!({"command": "ps -axo pid=,etime=,ucomm=", "description": "list", "timeout": 9000})
+    );
+    let note = out["additionalContext"].as_str().unwrap();
+    assert_eq!(note.lines().count(), 1, "{note}");
+    assert!(note.starts_with("G15: rewrote ps or pgrep"), "{note}");
+    // one line holds both fixes: sed and ps
+    let both = g.rewrite("sed -i s/a/b/ f; ps aux", "darwin");
+    assert_eq!(
+        both.as_deref(),
+        Some("sed -i '' s/a/b/ f; ps -axo pid=,etime=,ucomm=")
+    );
+}
+
+#[test]
+fn test_g15_denies_what_it_cannot_rewrite() {
+    let g = G::new();
     for cmd in ["procs", "procs --tree", "echo x; procs"] {
         assert_eq!(g.g15bash(cmd).as_deref(), Some(G15_PROCS), "{cmd}");
+        assert_eq!(g.rewrite(cmd, "darwin"), None, "{cmd}");
+    }
+    assert_eq!(
+        g.g15bash("bash -c 'pgrep -fl node'").as_deref(),
+        Some(G15_PGREP)
+    );
+    // a ps filter the rewrite cannot place, a ps in bash -c, a here-document, one fixable and one not
+    for cmd in [
+        "ps -U me",
+        "ps -ux",
+        "ps -u me -f",
+        "ps aux --sort=-pcpu",
+        "bash -c 'ps aux'",
+        "ps aux <<EOF\nx\nEOF",
+        "ps aux; procs",
+        "ps -p $PID",
+    ] {
+        assert_eq!(
+            g.g15bash(cmd).as_deref().map(|m| &m[..3]),
+            Some("G15"),
+            "{cmd}"
+        );
+        assert_eq!(g.rewrite(cmd, "darwin"), None, "{cmd}");
+    }
+    // the local.zsh read stays a deny, with or without a ps beside it
+    for cmd in [
+        "ps aux; cat ~/.config/zsh/local.zsh",
+        "cat ~/.config/zsh/local.zsh; pgrep -fl x",
+    ] {
+        assert!(g.g15bash(cmd).is_some(), "{cmd}");
+        assert_eq!(g.rewrite(cmd, "darwin"), None, "{cmd}");
     }
 }
 
@@ -2836,15 +4745,26 @@ fn test_g15_recursive_searches_denied() {
         "grep -r --exclude-dir=docs KEY .",
         "cd .. && grep -rn KEY dotfiles",
     ] {
-        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_GREP), "{cmd}");
+        assert_eq!(
+            g.g15bash_in(cmd, &repo).as_deref(),
+            Some(G15_SEARCH_GREP),
+            "{cmd}"
+        );
     }
     assert_eq!(
         g.g15bash_in("egrep -rn KEY .", &repo).as_deref(),
         Some(&G15_SEARCH_GREP.replace("`grep", "`egrep")[..])
     );
-    assert_eq!(g.g15bash_in("fgrep -r KEY ~", &repo).as_deref(), Some(&G15_SEARCH_GREP.replace("`grep", "`fgrep")[..]));
+    assert_eq!(
+        g.g15bash_in("fgrep -r KEY ~", &repo).as_deref(),
+        Some(&G15_SEARCH_GREP.replace("`grep", "`fgrep")[..])
+    );
     for cmd in ["ack KEY", "ack KEY ."] {
-        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_ACK), "{cmd}");
+        assert_eq!(
+            g.g15bash_in(cmd, &repo).as_deref(),
+            Some(G15_SEARCH_ACK),
+            "{cmd}"
+        );
     }
     for cmd in [
         "rg -u KEY .",
@@ -2859,11 +4779,24 @@ fn test_g15_recursive_searches_denied() {
         "rg -u -g '!other' KEY .",
         "sudo rg -u KEY .",
     ] {
-        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_RG), "{cmd}");
+        assert_eq!(
+            g.g15bash_in(cmd, &repo).as_deref(),
+            Some(G15_SEARCH_RG),
+            "{cmd}"
+        );
     }
-    for cmd in ["ag -u KEY", "ag --unrestricted KEY", "ag -U KEY .", "ag --skip-vcs-ignores KEY .", "ag --hidden KEY ."]
-    {
-        assert_eq!(g.g15bash_in(cmd, &repo).as_deref(), Some(G15_SEARCH_AG), "{cmd}");
+    for cmd in [
+        "ag -u KEY",
+        "ag --unrestricted KEY",
+        "ag -U KEY .",
+        "ag --skip-vcs-ignores KEY .",
+        "ag --hidden KEY .",
+    ] {
+        assert_eq!(
+            g.g15bash_in(cmd, &repo).as_deref(),
+            Some(G15_SEARCH_AG),
+            "{cmd}"
+        );
     }
 }
 
@@ -2917,8 +4850,29 @@ fn test_g15_ps_on_macos() {
     ] {
         assert_eq!(g.g15bash_on(cmd, "darwin"), None, "{cmd}");
     }
-    for cmd in ["ps", "ps -p 1", "ps -U me", "ps -ux", "ps -j", "ps -v", "ps -O ppid -p 1", "ps -c -o args -p 1"] {
-        assert_eq!(g.g15bash_on(cmd, "darwin").as_deref(), Some(G15_PS), "{cmd}");
+    // macOS prints the command line by default: these are rewritten, not denied
+    let f = "pid=,etime=,ucomm=";
+    for (before, after) in [
+        ("ps", format!("ps -o {f}")),
+        ("ps -p 1", format!("ps -o {f} -p 1")),
+        ("ps -j", format!("ps -o {f}")),
+        ("ps -v", format!("ps -o {f}")),
+        ("ps -O ppid -p 1", format!("ps -o {f} -p 1")),
+        ("ps -c -o args -p 1", format!("ps -c -o {f} -p 1")),
+    ] {
+        assert_eq!(g.g15bash_on(before, "darwin"), None, "{before}");
+        assert_eq!(
+            g.rewrite(before, "darwin").as_deref(),
+            Some(after.as_str()),
+            "{before}"
+        );
+    }
+    for cmd in ["ps -U me", "ps -ux"] {
+        assert_eq!(
+            g.g15bash_on(cmd, "darwin").as_deref(),
+            Some(G15_PS),
+            "{cmd}"
+        );
     }
     for cmd in ["ps -p 1", "ps -U me", "ps -O ppid -p 1"] {
         assert_eq!(g.g15bash_on(cmd, "linux"), None, "{cmd}");
@@ -2932,13 +4886,29 @@ fn test_g15_grep_tool() {
     let repo = g.secret_tree();
     let zsh = format!("{repo}/home/.config/zsh");
     let in_repo = |ti: Value| g.g15x("Grep", ti, &[], None, json!({"cwd": repo}));
-    for path in
-        ["~/.config/zsh", "~/.config/zsh/local.zsh", zsh.as_str(), &format!("{zsh}/local.zsh"), &g.join(".config/zsh")]
-    {
-        assert_eq!(g.g15("Grep", json!({"pattern": "KEY", "path": path})).as_deref(), Some(G15_FILE), "{path}");
+    for path in [
+        "~/.config/zsh",
+        "~/.config/zsh/local.zsh",
+        zsh.as_str(),
+        &format!("{zsh}/local.zsh"),
+        &g.join(".config/zsh"),
+    ] {
+        assert_eq!(
+            g.g15("Grep", json!({"pattern": "KEY", "path": path}))
+                .as_deref(),
+            Some(G15_FILE),
+            "{path}"
+        );
     }
     assert_eq!(
-        g.g15x("Grep", json!({"pattern": "KEY", "path": "local.zsh"}), &[], None, json!({"cwd": zsh})).as_deref(),
+        g.g15x(
+            "Grep",
+            json!({"pattern": "KEY", "path": "local.zsh"}),
+            &[],
+            None,
+            json!({"cwd": zsh})
+        )
+        .as_deref(),
         Some(G15_FILE)
     );
     let others = [
@@ -2952,11 +4922,21 @@ fn test_g15_grep_tool() {
         json!(5),
     ];
     for path in others {
-        assert_eq!(in_repo(json!({"pattern": "KEY", "path": path})), None, "{path}");
+        assert_eq!(
+            in_repo(json!({"pattern": "KEY", "path": path})),
+            None,
+            "{path}"
+        );
     }
     assert_eq!(in_repo(json!({"pattern": "KEY"})), None);
     assert_eq!(
-        g.g15x("Grep", json!({"pattern": "KEY", "path": "~/.config/zsh"}), &[("GUARD_OFF", "G15")], None, json!({})),
+        g.g15x(
+            "Grep",
+            json!({"pattern": "KEY", "path": "~/.config/zsh"}),
+            &[("GUARD_OFF", "G15")],
+            None,
+            json!({})
+        ),
         None
     );
 }
@@ -2971,21 +4951,61 @@ fn test_g15_letter_case_on_macos() {
     if g.dir.join(".CONFIG").exists() {
         for path in ["~/.config/ZSH/LOCAL.zsh", "~/.config/zsh/Local.ZSH"] {
             assert_eq!(
-                g.g15x("Read", json!({"file_path": path}), &[], Some("darwin"), json!({})).as_deref(),
+                g.g15x(
+                    "Read",
+                    json!({"file_path": path}),
+                    &[],
+                    Some("darwin"),
+                    json!({})
+                )
+                .as_deref(),
                 Some(G15_FILE),
                 "{path}"
             );
-            assert_eq!(g.g15bash_on(&format!("cat {path}"), "darwin").as_deref(), Some(G15_FILE), "{path}");
+            assert_eq!(
+                g.g15bash_on(&format!("cat {path}"), "darwin").as_deref(),
+                Some(G15_FILE),
+                "{path}"
+            );
         }
-        assert_eq!(g.g15bash_on("cat ~/.config/zsh/LOCAL.z*", "darwin").as_deref(), Some(G15_FILE));
         assert_eq!(
-            g.g15x("Grep", json!({"path": "~/.config/ZSH"}), &[], Some("darwin"), json!({})).as_deref(),
+            g.g15bash_on("cat ~/.config/zsh/LOCAL.z*", "darwin")
+                .as_deref(),
+            Some(G15_FILE)
+        );
+        assert_eq!(
+            g.g15x(
+                "Grep",
+                json!({"path": "~/.config/ZSH"}),
+                &[],
+                Some("darwin"),
+                json!({})
+            )
+            .as_deref(),
             Some(G15_FILE)
         );
     }
-    assert_eq!(g.g15x("Read", json!({"file_path": "~/.config/ZSH/LOCAL.zsh"}), &[], Some("linux"), json!({})), None);
+    assert_eq!(
+        g.g15x(
+            "Read",
+            json!({"file_path": "~/.config/ZSH/LOCAL.zsh"}),
+            &[],
+            Some("linux"),
+            json!({})
+        ),
+        None
+    );
     assert_eq!(g.g15bash_on("cat ~/.config/ZSH/LOCAL.zsh", "linux"), None);
-    assert_eq!(g.g15x("Read", json!({"file_path": "~/.config/ZSH/ALIASES.zsh"}), &[], Some("darwin"), json!({})), None);
+    assert_eq!(
+        g.g15x(
+            "Read",
+            json!({"file_path": "~/.config/ZSH/ALIASES.zsh"}),
+            &[],
+            Some("darwin"),
+            json!({})
+        ),
+        None
+    );
 }
 
 #[test]
@@ -3015,14 +5035,38 @@ fn test_g15_ln_install_and_dd() {
 #[test]
 fn test_g15_off_switch_and_fail_open() {
     let g = G::new();
-    let bash = |cmd: &str, off: &str| g.g15x("Bash", json!({"command": cmd}), &[("GUARD_OFF", off)], None, json!({}));
+    let bash = |cmd: &str, off: &str| {
+        g.g15x(
+            "Bash",
+            json!({"command": cmd}),
+            &[("GUARD_OFF", off)],
+            None,
+            json!({}),
+        )
+    };
     assert_eq!(bash("ps aux", "G15"), None);
     assert_eq!(bash("cat ~/.config/zsh/local.zsh", "G14 G15"), None);
     assert_eq!(
-        g.g15x("Read", json!({"file_path": "~/.config/zsh/local.zsh"}), &[("GUARD_OFF", "g15")], None, json!({})),
+        g.g15x(
+            "Read",
+            json!({"file_path": "~/.config/zsh/local.zsh"}),
+            &[("GUARD_OFF", "g15")],
+            None,
+            json!({})
+        ),
         None
     );
-    assert_eq!(bash("ps aux", "G14").as_deref(), Some(G15_PS));
+    assert_eq!(bash("procs", "G14").as_deref(), Some(G15_PROCS));
+    // the off switch turns the rewrite off too: the call goes through as it is
+    let ps = json!({"tool_name": "Bash", "tool_input": {"command": "ps aux"}});
+    assert_eq!(
+        g.rewrite_data(&ps, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "G15")]),
+        None
+    );
+    assert!(
+        g.rewrite_data(&ps, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "G14")])
+            .is_some()
+    );
     for (tool, ti) in [
         ("Bash", Value::Null),
         ("Bash", json!("oops")),
@@ -3054,11 +5098,19 @@ fn say13(text: &str) -> Value {
 }
 
 fn calls(start: usize, end: usize) -> Vec<Value> {
-    (start..=end).flat_map(|i| [tu13(i), tool_result(&format!("u{i}"))]).collect()
+    (start..=end)
+        .flat_map(|i| [tu13(i), tool_result(&format!("u{i}"))])
+        .collect()
 }
 
 impl G {
-    fn post_env(&self, records: &[Value], last: Option<usize>, extra: Value, env: &[(&str, &str)]) -> R {
+    fn post_env(
+        &self,
+        records: &[Value],
+        last: Option<usize>,
+        extra: Value,
+        env: &[(&str, &str)],
+    ) -> R {
         let path = self.transcript(records);
         let mut data = json!({"hook_event_name": "PostToolUse", "session_id": "p1", "tool_name": "Bash",
             "transcript_path": path});
@@ -3095,7 +5147,12 @@ fn test_g13_off_in_the_desktop_app() {
     let res = g.post(&recs, Some(8)); // no entrypoint env: the note fires
     assert_eq!(json_out(&res), note13());
     for (entry, fires) in [("claude-desktop", false), ("cli", true), ("", true)] {
-        let res = g.post_env(&recs, Some(8), json!({}), &[("CLAUDE_CODE_ENTRYPOINT", entry)]);
+        let res = g.post_env(
+            &recs,
+            Some(8),
+            json!({}),
+            &[("CLAUDE_CODE_ENTRYPOINT", entry)],
+        );
         if fires {
             assert_eq!(json_out(&res), note13(), "{entry}");
         } else {
@@ -3116,10 +5173,16 @@ fn test_g13_without_tool_use_id_counts_all() {
 fn test_g13_parallel_calls_each_see_their_own_count() {
     let g = G::new();
     let recs = cat(&[&[human("hi")], &calls(1, 10)]);
-    let fired: Vec<usize> = (1..=10).filter(|i| !g.post(&recs, Some(*i)).1.is_empty()).collect();
+    let fired: Vec<usize> = (1..=10)
+        .filter(|i| !g.post(&recs, Some(*i)).1.is_empty())
+        .collect();
     assert_eq!(fired, vec![8]);
     // a text written after the current call does not reset its count
-    let recs = cat(&[&[human("hi")], &calls(1, 8), &[say13("Now checking the results")]]);
+    let recs = cat(&[
+        &[human("hi")],
+        &calls(1, 8),
+        &[say13("Now checking the results")],
+    ]);
     assert_eq!(json_out(&g.post(&recs, Some(8))), note13());
 }
 
@@ -3135,7 +5198,12 @@ fn test_g13_text_resets_and_new_streak_starts() {
     let mixed = json!({"type": "assistant", "message": {"role": "assistant", "content": [
         {"type": "text", "text": "Reading the config files"},
         {"type": "tool_use", "id": "u6", "name": "Bash", "input": {}}]}});
-    let recs = cat(&[&[human("hi")], &calls(1, 5), &[mixed, tool_result("u6")], &calls(7, 11)]);
+    let recs = cat(&[
+        &[human("hi")],
+        &calls(1, 5),
+        &[mixed, tool_result("u6")],
+        &calls(7, 11),
+    ]);
     assert_allow(&g.post(&recs, Some(11))); // u6 shares a message with the text: 6 calls since it
 }
 
@@ -3181,14 +5249,28 @@ fn test_g13_fail_open() {
     assert_allow(&g.run_raw("posttool", ""));
     assert_allow(&g.run_raw("posttool", "[1]"));
     assert_allow(&g.run("posttool", &json!({"tool_name": "Bash"})));
-    assert_allow(&g.run("posttool", &json!({"tool_name": "Bash", "transcript_path": "/no/such"})));
+    assert_allow(&g.run(
+        "posttool",
+        &json!({"tool_name": "Bash", "transcript_path": "/no/such"}),
+    ));
     let path = g.join("bad.jsonl");
     G::write(&path, &"garbage\n{not json\n".repeat(5));
-    assert_allow(&g.run("posttool", &json!({"tool_name": "Bash", "transcript_path": path})));
-    assert_allow(&g.post_env(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8), json!({"transcript_path": 5}), &[]));
+    assert_allow(&g.run(
+        "posttool",
+        &json!({"tool_name": "Bash", "transcript_path": path}),
+    ));
+    assert_allow(&g.post_env(
+        &cat(&[&[human("hi")], &calls(1, 8)]),
+        Some(8),
+        json!({"transcript_path": 5}),
+        &[],
+    ));
     // The Python test also called guard.posttool directly and mocked reverse_lines; here the same
     // inputs go through the binary (a missing transcript above) and the mock has no counterpart.
-    assert_allow(&g.run("posttool", &json!({"transcript_path": "/no/such", "tool_use_id": "u8"})));
+    assert_allow(&g.run(
+        "posttool",
+        &json!({"transcript_path": "/no/such", "tool_use_id": "u8"}),
+    ));
 }
 
 // --- G20 whole-file Read of a big file ---
@@ -3244,7 +5326,9 @@ fn preset_guards() -> Vec<(String, Vec<String>)> {
     let mut out = Vec::new();
     for e in fs::read_dir(&dir).expect("claude/presets") {
         let e = e.unwrap();
-        let Ok(text) = fs::read_to_string(e.path().join("rules.md")) else { continue };
+        let Ok(text) = fs::read_to_string(e.path().join("rules.md")) else {
+            continue;
+        };
         let ids = text
             .lines()
             .find_map(|l| l.strip_prefix("guard:"))
@@ -3268,19 +5352,29 @@ impl G {
     /// The settings file: the pace fixtures' plan and week, then `text` (the last line of a name wins).
     fn set(&self, text: &str) {
         let base = "PLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\n";
-        Self::write(&self.join(".config/dotfiles/settings"), &format!("{base}{text}"));
+        Self::write(
+            &self.join(".config/dotfiles/settings"),
+            &format!("{base}{text}"),
+        );
     }
 
     /// Every preset on except `off`, as a PRESETS setting.
     fn presets_except(&self, off: &str) {
-        let names: Vec<String> = preset_guards().into_iter().map(|p| p.0).filter(|n| n != off).collect();
+        let names: Vec<String> = preset_guards()
+            .into_iter()
+            .map(|p| p.0)
+            .filter(|n| n != off)
+            .collect();
         self.set(&format!("PRESETS=\"{}\"\n", names.join(" ")));
     }
 
     /// An input that trips check `id`, run in this world.
     fn trigger(&self, id: &str) -> R {
         match id {
-            "G1" => self.pre("Agent", json!({"model": "sonnet", "effort": "high", "prompt": "Build it."})),
+            "G1" => self.pre(
+                "Agent",
+                json!({"model": "sonnet", "effort": "high", "prompt": "Build it."}),
+            ),
             "G2" => self.pre_ctx("ScheduleWakeup", json!({"delaySeconds": 600}), 150_000),
             "G3" => self.pre_ctx("Agent", ok_agent(), 600_000),
             "G4" => {
@@ -3293,30 +5387,55 @@ impl G {
             }
             "G5" => self.handback(&"x".repeat(9000)),
             "G6" => {
-                let recs = [human("hand off"), self.write_ho("w1", None), tool_result("w1"), say("written")];
+                let recs = [
+                    human("hand off"),
+                    self.write_ho("w1", None),
+                    tool_result("w1"),
+                    say("written"),
+                ];
                 self.archive(&recs, "self")
             }
-            "G7" => self.pre("Agent", merge(ok_agent(), json!({"subagent_type": "general-purpose"}))),
+            "G7" => self.pre(
+                "Agent",
+                merge(ok_agent(), json!({"subagent_type": "general-purpose"})),
+            ),
             "G8" => {
                 let t = now_secs();
-                let slots: Vec<Value> = (0..3).map(|i| json!({"id": format!("a{i}"), "t": t - 5.0})).collect();
-                Self::write(&self.state_dir().join("s8.json").to_string_lossy(), &json!({"spawns": slots}).to_string());
+                let slots: Vec<Value> = (0..3)
+                    .map(|i| json!({"id": format!("a{i}"), "t": t - 5.0}))
+                    .collect();
+                Self::write(
+                    &self.state_dir().join("s8.json").to_string_lossy(),
+                    &json!({"spawns": slots}).to_string(),
+                );
                 self.agent("s8")
             }
             "G9" => self.skill("superlite:writing-plans", S::new()),
             "G10" => {
                 let repo = self.make_repo(true);
                 let p = write_file(&repo, "new.txt", "x");
-                let recs = [human("build"), tu("Write", json!({"file_path": p}), "u1"), say("done")];
+                let recs = [
+                    human("build"),
+                    tu("Write", json!({"file_path": p}), "u1"),
+                    say("done"),
+                ];
                 self.g10(&recs, &repo, json!({}))
             }
             "G11" => self.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({})),
             "G12" => {
-                let recs = [human("go"), plan(json!({"items": items(&[("A", "pending")])})), say("x")];
+                let recs = [
+                    human("go"),
+                    plan(json!({"items": items(&[("A", "pending")])})),
+                    say("x"),
+                ];
                 self.stop_run(&recs, json!({}))
             }
             "G13" => self.post(&cat(&[&[human("hi")], &calls(1, 8)]), Some(8)),
             "H1" => self.pre_bash("cat src/a.ts", &[]),
+            "H2" => self.run(
+                "prompt",
+                &json!({"session_id": "h2t", "prompt": "please archive this session"}),
+            ),
             "W5" => {
                 let repo = self.make_repo(false);
                 let data = json!({"session_id": "w5", "tool_name": "Bash", "tool_input": {"command": "pnpm check"},
@@ -3337,7 +5456,11 @@ impl G {
             }
             "G19" => {
                 let repo = self.make_repo(false);
-                write_file(&repo, "package.json", r#"{"scripts": {"check:fast": "true"}}"#);
+                write_file(
+                    &repo,
+                    "package.json",
+                    r#"{"scripts": {"check:fast": "true"}}"#,
+                );
                 let file = write_file(&repo, "a.txt", "x");
                 let edit = json!({"session_id": "g19", "agent_id": "h1", "tool_name": "Edit", "cwd": repo,
                     "tool_input": {"file_path": file, "old_string": "a", "new_string": "b"}});
@@ -3354,7 +5477,10 @@ impl G {
             }
             "ROUTER" => self.pre("Agent", json!({"prompt": BRIEF})),
             // core: a secret shape needs no setting, so the trigger works in any world
-            "G16" => self.pre_bash(&format!("gh pr create --title t --body \"{}\"", gh_token()), &[]),
+            "G16" => self.pre_bash(
+                &format!("gh pr create --title t --body \"{}\"", gh_token()),
+                &[],
+            ),
             "G17" => self.pre_bash(&format!("git commit -m \"x\" -m \"{}\"", attr_line()), &[]),
             other => panic!("no trigger for {other}"),
         }
@@ -3371,32 +5497,50 @@ fn each_check_off_with_its_preset() {
     for (preset, ids) in preset_guards() {
         for id in &ids {
             let on = G::new();
-            assert!(fired(&on.trigger(id)), "{id} did not fire with every preset on");
+            assert!(
+                fired(&on.trigger(id)),
+                "{id} did not fire with every preset on"
+            );
             let off = G::new();
             off.presets_except(&preset);
             let res = off.trigger(id);
-            assert!(!fired(&res), "{id} still fires with the {preset} preset off: {res:?}");
+            assert!(
+                !fired(&res),
+                "{id} still fires with the {preset} preset off: {res:?}"
+            );
             covered += 1;
         }
     }
     // every check that has a preset was tested
-    assert_eq!(covered, gc::REGISTRY.iter().filter(|(_, p)| *p != "core").count());
+    assert_eq!(
+        covered,
+        gc::REGISTRY.iter().filter(|(_, p)| *p != "core").count()
+    );
 }
 
 #[test]
 fn core_checks_ignore_presets() {
     let g = G::new();
     g.set("PRESETS=\"none\"\n");
-    assert!(fired(&g.trigger("G16")), "G16 is core: no preset turns it off");
-    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
-    assert_deny(&g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]), "G14");
-    assert_deny(&g.pre("Read", json!({"file_path": "~/.config/zsh/local.zsh"})), "G15");
+    assert!(
+        fired(&g.trigger("G16")),
+        "G16 is core: no preset turns it off"
+    );
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": G14_DENIED}});
+    assert_deny(
+        &g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]),
+        "G14",
+    );
+    assert_deny(
+        &g.pre("Read", json!({"file_path": "~/.config/zsh/local.zsh"})),
+        "G15",
+    );
 }
 
 #[test]
 fn guard_off_setting() {
     let g = G::new();
-    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": G14_DENIED}});
     let run = || g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]);
     assert_deny(&run(), "G14");
     g.set("GUARD_OFF=\"G14\"\n");
@@ -3409,10 +5553,18 @@ fn guard_off_setting() {
 fn guard_off_env_wins() {
     let g = G::new();
     g.set("GUARD_OFF=\"G14\"\n");
-    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
-    let res = g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "")]);
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": G14_DENIED}});
+    let res = g.run_with(
+        "pretool",
+        &data,
+        &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "")],
+    );
     assert_deny(&res, "G14");
-    let res = g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "G13")]);
+    let res = g.run_with(
+        "pretool",
+        &data,
+        &[("GUARD_PLATFORM", "darwin"), ("GUARD_OFF", "G13")],
+    );
     assert_deny(&res, "G14");
 }
 
@@ -3420,8 +5572,11 @@ fn guard_off_env_wins() {
 fn a_broken_settings_file_leaves_every_check_on() {
     let g = G::new();
     g.set("PRESETS=\"nonsense\"\nGUARD_OFF=\n\u{0}\u{0}garbage");
-    let data = json!({"tool_name": "Bash", "tool_input": {"command": "sed -i s/a/b/ f"}});
-    assert_deny(&g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]), "G14");
+    let data = json!({"tool_name": "Bash", "tool_input": {"command": G14_DENIED}});
+    assert_deny(
+        &g.run_with("pretool", &data, &[("GUARD_PLATFORM", "darwin")]),
+        "G14",
+    );
 }
 
 #[test]
@@ -3430,15 +5585,44 @@ fn clock_names_timezone() {
     g.set("TIMEZONE=\"Asia/Tokyo\"\n");
     let res = g.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({}));
     assert_deny(&res, "local time (HH:MM) in Asia/Tokyo");
+    assert_clock(&res.2, "Asia/Tokyo");
+    // the setting wins over the system zone
+    let res = g.stop_msg(
+        &[human_at(12 * 60, "go"), say("All done.")],
+        json!({"session_id": "tz-env"}),
+        &[("TZ", "America/New_York")],
+    );
+    assert_clock(&res.2, "Asia/Tokyo");
+}
+
+#[test]
+fn clock_without_a_setting_uses_the_system_zone() {
+    let g = G::new();
+    let res = g.stop_msg(
+        &[human_at(12 * 60, "go"), say("All done.")],
+        json!({}),
+        &[("TZ", "America/New_York")],
+    );
+    assert_clock(&res.2, "America/New_York");
+    assert!(
+        !res.2.contains("local time (HH:MM) in"),
+        "no zone is asked for: {res:?}"
+    );
 }
 
 #[test]
 fn clock_bad_timezone_falls_back_to_the_system_zone() {
     let g = G::new();
-    for (i, bad) in ["Mars/Olympus_Mons", "not a zone", "../../etc/passwd"].into_iter().enumerate() {
+    for (i, bad) in ["Mars/Olympus_Mons", "not a zone", "../../etc/passwd"]
+        .into_iter()
+        .enumerate()
+    {
         g.set(&format!("TIMEZONE=\"{bad}\"\n"));
         // a session of its own per zone: G11 fires once per human turn
-        let res = g.stop_run(&[human_at(12 * 60, "go"), say("All done.")], json!({"session_id": format!("tz{i}")}));
+        let res = g.stop_run(
+            &[human_at(12 * 60, "go"), say("All done.")],
+            json!({"session_id": format!("tz{i}")}),
+        );
         assert_deny(&res, "local time (HH:MM) and one estimate");
         assert!(!res.2.contains(bad), "{res:?}");
     }
@@ -3497,7 +5681,12 @@ fn ask_reason(res: &R) -> Option<String> {
     let out = &v["hookSpecificOutput"];
     assert_eq!(out["hookEventName"], "PreToolUse", "{res:?}");
     assert_eq!(out["permissionDecision"], "ask", "{res:?}");
-    Some(out["permissionDecisionReason"].as_str().unwrap().to_string())
+    Some(
+        out["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .to_string(),
+    )
 }
 
 impl G {
@@ -3559,14 +5748,20 @@ fn g16_repo_and_branch_flag_values_are_not_body_text() {
     }
     let file = dir.path().join("b.md");
     fs::write(&file, format!("about {WORD}")).unwrap();
-    let cmd = format!("gh pr create -R me/x --title t --body-file {}", file.display());
+    let cmd = format!(
+        "gh pr create -R me/x --title t --body-file {}",
+        file.display()
+    );
     assert!(is_ask(&g16_cmd(&cmd, dir.path())), "{cmd}");
 }
 
 #[test]
 fn g16_private_word_asks() {
     let dir = tempfile::tempdir().unwrap();
-    let v = g16_cmd(&format!("gh pr create --title t --body \"fixes the {WORD} bug\""), dir.path());
+    let v = g16_cmd(
+        &format!("gh pr create --title t --body \"fixes the {WORD} bug\""),
+        dir.path(),
+    );
     match v {
         Verdict::Ask(m) => {
             assert!(m.starts_with("G16"), "{m}");
@@ -3584,21 +5779,33 @@ fn g16_secret_shape_asks() {
         (gh_token(), "GitHub token"),
         (anthropic_key(), "Anthropic API key"),
         (format!("xox{}-1234567890-abcdef", "b"), "Slack token"),
-        (format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP"), "AWS access key id"),
+        (
+            format!("{}{}", "AKIA", "ABCDEFGHIJKLMNOP"),
+            "AWS access key id",
+        ),
         (pem_header(), "private key"),
     ] {
-        let v = g16_cmd(&format!("gh issue comment 1 --body \"found {secret} here\""), dir.path());
+        let v = g16_cmd(
+            &format!("gh issue comment 1 --body \"found {secret} here\""),
+            dir.path(),
+        );
         match v {
             Verdict::Ask(m) => {
                 assert!(m.contains(&format!("a secret shape ({kind})")), "{m}");
-                assert!(!m.contains(&secret), "the message must not echo the match ({kind}): {m}");
+                assert!(
+                    !m.contains(&secret),
+                    "the message must not echo the match ({kind}): {m}"
+                );
             }
             other => panic!("{kind}: {other:?}"),
         }
     }
     // an ordinary word that merely contains "sk-" is not a key
     assert_eq!(
-        g16_cmd("gh pr comment 1 --body 'rename task-implementer to risk-assessment'", dir.path()),
+        g16_cmd(
+            "gh pr comment 1 --body 'rename task-implementer to risk-assessment'",
+            dir.path()
+        ),
         Verdict::Allow
     );
 }
@@ -3624,14 +5831,28 @@ fn g16_unreadable_body_file_asks() {
 #[test]
 fn g16_clean_long_body_file_allows() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("body.md"), "a plain sentence about nothing in particular. ".repeat(110)).unwrap();
+    fs::write(
+        dir.path().join("body.md"),
+        "a plain sentence about nothing in particular. ".repeat(110),
+    )
+    .unwrap();
     assert!(fs::metadata(dir.path().join("body.md")).unwrap().len() >= 5000);
-    let words: Vec<String> = ["zebrafish", "quincyzed", "alpha-proj", "beta-proj", "gamma", "quincy@example.test"]
-        .iter()
-        .map(ToString::to_string)
-        .collect();
+    let words: Vec<String> = [
+        "zebrafish",
+        "quincyzed",
+        "alpha-proj",
+        "beta-proj",
+        "gamma",
+        "quincy@example.test",
+    ]
+    .iter()
+    .map(ToString::to_string)
+    .collect();
     let input = bash_in("gh pr create --title t --body-file body.md");
-    assert_eq!(gc::g16_outbound("Bash", &input, dir.path(), &words), Verdict::Allow);
+    assert_eq!(
+        gc::g16_outbound("Bash", &input, dir.path(), &words),
+        Verdict::Allow
+    );
 }
 
 #[test]
@@ -3639,22 +5860,43 @@ fn g16_body_file_with_a_word_asks_relative_to_cwd() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("sub")).unwrap();
     fs::write(dir.path().join("sub/b.md"), format!("hello {WORD}")).unwrap();
-    assert!(is_ask(&g16_cmd("gh pr create --body-file sub/b.md", dir.path())));
-    assert!(is_ask(&g16_cmd("cd sub && gh pr create -F b.md", dir.path())));
+    assert!(is_ask(&g16_cmd(
+        "gh pr create --body-file sub/b.md",
+        dir.path()
+    )));
+    assert!(is_ask(&g16_cmd(
+        "cd sub && gh pr create -F b.md",
+        dir.path()
+    )));
     fs::write(dir.path().join("sub/b.md"), "hello").unwrap();
-    assert_eq!(g16_cmd("gh pr create --body-file sub/b.md", dir.path()), Verdict::Allow);
+    assert_eq!(
+        g16_cmd("gh pr create --body-file sub/b.md", dir.path()),
+        Verdict::Allow
+    );
 }
 
 #[test]
 fn g16_mcp_send_private_word_asks() {
     let g = G::new();
     g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
-    let res = g.pre_mcp("mcp__slack__send_message", json!({"channel": "c", "text": format!("about {WORD}")}));
+    let res = g.pre_mcp(
+        "mcp__slack__send_message",
+        json!({"channel": "c", "text": format!("about {WORD}")}),
+    );
     let why = ask_reason(&res).expect("an ask");
-    assert!(why.starts_with("G16") && why.contains("a private word") && !why.contains(WORD), "{why}");
-    assert_eq!(ask_reason(&g.pre_mcp("mcp__slack__send_message", json!({"text": "all clear"}))), None);
+    assert!(
+        why.starts_with("G16") && why.contains("a private word") && !why.contains(WORD),
+        "{why}"
+    );
+    assert_eq!(
+        ask_reason(&g.pre_mcp("mcp__slack__send_message", json!({"text": "all clear"}))),
+        None
+    );
     // a tool that is not a send tool never asks
-    assert_eq!(ask_reason(&g.pre_mcp("mcp__slack__list_channels", json!({"q": WORD}))), None);
+    assert_eq!(
+        ask_reason(&g.pre_mcp("mcp__slack__list_channels", json!({"q": WORD}))),
+        None
+    );
     let v = gc::g16_outbound(
         "mcp__mail__create_draft",
         &json!({"body": {"parts": [format!("x {WORD}")]}}),
@@ -3670,8 +5912,17 @@ fn g16_public_host_is_skipped() {
     let words = ["zebrafish".to_string()];
     let hosts = ["zebrafish.example".to_string()];
     let tool = "mcp__slack__send_message";
-    assert!(is_ask(&gc::g16_outbound_with(tool, &input, Path::new("."), &words, &[])));
-    assert_eq!(gc::g16_outbound_with(tool, &input, Path::new("."), &words, &hosts), Verdict::Allow);
+    assert!(is_ask(&gc::g16_outbound_with(
+        tool,
+        &input,
+        Path::new("."),
+        &words,
+        &[]
+    )));
+    assert_eq!(
+        gc::g16_outbound_with(tool, &input, Path::new("."), &words, &hosts),
+        Verdict::Allow
+    );
     // the bare word and a word in a path still ask
     for body in ["I like zebrafish", "https://zebrafish.example/zebrafish"] {
         let v = gc::g16_outbound_with(tool, &json!({"body": body}), Path::new("."), &words, &hosts);
@@ -3738,8 +5989,12 @@ fn g16_short_word_boundary() {
     assert_eq!(run("xabc"), Verdict::Allow);
     assert_eq!(run("abc_def"), Verdict::Allow);
     // five letters or more match anywhere
-    let long =
-        gc::g16_outbound("Bash", &bash_in("gh pr comment 1 --body \"abcdefg\""), dir.path(), &["abcde".to_string()]);
+    let long = gc::g16_outbound(
+        "Bash",
+        &bash_in("gh pr comment 1 --body \"abcdefg\""),
+        dir.path(),
+        &["abcde".to_string()],
+    );
     assert!(is_ask(&long));
 }
 
@@ -3748,15 +6003,23 @@ fn g16_shadow_allows_and_logs() {
     let g = G::new();
     g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
     let cmd = format!("gh pr create --title t --body \"{WORD} {}\"", gh_token());
-    assert!(ask_reason(&g.pre_bash(&cmd, &[])).is_some(), "control: it asks without shadow");
+    assert!(
+        ask_reason(&g.pre_bash(&cmd, &[])).is_some(),
+        "control: it asks without shadow"
+    );
     let res = g.pre_bash(&cmd, &[("GUARD_SHADOW", "G16")]);
     assert_allow(&res);
     let log = g.shadow_log();
     assert_eq!(log.lines().count(), 1, "{log:?}");
     assert!(log.contains(" G16 ask "), "{log:?}");
-    assert!(!log.contains(WORD) && !log.contains(&gh_token()), "the log must not hold the match: {log:?}");
+    assert!(
+        !log.contains(WORD) && !log.contains(&gh_token()),
+        "the log must not hold the match: {log:?}"
+    );
     // the setting works too, and the env var (even empty) wins over it
-    g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\nGUARD_SHADOW=\"g13, G16\"\n"));
+    g.set(&format!(
+        "PRIVATE_WORDS=\"{WORD}\"\nGUARD_SHADOW=\"g13, G16\"\n"
+    ));
     assert_allow(&g.pre_bash(&cmd, &[]));
     assert!(ask_reason(&g.pre_bash(&cmd, &[("GUARD_SHADOW", "")])).is_some());
     assert_eq!(g.shadow_log().lines().count(), 2);
@@ -3767,7 +6030,10 @@ fn g16_is_core_and_has_an_off_switch() {
     let g = G::new();
     g.set(&format!("PRESETS=\"none\"\nPRIVATE_WORDS=\"{WORD}\"\n"));
     let cmd = format!("gh issue create --title t --body 'about {WORD}'");
-    assert!(ask_reason(&g.pre_bash(&cmd, &[])).is_some(), "core: presets do not switch it off");
+    assert!(
+        ask_reason(&g.pre_bash(&cmd, &[])).is_some(),
+        "core: presets do not switch it off"
+    );
     assert_allow(&g.pre_bash(&cmd, &[("GUARD_OFF", "G16")]));
     g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\nGUARD_OFF=\"G16\"\n"));
     assert_allow(&g.pre_bash(&cmd, &[]));
@@ -3866,9 +6132,21 @@ fn g16_cannot_read_the_body_asks() {
         assert!(is_ask(&v), "{cmd:?} -> {v:?}");
     }
     // the heredoc-substitution idiom with a clean body is fine: the heredoc is scanned
-    assert_eq!(g16_cmd("gh pr create --title t --body \"$(cat <<'EOF'\nclean text\nEOF\n)\"", d), Verdict::Allow);
+    assert_eq!(
+        g16_cmd(
+            "gh pr create --title t --body \"$(cat <<'EOF'\nclean text\nEOF\n)\"",
+            d
+        ),
+        Verdict::Allow
+    );
     // a variable in a header is not a body
-    assert_eq!(g16_cmd("curl -H \"Authorization: Bearer $TOK\" https://example.test/x", d), Verdict::Allow);
+    assert_eq!(
+        g16_cmd(
+            "curl -H \"Authorization: Bearer $TOK\" https://example.test/x",
+            d
+        ),
+        Verdict::Allow
+    );
 }
 
 #[test]
@@ -3876,9 +6154,15 @@ fn g16_a_heredoc_elsewhere_in_the_command_is_scanned_when_it_sends() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let w = WORD;
-    assert!(is_ask(&g16_cmd(&format!("cat > n.md <<EOF\n{w}\nEOF\ngh pr create --body-file n.md"), d)));
+    assert!(is_ask(&g16_cmd(
+        &format!("cat > n.md <<EOF\n{w}\nEOF\ngh pr create --body-file n.md"),
+        d
+    )));
     // no outbound call: a heredoc with the word is just a local file
-    assert_eq!(g16_cmd(&format!("cat > n.md <<EOF\n{w}\nEOF\ngh pr view 1"), d), Verdict::Allow);
+    assert_eq!(
+        g16_cmd(&format!("cat > n.md <<EOF\n{w}\nEOF\ngh pr view 1"), d),
+        Verdict::Allow
+    );
 }
 
 #[test]
@@ -3890,7 +6174,11 @@ fn private_words_sources() {
         home.path().join(".config/dotfiles/settings"),
         "PRIVATE_PROJECTS=\"alpha-proj, Beta-Proj\"\nPRIVATE_WORDS=\"gamma delta\"\nGIT_NAME=\"Quincy Zed\"\nGIT_EMAIL=\"quincy@example.test\"\n",
     ).unwrap();
-    fs::write(home.path().join(".gitconfig"), "[user]\n\tname = Dana Quill\n\temail = dana@example.test\n").unwrap();
+    fs::write(
+        home.path().join(".gitconfig"),
+        "[user]\n\tname = Dana Quill\n\temail = dana@example.test\n",
+    )
+    .unwrap();
     let words = gc::private_words_at(home.path(), Some(work.path()));
     for want in [
         "alpha-proj",
@@ -3904,7 +6192,10 @@ fn private_words_sources() {
         "danaquill",
         "dana@example.test",
     ] {
-        assert!(words.iter().any(|w| w == want), "{want} missing from {words:?}");
+        assert!(
+            words.iter().any(|w| w == want),
+            "{want} missing from {words:?}"
+        );
     }
     let mut dedup = words.clone();
     dedup.sort();
@@ -3912,33 +6203,45 @@ fn private_words_sources() {
     assert_eq!(dedup.len(), words.len(), "{words:?}");
     // a handle that is part of the origin URL is left out, as the bash hook does
     let run_git = |args: &[&str]| {
-        let st = std::process::Command::new("git")
-            .args(args)
-            .current_dir(work.path())
-            .env("HOME", home.path())
-            .output()
-            .unwrap();
-        assert!(st.status.success(), "{args:?}");
+        common::git_env(
+            work.path(),
+            &[("HOME", home.path().to_str().unwrap())],
+            args,
+        );
     };
     run_git(&["init", "-q"]);
-    run_git(&["remote", "add", "origin", "https://github.com/quincyzed/x.git"]);
+    run_git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/quincyzed/x.git",
+    ]);
     let words = gc::private_words_at(home.path(), Some(work.path()));
     assert!(!words.iter().any(|w| w == "quincyzed"), "{words:?}");
     assert!(words.iter().any(|w| w == "dana quill"), "{words:?}");
     // an empty world has no words
     let empty = tempfile::tempdir().unwrap();
-    assert_eq!(gc::private_words_at(empty.path(), Some(empty.path())), [] as [String; 0]);
+    assert_eq!(
+        gc::private_words_at(empty.path(), Some(empty.path())),
+        [] as [String; 0]
+    );
 }
 
 // --- Task 11: G17 attribution check ---
 
 /// The lines G17 refuses, built at run time so this file holds none of them whole.
 fn attr_line() -> String {
-    format!("Co-authored-{}: Claude Opus <noreply@{}>", "by", "anthropic.com")
+    format!(
+        "Co-authored-{}: Claude Opus <noreply@{}>",
+        "by", "anthropic.com"
+    )
 }
 
 fn attr_generated() -> String {
-    format!("Generated {} [Claude Code](https://claude.com/claude-code)", "with")
+    format!(
+        "Generated {} [Claude Code](https://claude.com/claude-code)",
+        "with"
+    )
 }
 
 fn g17_cmd(cmd: &str, dir: &Path) -> Verdict {
@@ -3966,8 +6269,17 @@ fn g17_inline_trailer_denied() {
         !res.2.contains(&a) && !res.2.to_lowercase().contains("noreply"),
         "the message must not echo the line: {res:?}"
     );
-    assert_deny(&g.g17(&format!("git commit -m \"fix\n\n{}\"", attr_generated()), &[]), "G17");
-    assert_deny(&g.g17("git commit -m \"fix noreply@anthropic.com\"", &[]), "G17");
+    assert_deny(
+        &g.g17(
+            &format!("git commit -m \"fix\n\n{}\"", attr_generated()),
+            &[],
+        ),
+        "G17",
+    );
+    assert_deny(
+        &g.g17("git commit -m \"fix noreply@anthropic.com\"", &[]),
+        "G17",
+    );
 }
 
 #[test]
@@ -3985,10 +6297,31 @@ fn g17_message_file_denied() {
     assert_deny(&g.g17("git notes add -F msg.txt", &[]), "G17");
     assert_allow(&g.g17("git commit -F clean.txt", &[]));
     // the file is made in the same command, or comes in on stdin: the command text is what counts
-    assert_deny(&g.g17(&format!("printf '%s' \"{a}\" > m2.txt && git commit -F m2.txt"), &[]), "G17");
-    assert_deny(&g.g17(&format!("echo \"{a}\" | git commit -F -"), &[]), "G17");
-    assert_deny(&g.g17(&format!("git commit -F - <<'EOF'\nsubject\n\n{a}\nEOF"), &[]), "G17");
-    assert_deny(&g.g17(&format!("git commit -m \"$(cat <<'EOF'\nsubject\n\n{a}\nEOF\n)\""), &[]), "G17");
+    assert_deny(
+        &g.g17(
+            &format!("printf '%s' \"{a}\" > m2.txt && git commit -F m2.txt"),
+            &[],
+        ),
+        "G17",
+    );
+    assert_deny(
+        &g.g17(&format!("echo \"{a}\" | git commit -F -"), &[]),
+        "G17",
+    );
+    assert_deny(
+        &g.g17(
+            &format!("git commit -F - <<'EOF'\nsubject\n\n{a}\nEOF"),
+            &[],
+        ),
+        "G17",
+    );
+    assert_deny(
+        &g.g17(
+            &format!("git commit -m \"$(cat <<'EOF'\nsubject\n\n{a}\nEOF\n)\""),
+            &[],
+        ),
+        "G17",
+    );
     assert_allow(&g.g17("git commit -F - <<'EOF'\nsubject\nEOF", &[]));
 }
 
@@ -4084,22 +6417,40 @@ fn g17_shadow_allows_and_logs() {
     assert_allow(&g.g17(&cmd, &[("GUARD_SHADOW", "G17")]));
     let log = g.shadow_log();
     assert!(log.contains(" G17 deny "), "{log:?}");
-    assert!(!log.to_lowercase().contains("noreply") && !log.to_lowercase().contains("claude"), "{log:?}");
+    assert!(
+        !log.to_lowercase().contains("noreply") && !log.to_lowercase().contains("claude"),
+        "{log:?}"
+    );
 }
 
 #[test]
 fn g17_library_verdicts() {
     let dir = tempfile::tempdir().unwrap();
     let a = attr_line();
-    assert!(is_deny(&g17_cmd(&format!("git commit -m \"{a}\""), dir.path())));
-    assert_eq!(g17_cmd(&format!("echo \"{a}\""), dir.path()), Verdict::Allow);
+    assert!(is_deny(&g17_cmd(
+        &format!("git commit -m \"{a}\""),
+        dir.path()
+    )));
+    assert_eq!(
+        g17_cmd(&format!("echo \"{a}\""), dir.path()),
+        Verdict::Allow
+    );
     assert_eq!(g17_cmd("", dir.path()), Verdict::Allow);
     // a message file read relative to the cwd, and relative to `-C`
     fs::create_dir(dir.path().join("sub")).unwrap();
     fs::write(dir.path().join("sub/m.txt"), &a).unwrap();
     assert!(is_deny(&g17_cmd("git -C sub commit -F m.txt", dir.path())));
-    assert!(is_deny(&g17_cmd("cd sub && git commit -F m.txt", dir.path())));
-    assert_eq!(g17_cmd("git commit -F m.txt && true", &dir.path().join("sub").join("x")), Verdict::Allow);
+    assert!(is_deny(&g17_cmd(
+        "cd sub && git commit -F m.txt",
+        dir.path()
+    )));
+    assert_eq!(
+        g17_cmd(
+            "git commit -F m.txt && true",
+            &dir.path().join("sub").join("x")
+        ),
+        Verdict::Allow
+    );
 }
 
 // --- Fix round 1: quote, parse and MCP name bypasses ---
@@ -4169,11 +6520,25 @@ fn g16_mcp_send_names_ask() {
     for name in SEND_NAMES {
         let tool = format!("mcp__srv__{name}");
         assert!(gc::g16_applies(&tool, &json!({})), "{tool}");
-        let v = gc::g16_outbound(&tool, &json!({"body": format!("about {WORD}")}), Path::new("."), &[WORD.into()]);
+        let v = gc::g16_outbound(
+            &tool,
+            &json!({"body": format!("about {WORD}")}),
+            Path::new("."),
+            &[WORD.into()],
+        );
         assert!(is_ask(&v), "{tool} -> {v:?}");
     }
-    for name in ["list_channels", "get_issue", "search_files", "read_file", "list_pull_requests"] {
-        assert!(!gc::g16_applies(&format!("mcp__srv__{name}"), &json!({})), "{name}");
+    for name in [
+        "list_channels",
+        "get_issue",
+        "search_files",
+        "read_file",
+        "list_pull_requests",
+    ] {
+        assert!(
+            !gc::g16_applies(&format!("mcp__srv__{name}"), &json!({})),
+            "{name}"
+        );
     }
 }
 
@@ -4195,7 +6560,10 @@ fn the_hook_matcher_covers_every_send_name() {
         assert!(re.is_match(name), "the matcher misses {name}");
     }
     for name in SEND_NAMES {
-        assert!(re.is_match(&format!("mcp__srv__{name}")), "the matcher misses {name}");
+        assert!(
+            re.is_match(&format!("mcp__srv__{name}")),
+            "the matcher misses {name}"
+        );
     }
     for name in ["list_channels", "get_issue", "read_file"] {
         assert!(!re.is_match(&format!("mcp__srv__{name}")), "{name}");
@@ -4207,13 +6575,31 @@ fn g16_heredoc_must_belong_to_the_sending_command() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     // a heredoc for another command does not make `-F -` readable
-    assert!(is_ask(&g16_cmd("cat <<EOF >/dev/null\nhello\nEOF\necho x | gh pr create --body-file -", d)));
-    assert!(is_ask(&g16_cmd("cat > n.md <<EOF\nhello\nEOF\ngh issue create --body-file -", d)));
-    assert!(is_ask(&g16_cmd("cat <<EOF >/dev/null\nhello\nEOF\ncurl -d @- https://x.y", d)));
+    assert!(is_ask(&g16_cmd(
+        "cat <<EOF >/dev/null\nhello\nEOF\necho x | gh pr create --body-file -",
+        d
+    )));
+    assert!(is_ask(&g16_cmd(
+        "cat > n.md <<EOF\nhello\nEOF\ngh issue create --body-file -",
+        d
+    )));
+    assert!(is_ask(&g16_cmd(
+        "cat <<EOF >/dev/null\nhello\nEOF\ncurl -d @- https://x.y",
+        d
+    )));
     // its own heredoc, on its own line, is scanned
-    assert_eq!(g16_cmd("gh pr create --body-file - <<EOF\nclean\nEOF", d), Verdict::Allow);
-    assert_eq!(g16_cmd("cat <<EOF | gh pr create --body-file -\nclean\nEOF", d), Verdict::Allow);
-    assert!(is_ask(&g16_cmd(&format!("gh pr create --body-file - <<EOF\n{WORD}\nEOF"), d)));
+    assert_eq!(
+        g16_cmd("gh pr create --body-file - <<EOF\nclean\nEOF", d),
+        Verdict::Allow
+    );
+    assert_eq!(
+        g16_cmd("cat <<EOF | gh pr create --body-file -\nclean\nEOF", d),
+        Verdict::Allow
+    );
+    assert!(is_ask(&g16_cmd(
+        &format!("gh pr create --body-file - <<EOF\n{WORD}\nEOF"),
+        d
+    )));
 }
 
 #[test]
@@ -4317,7 +6703,12 @@ fn g17_odd_quoting_and_unparsable_pieces_deny() {
         let v = g17_cmd(&cmd, d);
         assert!(is_deny(&v), "{cmd:?} -> {v:?}");
     }
-    for cmd in ["echo it's fine", "ls", "git commit -m 'clean' # it's", "git status # it's"] {
+    for cmd in [
+        "echo it's fine",
+        "ls",
+        "git commit -m 'clean' # it's",
+        "git status # it's",
+    ] {
         assert_eq!(g17_cmd(cmd, d), Verdict::Allow, "{cmd}");
     }
 }
@@ -4374,7 +6765,10 @@ fn h1_hints_ctx_for_sed_n_and_cat_of_code() {
     for (i, (cmd, file)) in cases.iter().enumerate() {
         let res = g.bash_sid(&format!("h1a{i}"), cmd, &[]);
         let ctx = assert_warn(&res, &hint(file));
-        assert!(!res.1.contains("permissionDecision"), "a hint is not a decision: {res:?}");
+        assert!(
+            !res.1.contains("permissionDecision"),
+            "a hint is not a decision: {res:?}"
+        );
         assert_eq!(ctx.lines().count(), 1, "{ctx:?}");
     }
 }
@@ -4406,14 +6800,23 @@ fn h1_is_silent_for_other_files_and_commands() {
 fn h1_gives_at_most_three_hints_per_session() {
     let g = G::new();
     for n in 1..=3 {
-        assert_warn(&g.bash_sid("h1c", &format!("cat src/f{n}.ts"), &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+        assert_warn(
+            &g.bash_sid("h1c", &format!("cat src/f{n}.ts"), &[]),
+            "Tip: ~/.claude/hooks/rust-bin ctx outline",
+        );
     }
     assert_allow(&g.bash_sid("h1c", "cat src/f4.ts", &[]));
     assert_allow(&g.bash_sid("h1c", "sed -n '1,9p' src/f5.ts", &[]));
     // a call that gets no hint does not use one up, and another session has its own count
-    assert_warn(&g.bash_sid("h1d", "cat src/f1.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+    assert_warn(
+        &g.bash_sid("h1d", "cat src/f1.ts", &[]),
+        "Tip: ~/.claude/hooks/rust-bin ctx outline",
+    );
     assert_allow(&g.bash_sid("h1d", "cat notes.xyz", &[]));
-    assert_warn(&g.bash_sid("h1d", "cat src/f2.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+    assert_warn(
+        &g.bash_sid("h1d", "cat src/f2.ts", &[]),
+        "Tip: ~/.claude/hooks/rust-bin ctx outline",
+    );
 }
 
 #[test]
@@ -4438,7 +6841,10 @@ fn h1_is_silent_for_text_files_and_hints_for_code() {
     {
         assert_allow(&g.bash_sid(&format!("h1t{i}"), cmd, &[]));
     }
-    assert_warn(&g.bash_sid("h1u", "sed -n 1,80p src/a.rs", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline src/a.rs");
+    assert_warn(
+        &g.bash_sid("h1u", "sed -n 1,80p src/a.rs", &[]),
+        "Tip: ~/.claude/hooks/rust-bin ctx outline src/a.rs",
+    );
 }
 
 #[test]
@@ -4449,7 +6855,10 @@ fn h1_guard_off_turns_it_off() {
     g.set("GUARD_OFF=\"H1\"\n");
     assert_allow(&g.bash_sid("h1f", "cat src/a.ts", &[]));
     g.set("");
-    assert_warn(&g.bash_sid("h1g", "cat src/a.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+    assert_warn(
+        &g.bash_sid("h1g", "cat src/a.ts", &[]),
+        "Tip: ~/.claude/hooks/rust-bin ctx outline",
+    );
 }
 
 // --- fire log: each check that fires leaves one line for `harness_stats guard` ---
@@ -4460,13 +6869,164 @@ fn fire_log_records_each_check_that_fires() {
     let fires = || fs::read_to_string(g.join("cache/dots-guard-fires.log")).unwrap_or_default();
     assert_allow(&g.bash_sid("fl1", "ls src", &[]));
     assert_eq!(fires(), "", "a quiet call logs nothing");
-    assert_warn(&g.bash_sid("fl1", "cat src/a.ts", &[]), "Tip: ~/.claude/hooks/rust-bin ctx outline");
+    assert_warn(
+        &g.bash_sid("fl1", "cat src/a.ts", &[]),
+        "Tip: ~/.claude/hooks/rust-bin ctx outline",
+    );
     g.set(&format!("PRIVATE_WORDS=\"{WORD}\"\n"));
     let cmd = format!("gh pr create --title t --body \"{WORD}\"");
     assert!(ask_reason(&g.pre_bash(&cmd, &[])).is_some());
     assert_allow(&g.pre_bash(&cmd, &[("GUARD_SHADOW", "G16")]));
-    let kinds: Vec<String> =
-        fires().lines().map(|l| l.split_whitespace().skip(1).collect::<Vec<_>>().join(" ")).collect();
+    let kinds: Vec<String> = fires()
+        .lines()
+        .map(|l| l.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))
+        .collect();
     assert_eq!(kinds, ["H1 hint", "G16 ask", "G16 shadow"]);
     assert!(!fires().contains(WORD), "the log holds no message text");
+}
+
+// --- fix round 1 ---
+
+#[test]
+fn g16_ask_never_lets_a_fixable_command_through_unfixed() {
+    let g = G::new();
+    let send = format!("gh pr create --title t --body \"{}\"", gh_token());
+    // sed -i beside an outbound send: the deny names the rewritten command, not an ask
+    let res = g.pre_bash(
+        &format!("{send} && sed -i 's/a/b/' f"),
+        &[("GUARD_PLATFORM", "darwin")],
+    );
+    assert_deny(&res, "sed -i '' 's/a/b/' f");
+    // ps aux beside an outbound send: same
+    let res = g.pre_bash(&format!("ps aux && {send}"), &[]);
+    assert_deny(&res, "pid=,etime=,ucomm=");
+    // nothing to fix: G16 still asks
+    assert!(ask_reason(&g.pre_bash(&send, &[])).is_some());
+}
+
+// --- H2: a phrase of the user names a skill ---
+
+impl G {
+    /// A `UserPromptSubmit` with `text`, the transcript `recs`, and the context lines it adds.
+    fn h2(&self, text: &str, recs: &[Value], env: &[(&str, &str)]) -> Vec<String> {
+        let path = self.transcript_named(recs, "h2.jsonl");
+        let data = json!({"hook_event_name": "UserPromptSubmit", "session_id": "h2", "transcript_path": path,
+            "prompt": text});
+        let res = self.run_with("prompt", &data, env);
+        assert_eq!(res.0, 0, "{res:?}");
+        if res.1.is_empty() {
+            return vec![];
+        }
+        let v: Value = serde_json::from_str(&res.1).unwrap_or_else(|e| panic!("{e}: {res:?}"));
+        let ctx = v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_default();
+        ctx.lines()
+            .filter(|l| l.starts_with("The user said"))
+            .map(String::from)
+            .collect()
+    }
+}
+
+#[test]
+fn h2_names_the_skill_for_a_phrase() {
+    let g = G::new();
+    let hint = |text: &str| g.h2(text, &[human("hi"), say("ok")], &[]);
+    assert_eq!(
+        hint("ok, archive this session please"),
+        ["The user said 'archive this session': run /ps:mic-drop first."]
+    );
+    assert_eq!(
+        hint("Where are we?"),
+        ["The user said 'Where are we': run /ps:whatsleft first."]
+    );
+    assert_eq!(
+        hint("find 3 options"),
+        ["The user said 'find 3 options': run /ps:captain-research first."]
+    );
+    // one hint per prompt, first set wins
+    assert_eq!(
+        hint("wrap up, overnight, autopilot"),
+        ["The user said 'wrap up': run /ps:mic-drop first."]
+    );
+    // whole words only, and no phrase, no hint
+    assert_eq!(hint("it runs slowly"), Vec::<String>::new());
+    assert_eq!(hint("fix the bug"), Vec::<String>::new());
+    // a slash command or a command message gets none
+    assert_eq!(hint("/ps:autopilot overnight"), Vec::<String>::new());
+    assert_eq!(
+        hint("<command-message>ps:autopilot</command-message> overnight"),
+        Vec::<String>::new()
+    );
+    // the check is off with GUARD_OFF
+    assert_eq!(
+        g.h2("wrap up", &[human("hi")], &[("GUARD_OFF", "H2")]),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn h2_hints_only_on_a_human_prompt() {
+    let g = G::new();
+    let hint = |text: &str| g.h2(text, &[human("hi"), say("ok")], &[]);
+    assert_eq!(
+        hint("archive this"),
+        ["The user said 'archive this': run /ps:mic-drop first."]
+    );
+    // each marker of a prompt the harness wrote silences the hint, even with a phrase inside
+    for text in [
+        "[SYSTEM NOTIFICATION] the task said: archive this",
+        "<task-notification>done: archive this</task-notification>",
+        "<task-notification id=\"7\">done: archive this</task-notification>",
+        "<side-sessions-event>archive this</side-sessions-event>",
+        "<ci-monitor-event pr=\"12\">archive this</ci-monitor-event>",
+        "<ci-monitor-event>archive this</ci-monitor-event>",
+        "<cross-session-message from=\"x\">archive this</cross-session-message>",
+        "<system-reminder>archive this</system-reminder>",
+        "ok, archive this <system-reminder>x</system-reminder>",
+    ] {
+        assert!(hint(text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn h2_stays_quiet_when_the_skill_ran_in_the_last_three_turns() {
+    let g = G::new();
+    let called = tu("Skill", json!({"skill": "ps:mic-drop"}), "k1");
+    let turn = |n: usize| [human(&format!("turn {n}")), say("ok")];
+    // called in the previous turn, two turns back and three turns back: quiet
+    for later in 1..=3 {
+        let mut recs = vec![human("go"), called.clone(), say("done")];
+        for n in 1..later {
+            recs.extend(turn(n));
+        }
+        assert!(g.h2("wrap up", &recs, &[]).is_empty(), "{later} turns back");
+    }
+    // four turns back: the hint comes again
+    let mut recs = vec![human("go"), called, say("done")];
+    for n in 1..4 {
+        recs.extend(turn(n));
+    }
+    assert_eq!(g.h2("wrap up", &recs, &[]).len(), 1);
+    // another skill called recently does not silence it
+    let other = [
+        human("go"),
+        tu("Skill", json!({"skill": "ps:whatsleft"}), "k2"),
+        say("ok"),
+    ];
+    assert_eq!(g.h2("wrap up", &other, &[]).len(), 1);
+    // a typed command counts as a call
+    let typed = [
+        human("<command-name>/ps:mic-drop</command-name>"),
+        say("ok"),
+    ];
+    assert_eq!(g.h2("wrap up", &typed, &[]), Vec::<String>::new());
+    // the hint is logged with kind hint
+    let log = fs::read_to_string(g.join("cache/dots-guard-fires.log")).unwrap_or_default();
+    assert!(log.lines().any(|l| l.ends_with("H2 hint")), "{log}");
+    assert!(
+        log.lines()
+            .all(|l| !l.contains("H2") || l.ends_with("H2 hint")),
+        "{log}"
+    );
 }

@@ -73,10 +73,13 @@ const LOGINS: [Login; 4] = [
 
 /// The logins still to do: (menu label, command), for the tools that exist and are not signed in.
 /// The probes of the tools that exist run at the same time.
-fn pending(have: &dyn Fn(&str) -> bool, probe: Probe) -> Vec<(&'static str, &'static str)> {
+fn pending(have: &dyn Fn(&str) -> bool, probe: Probe<'_>) -> Vec<(&'static str, &'static str)> {
     std::thread::scope(|s| {
-        let probes: Vec<_> =
-            LOGINS.iter().filter(|l| have(l.prog)).map(|l| (l, s.spawn(|| probe(l.prog, l.args)))).collect();
+        let probes: Vec<_> = LOGINS
+            .iter()
+            .filter(|l| have(l.prog))
+            .map(|l| (l, s.spawn(|| probe(l.prog, l.args))))
+            .collect();
         probes
             .into_iter()
             .filter_map(|(l, h)| {
@@ -89,20 +92,30 @@ fn pending(have: &dyn Fn(&str) -> bool, probe: Probe) -> Vec<(&'static str, &'st
 
 /// Run a probe for real: stderr dropped, stdin closed.
 fn probe_real(prog: &str, args: &[&str]) -> (bool, String) {
-    match Command::new(prog).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output() {
-        Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stdout).into_owned()),
+    match Command::new(prog)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) => (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+        ),
         Err(_) => (false, String::new()),
     }
 }
 
-pub fn step(_repo: &Path) {
+pub(super) fn step(_repo: &Path) {
     os::brew_env();
     let _restore = PathGuard(std::env::var_os("PATH"));
     let local_bin = os::home().join(".local").join("bin");
     if local_bin.is_dir() {
         // claude, agent
         let mut parts = vec![local_bin];
-        parts.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        parts.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
         if let Ok(joined) = std::env::join_paths(parts) {
             os::set_env("PATH", joined);
         }
@@ -127,8 +140,11 @@ pub fn step(_repo: &Path) {
     let labels: Vec<&str> = list.iter().map(|(l, _)| *l).collect();
     let yes = format!("\u{2705} Yes, sign in to: {}", labels.join(", "));
     let later = "\u{23ED}\u{FE0F}  Later (dots shows the commands)".to_string();
-    let answer =
-        ask::one("\u{1F511} Sign in now? A browser opens for each one.", &[yes.clone(), later]).unwrap_or_default();
+    let answer = ask::one(
+        "\u{1F511} Sign in now? A browser opens for each one.",
+        &[yes.clone(), later],
+    )
+    .unwrap_or_default();
     if answer != yes {
         for (_, c) in &list {
             info(&format!("later, run: {c}"));
@@ -155,12 +171,16 @@ pub fn step(_repo: &Path) {
 mod tests {
     use super::*;
 
-    fn fake(logged: &'static [(&'static str, bool, &'static str)]) -> impl Fn(&str, &[&str]) -> (bool, String) {
+    fn fake(
+        logged: &'static [(&'static str, bool, &'static str)],
+    ) -> impl Fn(&str, &[&str]) -> (bool, String) {
         move |p, _| {
             logged
                 .iter()
                 .find(|(n, _, _)| *n == p)
-                .map_or((false, String::new()), |(_, ok, out)| (*ok, out.to_string()))
+                .map_or((false, String::new()), |(_, ok, out)| {
+                    (*ok, out.to_string())
+                })
         }
     }
 
@@ -178,15 +198,25 @@ mod tests {
         let probes = fake(&[
             ("gh", false, ""),
             ("claude", true, "{\"loggedIn\": true}"),
-            ("opencode", true, "0 credentials: No authenticated providers"),
+            (
+                "opencode",
+                true,
+                "0 credentials: No authenticated providers",
+            ),
             ("agent", true, "Logged in as someone"),
         ]);
         let all = pending(&|_| true, &probes);
         let cmds: Vec<&str> = all.iter().map(|(_, c)| *c).collect();
         assert_eq!(cmds, ["gh auth login", "opencode auth login"]);
-        let only_agent = pending(&|c| c == "agent", &fake(&[("agent", true, "Not logged in")]));
+        let only_agent = pending(
+            &|c| c == "agent",
+            &fake(&[("agent", true, "Not logged in")]),
+        );
         assert_eq!(only_agent, [("\u{1F5B1}\u{FE0F}  Cursor", "agent login")]);
-        let claude_out = pending(&|c| c == "claude", &fake(&[("claude", true, "{\"loggedIn\": false}")]));
+        let claude_out = pending(
+            &|c| c == "claude",
+            &fake(&[("claude", true, "{\"loggedIn\": false}")]),
+        );
         assert_eq!(claude_out[0].1, "claude auth login");
     }
 }

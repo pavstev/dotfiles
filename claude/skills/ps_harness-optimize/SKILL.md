@@ -17,7 +17,7 @@ small changes with evidence. The numbers come from the script, never from eyebal
 1. **Collect.** `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin harness_stats collect --since <date> --exclude <this session id>`. Every `harness_stats <cmd>` below runs the same way: `${CLAUDE_SKILL_DIR}/../../hooks/rust-bin harness_stats <cmd>`.
    Default `--since`: the date of the newest `~/.claude/research/*-harness-review.md`, else 14 days ago.
    It reads main transcripts AND `subagents/*.jsonl` (most tool errors live there) and the desktop
-   app's records (title, archived). Default window: since the last review, or 14 days.
+   app's records (title, archived).
 2. **Find the change points.** `harness_stats cuts --since <date>` lists push groups (commits to
    `claude/` less than 3 h apart) and prints where the repo history starts. If that start is inside the
    window, find the older repo with `gh repo list --limit 50` and run
@@ -117,7 +117,6 @@ Cuts: <ISO + commit subject per cut>
 | Keyword frustration counts | "do not stop until" is an instruction. Use the script's corrections count and read the hits |
 | One big rewrite | One change per proposal, each tied to a metric |
 | Judging a 1-day period | The report marks periods under 20 sessions early; re-run next week |
-| Cutting a guard check because it never fired | Quiet is not useless: apply all four tests of step 8 |
 | Per-session rates after hand-offs | Hand-offs make sessions shorter; compare per-100-prompt rates too |
 
 Transcripts older than `cleanupPeriodDays` are deleted. If the setting is under 180, propose raising it.

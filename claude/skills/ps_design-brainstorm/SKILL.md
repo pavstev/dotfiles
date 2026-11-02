@@ -28,13 +28,7 @@ List the open decisions, each tagged high / medium / low by cost of being wrong:
 Show the map once, briefly (one line per item, ~8 lines max). Start with the highest-impact decision whose prerequisites are settled.
 
 ### 4. Interview loop (ps:askme conventions)
-Each round:
-1. One status line, e.g. `Locked 3 · Open: 1 high, 2 medium`.
-2. In 1–2 sentences, name the risk behind the next question and why it matters. Act as a skeptical senior reviewer: flag unstated assumptions, edge cases (empty, huge, concurrent, failed), security holes, data-loss risk, scaling limits, and conflicts with existing code. When my idea has a flaw, say so plainly.
-3. Ask one question with the structured question tool (AskUserQuestion in Claude Code, AskQuestion in Cursor, `question` in OpenCode): 2–4 technically distinct options, labels short, recommendation first with "(Recommended)", meaning + trade-off in each description. One topic per call; dependent questions go one at a time.
-4. Process the answer (unclear → drill in; contradiction → show both and ask which wins; against recommendation → name the risk once, challenge once, never nag; ripple → update the map and re-rank). Then pick the next highest-impact open decision.
-
-Stop when every open item is low-impact, or you say "go", "enough", "ship it", or similar. List unresolved items as explicit assumptions.
+Run the loop of [ps:askme](../ps_askme/SKILL.md): its phase 3 (status line, risk sentence, batched questions with the recommendation first), `<after_each_answer>` and `<stop_condition>`. The map above is the decision map. Design adds one thing: question the tokens and the audience before the variants.
 
 ### 5. Build the artifact (ps:design-artifact)
 Invoke `ps:design-artifact` with a filled `DESIGN` block matching our decisions:
@@ -44,7 +38,7 @@ Invoke `ps:design-artifact` with a filled `DESIGN` block matching our decisions:
 - `renderPreview(tokens)`: the live preview (card + button + badge + input by default)
 - `pickPayload(tokens)`: the object copied into the `pick:` line
 
-Publish it as one artifact. Zero external dependencies. Light + dark, phone width, WCAG contrast badges live.
+Publish it as one artifact; the `ps:design-artifact` rules apply.
 
 ### 6. Review & loop
 Show the artifact link, then ask: satisfied / revise a decision / change the build.
@@ -55,19 +49,10 @@ Show the artifact link, then ask: satisfied / revise a decision / change the bui
 Never renumber ids or variants between rounds.
 
 ### 7. Exit
-Write the decision record:
-- **Goal** — one sentence
-- **Decisions** — each with its reason and the alternative rejected
-- **Defaults & assumptions** — what I decided without you
-- **Accepted risks** — where you overrode my recommendation
-- **Out of scope**
-
-Then one final question: implement now (apply the `pick:` values to the project), revise a decision, or save the record as a spec file and stop. Implement only after you choose.
+Exit as ps:askme's `<exit>` does: the decision record, then the final question. "Implement now" here means apply the `pick:` values to the project (ps:pick, "Apply the pick").
 
 ## Rules
 
 - Research before asking: spend my attention only on decisions that are mine.
-- One question per call; options technically distinct; recommendation first.
 - Locked decisions stay locked unless you ask to reopen them.
-- One artifact, one file, republished to the same URL across rounds. Never renumber.
 - Long reference material lives in [notes.md](notes.md).

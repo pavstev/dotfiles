@@ -31,21 +31,58 @@ pub struct Mgr {
 
 /// The managers, in update order.
 pub const MANAGERS: [Mgr; 12] = [
-    Mgr { id: "brew", name: "Homebrew" },
-    Mgr { id: "mise", name: "mise" },
-    Mgr { id: "rustup", name: "Rust (rustup)" },
-    Mgr { id: "cargo", name: "cargo crates" },
-    Mgr { id: "uv", name: "uv tools" },
-    Mgr { id: "npm", name: "npm globals" },
-    Mgr { id: "pnpm", name: "pnpm globals" },
-    Mgr { id: "gh", name: "gh extensions" },
-    Mgr { id: "omz", name: "Oh My Zsh" },
-    Mgr { id: "mas", name: "App Store apps" },
-    Mgr { id: "claude", name: "Claude Code" },
-    Mgr { id: "macos", name: "macOS" },
+    Mgr {
+        id: "brew",
+        name: "Homebrew",
+    },
+    Mgr {
+        id: "mise",
+        name: "mise",
+    },
+    Mgr {
+        id: "rustup",
+        name: "Rust (rustup)",
+    },
+    Mgr {
+        id: "cargo",
+        name: "cargo crates",
+    },
+    Mgr {
+        id: "uv",
+        name: "uv tools",
+    },
+    Mgr {
+        id: "npm",
+        name: "npm globals",
+    },
+    Mgr {
+        id: "pnpm",
+        name: "pnpm globals",
+    },
+    Mgr {
+        id: "gh",
+        name: "gh extensions",
+    },
+    Mgr {
+        id: "omz",
+        name: "Oh My Zsh",
+    },
+    Mgr {
+        id: "mas",
+        name: "App Store apps",
+    },
+    Mgr {
+        id: "claude",
+        name: "Claude Code",
+    },
+    Mgr {
+        id: "macos",
+        name: "macOS",
+    },
 ];
 
 /// The options of `dots update`.
+#[derive(Debug)]
 pub struct Opts {
     pub check: bool,
     pub only: Vec<String>,
@@ -77,17 +114,26 @@ pub enum Check {
 
 // ---------- pure parts ----------
 
-/// The managers to run, in table order. Err: an unknown id, with the valid ones.
+/// The managers to run, in table order.
+///
+/// # Errors
+///
+/// Returns `Err` for an unknown id, with the valid ones.
 pub fn plan(only: &[String], skip: &[String]) -> Result<Vec<&'static Mgr>, String> {
     for id in only.iter().chain(skip) {
         if !MANAGERS.iter().any(|m| m.id == id) {
             let valid: Vec<&str> = MANAGERS.iter().map(|m| m.id).collect();
-            return Err(format!("unknown manager \"{id}\". Valid ids: {}", valid.join(", ")));
+            return Err(format!(
+                "unknown manager \"{id}\". Valid ids: {}",
+                valid.join(", ")
+            ));
         }
     }
     Ok(MANAGERS
         .iter()
-        .filter(|m| (only.is_empty() || only.iter().any(|o| o == m.id)) && !skip.iter().any(|s| s == m.id))
+        .filter(|m| {
+            (only.is_empty() || only.iter().any(|o| o == m.id)) && !skip.iter().any(|s| s == m.id)
+        })
         .collect())
 }
 
@@ -97,6 +143,10 @@ fn json(text: &str) -> Result<Value, String> {
 
 /// `brew outdated --json=v2`: formulae first, then casks. Pinned formulae are left out:
 /// `brew upgrade` skips them, so they would look outdated on every run.
+///
+/// # Errors
+///
+/// Returns `Err` when the text is not valid JSON.
 pub fn parse_brew(text: &str) -> Result<Vec<String>, String> {
     let v = json(text)?;
     let mut names = Vec::new();
@@ -114,14 +164,25 @@ pub fn parse_brew(text: &str) -> Result<Vec<String>, String> {
 }
 
 /// `mise outdated --json`: an object keyed by tool, each with `current` and `latest`.
+///
+/// # Errors
+///
+/// Returns `Err` when the text is not valid JSON or not an object.
 pub fn parse_mise(text: &str) -> Result<Vec<String>, String> {
     let v = json(text)?;
-    let Some(map) = v.as_object() else { return Err("mise did not answer with an object".into()) };
+    let Some(map) = v.as_object() else {
+        return Err("mise did not answer with an object".into());
+    };
     Ok(map
         .iter()
-        .map(|(name, t)| match (t.get("current").and_then(Value::as_str), t.get("latest").and_then(Value::as_str)) {
-            (Some(c), Some(l)) => format!("{name} {c} -> {l}"),
-            _ => name.clone(),
+        .map(|(name, t)| {
+            match (
+                t.get("current").and_then(Value::as_str),
+                t.get("latest").and_then(Value::as_str),
+            ) {
+                (Some(c), Some(l)) => format!("{name} {c} -> {l}"),
+                _ => name.clone(),
+            }
         })
         .collect())
 }
@@ -129,6 +190,10 @@ pub fn parse_mise(text: &str) -> Result<Vec<String>, String> {
 /// `npm outdated -g --json` and `pnpm outdated -g --format json`: an object keyed by package (or a
 /// list of objects with a name). No output means nothing is outdated. Offline, npm prints
 /// `{"error":{"code":..,"summary":..}}` instead: that is an error, not a package named `error`.
+///
+/// # Errors
+///
+/// Returns `Err` when the text is not valid JSON, or is an npm error object.
 pub fn parse_node_outdated(text: &str) -> Result<Vec<String>, String> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
@@ -138,8 +203,11 @@ pub fn parse_node_outdated(text: &str) -> Result<Vec<String>, String> {
             if let Some(e) = m.get("error").and_then(Value::as_object)
                 && !e.contains_key("latest")
                 && !e.contains_key("current")
-                && let Some(why) =
-                    e.get("summary").or_else(|| e.get("code")).and_then(Value::as_str).filter(|s| !s.is_empty())
+                && let Some(why) = e
+                    .get("summary")
+                    .or_else(|| e.get("code"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
             {
                 return Err(why.lines().next().unwrap_or(why).trim().to_string());
             }
@@ -147,7 +215,11 @@ pub fn parse_node_outdated(text: &str) -> Result<Vec<String>, String> {
         }
         Value::Array(a) => Ok(a
             .iter()
-            .filter_map(|x| x.get("packageName").or_else(|| x.get("name")).and_then(Value::as_str))
+            .filter_map(|x| {
+                x.get("packageName")
+                    .or_else(|| x.get("name"))
+                    .and_then(Value::as_str)
+            })
             .map(str::to_string)
             .collect()),
         _ => Err("unexpected answer".into()),
@@ -212,7 +284,10 @@ pub fn parse_mas(text: &str) -> Vec<String> {
 
 /// `softwareupdate --list`: the label of each `* Label: ...` line.
 pub fn parse_softwareupdate(text: &str) -> Vec<String> {
-    text.lines().filter_map(|l| l.trim().strip_prefix("* Label:")).map(|l| l.trim().to_string()).collect()
+    text.lines()
+        .filter_map(|l| l.trim().strip_prefix("* Label:"))
+        .map(|l| l.trim().to_string())
+        .collect()
 }
 
 /// `git rev-list --count HEAD..@{u}`: the number, 0 when it is not one.
@@ -223,13 +298,26 @@ pub fn parse_behind(text: &str) -> usize {
 /// The names for a check line: at most 8, then `+N more`.
 pub fn summarize(items: &[String]) -> String {
     const MAX: usize = 8;
-    let s = items.iter().take(MAX).cloned().collect::<Vec<_>>().join(", ");
-    if items.len() > MAX { format!("{s}, +{} more", items.len() - MAX) } else { s }
+    let s = items
+        .iter()
+        .take(MAX)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if items.len() > MAX {
+        format!("{s}, +{} more", items.len() - MAX)
+    } else {
+        s
+    }
 }
 
 /// The line that says what went wrong: the first one that mentions an error, else the first one.
 pub fn first_useful_line(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let pick = lines
         .iter()
         .find(|l| {
@@ -260,10 +348,14 @@ pub fn under_prefix(path: &Path, prefix: Option<&Path>) -> bool {
 pub fn still_outdated(before: &[String], after: &[String]) -> Vec<String> {
     let name = |s: &str| s.split_whitespace().next().unwrap_or("").to_string();
     let after: Vec<String> = after.iter().map(|a| name(a)).collect();
-    before.iter().filter(|b| after.contains(&name(b))).cloned().collect()
+    before
+        .iter()
+        .filter(|b| after.contains(&name(b)))
+        .cloned()
+        .collect()
 }
 
-/// PATH plus pnpm's global bin folders ($PNPM_HOME, else ~/Library/pnpm, and its bin/), when they
+/// PATH plus pnpm's global bin folders ($`PNPM_HOME`, else ~/Library/pnpm, and its bin/), when they
 /// are missing. `pnpm update -g` stops when its bin folder is not on PATH, and a shell that skipped
 /// .zshrc (a launcher, `zsh -l`) does not have it.
 pub fn with_pnpm_home(path: &OsString, pnpm_home: Option<PathBuf>, home: &Path) -> OsString {
@@ -277,8 +369,12 @@ pub fn with_pnpm_home(path: &OsString, pnpm_home: Option<PathBuf>, home: &Path) 
     std::env::join_paths(dirs).unwrap_or_else(|_| path.clone())
 }
 
-/// Where gh keeps its extensions: $GH_DATA_DIR, else $XDG_DATA_HOME/gh, else ~/.local/share/gh.
-pub fn gh_extensions_dir(gh_data: Option<PathBuf>, xdg_data: Option<PathBuf>, home: &Path) -> PathBuf {
+/// Where gh keeps its extensions: $`GH_DATA_DIR`, else $`XDG_DATA_HOME/gh`, else ~/.local/share/gh.
+pub fn gh_extensions_dir(
+    gh_data: Option<PathBuf>,
+    xdg_data: Option<PathBuf>,
+    home: &Path,
+) -> PathBuf {
     gh_data
         .or_else(|| xdg_data.map(|x| x.join("gh")))
         .unwrap_or_else(|| home.join(".local/share/gh"))
@@ -287,7 +383,9 @@ pub fn gh_extensions_dir(gh_data: Option<PathBuf>, xdg_data: Option<PathBuf>, ho
 
 /// The log files to delete so that `keep` remain (newest by name, which is the time stamp).
 pub fn stale_logs(mut names: Vec<String>, keep: usize) -> Vec<String> {
-    names.retain(|n| n.starts_with("update-") && Path::new(n).extension().is_some_and(|e| e == "log"));
+    names.retain(|n| {
+        n.starts_with("update-") && Path::new(n).extension().is_some_and(|e| e == "log")
+    });
     names.sort();
     let drop = names.len().saturating_sub(keep);
     names.truncate(drop);
@@ -295,13 +393,16 @@ pub fn stale_logs(mut names: Vec<String>, keep: usize) -> Vec<String> {
 }
 
 /// The variables that keep git (and ssh under it) from asking questions on the terminal: a dead
-/// remote or a host key prompt would hang the run. `ssh_command`: the user's own GIT_SSH_COMMAND.
+/// remote or a host key prompt would hang the run. `ssh_command`: the user's own `GIT_SSH_COMMAND`.
 pub fn git_env(ssh_command: Option<&str>) -> Vec<(String, String)> {
     let ssh = match ssh_command.filter(|s| !s.trim().is_empty()) {
         Some(s) => format!("{s} -o BatchMode=yes"),
         None => "ssh -o BatchMode=yes".to_string(),
     };
-    vec![("GIT_TERMINAL_PROMPT".into(), "0".into()), ("GIT_SSH_COMMAND".into(), ssh)]
+    vec![
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        ("GIT_SSH_COMMAND".into(), ssh),
+    ]
 }
 
 /// One command to run.
@@ -314,7 +415,11 @@ pub struct CmdSpec {
 
 impl CmdSpec {
     fn new(prog: &str, args: &[&str]) -> Self {
-        Self { prog: prog.into(), args: args.iter().map(|a| (*a).to_string()).collect(), env: Vec::new() }
+        Self {
+            prog: prog.into(),
+            args: args.iter().map(|a| (*a).to_string()).collect(),
+            env: Vec::new(),
+        }
     }
     fn env(mut self, k: &str, v: &str) -> Self {
         self.env.push((k.into(), v.into()));
@@ -322,14 +427,22 @@ impl CmdSpec {
     }
     /// The command as a line, for the log and the screen.
     pub fn line(&self) -> String {
-        std::iter::once(self.prog.as_str()).chain(self.args.iter().map(String::as_str)).collect::<Vec<_>>().join(" ")
+        std::iter::once(self.prog.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
 /// The update commands of a manager, in order. `macos` and `mas` have none: they only report.
 /// `mise_self_update`: mise is not a Homebrew package, so it updates itself first.
 /// `repos`: the Oh My Zsh repos that are behind.
-pub fn update_cmds(id: &str, mise_self_update: bool, zsh_dir: &Path, repos: &[PathBuf]) -> Vec<CmdSpec> {
+pub fn update_cmds(
+    id: &str,
+    mise_self_update: bool,
+    zsh_dir: &Path,
+    repos: &[PathBuf],
+) -> Vec<CmdSpec> {
     match id {
         "brew" => vec![CmdSpec::new("brew", &["upgrade"])],
         "mise" => {
@@ -355,7 +468,10 @@ pub fn update_cmds(id: &str, mise_self_update: bool, zsh_dir: &Path, repos: &[Pa
             }
             for r in repos.iter().filter(|r| r.as_path() != zsh_dir) {
                 let dir = r.to_string_lossy().into_owned();
-                v.push(CmdSpec::new("git", &["-C", &dir, "pull", "--ff-only", "--quiet"]));
+                v.push(CmdSpec::new(
+                    "git",
+                    &["-C", &dir, "pull", "--ff-only", "--quiet"],
+                ));
             }
             v
         }
@@ -384,14 +500,25 @@ fn open_log() -> Option<Log> {
     let dir = os::home().join("Library/Logs/dots");
     fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("update-{}.log", os::timestamp()));
-    let file = fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
     let names: Vec<String> = fs::read_dir(&dir)
-        .map(|rd| rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
         .unwrap_or_default();
     for old in stale_logs(names, 10) {
         let _ = fs::remove_file(dir.join(old));
     }
-    Some(Log { path, file: Mutex::new(file) })
+    Some(Log {
+        path,
+        file: Mutex::new(file),
+    })
 }
 
 /// What a command did.
@@ -399,6 +526,10 @@ fn open_log() -> Option<Log> {
 struct Out {
     /// None: killed by a signal, or never started.
     code: Option<i32>,
+    #[expect(
+        clippy::struct_field_names,
+        reason = "the plain word, not a repeat of `Out`"
+    )]
     timed_out: bool,
     /// Why it never started.
     err: Option<String>,
@@ -430,7 +561,11 @@ struct Tap {
 }
 
 /// The lines of one pipe, split at newlines and carriage returns (progress bars).
-fn spawn_reader(pipe: Option<impl std::io::Read + Send + 'static>, is_err: bool, tx: mpsc::Sender<(bool, String)>) {
+fn spawn_reader(
+    pipe: Option<impl std::io::Read + Send + 'static>,
+    is_err: bool,
+    tx: mpsc::Sender<(bool, String)>,
+) {
     let Some(pipe) = pipe else { return };
     std::thread::spawn(move || {
         let mut r = BufReader::new(pipe);
@@ -442,7 +577,8 @@ fn spawn_reader(pipe: Option<impl std::io::Read + Send + 'static>, is_err: bool,
                 Ok(_) => {}
             }
             for seg in String::from_utf8_lossy(&buf).split(['\n', '\r']) {
-                if !seg.trim().is_empty() && tx.send((is_err, seg.trim_end().to_string())).is_err() {
+                if !seg.trim().is_empty() && tx.send((is_err, seg.trim_end().to_string())).is_err()
+                {
                     return;
                 }
             }
@@ -452,7 +588,7 @@ fn spawn_reader(pipe: Option<impl std::io::Read + Send + 'static>, is_err: bool,
 
 /// Everything a run needs, read once on the main thread.
 struct Runner {
-    /// Where managers are found, and the PATH every child gets: DOTS_UPDATE_PATH (the test hook)
+    /// Where managers are found, and the PATH every child gets: `DOTS_UPDATE_PATH` (the test hook)
     /// as it is, else PATH plus pnpm's bin folders.
     path: OsString,
     check_timeout: u64,
@@ -463,7 +599,7 @@ struct Runner {
     gh_extensions: PathBuf,
     /// The folder every child starts in.
     home: PathBuf,
-    /// The user's GIT_SSH_COMMAND, if any.
+    /// The user's `GIT_SSH_COMMAND`, if any.
     ssh_command: Option<String>,
     log: Option<Log>,
 }
@@ -471,8 +607,14 @@ struct Runner {
 impl Runner {
     fn new() -> Self {
         let pinned_path = std::env::var_os("DOTS_UPDATE_PATH");
-        let secs = std::env::var("DOTS_UPDATE_TIMEOUT").ok().and_then(|v| v.trim().parse::<u64>().ok());
-        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let secs = std::env::var("DOTS_UPDATE_TIMEOUT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        let var = |k: &str| {
+            std::env::var_os(k)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
         let zsh_dir = var("ZSH").unwrap_or_else(|| os::home().join(".oh-my-zsh"));
         let zsh_custom = var("ZSH_CUSTOM").unwrap_or_else(|| zsh_dir.join("custom"));
         let path = pinned_path.unwrap_or_else(|| {
@@ -527,13 +669,20 @@ impl Runner {
             o
         };
         let Some(prog) = self.find(&cmd.prog) else {
-            let o = Out { err: Some(format!("{} not found", cmd.prog)), ..Out::default() };
+            let o = Out {
+                err: Some(format!("{} not found", cmd.prog)),
+                ..Out::default()
+            };
             return finish(o, "none");
         };
         let mut c = Command::new(prog);
         // Start in the home folder, not in the project the user ran dots from: `mise` there would
         // read and rewrite that project's mise.toml and lock file.
-        c.args(&cmd.args).current_dir(&self.home).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        c.args(&cmd.args)
+            .current_dir(&self.home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         c.env("PATH", &self.path);
         for (k, v) in git_env(self.ssh_command.as_deref()) {
             c.env(k, v);
@@ -544,7 +693,10 @@ impl Runner {
         let mut child = match c.spawn() {
             Ok(ch) => ch,
             Err(e) => {
-                let o = Out { err: Some(format!("could not start {}: {e}", cmd.prog)), ..Out::default() };
+                let o = Out {
+                    err: Some(format!("could not start {}: {e}", cmd.prog)),
+                    ..Out::default()
+                };
                 return finish(o, "none");
             }
         };
@@ -567,7 +719,9 @@ impl Runner {
                             plain(&format!("{}{}{}", out::d(), line, out::z()));
                         }
                         if let Some(last) = &tap.last {
-                            last.lock().unwrap_or_else(PoisonError::into_inner).clone_from(&line);
+                            last.lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .clone_from(&line);
                         }
                         let side = if is_err { &mut o.stderr } else { &mut o.stdout };
                         side.push_str(&line);
@@ -598,14 +752,22 @@ impl Runner {
             }
         }
         o.secs = started.elapsed().as_secs();
-        let tail =
-            if o.timed_out { "timeout".to_string() } else { o.code.map_or("signal".to_string(), |c| c.to_string()) };
+        let tail = if o.timed_out {
+            "timeout".to_string()
+        } else {
+            o.code.map_or("signal".to_string(), |c| c.to_string())
+        };
         finish(o, &tail)
     }
 
     fn probe(&self, id: &str, prog: &str, args: &[&str]) -> Option<Out> {
         self.find(prog)?;
-        Some(self.run(id, &CmdSpec::new(prog, args), self.check_timeout, &Tap::default()))
+        Some(self.run(
+            id,
+            &CmdSpec::new(prog, args),
+            self.check_timeout,
+            &Tap::default(),
+        ))
     }
 
     fn mise_self_update(&self) -> bool {
@@ -627,7 +789,11 @@ fn fail_text(o: &Out, timeout: u64) -> String {
     }
     let line = first_useful_line(&o.text());
     let code = o.code.map_or("signal".to_string(), |c| c.to_string());
-    if line.is_empty() { format!("exit {code}") } else { line }
+    if line.is_empty() {
+        format!("exit {code}")
+    } else {
+        line
+    }
 }
 
 /// Run a check command; `parse` turns its output into the outdated names.
@@ -639,13 +805,18 @@ fn simple(
     ok_codes: &[i32],
     parse: fn(&Out) -> Result<Vec<String>, String>,
 ) -> Check {
-    let Some(o) = rt.probe(id, prog, args) else { return Check::Missing };
+    let Some(o) = rt.probe(id, prog, args) else {
+        return Check::Missing;
+    };
     if o.timed_out || o.err.is_some() || !o.code.is_some_and(|c| ok_codes.contains(&c)) {
         return Check::Failed(fail_text(&o, rt.check_timeout));
     }
     match parse(&o) {
         Ok(items) if items.is_empty() => Check::UpToDate,
-        Ok(items) => Check::Outdated(Found { items, repos: Vec::new() }),
+        Ok(items) => Check::Outdated(Found {
+            items,
+            repos: Vec::new(),
+        }),
         Err(e) => Check::Failed(e),
     }
 }
@@ -656,11 +827,18 @@ fn check_omz(rt: &Runner) -> Check {
     }
     let mut repos: Vec<(String, PathBuf)> = vec![("oh-my-zsh".into(), rt.zsh_dir.clone())];
     for sub in ["plugins", "themes"] {
-        let Ok(rd) = fs::read_dir(rt.zsh_custom.join(sub)) else { continue };
+        let Ok(rd) = fs::read_dir(rt.zsh_custom.join(sub)) else {
+            continue;
+        };
         let mut found: Vec<(String, PathBuf)> = rd
             .flatten()
             .filter(|e| e.path().join(".git").exists())
-            .map(|e| (format!("{sub}/{}", e.file_name().to_string_lossy()), e.path()))
+            .map(|e| {
+                (
+                    format!("{sub}/{}", e.file_name().to_string_lossy()),
+                    e.path(),
+                )
+            })
             .collect();
         found.sort();
         repos.extend(found);
@@ -669,13 +847,19 @@ fn check_omz(rt: &Runner) -> Check {
     let mut skipped: Vec<String> = Vec::new();
     for (name, dir) in repos {
         let d = dir.to_string_lossy().into_owned();
-        let Some(f) = rt.probe("omz", "git", &["-C", &d, "fetch", "--quiet"]) else { return Check::Missing };
+        let Some(f) = rt.probe("omz", "git", &["-C", &d, "fetch", "--quiet"]) else {
+            return Check::Missing;
+        };
         if !f.exit_ok() {
             // One dead remote must not stop the others from updating.
             skipped.push(format!("{name} ({})", fail_text(&f, rt.check_timeout)));
             continue;
         }
-        let Some(c) = rt.probe("omz", "git", &["-C", &d, "rev-list", "--count", "HEAD..@{u}"]) else {
+        let Some(c) = rt.probe(
+            "omz",
+            "git",
+            &["-C", &d, "rev-list", "--count", "HEAD..@{u}"],
+        ) else {
             return Check::Missing;
         };
         // No upstream (a local repo): nothing to pull.
@@ -685,22 +869,35 @@ fn check_omz(rt: &Runner) -> Check {
         }
     }
     if !skipped.is_empty() {
-        warn(&format!("Oh My Zsh: could not fetch, so skipped: {}", skipped.join("; ")));
+        warn(&format!(
+            "Oh My Zsh: could not fetch, so skipped: {}",
+            skipped.join("; ")
+        ));
     }
-    if behind.items.is_empty() { Check::UpToDate } else { Check::Outdated(behind) }
+    if behind.items.is_empty() {
+        Check::UpToDate
+    } else {
+        Check::Outdated(behind)
+    }
 }
 
 /// The read-only check of one manager.
 fn check(rt: &Runner, id: &str) -> Check {
     match id {
         "brew" => {
-            let Some(u) = rt.probe(id, "brew", &["update", "--quiet"]) else { return Check::Missing };
+            let Some(u) = rt.probe(id, "brew", &["update", "--quiet"]) else {
+                return Check::Missing;
+            };
             if !u.exit_ok() {
                 return Check::Failed(fail_text(&u, rt.check_timeout));
             }
-            simple(rt, id, "brew", &["outdated", "--json=v2"], &[0], |o| parse_brew(&o.stdout))
+            simple(rt, id, "brew", &["outdated", "--json=v2"], &[0], |o| {
+                parse_brew(&o.stdout)
+            })
         }
-        "mise" => simple(rt, id, "mise", &["outdated", "--json"], &[0], |o| parse_mise(&o.stdout)),
+        "mise" => simple(rt, id, "mise", &["outdated", "--json"], &[0], |o| {
+            parse_mise(&o.stdout)
+        }),
         "rustup" => simple(rt, id, "rustup", &["check"], &[0, 100], |o| {
             let mut items = parse_rustup(&o.text());
             if items.is_empty() && o.code == Some(100) {
@@ -712,50 +909,86 @@ fn check(rt: &Runner, id: &str) -> Check {
             if rt.find("cargo-install-update").is_none() {
                 return Check::Missing;
             }
-            simple(rt, id, "cargo", &["install-update", "--list"], &[0], |o| Ok(parse_cargo_update(&o.text())))
+            simple(rt, id, "cargo", &["install-update", "--list"], &[0], |o| {
+                Ok(parse_cargo_update(&o.text()))
+            })
         }
-        "uv" => simple(rt, id, "uv", &["tool", "list", "--outdated"], &[0], |o| Ok(parse_uv(&o.text()))),
-        "npm" => simple(rt, id, "npm", &["outdated", "-g", "--json"], &[0, 1], |o| parse_node_outdated(&o.stdout)),
-        "pnpm" => {
-            simple(rt, id, "pnpm", &["outdated", "-g", "--format", "json"], &[0, 1], |o| parse_node_outdated(&o.stdout))
-        }
+        "uv" => simple(rt, id, "uv", &["tool", "list", "--outdated"], &[0], |o| {
+            Ok(parse_uv(&o.text()))
+        }),
+        "npm" => simple(rt, id, "npm", &["outdated", "-g", "--json"], &[0, 1], |o| {
+            parse_node_outdated(&o.stdout)
+        }),
+        "pnpm" => simple(
+            rt,
+            id,
+            "pnpm",
+            &["outdated", "-g", "--format", "json"],
+            &[0, 1],
+            |o| parse_node_outdated(&o.stdout),
+        ),
         "gh" => {
             // No extensions: nothing to update. A gh that is signed out fails `extension list`.
             if fs::read_dir(&rt.gh_extensions).map_or(true, |mut rd| rd.next().is_none()) {
                 return Check::Missing;
             }
-            let Some(l) = rt.probe(id, "gh", &["extension", "list"]) else { return Check::Missing };
+            let Some(l) = rt.probe(id, "gh", &["extension", "list"]) else {
+                return Check::Missing;
+            };
             if !l.exit_ok() {
                 return Check::Failed(fail_text(&l, rt.check_timeout));
             }
             if l.stdout.trim().is_empty() {
                 return Check::Missing;
             }
-            simple(rt, id, "gh", &["extension", "upgrade", "--all", "--dry-run"], &[0], |o| Ok(parse_gh(&o.text())))
+            simple(
+                rt,
+                id,
+                "gh",
+                &["extension", "upgrade", "--all", "--dry-run"],
+                &[0],
+                |o| Ok(parse_gh(&o.text())),
+            )
         }
         "omz" => check_omz(rt),
         "mas" => {
-            let Some(o) = rt.probe(id, "mas", &["outdated"]) else { return Check::Missing };
+            let Some(o) = rt.probe(id, "mas", &["outdated"]) else {
+                return Check::Missing;
+            };
             if !o.exit_ok() {
                 return Check::Failed(fail_text(&o, rt.check_timeout));
             }
             let items = parse_mas(&o.stdout);
-            if items.is_empty() { Check::UpToDate } else { Check::CheckOnly(items) }
+            if items.is_empty() {
+                Check::UpToDate
+            } else {
+                Check::CheckOnly(items)
+            }
         }
         "claude" => match rt.find("claude") {
             Some(p) => {
                 let real = fs::canonicalize(&p).unwrap_or(p);
-                if under_prefix(&real, rt.prefix.as_deref()) { Check::Missing } else { Check::WillRun }
+                if under_prefix(&real, rt.prefix.as_deref()) {
+                    Check::Missing
+                } else {
+                    Check::WillRun
+                }
             }
             None => Check::Missing,
         },
         "macos" => {
-            let Some(o) = rt.probe(id, "softwareupdate", &["--list"]) else { return Check::Missing };
+            let Some(o) = rt.probe(id, "softwareupdate", &["--list"]) else {
+                return Check::Missing;
+            };
             if !o.exit_ok() {
                 return Check::Failed(fail_text(&o, rt.check_timeout));
             }
             let items = parse_softwareupdate(&o.text());
-            if items.is_empty() { Check::UpToDate } else { Check::CheckOnly(items) }
+            if items.is_empty() {
+                Check::UpToDate
+            } else {
+                Check::CheckOnly(items)
+            }
         }
         _ => Check::Missing,
     }
@@ -770,7 +1003,10 @@ pub fn check_only_line(m: &Mgr, n: usize) -> String {
         format!("{}: {n} update{s} (run: sudo mas upgrade)", m.name)
     } else {
         let it = if n == 1 { "it" } else { "them" };
-        format!("{}: {n} update{s} (install {it} in System Settings > General > Software Update)", m.name)
+        format!(
+            "{}: {n} update{s} (install {it} in System Settings > General > Software Update)",
+            m.name
+        )
     }
 }
 
@@ -783,7 +1019,12 @@ fn show_check(m: &Mgr, c: &Check) {
             }
         }
         Check::UpToDate => plain(&format!("{}• {}: up to date{}", out::d(), m.name, out::z())),
-        Check::Outdated(f) => info(&format!("{}: {} to update ({})", m.name, f.items.len(), summarize(&f.items))),
+        Check::Outdated(f) => info(&format!(
+            "{}: {} to update ({})",
+            m.name,
+            f.items.len(),
+            summarize(&f.items)
+        )),
         Check::WillRun => info(&format!("{}: will run claude update", m.name)),
         Check::CheckOnly(items) => info(&check_only_line(m, items.len())),
         Check::Failed(why) => warn(&format!("{}: check failed: {why}", m.name)),
@@ -816,16 +1057,27 @@ fn check_all(rt: &Runner, mgrs: &[&'static Mgr]) -> Vec<Check> {
                     let secs = started.elapsed().as_secs();
                     if secs >= next_notice {
                         next_notice += 30;
-                        let names: Vec<&str> =
-                            mgrs.iter().zip(&results).filter(|(_, r)| r.is_none()).map(|(m, _)| m.name).collect();
-                        info(&format!("still checking: {} ({})…", names.join(", "), out::duration(secs)));
+                        let names: Vec<&str> = mgrs
+                            .iter()
+                            .zip(&results)
+                            .filter(|(_, r)| r.is_none())
+                            .map(|(m, _)| m.name)
+                            .collect();
+                        info(&format!(
+                            "still checking: {} ({})…",
+                            names.join(", "),
+                            out::duration(secs)
+                        ));
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
     });
-    results.into_iter().map(|r| r.unwrap_or_else(|| Check::Failed("the check stopped".into()))).collect()
+    results
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|| Check::Failed("the check stopped".into())))
+        .collect()
 }
 
 /// The managers by outcome, for the summary.
@@ -841,7 +1093,12 @@ struct Tally {
 }
 
 /// Run the update of one manager. Err: why it failed, with the last output lines.
-fn update_one(rt: &Runner, m: &Mgr, found: &Found, verbose: bool) -> Result<(), (String, Vec<String>)> {
+fn update_one(
+    rt: &Runner,
+    m: &Mgr,
+    found: &Found,
+    verbose: bool,
+) -> Result<(), (String, Vec<String>)> {
     let last = Arc::new(Mutex::new(String::new()));
     let ticker = {
         let last = Arc::clone(&last);
@@ -852,7 +1109,11 @@ fn update_one(rt: &Runner, m: &Mgr, found: &Found, verbose: bool) -> Result<(), 
             format!("still working on {name} ({}): {l}", out::duration(secs))
         })
     };
-    let tap = Tap { live: true, echo: verbose, last: Some(Arc::clone(&last)) };
+    let tap = Tap {
+        live: true,
+        echo: verbose,
+        last: Some(Arc::clone(&last)),
+    };
     let mut failure: Option<(String, Vec<String>)> = None;
     for cmd in update_cmds(m.id, rt.mise_self_update(), &rt.zsh_dir, &found.repos) {
         info(&cmd.line());
@@ -865,7 +1126,10 @@ fn update_one(rt: &Runner, m: &Mgr, found: &Found, verbose: bool) -> Result<(), 
         } else if let Some(e) = &o.err {
             e.clone()
         } else {
-            format!("exit {}", o.code.map_or("signal".to_string(), |c| c.to_string()))
+            format!(
+                "exit {}",
+                o.code.map_or("signal".to_string(), |c| c.to_string())
+            )
         };
         if failure.is_none() {
             let tail: Vec<String> = o.all.iter().rev().take(10).rev().cloned().collect();
@@ -896,7 +1160,10 @@ pub fn run(o: &Opts) -> i32 {
     let verbose = out::verbose();
 
     step("Checking");
-    info(&format!("looking for updates in {} package managers", mgrs.len()));
+    info(&format!(
+        "looking for updates in {} package managers",
+        mgrs.len()
+    ));
     let results = check_all(&rt, &mgrs);
 
     let mut tally = Tally::default();
@@ -937,7 +1204,11 @@ pub fn run(o: &Opts) -> i32 {
                     if left.is_empty() {
                         ok(&format!("{}: updated {done}", m.name));
                     } else {
-                        ok(&format!("{}: updated {done} of {}", m.name, found.items.len()));
+                        ok(&format!(
+                            "{}: updated {done} of {}",
+                            m.name,
+                            found.items.len()
+                        ));
                         warn(&format!(
                             "{}: still outdated: {} (a version pin may hold it back)",
                             m.name,
@@ -962,7 +1233,11 @@ pub fn run(o: &Opts) -> i32 {
             }
             step_end();
         }
-        tally.to_update.retain(|n| ![&tally.updated, &tally.failed, &tally.left].iter().any(|g| g.contains(n)));
+        tally.to_update.retain(|n| {
+            ![&tally.updated, &tally.failed, &tally.left]
+                .iter()
+                .any(|g| g.contains(n))
+        });
     }
 
     step("Summary");
@@ -988,13 +1263,19 @@ pub fn run(o: &Opts) -> i32 {
     if let Some(l) = &rt.log {
         info(&format!("log: {}", l.path.display()));
     }
-    info(&format!("run time: {}", out::duration(started.elapsed().as_secs())));
+    info(&format!(
+        "run time: {}",
+        out::duration(started.elapsed().as_secs())
+    ));
     step_end();
     i32::from(!tally.failed.is_empty())
 }
 
 #[cfg(test)]
-#[allow(clippy::assert_is_empty)] // `assert!(parse(..).is_empty())` reads best for "nothing found"
+#[allow(
+    clippy::assert_is_empty,
+    reason = "`assert!(parse(..).is_empty())` reads best for \"nothing found\""
+)]
 mod tests {
     use super::*;
 
@@ -1009,7 +1290,10 @@ mod tests {
         assert_eq!(all[0].id, "brew");
         assert_eq!(all[11].id, "macos");
         let only = plan(&v(&["mise", "brew"]), &[]).unwrap();
-        assert_eq!(only.iter().map(|m| m.id).collect::<Vec<_>>(), ["brew", "mise"]);
+        assert_eq!(
+            only.iter().map(|m| m.id).collect::<Vec<_>>(),
+            ["brew", "mise"]
+        );
         let skip = plan(&[], &v(&["mas", "claude"])).unwrap();
         assert_eq!(skip.len(), 10);
         assert!(skip.iter().all(|m| m.id != "mas" && m.id != "claude"));
@@ -1020,13 +1304,19 @@ mod tests {
     #[test]
     fn plan_rejects_unknown_ids() {
         let e = plan(&v(&["brew", "nope"]), &[]).unwrap_err();
-        assert!(e.contains("\"nope\"") && e.contains("brew, mise, rustup"), "{e}");
+        assert!(
+            e.contains("\"nope\"") && e.contains("brew, mise, rustup"),
+            "{e}"
+        );
         assert!(plan(&[], &v(&["zzz"])).is_err());
     }
 
     #[test]
     fn brew_json() {
-        assert_eq!(parse_brew("{\n  \"formulae\": [],\n  \"casks\": []\n}\n").unwrap(), Vec::<String>::new());
+        assert_eq!(
+            parse_brew("{\n  \"formulae\": [],\n  \"casks\": []\n}\n").unwrap(),
+            Vec::<String>::new()
+        );
         let sample = r#"{"formulae":[{"name":"git","installed_versions":["2.50.0"],"current_version":"2.51.0","pinned":false,"pinned_version":null},
             {"name":"wget","installed_versions":["1.25.0"],"current_version":"1.25.1","pinned":false,"pinned_version":null}],
             "casks":[{"name":"ghostty","installed_versions":"1.2.0","current_version":"1.2.1"}]}"#;
@@ -1050,7 +1340,10 @@ mod tests {
 }"#;
         assert_eq!(
             parse_mise(sample).unwrap(),
-            v(&["aqua:01mf02/jaq 3.1.1 -> 3.1.2", "npm:awwwards-mcp 1.11.0 -> 1.13.0"])
+            v(&[
+                "aqua:01mf02/jaq 3.1.1 -> 3.1.2",
+                "npm:awwwards-mcp 1.11.0 -> 1.13.0"
+            ])
         );
         assert_eq!(parse_mise("{}").unwrap(), Vec::<String>::new());
         assert!(parse_mise("[]").is_err());
@@ -1083,7 +1376,10 @@ mod tests {
                       1.89-aarch64-apple-darwin - up to date: 1.89.0 (29483883e 2025-08-04)\n\
                       rustup - up to date : 1.29.2\n";
         assert_eq!(parse_rustup(sample), v(&["stable-aarch64-apple-darwin"]));
-        assert_eq!(parse_rustup("rustup - Update available : 1.29.2 -> 1.30.0\n"), v(&["rustup"]));
+        assert_eq!(
+            parse_rustup("rustup - Update available : 1.29.2 -> 1.30.0\n"),
+            v(&["rustup"])
+        );
         assert!(parse_rustup("stable - up to date: 1.0.0\n").is_empty());
     }
 
@@ -1106,7 +1402,10 @@ mod tests {
 
     #[test]
     fn gh_dry_run() {
-        assert_eq!(parse_gh("[dash]: would have upgraded from v4.26.0 to v4.26.2\n"), v(&["dash"]));
+        assert_eq!(
+            parse_gh("[dash]: would have upgraded from v4.26.0 to v4.26.2\n"),
+            v(&["dash"])
+        );
         assert!(parse_gh("[dash]: already up to date\n").is_empty());
         assert!(parse_gh("").is_empty());
     }
@@ -1125,8 +1424,10 @@ mod tests {
                       * Label: macOS 27.2-26B123\n\tTitle: macOS 27.2, Version: 27.2, Size: 6067473KiB, Recommended: YES, Action: restart, \n";
         assert_eq!(parse_softwareupdate(sample), v(&["macOS 27.2-26B123"]));
         assert!(
-            parse_softwareupdate("Software Update Tool\n\nFinding available software\nNo new software available.\n")
-                .is_empty()
+            parse_softwareupdate(
+                "Software Update Tool\n\nFinding available software\nNo new software available.\n"
+            )
+            .is_empty()
         );
     }
 
@@ -1147,8 +1448,14 @@ mod tests {
 
     #[test]
     fn useful_line() {
-        assert_eq!(first_useful_line("\n  npm warn config\nnpm ERR! code E404\nmore\n"), "npm ERR! code E404");
-        assert_eq!(first_useful_line("\nsomething odd\nsecond\n"), "something odd");
+        assert_eq!(
+            first_useful_line("\n  npm warn config\nnpm ERR! code E404\nmore\n"),
+            "npm ERR! code E404"
+        );
+        assert_eq!(
+            first_useful_line("\nsomething odd\nsecond\n"),
+            "something odd"
+        );
         assert_eq!(first_useful_line(""), "");
     }
 
@@ -1162,8 +1469,14 @@ mod tests {
 
     #[test]
     fn prefix_and_logs() {
-        assert!(under_prefix(Path::new("/opt/homebrew/Cellar/mise/1/bin/mise"), Some(Path::new("/opt/homebrew"))));
-        assert!(!under_prefix(Path::new("/Users/x/.local/bin/mise"), Some(Path::new("/opt/homebrew"))));
+        assert!(under_prefix(
+            Path::new("/opt/homebrew/Cellar/mise/1/bin/mise"),
+            Some(Path::new("/opt/homebrew"))
+        ));
+        assert!(!under_prefix(
+            Path::new("/Users/x/.local/bin/mise"),
+            Some(Path::new("/opt/homebrew"))
+        ));
         assert!(!under_prefix(Path::new("/opt/homebrew/bin/x"), None));
         let before = v(&["jq 1.7.1 -> 1.8.2", "ruff", "git"]);
         assert_eq!(
@@ -1177,14 +1490,31 @@ mod tests {
             with_pnpm_home(&p, None, home),
             OsString::from("/usr/bin:/Users/x/Library/pnpm:/Users/x/Library/pnpm/bin")
         );
-        assert_eq!(with_pnpm_home(&OsString::from("/bin"), Some("/p".into()), home), OsString::from("/bin:/p:/p/bin"));
-        assert_eq!(gh_extensions_dir(None, None, home), Path::new("/Users/x/.local/share/gh/extensions"));
-        assert_eq!(gh_extensions_dir(None, Some("/d".into()), home), Path::new("/d/gh/extensions"));
-        assert_eq!(gh_extensions_dir(Some("/g".into()), Some("/d".into()), home), Path::new("/g/extensions"));
-        let names: Vec<String> =
-            (1..=12).map(|n| format!("update-202610{n:02}-120000.log")).chain(["notes.txt".to_string()]).collect();
+        assert_eq!(
+            with_pnpm_home(&OsString::from("/bin"), Some("/p".into()), home),
+            OsString::from("/bin:/p:/p/bin")
+        );
+        assert_eq!(
+            gh_extensions_dir(None, None, home),
+            Path::new("/Users/x/.local/share/gh/extensions")
+        );
+        assert_eq!(
+            gh_extensions_dir(None, Some("/d".into()), home),
+            Path::new("/d/gh/extensions")
+        );
+        assert_eq!(
+            gh_extensions_dir(Some("/g".into()), Some("/d".into()), home),
+            Path::new("/g/extensions")
+        );
+        let names: Vec<String> = (1..=12)
+            .map(|n| format!("update-202610{n:02}-120000.log"))
+            .chain(["notes.txt".to_string()])
+            .collect();
         let stale = stale_logs(names, 10);
-        assert_eq!(stale, v(&["update-20261001-120000.log", "update-20261002-120000.log"]));
+        assert_eq!(
+            stale,
+            v(&["update-20261001-120000.log", "update-20261002-120000.log"])
+        );
         assert!(stale_logs(v(&["update-20261001-120000.log"]), 10).is_empty());
     }
 
@@ -1192,17 +1522,35 @@ mod tests {
     fn update_commands() {
         let z = Path::new("/h/.oh-my-zsh");
         let line = |id: &str, selfup: bool, repos: &[PathBuf]| -> Vec<String> {
-            update_cmds(id, selfup, z, repos).iter().map(CmdSpec::line).collect()
+            update_cmds(id, selfup, z, repos)
+                .iter()
+                .map(CmdSpec::line)
+                .collect()
         };
         assert_eq!(line("brew", false, &[]), ["brew upgrade"]);
-        assert_eq!(line("mise", true, &[]), ["mise self-update --yes", "mise upgrade"]);
+        assert_eq!(
+            line("mise", true, &[]),
+            ["mise self-update --yes", "mise upgrade"]
+        );
         assert_eq!(line("mise", false, &[]), ["mise upgrade"]);
-        assert_eq!(update_cmds("mise", false, z, &[])[0].env, [("MISE_YES".to_string(), "1".to_string())]);
+        assert_eq!(
+            update_cmds("mise", false, z, &[])[0].env,
+            [("MISE_YES".to_string(), "1".to_string())]
+        );
         assert_eq!(line("pnpm", false, &[]), ["pnpm update -g --latest"]);
         assert_eq!(line("cargo", false, &[]), ["cargo install-update --all"]);
-        assert!(line("macos", false, &[]).is_empty(), "macOS is never installed");
-        assert!(line("mas", false, &[]).is_empty(), "mas upgrade needs root: check only");
-        let repos = [z.to_path_buf(), PathBuf::from("/h/.oh-my-zsh/custom/plugins/x")];
+        assert!(
+            line("macos", false, &[]).is_empty(),
+            "macOS is never installed"
+        );
+        assert!(
+            line("mas", false, &[]).is_empty(),
+            "mas upgrade needs root: check only"
+        );
+        let repos = [
+            z.to_path_buf(),
+            PathBuf::from("/h/.oh-my-zsh/custom/plugins/x"),
+        ];
         assert_eq!(
             line("omz", false, &repos),
             [
@@ -1210,8 +1558,15 @@ mod tests {
                 "git -C /h/.oh-my-zsh/custom/plugins/x pull --ff-only --quiet"
             ]
         );
-        assert_eq!(update_cmds("omz", false, z, &repos)[0].env, [("ZSH".to_string(), "/h/.oh-my-zsh".to_string())]);
-        assert_eq!(line("omz", false, &repos[1..]).len(), 1, "no main upgrade when only a plugin is behind");
+        assert_eq!(
+            update_cmds("omz", false, z, &repos)[0].env,
+            [("ZSH".to_string(), "/h/.oh-my-zsh".to_string())]
+        );
+        assert_eq!(
+            line("omz", false, &repos[1..]).len(),
+            1,
+            "no main upgrade when only a plugin is behind"
+        );
     }
 
     #[test]
@@ -1228,8 +1583,14 @@ mod tests {
     #[test]
     fn npm_offline_is_an_error_not_a_package() {
         let offline = r#"{"error":{"code":"ECONNREFUSED","summary":"request to https://registry.npmjs.org/npm failed","detail":""}}"#;
-        assert_eq!(parse_node_outdated(offline).unwrap_err(), "request to https://registry.npmjs.org/npm failed");
-        assert_eq!(parse_node_outdated(r#"{"error":{"code":"ENOTFOUND"}}"#).unwrap_err(), "ENOTFOUND");
+        assert_eq!(
+            parse_node_outdated(offline).unwrap_err(),
+            "request to https://registry.npmjs.org/npm failed"
+        );
+        assert_eq!(
+            parse_node_outdated(r#"{"error":{"code":"ENOTFOUND"}}"#).unwrap_err(),
+            "ENOTFOUND"
+        );
         // a real package that happens to be called error
         let pkg = r#"{"error":{"current":"1.0.0","wanted":"1.1.0","latest":"1.1.0"}}"#;
         assert_eq!(parse_node_outdated(pkg).unwrap(), v(&["error"]));
@@ -1239,16 +1600,28 @@ mod tests {
     fn git_children_never_prompt() {
         let e = git_env(None);
         assert!(e.contains(&("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())));
-        assert!(e.contains(&("GIT_SSH_COMMAND".to_string(), "ssh -o BatchMode=yes".to_string())));
+        assert!(e.contains(&(
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -o BatchMode=yes".to_string()
+        )));
         let own = git_env(Some("ssh -i /k/id"));
-        assert!(own.contains(&("GIT_SSH_COMMAND".to_string(), "ssh -i /k/id -o BatchMode=yes".to_string())));
-        assert!(git_env(Some("  ")).contains(&("GIT_SSH_COMMAND".to_string(), "ssh -o BatchMode=yes".to_string())));
+        assert!(own.contains(&(
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -i /k/id -o BatchMode=yes".to_string()
+        )));
+        assert!(git_env(Some("  ")).contains(&(
+            "GIT_SSH_COMMAND".to_string(),
+            "ssh -o BatchMode=yes".to_string()
+        )));
     }
 
     #[test]
     fn check_only_hints() {
         let find = |id: &str| MANAGERS.iter().find(|m| m.id == id).unwrap();
-        assert_eq!(check_only_line(find("mas"), 2), "App Store apps: 2 updates (run: sudo mas upgrade)");
+        assert_eq!(
+            check_only_line(find("mas"), 2),
+            "App Store apps: 2 updates (run: sudo mas upgrade)"
+        );
         assert_eq!(
             check_only_line(find("macos"), 1),
             "macOS: 1 update (install it in System Settings > General > Software Update)"

@@ -22,8 +22,11 @@ const MAX_TEXT: usize = 20_000;
 const MAX_ERROR: usize = 1_000;
 const INTERRUPT: &str = "[Request interrupted by user";
 
-static PROJ_WT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"--claude-worktrees-.*").unwrap());
-static WORK_PFX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^work-").unwrap());
+static PROJ_WT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"--claude-worktrees-.*").expect("the worktree regex literal is valid")
+});
+static WORK_PFX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^work-").expect("the work-prefix regex literal is valid"));
 
 /// `~/.claude/projects`.
 pub fn claude_root(home: &Path) -> PathBuf {
@@ -32,10 +35,14 @@ pub fn claude_root(home: &Path) -> PathBuf {
 
 /// The desktop app's session records (title, archived, effort).
 pub fn desktop_dir(home: &Path) -> PathBuf {
-    home.join("Library").join("Application Support").join("Claude").join("claude-code-sessions")
+    home.join("Library")
+        .join("Application Support")
+        .join("Claude")
+        .join("claude-code-sessions")
 }
 
 /// What the desktop app knows about one session.
+#[derive(Debug)]
 pub struct DesktopMeta {
     pub title: Value,
     pub archived: bool,
@@ -64,7 +71,9 @@ pub fn desktop_meta(desktop: &Path) -> HashMap<String, DesktopMeta> {
                     continue;
                 }
                 let Ok(txt) = fs::read(&f) else { continue };
-                let Ok(d) = serde_json::from_slice::<Value>(&txt) else { continue };
+                let Ok(d) = serde_json::from_slice::<Value>(&txt) else {
+                    continue;
+                };
                 let sid = val(&d, "cliSessionId");
                 if truthy(sid) {
                     meta.insert(
@@ -132,7 +141,7 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
-fn doc(c: &FileCtx, time: i64, role: &str, text: &str) -> Option<Doc> {
+fn doc(c: &FileCtx<'_>, time: i64, role: &str, text: &str) -> Option<Doc> {
     if text.trim().is_empty() {
         return None;
     }
@@ -149,8 +158,14 @@ fn doc(c: &FileCtx, time: i64, role: &str, text: &str) -> Option<Doc> {
     })
 }
 
-/// Turn one transcript line into documents. `names` maps tool_use ids to tool names.
-fn line_docs(o: &Line, time: i64, c: &FileCtx, names: &mut HashMap<String, String>, out: &mut dyn FnMut(Doc)) {
+/// Turn one transcript line into documents. `names` maps `tool_use` ids to tool names.
+fn line_docs(
+    o: &Line<'_>,
+    time: i64,
+    c: &FileCtx<'_>,
+    names: &mut HashMap<String, String>,
+    out: &mut dyn FnMut(Doc),
+) {
     let content = &o.msg().content;
     match o.kind.or_empty() {
         "assistant" => {
@@ -164,7 +179,10 @@ fn line_docs(o: &Line, time: i64, c: &FileCtx, names: &mut HashMap<String, Strin
                     Some("tool_use") => {
                         let name = b.name.as_str().unwrap_or("?");
                         names.insert(b.id.or_empty().to_string(), name.to_string());
-                        let arg = ["command", "file_path"].iter().find_map(|k| b.input.get(k)?.as_str()).unwrap_or("");
+                        let arg = ["command", "file_path"]
+                            .iter()
+                            .find_map(|k| b.input.get(k)?.as_str())
+                            .unwrap_or("");
                         if let Some(d) = doc(c, time, "tool", &format!("{name} {arg}")) {
                             out(d);
                         }
@@ -174,14 +192,16 @@ fn line_docs(o: &Line, time: i64, c: &FileCtx, names: &mut HashMap<String, Strin
             }
         }
         "user" => {
-            let is_result = |x: &&Block| x.kind.as_str() == Some("tool_result");
+            let is_result = |x: &&Block<'_>| x.kind.as_str() == Some("tool_result");
             let blocks = content.blocks();
             if blocks.iter().any(|x| is_result(&x)) {
                 for x in blocks.iter().filter(is_result) {
                     if !x.is_error.0 {
                         continue;
                     }
-                    let name = names.get(x.tool_use_id.or_empty()).map_or("?", String::as_str);
+                    let name = names
+                        .get(x.tool_use_id.or_empty())
+                        .map_or("?", String::as_str);
                     let text = match &x.content {
                         Body::Text(s) => s.to_string(),
                         Body::Json(v) => text_of(v),
@@ -198,7 +218,9 @@ fn line_docs(o: &Line, time: i64, c: &FileCtx, names: &mut HashMap<String, Strin
                 return;
             }
             let t = content.text(" ");
-            if t.starts_with(INTERRUPT) || (t.trim_start().starts_with('<') && !t.contains("command-name")) {
+            if t.starts_with(INTERRUPT)
+                || (t.trim_start().starts_with('<') && !t.contains("command-name"))
+            {
                 return;
             }
             if let Some(d) = doc(c, time, "user", &t) {
@@ -210,7 +232,7 @@ fn line_docs(o: &Line, time: i64, c: &FileCtx, names: &mut HashMap<String, Strin
 }
 
 /// Stream one transcript. Err means the file could not be read to the end.
-fn read_file(path: &Path, c: &FileCtx, out: &mut dyn FnMut(Doc)) -> std::io::Result<()> {
+fn read_file(path: &Path, c: &FileCtx<'_>, out: &mut dyn FnMut(Doc)) -> std::io::Result<()> {
     let mut r = BufReader::new(File::open(path)?);
     let mut buf: Vec<u8> = Vec::new();
     let mut names: HashMap<String, String> = HashMap::new();
@@ -221,7 +243,9 @@ fn read_file(path: &Path, c: &FileCtx, out: &mut dyn FnMut(Doc)) -> std::io::Res
             return Ok(());
         }
         let line = String::from_utf8_lossy(&buf);
-        let Some(o) = Line::parse_str(line.trim()) else { continue };
+        let Some(o) = Line::parse_str(line.trim()) else {
+            continue;
+        };
         if let Some(s) = o.timestamp.as_str()
             && let Some((us, _)) = parse_ts_micros(s)
         {
@@ -234,8 +258,8 @@ fn read_file(path: &Path, c: &FileCtx, out: &mut dyn FnMut(Doc)) -> std::io::Res
 fn stamp(path: &Path) -> Option<(u64, i64)> {
     let m = fs::metadata(path).ok()?;
     let mtime = match m.modified().ok()?.duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs() as i64,
-        Err(e) => -(e.duration().as_secs() as i64),
+        Ok(d) => i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+        Err(e) => -i64::try_from(e.duration().as_secs()).unwrap_or(i64::MAX),
     };
     Some((m.len(), mtime))
 }
@@ -247,6 +271,10 @@ fn is_jsonl(p: &Path) -> bool {
 /// Read every Claude Code transcript whose (size, mtime) differs from `since`, in path order.
 /// Returns the (size, mtime) of every transcript found, changed or not. A file that cannot be
 /// read to the end is left out of the result, so the next run reads it again.
+///
+/// # Errors
+///
+/// Returns [`Skip::Missing`] when the `~/.claude/projects` folder does not exist.
 pub fn read_claude(
     home: &Path,
     since: &BTreeMap<PathBuf, (u64, i64)>,
@@ -266,7 +294,10 @@ pub fn read_claude(
         let mut files: Vec<(PathBuf, String, bool)> = Vec::new();
         for f in list_dir(&pdir) {
             if f.is_file() && is_jsonl(&f) {
-                let sid = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let sid = f
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 files.push((f, sid, false));
             } else if f.is_dir() {
                 let sid = fname(&f);
@@ -284,9 +315,18 @@ pub fn read_claude(
                 state.insert(path, st);
                 continue;
             }
-            let title = titles.get(&sid).and_then(|m| m.title.as_str()).unwrap_or("");
+            let title = titles
+                .get(&sid)
+                .and_then(|m| m.title.as_str())
+                .unwrap_or("");
             let file = path.to_string_lossy();
-            let ctx = FileCtx { file: &file, session: &sid, project: &project, title, is_sub };
+            let ctx = FileCtx {
+                file: &file,
+                session: &sid,
+                project: &project,
+                title,
+                is_sub,
+            };
             if read_file(&path, &ctx, out).is_ok() {
                 state.insert(path, st);
             }

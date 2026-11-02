@@ -17,6 +17,8 @@ use std::process::Command;
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+// Cursor keeps its own limits. The Claude guard's 400K and 475K sit under Claude Code's
+// `autoCompactWindow` (500K), which Cursor does not have.
 const NUDGE_CONTEXT: i64 = 300_000;
 const SPAWN_CONTEXT: i64 = 350_000;
 const NUDGE_EVERY: i64 = 5;
@@ -27,7 +29,10 @@ const DIRECT_KEYS: &[&str] = &["context_tokens", "contextTokens"];
 const USAGE_KEYS: &[&str] = &["usage", "token_usage", "tokenUsage", "tokens"];
 
 #[derive(Parser, Debug)]
-#[command(name = "guard_cursor", about = "Cursor port of guard G3 (context ceiling) and the shared checks G14-G17")]
+#[command(
+    name = "guard_cursor",
+    about = "Cursor port of guard G3 (context ceiling) and the shared checks G14-G17"
+)]
 struct Cli {
     mode: Option<String>,
 }
@@ -35,8 +40,17 @@ struct Cli {
 /// `$TMPDIR/cursor-guard`. Without TMPDIR: `/tmp` on Unix, the system temp folder on Windows
 /// (Windows has no `/tmp`).
 fn state_dir_from(tmpdir: Option<String>) -> PathBuf {
-    let fallback = || if cfg!(windows) { env::temp_dir() } else { PathBuf::from("/tmp") };
-    tmpdir.filter(|s| !s.is_empty()).map_or_else(fallback, PathBuf::from).join("cursor-guard")
+    let fallback = || {
+        if cfg!(windows) {
+            env::temp_dir()
+        } else {
+            PathBuf::from("/tmp")
+        }
+    };
+    tmpdir
+        .filter(|s| !s.is_empty())
+        .map_or_else(fallback, PathBuf::from)
+        .join("cursor-guard")
 }
 
 fn state_dir() -> PathBuf {
@@ -45,8 +59,14 @@ fn state_dir() -> PathBuf {
 
 /// A non-empty string field; Python treats "" like a missing value.
 fn str_field<'a>(data: &'a Value, name: &str) -> Option<&'a str> {
-    data.get(name).and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+    data.get(name)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
 }
+
+static UNSAFE_CHARS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[^A-Za-z0-9_.-]").expect("the unsafe-chars regex literal is valid")
+});
 
 fn conv_key(data: &Value, mode: &str) -> String {
     let raw = if mode == "subagent" {
@@ -54,10 +74,13 @@ fn conv_key(data: &Value, mode: &str) -> String {
     } else {
         str_field(data, "conversation_id")
     };
-    static UNSAFE_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^A-Za-z0-9_.-]").unwrap());
     let replaced = UNSAFE_CHARS.replace_all(raw.unwrap_or("unknown"), "_");
     let key: String = replaced.chars().take(128).collect();
-    if key.trim_matches('.').is_empty() { "unknown".to_string() } else { key }
+    if key.trim_matches('.').is_empty() {
+        "unknown".to_string()
+    } else {
+        key
+    }
 }
 
 fn read_state(key: &str) -> BTreeMap<String, Value> {
@@ -73,7 +96,9 @@ fn prune_state(dir: &Path) {
         Ok(d) => d.as_secs(),
         Err(_) => return,
     };
-    let Ok(read_dir) = fs::read_dir(dir) else { return };
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return;
+    };
     let mut files = Vec::new();
     for entry in read_dir.flatten() {
         let path = entry.path();
@@ -103,7 +128,7 @@ fn prune_state(dir: &Path) {
 fn write_state(key: &str, mut st: BTreeMap<String, Value>) {
     let d = state_dir();
     let _ = fs::create_dir_all(&d);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let now = u64::try_from(agent_config::paths::unix_now()).unwrap_or(0);
     st.insert("updated".to_string(), Value::from(now));
     let tmp = d.join(format!(".{}.{}.tmp", key, std::process::id()));
     let target = d.join(format!("{key}.json"));
@@ -115,6 +140,10 @@ fn write_state(key: &str, mut st: BTreeMap<String, Value>) {
     prune_state(&d);
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float to int cast saturates and never panics"
+)]
 fn to_int(v: Option<&Value>) -> i64 {
     match v {
         Some(Value::Number(n)) => {
@@ -128,7 +157,11 @@ fn to_int(v: Option<&Value>) -> i64 {
         }
         Some(Value::String(s)) => {
             let s = s.trim();
-            if s.chars().all(|c| c.is_ascii_digit()) { s.parse::<i64>().unwrap_or(0) } else { 0 }
+            if s.chars().all(|c| c.is_ascii_digit()) {
+                s.parse::<i64>().unwrap_or(0)
+            } else {
+                0
+            }
         }
         _ => 0,
     }
@@ -162,12 +195,16 @@ fn default_app_db() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("/"))
             .join("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
     } else {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join(".config/Cursor/User/globalStorage/state.vscdb")
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/"))
+            .join(".config/Cursor/User/globalStorage/state.vscdb")
     }
 }
 
 fn app_context(data: &Value) -> i64 {
-    let Some(conv) = str_field(data, "parent_conversation_id").or_else(|| str_field(data, "conversation_id")) else {
+    let Some(conv) =
+        str_field(data, "parent_conversation_id").or_else(|| str_field(data, "conversation_id"))
+    else {
         return 0;
     };
     let path = match env::var("CURSOR_GUARD_APP_DB") {
@@ -178,16 +215,31 @@ fn app_context(data: &Value) -> i64 {
         return 0;
     }
     // A path starting with "-" must not be read as an option.
-    let path = if path.is_relative() { PathBuf::from(".").join(&path) } else { path };
+    let path = if path.is_relative() {
+        PathBuf::from(".").join(&path)
+    } else {
+        path
+    };
     let escaped_conv = conv.replace('\'', "''").replace('\0', "");
-    let query = format!("SELECT value FROM cursorDiskKV WHERE key = 'composerData:{escaped_conv}' LIMIT 1;");
+    let query = format!(
+        "SELECT value FROM cursorDiskKV WHERE key = 'composerData:{escaped_conv}' LIMIT 1;"
+    );
     // Read-only, no rc file (-init /dev/null), fixed output mode, 1 s busy timeout.
     let mut cmd = Command::new("sqlite3");
-    cmd.args(["-readonly", "-batch", "-noheader", "-list", "-nullvalue", ""])
-        .args(["-init", "/dev/null", "-cmd", ".timeout 1000"])
-        .arg(&path)
-        .arg(&query);
-    let Some(done) = gc::run_limited(&mut cmd, Duration::from_secs(3)).filter(|d| d.success) else { return 0 };
+    cmd.args([
+        "-readonly",
+        "-batch",
+        "-noheader",
+        "-list",
+        "-nullvalue",
+        "",
+    ])
+    .args(["-init", "/dev/null", "-cmd", ".timeout 1000"])
+    .arg(&path)
+    .arg(&query);
+    let Some(done) = gc::run_limited(&mut cmd, Duration::from_secs(3)).filter(|d| d.success) else {
+        return 0;
+    };
     let val_str = String::from_utf8_lossy(&done.stdout);
     let trimmed = val_str.trim();
     if trimmed.is_empty() {
@@ -226,15 +278,24 @@ fn estimate(data: &Value, st: &BTreeMap<String, Value>) -> i64 {
 fn mode_prompt(data: &Value, key: &str) {
     let mut st = read_state(key);
     let size = estimate(data, &st);
-    let count = if size >= NUDGE_CONTEXT { to_int(st.get("prompts")) + 1 } else { 0 };
+    let count = if size >= NUDGE_CONTEXT {
+        to_int(st.get("prompts")) + 1
+    } else {
+        0
+    };
     st.insert("prompts".to_string(), Value::from(count));
     write_state(key, st);
 
     let mut out = serde_json::json!({"continue": true});
     if count >= 1 && (count - 1) % NUDGE_EVERY == 0 {
-        let msg = format!("Context is about {}K. Run /ps:handoff and continue in a fresh session.", size / 1000);
+        let msg = format!(
+            "Context is about {}K. Run /ps:handoff and continue in a fresh session.",
+            size / 1000
+        );
         out["user_message"] = Value::String(msg.clone());
-        out["additional_context"] = Value::String(format!("Start your reply by telling the user, in one line: {msg}"));
+        out["additional_context"] = Value::String(format!(
+            "Start your reply by telling the user, in one line: {msg}"
+        ));
     }
     emit_out(&serde_json::to_string(&out).unwrap_or_default());
 }
@@ -323,19 +384,28 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
     let event = str_field(data, "hook_event_name").unwrap_or("");
     let cwd_of = |input: &Value| -> PathBuf {
         str_field(data, "cwd")
-            .or_else(|| input.get("working_directory").and_then(|v| v.as_str()).filter(|s| !s.is_empty()))
+            .or_else(|| {
+                input
+                    .get("working_directory")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            })
             .map(PathBuf::from)
             .or_else(|| env::current_dir().ok())
             .unwrap_or_default()
     };
     let is_mcp = event == "beforeMCPExecution" || str_field(data, "mcp_server_name").is_some();
     let is_shell = event == "beforeShellExecution"
-        || (event.is_empty() && str_field(data, "command").is_some() && data.get("tool_name").is_none());
+        || (event.is_empty()
+            && str_field(data, "command").is_some()
+            && data.get("tool_name").is_none());
     if is_mcp {
         let name = str_field(data, "tool_name")?;
         let raw = data.get("tool_input").cloned().unwrap_or(Value::Null);
         let input = match &raw {
-            Value::String(s) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({"input": s})),
+            Value::String(s) => {
+                serde_json::from_str(s).unwrap_or_else(|_| serde_json::json!({"input": s}))
+            }
             other => other.clone(),
         };
         let server = str_field(data, "mcp_server_name").unwrap_or("cursor");
@@ -349,13 +419,27 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
     }
     if is_shell {
         let input = serde_json::json!({"command": str_field(data, "command")?});
-        return Some(ToolCall { tool: "Bash".into(), cwd: cwd_of(&input), input, can_ask: true, read_event: false });
+        return Some(ToolCall {
+            tool: "Bash".into(),
+            cwd: cwd_of(&input),
+            input,
+            can_ask: true,
+            read_event: false,
+        });
     }
     let is_read = event == "beforeReadFile"
-        || (event.is_empty() && str_field(data, "file_path").is_some() && data.get("tool_name").is_none());
+        || (event.is_empty()
+            && str_field(data, "file_path").is_some()
+            && data.get("tool_name").is_none());
     if is_read {
         let input = serde_json::json!({"file_path": str_field(data, "file_path")?});
-        return Some(ToolCall { tool: "Read".into(), cwd: cwd_of(&input), input, can_ask: false, read_event: true });
+        return Some(ToolCall {
+            tool: "Read".into(),
+            cwd: cwd_of(&input),
+            input,
+            can_ask: false,
+            read_event: true,
+        });
     }
     let tool = match str_field(data, "tool_name")? {
         "Shell" => "Bash",
@@ -371,57 +455,48 @@ fn tool_call(data: &Value) -> Option<ToolCall> {
     {
         input["file_path"] = p;
     }
-    Some(ToolCall { tool: tool.into(), cwd: cwd_of(&input), input, can_ask: false, read_event: false })
+    Some(ToolCall {
+        tool: tool.into(),
+        cwd: cwd_of(&input),
+        input,
+        can_ask: false,
+        read_event: false,
+    })
 }
 
-/// Run check `id` when its gate is open (preset on, not in `GUARD_OFF`), the same gate the Claude
-/// guard uses. A check in shadow mode (`GUARD_SHADOW`) logs what it would do and allows. A deny or
-/// an ask goes to the fire log, as in the Claude guard.
-fn gated(check: gc::Check, f: impl FnOnce() -> gc::Verdict) -> gc::Verdict {
-    if !gc::check_enabled(check) {
-        return gc::Verdict::Allow;
-    }
-    let v = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(gc::Verdict::Allow);
-    match &v {
-        gc::Verdict::Ask(m) | gc::Verdict::Deny(m) if gc::shadow(check) => {
-            gc::shadow_log(check, &v, m);
-            gc::Verdict::Allow
-        }
-        gc::Verdict::Ask(_) => {
-            gc::fire_log(check, gc::FireKind::Ask);
-            v
-        }
-        gc::Verdict::Deny(_) => {
-            gc::fire_log(check, gc::FireKind::Deny);
-            v
-        }
-        gc::Verdict::Allow => v,
-    }
-}
-
+/// Each check runs through [`gc::run_gated`]: the same gate, shadow mode and fire log as the Claude
+/// guard.
 fn tool_verdict(call: &ToolCall) -> gc::Verdict {
     let (tool, input, cwd) = (call.tool.as_str(), &call.input, call.cwd.as_path());
     if call.can_ask {
         // G16 runs here: Cursor enforces `ask` on these events only.
-        return gated(gc::Check::G16, || {
-            if !gc::g16_applies(tool, input) {
-                return gc::Verdict::Allow;
-            }
-            let words = gc::private_words_at(&agent_config::paths::home(), Some(cwd));
-            gc::g16_outbound(tool, input, cwd, &words)
-        });
+        return gc::run_gated(gc::Check::G16, || gc::g16_run(tool, input, cwd));
     }
     let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
     let bash = tool == "Bash";
-    let v = gated(gc::Check::G14, || if bash { gc::g14_sed(command, gc::is_macos()) } else { gc::Verdict::Allow });
+    let v = gc::run_gated(gc::Check::G14, || {
+        if bash {
+            gc::g14_sed(command, gc::is_macos())
+        } else {
+            gc::Verdict::Allow
+        }
+    });
     if v != gc::Verdict::Allow {
         return v;
     }
-    let v = gated(gc::Check::G15, || gc::g15_secrets_at(tool, input, &cwd.to_string_lossy()));
+    let v = gc::run_gated(gc::Check::G15, || {
+        gc::g15_secrets_at(tool, input, &cwd.to_string_lossy())
+    });
     if v != gc::Verdict::Allow {
         return v;
     }
-    gated(gc::Check::G17, || if bash { gc::g17_attribution(command, cwd) } else { gc::Verdict::Allow })
+    gc::run_gated(gc::Check::G17, || {
+        if bash {
+            gc::g17_attribution(command, cwd)
+        } else {
+            gc::Verdict::Allow
+        }
+    })
 }
 
 /// Answer one tool event. Always prints a permission answer; any failure allows.
@@ -440,7 +515,8 @@ fn mode_tool(stdin: &str) -> i32 {
             0
         }
         gc::Verdict::Ask(msg) => {
-            let out = serde_json::json!({"permission": "ask", "user_message": msg, "agent_message": msg});
+            let out =
+                serde_json::json!({"permission": "ask", "user_message": msg, "agent_message": msg});
             emit_out(&serde_json::to_string(&out).unwrap_or_else(|_| ALLOW.into()));
             0
         }
@@ -521,8 +597,14 @@ mod tests {
         let d = json!({"parent_conversation_id": "", "conversation_id": ""});
         assert_eq!(conv_key(&d, "subagent"), "unknown");
         // The key names a state file, so an id of dots alone never points outside its folder.
-        assert_eq!(conv_key(&json!({"conversation_id": ".."}), "prompt"), "unknown");
-        assert_eq!(conv_key(&json!({"conversation_id": "../x"}), "prompt"), ".._x");
+        assert_eq!(
+            conv_key(&json!({"conversation_id": ".."}), "prompt"),
+            "unknown"
+        );
+        assert_eq!(
+            conv_key(&json!({"conversation_id": "../x"}), "prompt"),
+            ".._x"
+        );
     }
 
     #[test]
@@ -533,9 +615,19 @@ mod tests {
 
     #[test]
     fn empty_tmpdir_falls_back_to_tmp() {
-        let fallback = if cfg!(windows) { env::temp_dir() } else { PathBuf::from("/tmp") };
-        assert_eq!(state_dir_from(Some(String::new())), fallback.join("cursor-guard"));
+        let fallback = if cfg!(windows) {
+            env::temp_dir()
+        } else {
+            PathBuf::from("/tmp")
+        };
+        assert_eq!(
+            state_dir_from(Some(String::new())),
+            fallback.join("cursor-guard")
+        );
         assert_eq!(state_dir_from(None), fallback.join("cursor-guard"));
-        assert_eq!(state_dir_from(Some("/x".into())), PathBuf::from("/x/cursor-guard"));
+        assert_eq!(
+            state_dir_from(Some("/x".into())),
+            PathBuf::from("/x/cursor-guard")
+        );
     }
 }

@@ -11,7 +11,7 @@ Edit only the block marked `// ==== EDIT THIS BLOCK ====`.
 | `title` | Artifact header + `<title>`. |
 | `subtitle` | One line under the title. |
 | `tokens` | Knob definitions. Each drives one CSS custom property on `:root`. |
-| `variants` | Saved coherent starting points (`id`, `label`, `tokens`). At most 20. First variant auto-loads. |
+| `variants` | Saved coherent starting points (`id`, `label`, `tokens`). First variant auto-loads. |
 | `renderPreview(tokens)` | Returns HTML for the live preview (card + button + badge + input by default). Escape with `esc()`. |
 | `pickPayload(tokens)` | Plain object copied into the `pick:` line. |
 
@@ -24,12 +24,9 @@ Edit only the block marked `// ==== EDIT THIS BLOCK ====`.
 
 Every token writes to `document.documentElement.style.setProperty(css, value)`, so preview, chips and exports share one source of truth.
 
-## Smart features built in
+## Built-in behaviour
 
-- **WCAG contrast**: live AA ratio badges for "Primary on surface" and "Text on primary" (computed from sRGB luminance, `>= 4.5` = pass).
-- **Variants**: pick a variant loads a coherent token set into every knob; chips show each token's value.
-- **Export panel** (appears after a pick): CSS variables, Tailwind `extend` block, and component props JSON — each with a one-click copy button.
-- **Theme**: light/dark via `:root` + `.dark` / `prefers-color-scheme: dark`; knobs write to `:root`.
+The features are listed in `SKILL.md`. Details: contrast is computed from sRGB luminance (`>= 4.5` passes); a variant loads its whole token set into every knob; the export panel appears after a pick (the Tailwind block is an `extend` block); dark mode uses `.dark` / `prefers-color-scheme: dark`.
 
 ## The pick line
 
@@ -41,24 +38,15 @@ pick: <id> { "radius": "12px", "primary": "#b4552d", ... }
 
 ## Apply it back in the project
 
-When the user pastes `pick: <id> {json}`:
+The steps (echo, apply, delete on a yes) and "Rework" are in [ps:pick](../ps_pick/SKILL.md). Map each key to the project and give the exact snippet:
 
-1. Echo: `<id> <label> → <json values>`.
-2. Map each key to the project — give the exact snippet:
-   - CSS variables: `--ds-radius: 12px; --ds-primary: #b4552d;` in `:root` / `.dark`.
-   - Tailwind: add to `tailwind.config.js` `theme.extend.colors.primary` / `borderRadius.DEFAULT` (see the export panel).
-   - Component props: pass `radius="12px" primary="#b4552d"` etc.
-3. Ask for the file path if it is not this session's folder.
-4. Offer to delete the artifact. Delete only on a yes.
-
-## Rework
-
-Change only the thing the user named. Keep every `id` and card the same. Republish to the same URL. Add new variants with new ids. Never renumber.
+- CSS variables: `--ds-radius: 12px; --ds-primary: #b4552d;` in `:root` / `.dark`.
+- Tailwind: add to `tailwind.config.js` `theme.extend.colors.primary` / `borderRadius.DEFAULT` (see the export panel).
+- Component props: pass `radius="12px" primary="#b4552d"` etc.
 
 ## Sandbox constraints
 
-- Zero external dependencies: inline CSS + vanilla JS only. Works in Claude Code, Desktop, Web and iOS/Android artifacts.
-- Phone width: single column, sticky footer, `env(safe-area-inset-bottom)`.
+The artifact works in Claude Code, Desktop, Web and iOS/Android. Phone width: single column, sticky footer, `env(safe-area-inset-bottom)`.
 
 ## References
 

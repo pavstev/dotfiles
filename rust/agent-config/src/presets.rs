@@ -14,8 +14,15 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Every preset folder, sorted. Fragments merge in this order.
-pub const ALL: [&str; 7] =
-    ["clock", "models", "no-ai-attribution", "pace", "plain-writing", "ship-to-main", "workflow"];
+pub const ALL: [&str; 7] = [
+    "clock",
+    "models",
+    "no-ai-attribution",
+    "pace",
+    "plain-writing",
+    "ship-to-main",
+    "workflow",
+];
 
 /// The preset that a new shared install leaves off: a push to a work repo's main can hurt.
 const OFF_FOR_SHARED: &str = "ship-to-main";
@@ -82,7 +89,11 @@ impl From<&Self> for Profile {
 /// The profile named by `DOTFILES_PROFILE`, else by the `PROFILE` setting; empty when neither is set.
 pub fn named_profile(home: &Path) -> String {
     let p = std::env::var("DOTFILES_PROFILE").unwrap_or_default();
-    if p.is_empty() { crate::setting(home, "PROFILE") } else { p }
+    if p.is_empty() {
+        crate::setting(home, "PROFILE")
+    } else {
+        p
+    }
 }
 
 /// The profile: the named one, else `owner` when the private rules exist, else `shared`. Read
@@ -108,7 +119,10 @@ fn parse(home: &Path, profile: Profile) -> (Vec<String>, Vec<String>) {
     let raw = crate::setting(home, "PRESETS");
     let words: Vec<&str> = raw.split([' ', ',']).filter(|w| !w.is_empty()).collect();
     let default = || -> Vec<String> {
-        ALL.iter().filter(|n| profile == Profile::Owner || **n != OFF_FOR_SHARED).map(ToString::to_string).collect()
+        ALL.iter()
+            .filter(|n| profile == Profile::Owner || **n != OFF_FOR_SHARED)
+            .map(ToString::to_string)
+            .collect()
     };
     if words.is_empty() {
         return (default(), Vec::new());
@@ -120,8 +134,16 @@ fn parse(home: &Path, profile: Profile) -> (Vec<String>, Vec<String>) {
         return (ALL.iter().map(ToString::to_string).collect(), Vec::new());
     }
     let want: BTreeSet<&str> = words.iter().copied().collect();
-    let on = ALL.iter().filter(|n| want.contains(**n)).map(ToString::to_string).collect();
-    let unknown = words.iter().filter(|w| !ALL.contains(w)).map(ToString::to_string).collect();
+    let on = ALL
+        .iter()
+        .filter(|n| want.contains(**n))
+        .map(ToString::to_string)
+        .collect();
+    let unknown = words
+        .iter()
+        .filter(|w| !ALL.contains(w))
+        .map(ToString::to_string)
+        .collect();
     (on, unknown)
 }
 
@@ -155,7 +177,9 @@ fn dir(repo: &Path, name: &str) -> PathBuf {
 pub fn rules_text(repo: &Path, names: &[String]) -> String {
     let mut parts: Vec<String> = Vec::new();
     for n in names {
-        let Ok(text) = fs::read_to_string(dir(repo, n).join("rules.md")) else { continue };
+        let Ok(text) = fs::read_to_string(dir(repo, n).join("rules.md")) else {
+            continue;
+        };
         let (_, body) = crate::split_frontmatter(&text);
         let body = body.trim();
         if !body.is_empty() {
@@ -171,10 +195,16 @@ pub fn fragments(repo: &Path, names: &[String]) -> Vec<Value> {
     let mut out = Vec::new();
     for n in names {
         let p = dir(repo, n).join("settings.json");
-        let Ok(text) = fs::read_to_string(&p) else { continue };
+        let Ok(text) = fs::read_to_string(&p) else {
+            continue;
+        };
         match serde_json::from_str::<Value>(&text) {
             Ok(v) if v.is_object() => out.push(v),
-            _ => warn(&format!("{} is not a JSON object, so the {} fragment is left out", crate::tilde(&p), n)),
+            _ => warn(&format!(
+                "{} is not a JSON object, so the {} fragment is left out",
+                crate::tilde(&p),
+                n
+            )),
         }
     }
     out
@@ -207,10 +237,17 @@ pub fn link_all(repo: &Path, home: &Path, names: &[String]) {
         }
         crate::dots::link::link_item(&src, &dst, true);
     }
-    let Ok(entries) = fs::read_dir(&rules) else { return };
+    let Ok(entries) = fs::read_dir(&rules) else {
+        return;
+    };
     for e in entries.filter_map(Result::ok) {
         let file = e.file_name().to_string_lossy().into_owned();
-        let Some(name) = file.strip_prefix("preset-").and_then(|r| r.strip_suffix(".md")) else { continue };
+        let Some(name) = file
+            .strip_prefix("preset-")
+            .and_then(|r| r.strip_suffix(".md"))
+        else {
+            continue;
+        };
         if names.iter().any(|n| n == name) || !ours(&e.path(), &presets) {
             continue;
         }

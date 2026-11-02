@@ -49,4 +49,4 @@ Sources: <what was read, with counts>; <what was unavailable>
 - Use the commit text. Do not add outcomes the commits do not show.
 - Keep the whole text at 12 lines or fewer. Drop the lowest-signal lines first (formatting,
   merge commits). The Sources line counts.
-- Never print an email address or a token. Plain sentences, no em dashes.
+- Never print an email address or a token.

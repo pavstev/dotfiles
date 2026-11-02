@@ -51,15 +51,12 @@ Read each session with `get_session`, then `list_events` for the last turns. Sen
    - a file or branch changes: `Monitor` on an `until` loop that exits on the condition (`test -f` the report, `git merge-base --is-ancestor`).
 4. End the turn. The final report is the signal. An idle notice alone can mean the other session waits on its user: read its last turn with `list_events` before you continue (rebase, run the tests).
 
-Never call `ScheduleWakeup`, `CronCreate` or `/loop` to check on a session. The guard hook denies them under 30 minutes.
-
 ## Red flags
 
 | You think | Do this instead |
 |---|---|
-| "I'll check every few minutes" | One `notify_when_idle` or one `Monitor`, then end the turn |
+| "I'll check every few minutes" (`ScheduleWakeup`, `CronCreate`, `/loop`) | One `notify_when_idle` or one `Monitor`, then end the turn |
 | "A wakeup keeps me from sitting idle" | Idle is the goal. The notice wakes you. |
-| "Just one /loop" | Same cost every tick. Arm one watch. |
 
 ## Safety
 

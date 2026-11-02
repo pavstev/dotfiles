@@ -1,4 +1,4 @@
-//! mic_check: is this repo really done? Read-only (except `git fetch`). Replaces
+//! `mic_check`: is this repo really done? Read-only (except `git fetch`). Replaces
 //! claude/skills/ps_mic-drop/scripts/mic-check.sh (same flags, lines and exit codes).
 //!
 //! ```text
@@ -46,8 +46,20 @@ Last line: VERDICT: CLEAN (exit 0) | NOT CLEAN (n mandatory) (exit 1)
 
 /// Run `git -C dir args`: (success, stdout with trailing newlines cut).
 fn git(dir: &Path, args: &[&str]) -> (bool, String) {
-    match Command::new("git").arg("-C").arg(dir).args(args).stdin(Stdio::null()).stderr(Stdio::null()).output() {
-        Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string()),
+    match Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) => (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout)
+                .trim_end_matches(['\n', '\r'])
+                .to_string(),
+        ),
         Err(_) => (false, String::new()),
     }
 }
@@ -69,13 +81,23 @@ fn count_lines(s: &str) -> usize {
 }
 
 fn on_path(name: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else { return false };
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    std::env::split_paths(&paths).any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    std::env::split_paths(&paths)
+        .any(|d| exts.iter().any(|e| d.join(format!("{name}{e}")).is_file()))
 }
 
 fn base_name(p: &Path) -> String {
-    p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned())
+    p.file_name().map_or_else(
+        || p.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
 }
 
 /// Add a leftover to the project of `dir` (see `agent_config::leftovers`).
@@ -84,7 +106,10 @@ fn note(text: &str, dir: &Path) -> Result<(), leftovers::Error> {
     let added = store.add(text, &[])?;
     println!("saved to {}", store.path().display());
     if added.ignore_added {
-        println!("added .agents/ to {} (commit it)", store.root().join(".gitignore").display());
+        println!(
+            "added .agents/ to {} (commit it)",
+            store.root().join(".gitignore").display()
+        );
     }
     Ok(())
 }
@@ -108,14 +133,20 @@ fn regex(pattern: &str) -> Regex {
 
 /// Each name with the regex that finds it as a `package.json` script key.
 static PACKAGE_SCRIPTS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
-    ["typecheck", "lint", "test", "check", "build"].map(|t| (t, regex(&format!(r#""{t}"\s*:"#)))).into()
+    ["typecheck", "lint", "test", "check", "build"]
+        .map(|t| (t, regex(&format!(r#""{t}"\s*:"#))))
+        .into()
 });
 /// Each name with the regex that finds it as a `Makefile` target.
-static MAKE_TARGETS: LazyLock<Vec<(&str, Regex)>> =
-    LazyLock::new(|| ["check", "lint", "test", "verify"].map(|t| (t, regex(&format!(r"(?m)^{t}:")))).into());
+static MAKE_TARGETS: LazyLock<Vec<(&str, Regex)>> = LazyLock::new(|| {
+    ["check", "lint", "test", "verify"]
+        .map(|t| (t, regex(&format!(r"(?m)^{t}:"))))
+        .into()
+});
 static MISE_TASKS: LazyLock<Regex> = LazyLock::new(|| regex(r"(?m)^\[tasks\.(check|lint|test)\]"));
 static SHA_LIKE: LazyLock<Regex> = LazyLock::new(|| regex(r"^[0-9a-fA-F]{7,40}$"));
-static BAD_CI: LazyLock<Regex> = LazyLock::new(|| regex(r"^completed\|(failure|cancelled|timed_out|startup_failure)"));
+static BAD_CI: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"^completed\|(failure|cancelled|timed_out|startup_failure)"));
 static SPACES: LazyLock<Regex> = LazyLock::new(|| regex(r"\s+"));
 
 /// The masking steps of `safe_args`, in order: pattern and replacement.
@@ -133,7 +164,10 @@ static MASKS: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
         ),
         (r"[A-Za-z0-9_+]{32,}".to_string(), "***"),
     ];
-    steps.into_iter().map(|(pat, rep)| (regex(&pat), rep)).collect()
+    steps
+        .into_iter()
+        .map(|(pat, rep)| (regex(&pat), rep))
+        .collect()
 });
 
 /// The verification commands this repo offers.
@@ -166,7 +200,10 @@ fn checks_for(r: &Path) -> Vec<String> {
             }
         }
     }
-    let justfile = ["justfile", "Justfile"].into_iter().map(|n| r.join(n)).find(|p| p.is_file());
+    let justfile = ["justfile", "Justfile"]
+        .into_iter()
+        .map(|n| r.join(n))
+        .find(|p| p.is_file());
     if let Some(jf) = justfile {
         let summary = Command::new("just")
             .arg("--justfile")
@@ -222,7 +259,9 @@ fn checks_for(r: &Path) -> Vec<String> {
 
 /// True when `.github/workflows/*.y*ml` matches something.
 fn workflows(root: &Path) -> bool {
-    let Ok(rd) = std::fs::read_dir(root.join(".github").join("workflows")) else { return false };
+    let Ok(rd) = std::fs::read_dir(root.join(".github").join("workflows")) else {
+        return false;
+    };
     rd.filter_map(Result::ok).any(|e| {
         let n = e.file_name().to_string_lossy().into_owned();
         n.ends_with("ml") && n[..n.len() - 2].contains(".y")
@@ -232,14 +271,17 @@ fn workflows(root: &Path) -> bool {
 /// Mask what could be a key in a command line (a flag value, KEY=VALUE, a password in a URL).
 /// Over-masking is fine.
 fn safe_args(raw: &str) -> String {
-    let mut s: String = raw.chars().map(|c| if c == '\n' || c == '\t' { ' ' } else { c }).collect();
+    let mut s: String = raw
+        .chars()
+        .map(|c| if c == '\n' || c == '\t' { ' ' } else { c })
+        .collect();
     for (re, rep) in MASKS.iter() {
         s = re.replace_all(&s, *rep).into_owned();
     }
     SPACES.replace_all(&s, " ").trim_matches(' ').to_string()
 }
 
-/// "pid name: args" for one process, args masked and cut to 100 chars; nothing for mic_check itself.
+/// "pid name: args" for one process, args masked and cut to 100 chars; nothing for `mic_check` itself.
 fn proc_line(pid: &str) -> Option<String> {
     let ps = |field: &str| {
         Command::new("ps")
@@ -311,12 +353,25 @@ impl Run {
         }
 
         let branch = g(&["symbolic-ref", "--quiet", "--short", "HEAD"]);
-        let mut main = g(&["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]);
+        let mut main = g(&[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ]);
         if let Some(m) = main.strip_prefix("origin/") {
             main = m.to_string();
         }
         if main.is_empty() {
-            main = if git_ok(&root, &["show-ref", "--verify", "--quiet", "refs/remotes/origin/main"]) {
+            main = if git_ok(
+                &root,
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    "refs/remotes/origin/main",
+                ],
+            ) {
                 "main"
             } else {
                 "master"
@@ -345,7 +400,9 @@ impl Run {
         let conflicts = count_lines(&unmerged);
         if conflicts > 0 {
             let names = each_then_space(lines_of(&unmerged).into_iter().take(5));
-            self.fix(&format!("{conflicts} file(s) with merge conflicts: {names}"));
+            self.fix(&format!(
+                "{conflicts} file(s) with merge conflicts: {names}"
+            ));
         }
         let marked = g(&["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>) "]);
         let markers = each_then_space(lines_of(&marked).into_iter().take(3));
@@ -362,7 +419,9 @@ impl Run {
         } else if branch == main {
             ok(&format!("on {main}"));
         } else {
-            warn(&format!("on branch '{branch}', not '{main}' — merge it, or open a PR (ask the user)"));
+            warn(&format!(
+                "on branch '{branch}', not '{main}' — merge it, or open a PR (ask the user)"
+            ));
         }
 
         // 3. Uncommitted work
@@ -372,7 +431,9 @@ impl Run {
         if staged + unstaged + untracked == 0 {
             ok("working tree clean");
         } else {
-            self.fix(&format!("not committed: {staged} staged, {unstaged} changed, {untracked} new file(s)"));
+            self.fix(&format!(
+                "not committed: {staged} staged, {unstaged} changed, {untracked} new file(s)"
+            ));
             for l in lines_of(&g(&["status", "--short"])).iter().take(8) {
                 println!("          {l}");
             }
@@ -384,25 +445,44 @@ impl Run {
             if up.is_empty() {
                 self.fix(&format!("branch '{branch}' has no upstream — never pushed"));
             } else {
-                let counts = g(&["rev-list", "--left-right", "--count", &format!("{up}...HEAD")]);
-                let mut it = counts.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(0));
+                let counts = g(&[
+                    "rev-list",
+                    "--left-right",
+                    "--count",
+                    &format!("{up}...HEAD"),
+                ]);
+                let mut it = counts
+                    .split_whitespace()
+                    .map(|n| n.parse::<usize>().unwrap_or(0));
                 let (behind, ahead) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
                 if ahead > 0 {
                     self.fix(&format!("{ahead} commit(s) not pushed to {up}"));
                 }
                 if behind > 0 {
-                    self.fix(&format!("{behind} commit(s) on {up} not pulled (pull --rebase, then re-check)"));
+                    self.fix(&format!(
+                        "{behind} commit(s) on {up} not pulled (pull --rebase, then re-check)"
+                    ));
                 }
                 if ahead == 0 && behind == 0 {
-                    ok(&format!("in sync with {up} ({})", g(&["rev-parse", "--short", "HEAD"])));
+                    ok(&format!(
+                        "in sync with {up} ({})",
+                        g(&["rev-parse", "--short", "HEAD"])
+                    ));
                 }
             }
         }
         let origin_main = format!("refs/remotes/origin/{main}");
-        if !branch.is_empty() && branch != main && git_ok(&root, &["show-ref", "--verify", "--quiet", &origin_main]) {
-            let notin: usize = g(&["rev-list", "--count", &format!("origin/{main}..HEAD")]).parse().unwrap_or(0);
+        if !branch.is_empty()
+            && branch != main
+            && git_ok(&root, &["show-ref", "--verify", "--quiet", &origin_main])
+        {
+            let notin: usize = g(&["rev-list", "--count", &format!("origin/{main}..HEAD")])
+                .parse()
+                .unwrap_or(0);
             if notin > 0 {
-                warn(&format!("{notin} commit(s) on '{branch}' are not in origin/{main} yet"));
+                warn(&format!(
+                    "{notin} commit(s) on '{branch}' are not in origin/{main} yet"
+                ));
             }
         }
 
@@ -412,15 +492,26 @@ impl Run {
         }
 
         // 5. Other local branches with unpushed work
-        let refs = g(&["for-each-ref", "--format=%(refname:short)|%(upstream:short)|%(upstream:track)", "refs/heads"]);
+        let refs = g(&[
+            "for-each-ref",
+            "--format=%(refname:short)|%(upstream:short)|%(upstream:track)",
+            "refs/heads",
+        ]);
         for l in lines_of(&refs) {
             let mut p = l.splitn(3, '|');
-            let (b, u, t) = (p.next().unwrap_or(""), p.next().unwrap_or(""), p.next().unwrap_or(""));
+            let (b, u, t) = (
+                p.next().unwrap_or(""),
+                p.next().unwrap_or(""),
+                p.next().unwrap_or(""),
+            );
             if b == branch {
                 continue;
             }
             if u.is_empty() {
-                if !git_ok(&root, &["merge-base", "--is-ancestor", b, &format!("origin/{main}")]) {
+                if !git_ok(
+                    &root,
+                    &["merge-base", "--is-ancestor", b, &format!("origin/{main}")],
+                ) {
                     warn(&format!("branch '{b}' is local only and not merged"));
                 }
             } else if t.contains("ahead") {
@@ -432,12 +523,18 @@ impl Run {
         let stashes = g(&["stash", "list"]);
         let s = count_lines(&stashes);
         if s > 0 {
-            warn(&format!("{s} stash(es) — forgotten work? ({})", lines_of(&stashes)[0]));
+            warn(&format!(
+                "{s} stash(es) — forgotten work? ({})",
+                lines_of(&stashes)[0]
+            ));
         }
         let wt = g(&["worktree", "list"]);
         let w = count_lines(&wt);
         if w > 1 {
-            let first_words = lines_of(&wt).into_iter().skip(1).map(|l| l.split_whitespace().next().unwrap_or(""));
+            let first_words = lines_of(&wt)
+                .into_iter()
+                .skip(1)
+                .map(|l| l.split_whitespace().next().unwrap_or(""));
             let paths = each_then_space(first_words);
             warn(&format!("{} extra worktree(s): {paths}", w - 1));
         }
@@ -450,7 +547,9 @@ impl Run {
         // 8. Verification checks this repo offers (the agent runs them)
         let c = checks_for(&root);
         if c.is_empty() {
-            warn("no known check command found — ask how this repo is verified, or check README/AGENTS.md");
+            warn(
+                "no known check command found — ask how this repo is verified, or check README/AGENTS.md",
+            );
         } else {
             println!("  RUN   verification checks for this repo:");
             for l in &c {
@@ -468,7 +567,11 @@ impl Run {
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
-        let procs: Vec<String> = pids.split_whitespace().filter_map(proc_line).take(5).collect();
+        let procs: Vec<String> = pids
+            .split_whitespace()
+            .filter_map(proc_line)
+            .take(5)
+            .collect();
         if !procs.is_empty() {
             warn("processes still running from this repo:");
             for p in &procs {
@@ -486,9 +589,16 @@ impl Run {
         if sha_like {
             // a sha: must be in this branch, never read as a date
             if git_ok(root, &["merge-base", "--is-ancestor", since, "HEAD"]) {
-                base = g(&["rev-parse", "--verify", "--quiet", &format!("{since}^{{commit}}^")]); // inclusive: the base is the parent
+                base = g(&[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{since}^{{commit}}^"),
+                ]); // inclusive: the base is the parent
             } else {
-                warn(&format!("--since {since} is not an ancestor of HEAD here: no squash range for this repo"));
+                warn(&format!(
+                    "--since {since} is not an ancestor of HEAD here: no squash range for this repo"
+                ));
             }
         } else {
             let revs = g(&["rev-list", &format!("--since={since}"), "HEAD"]);
@@ -496,21 +606,41 @@ impl Run {
                 base = g(&["rev-parse", "--verify", "--quiet", &format!("{first}^")]);
             }
         }
-        let rng = if base.is_empty() { String::new() } else { format!("{base}..HEAD") };
-        let n: usize = if rng.is_empty() { 0 } else { g(&["rev-list", "--count", &rng]).parse().unwrap_or(0) };
+        let rng = if base.is_empty() {
+            String::new()
+        } else {
+            format!("{base}..HEAD")
+        };
+        let n: usize = if rng.is_empty() {
+            0
+        } else {
+            g(&["rev-list", "--count", &rng]).parse().unwrap_or(0)
+        };
         if n == 0 {
-            ok(&format!("no session commits since {since} (or the base is not found)"));
+            ok(&format!(
+                "no session commits since {since} (or the base is not found)"
+            ));
             return;
         }
         let me = g(&["config", "user.email"]);
-        let foreign = g(&["log", "--format=%ae", &rng]).lines().filter(|l| *l != me).count();
+        let foreign = g(&["log", "--format=%ae", &rng])
+            .lines()
+            .filter(|l| *l != me)
+            .count();
         let short = g(&["rev-parse", "--short", &base]);
-        ok(&format!("{n} session commit(s) on top of base {short} (squash: git reset --soft {short})"));
-        for l in lines_of(&g(&["log", "--format=          %h %an  %s", &rng])).iter().take(8) {
+        ok(&format!(
+            "{n} session commit(s) on top of base {short} (squash: git reset --soft {short})"
+        ));
+        for l in lines_of(&g(&["log", "--format=          %h %an  %s", &rng]))
+            .iter()
+            .take(8)
+        {
             println!("{l}");
         }
         if foreign > 0 {
-            warn(&format!("{foreign} of those commit(s) have another author — do not squash them"));
+            warn(&format!(
+                "{foreign} of those commit(s) have another author — do not squash them"
+            ));
         }
         if !g(&["rev-list", "--merges", &rng]).is_empty() {
             warn("merge commit(s) in that range — do not squash");
@@ -521,13 +651,23 @@ impl Run {
         let head = git_out(root, &["rev-parse", "HEAD"]);
         let out = Command::new("gh")
             .current_dir(root)
-            .args(["run", "list", "--commit", &head, "--json", "name,status,conclusion", "-q"])
+            .args([
+                "run",
+                "list",
+                "--commit",
+                &head,
+                "--json",
+                "name,status,conclusion",
+                "-q",
+            ])
             .arg(r#".[] | "\(.status)|\(.conclusion)|\(.name)""#)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output();
         let runs = match out {
-            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim_end_matches('\n').to_string(),
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .trim_end_matches('\n')
+                .to_string(),
             _ => {
                 warn("could not read CI (gh auth?)");
                 return;
@@ -535,18 +675,25 @@ impl Run {
         };
         if runs.is_empty() {
             let short = git_out(root, &["rev-parse", "--short", "HEAD"]);
-            warn(&format!("no CI run found for {short} (not pushed yet, or CI not triggered)"));
+            warn(&format!(
+                "no CI run found for {short} (not pushed yet, or CI not triggered)"
+            ));
             return;
         }
-        let bad: BTreeSet<&str> =
-            runs.lines().filter(|l| BAD_CI.is_match(l)).filter_map(|l| l.split('|').nth(2)).collect();
+        let bad: BTreeSet<&str> = runs
+            .lines()
+            .filter(|l| BAD_CI.is_match(l))
+            .filter_map(|l| l.split('|').nth(2))
+            .collect();
         let pending = runs.lines().filter(|l| !l.starts_with("completed")).count();
         if !bad.is_empty() {
             let names = each_then_space(bad.iter().copied());
             self.fix(&format!("CI failed on HEAD: {names}"));
         }
         if pending > 0 {
-            warn(&format!("{pending} CI run(s) still running on HEAD — wait, then re-check"));
+            warn(&format!(
+                "{pending} CI run(s) still running on HEAD — wait, then re-check"
+            ));
         }
         if bad.is_empty() && pending == 0 {
             ok("CI green on HEAD");
@@ -556,7 +703,11 @@ impl Run {
 
 /// The flags. Help is printed from `USAGE`, so clap's own help flag is off.
 #[derive(Parser)]
-#[command(name = "mic_check", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "mic_check",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 struct Cli {
     /// Print the usage text.
     #[arg(short = 'h', long = "help")]
@@ -582,8 +733,15 @@ fn main() -> ExitCode {
         Ok(cli) => cli,
         // A flag that needs a value and has none exits 1, other bad input 2.
         Err(e) if e.kind() == ErrorKind::InvalidValue => {
-            let flag = e.get(ContextKind::InvalidArg).map(ToString::to_string).unwrap_or_default();
-            let need = if flag.contains("--since") { "--since needs a sha or time" } else { "--note needs text" };
+            let flag = e
+                .get(ContextKind::InvalidArg)
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let need = if flag.contains("--since") {
+                "--since needs a sha or time"
+            } else {
+                "--note needs text"
+            };
             eprintln!("mic_check: {need}");
             return ExitCode::from(1);
         }
@@ -601,7 +759,11 @@ fn main() -> ExitCode {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let mut run = Run { fetch: !cli.no_fetch, since: cli.since.unwrap_or_default(), fixes: 0 };
+    let mut run = Run {
+        fetch: !cli.no_fetch,
+        since: cli.since.unwrap_or_default(),
+        fixes: 0,
+    };
     let mut repos = cli.repos;
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if cli.leftovers || cli.note.is_some() {
@@ -625,9 +787,17 @@ fn main() -> ExitCode {
         run.report(r);
     }
     let mut seen = BTreeSet::new();
-    for store in repos.iter().filter_map(|r| Store::at(r).ok()).filter(|s| seen.insert(s.path().to_path_buf())) {
+    for store in repos
+        .iter()
+        .filter_map(|r| Store::at(r).ok())
+        .filter(|s| seen.insert(s.path().to_path_buf()))
+    {
         if store.path().is_file() {
-            println!("leftovers file: {} ({} open)", store.path().display(), store.open_items().len());
+            println!(
+                "leftovers file: {} ({} open)",
+                store.path().display(),
+                store.open_items().len()
+            );
         }
     }
     if run.fixes == 0 {

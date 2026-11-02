@@ -51,23 +51,32 @@ pub enum ConfigError {
 }
 
 /// A Claude permission rule: `Tool(arg)`.
-static RULE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\w+)\((.*)\)$").unwrap());
+static RULE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\w+)\((.*)\)$").expect("RULE_RE is a valid literal regex"));
 /// The wildcard end of a Bash rule: `:*` or ` *`.
-static WILDCARD_END_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(:\*|\s\*)$").unwrap());
+static WILDCARD_END_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(:\*|\s\*)$").expect("WILDCARD_END_RE is a valid literal regex"));
 /// The front matter block of a Markdown file.
-static FRONTMATTER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)^---\n(.*?)\n---\n?(.*)$").unwrap());
+static FRONTMATTER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)^---\n(.*?)\n---\n?(.*)$").expect("FRONTMATTER_RE is a valid literal regex")
+});
 /// A `key: value` line of front matter.
-static KEY_LINE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z0-9_-]+):(?:\s+(.*)|\s*)$").unwrap());
+static KEY_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([A-Za-z0-9_-]+):(?:\s+(.*)|\s*)$").expect("KEY_LINE_RE is a valid literal regex")
+});
 /// A `- item` line of front matter.
-static ITEM_LINE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*-\s+(.*)$").unwrap());
+static ITEM_LINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*-\s+(.*)$").expect("ITEM_LINE_RE is a valid literal regex"));
 
 pub mod codeview;
 pub mod dots;
+pub mod gitutil;
 pub mod guard_checks;
 pub mod leftovers;
 pub mod out;
 pub mod pace_core;
 pub mod paths;
+pub mod port;
 pub mod presets;
 pub mod proj;
 pub mod pycompat;
@@ -79,8 +88,6 @@ pub mod tools_cli;
 pub mod tools_core;
 pub mod transcript;
 pub mod undo;
-#[allow(unused_imports)]
-use out::{b, d, g, y, z};
 pub use out::{color_enabled, header, info, ok, skip, summary, verbose, warn, wrote};
 
 /// The path with the home folder shown as `~`, for messages.
@@ -140,11 +147,18 @@ pub fn guard_path() -> PathBuf {
 /// `<n>\t<first open step>`. The guard's Stop pass writes it; the statusline reads it. Only
 /// `[A-Za-z0-9_-]` of the session id is kept, so the id cannot leave the folder.
 pub fn status_path(session: &str) -> PathBuf {
-    let mut name: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).collect();
+    let mut name: String = session
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        .collect();
     if name.is_empty() {
         name.push('_');
     }
-    dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache")).join("dots").join("status").join(format!("{name}.txt"))
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from(".cache"))
+        .join("dots")
+        .join("status")
+        .join(format!("{name}.txt"))
 }
 
 /// The file as text, or `None` when it cannot be read.
@@ -154,7 +168,8 @@ pub fn read_text(p: &Path) -> Option<String> {
 
 /// True when the path itself is a symlink (a link to a missing target counts).
 pub fn is_symlink(p: &Path) -> bool {
-    p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
+    p.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// The value without one pair of matching quotes, with JSON escapes read for double quotes.
@@ -179,9 +194,12 @@ pub fn unquote(v: &str) -> String {
 /// Text with no front matter gives an empty map and the whole text.
 pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
     let norm = text.replace("\r\n", "\n");
-    let Some(caps) = FRONTMATTER_RE.captures(&norm) else { return (BTreeMap::new(), text.to_string()) };
-    let meta_text = caps.get(1).unwrap().as_str();
-    let body = caps.get(2).unwrap().as_str().to_string();
+    let Some(caps) = FRONTMATTER_RE.captures(&norm) else {
+        return (BTreeMap::new(), text.to_string());
+    };
+    // Both groups of `FRONTMATTER_RE` always take part in a match, so indexing cannot fail.
+    let meta_text = &caps[1];
+    let body = caps[2].to_string();
     let mut meta: BTreeMap<String, String> = BTreeMap::new();
     let mut key: Option<String> = None;
     let mut style: Option<char> = None;
@@ -193,16 +211,19 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
                  items: &mut Vec<String>,
                  block: &mut Vec<String>,
                  meta: &mut BTreeMap<String, String>| {
-        if key.is_none() {
+        let Some(k) = key.clone() else {
             return;
-        }
-        let k = key.clone().unwrap();
+        };
         if !items.is_empty() {
             meta.insert(k, items.join(", "));
         } else if *style == Some('|') {
             meta.insert(k, block.join("\n").trim_matches('\n').to_string());
         } else if !block.is_empty() {
-            let joined: Vec<String> = block.iter().map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+            let joined: Vec<String> = block
+                .iter()
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
             meta.insert(k, joined.join(" "));
         }
     };
@@ -213,7 +234,8 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
         }
         if let Some(km) = KEY_LINE_RE.captures(line) {
             flush(&mut key, &mut style, &mut items, &mut block, &mut meta);
-            key = Some(km.get(1).unwrap().as_str().to_string());
+            let new_key = km[1].to_string();
+            key = Some(new_key.clone());
             items = Vec::new();
             block = Vec::new();
             let value = km.get(2).map_or("", |m| m.as_str()).trim().to_string();
@@ -222,24 +244,27 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
             } else {
                 style = None;
                 let u = unquote(&value);
-                meta.insert(key.clone().unwrap(), u.clone());
+                meta.insert(new_key, u.clone());
                 if !value.is_empty() {
                     block = vec![u];
                 }
             }
             continue;
         }
-        if key.is_none() {
+        let Some(k) = key.as_ref() else {
+            continue;
+        };
+        if let Some(lm) = ITEM_LINE_RE.captures(line)
+            && style.is_none()
+            && meta.get(k) == Some(&String::new())
+        {
+            items.push(unquote(lm[1].trim()));
             continue;
         }
-        if let Some(lm) = ITEM_LINE_RE.captures(line) {
-            let k = key.clone().unwrap();
-            if style.is_none() && meta.get(&k) == Some(&String::new()) {
-                items.push(unquote(lm.get(1).unwrap().as_str().trim()));
-                continue;
-            }
-        }
-        if line.starts_with(' ') || line.starts_with('\t') || (style.is_some() && line.trim().is_empty()) {
+        if line.starts_with(' ')
+            || line.starts_with('\t')
+            || (style.is_some() && line.trim().is_empty())
+        {
             if style == Some('|') {
                 block.push(line.trim().to_string());
             } else {
@@ -254,7 +279,11 @@ pub fn split_frontmatter(text: &str) -> (BTreeMap<String, String>, String) {
 /// The private `owner.md` rules file, only for the `owner` profile and only when it exists.
 pub fn owner_overlay(home: &Path, profile: Profile) -> Option<PathBuf> {
     let f = home.join(OWNER_MD);
-    if profile == Profile::Owner && f.is_file() { Some(f) } else { None }
+    if profile == Profile::Owner && f.is_file() {
+        Some(f)
+    } else {
+        None
+    }
 }
 
 fn has_preset_rules(home: &Path, profile: Profile) -> bool {
@@ -270,7 +299,11 @@ pub fn rules_text(home: &Path, profile: Profile) -> String {
         text = format!("{}\n\n{}\n", text.trim_end_matches('\n'), extra);
     }
     if let Some(overlay) = owner_overlay(home, profile) {
-        format!("{}\n\n{}", text.trim_end_matches('\n'), read_text(&overlay).unwrap_or_default())
+        format!(
+            "{}\n\n{}",
+            text.trim_end_matches('\n'),
+            read_text(&overlay).unwrap_or_default()
+        )
     } else {
         text
     }
@@ -282,7 +315,9 @@ pub fn yaml_str(v: &str) -> String {
         || v.contains(": ")
         || v.contains(" #")
         || (!v.is_empty() && v.trim() != v)
-        || v.chars().next().is_some_and(|c| "!&*?|>%@`'\"[]{},#-".contains(c))
+        || v.chars()
+            .next()
+            .is_some_and(|c| "!&*?|>%@`'\"[]{},#-".contains(c))
     {
         serde_json::to_string(v).unwrap_or_default()
     } else {
@@ -297,8 +332,17 @@ pub fn mdc(description: &str, body: &str) -> String {
 
 /// The `generated-by` comment that opens a generated file and names its sources.
 pub fn stamp(srcs: &[&str]) -> String {
-    let edit = if srcs.len() == 1 { "that file" } else { "those files" };
-    format!("<!-- {} (scripts/agent-config) from {}. Edit {}, then run dots. -->\n\n", MARK, srcs.join(" and "), edit)
+    let edit = if srcs.len() == 1 {
+        "that file"
+    } else {
+        "those files"
+    };
+    format!(
+        "<!-- {} (scripts/agent-config) from {}. Edit {}, then run dots. -->\n\n",
+        MARK,
+        srcs.join(" and "),
+        edit
+    )
 }
 
 /// The SHA-256 of the text, in lowercase hex.
@@ -311,7 +355,9 @@ pub fn sha(text: &str) -> String {
 /// One value from `~/.config/dotfiles/settings` (the last line of that name wins), or an empty string.
 pub fn setting(home: &Path, name: &str) -> String {
     let p = home.join(SETTINGS);
-    let Ok(data) = fs::read(&p) else { return String::new() };
+    let Ok(data) = fs::read(&p) else {
+        return String::new();
+    };
     let text = String::from_utf8_lossy(&data);
     let mut value = String::new();
     for line in text.split('\n') {
@@ -330,7 +376,12 @@ pub fn setting(home: &Path, name: &str) -> String {
 pub fn user_rules_text(home: &Path, profile: Profile) -> String {
     let mut text = format!("{}{}", CURSOR_NOTE, rules_text(home, profile));
     if let Some((name, _, body)) = output_style(home) {
-        text = format!("{}\n\n# Reply style: {}\n\n{}", text.trim_end_matches('\n'), name, body);
+        text = format!(
+            "{}\n\n# Reply style: {}\n\n{}",
+            text.trim_end_matches('\n'),
+            name,
+            body
+        );
     }
     text
 }
@@ -351,12 +402,17 @@ pub fn built_settings(home: &Path) -> Value {
 /// The repo base with the settings fragments of the enabled presets merged over it, in order.
 pub fn with_presets(home: &Path, base: &Value) -> Value {
     let on = presets::enabled_quiet(home, presets::current_profile(home));
-    presets::fragments(&repo_root(), &on).iter().fold(base.clone(), |acc, f| merge(&acc, f))
+    presets::fragments(&repo_root(), &on)
+        .iter()
+        .fold(base.clone(), |acc, f| merge(&acc, f))
 }
 
 /// The active output style as (name, file, body), or `None` when the style is `default` or not found.
 pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
-    let style_name = built_settings(home).get("outputStyle").and_then(|v| v.as_str()).map(ToString::to_string);
+    let style_name = built_settings(home)
+        .get("outputStyle")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string);
     let name = match style_name {
         Some(s) if s.to_lowercase() != "default" => s,
         _ => return None,
@@ -382,11 +438,18 @@ pub fn output_style(home: &Path) -> Option<(String, PathBuf, String)> {
 // Writers
 /// Writes the file through a temp file and a rename, so a reader never sees half a file.
 /// It creates missing folders and sets `mode` (else keeps the old mode, or 0644 for a new file).
+///
+/// # Errors
+///
+/// Returns an error when the folder, the temp file, the write, the mode change or the rename fails.
 pub fn atomic_write(path: &Path, text: &str, mode: Option<u32>) -> io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
     let mut builder = tempfile::Builder::new();
-    let prefix = format!(".{}.", path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp"));
+    let prefix = format!(
+        ".{}.",
+        path.file_name().and_then(|s| s.to_str()).unwrap_or("tmp")
+    );
     builder.prefix(&prefix);
     let mut nt = builder.tempfile_in(parent)?;
     nt.write_all(text.as_bytes())?;
@@ -425,7 +488,10 @@ pub fn write_generated(path: &Path, text: &str, mode: Option<u32>) {
     let is_sym = is_symlink(path);
     let has_mark = read_text(path).is_some_and(|t| t.contains(MARK));
     if is_sym || (path.exists() && !has_mark) {
-        warn(&format!("{} exists and is not ours, left untouched", tilde(path)));
+        warn(&format!(
+            "{} exists and is not ours, left untouched",
+            tilde(path)
+        ));
         return;
     }
     if path.exists()
@@ -494,7 +560,10 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
         return;
     }
     if is_symlink(path) {
-        warn(&format!("{} is a symlink (yours), left untouched", tilde(path)));
+        warn(&format!(
+            "{} is a symlink (yours), left untouched",
+            tilde(path)
+        ));
         return;
     }
     if dry() {
@@ -503,8 +572,14 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
     }
     if path.exists() {
         // A failed backup stops the write: the old file may be the only copy.
-        if let Err(e) = fs::copy(path, backup_path(path, unix_ts())) {
-            warn(&format!("could not back up {}: {e}; left untouched", tilde(path)));
+        if let Err(e) = fs::copy(
+            path,
+            backup_path(path, u64::try_from(paths::unix_now()).unwrap_or(0)),
+        ) {
+            warn(&format!(
+                "could not back up {}: {e}; left untouched",
+                tilde(path)
+            ));
             return;
         }
     }
@@ -518,7 +593,9 @@ pub fn save_json(path: &Path, old: &Value, new: &Value, private: bool) {
 /// A free `<file>.bak-<ts>` name next to `path`. A second save in the same second gets
 /// `-1`, `-2` and so on, so it never overwrites the backup of the first.
 pub fn backup_path(path: &Path, ts: u64) -> PathBuf {
-    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
     let mut bak = path.with_file_name(format!("{name}.bak-{ts}"));
     let mut n = 0;
     while bak.symlink_metadata().is_ok() {
@@ -528,21 +605,31 @@ pub fn backup_path(path: &Path, ts: u64) -> PathBuf {
     bak
 }
 
-fn unix_ts() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
 // MCP
 /// True when Cursor MCP servers are on (`DOTFILES_MCP`, else the `CURSOR_MCP` setting).
 pub fn mcp_wanted(home: &Path) -> bool {
-    let v = env::var("DOTFILES_MCP").unwrap_or_default().trim().to_lowercase();
-    let v = if v.is_empty() { setting(home, "CURSOR_MCP").trim().to_lowercase() } else { v };
+    let v = env::var("DOTFILES_MCP")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    let v = if v.is_empty() {
+        setting(home, "CURSOR_MCP").trim().to_lowercase()
+    } else {
+        v
+    };
     matches!(v.as_str(), "1" | "on" | "yes" | "true")
 }
 /// True when Opencode MCP servers are on (`DOTFILES_MCP`, else the `OPENCODE_MCP` setting).
 pub fn opencode_mcp_wanted(home: &Path) -> bool {
-    let v = env::var("DOTFILES_MCP").unwrap_or_default().trim().to_lowercase();
-    let v = if v.is_empty() { setting(home, "OPENCODE_MCP").trim().to_lowercase() } else { v };
+    let v = env::var("DOTFILES_MCP")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    let v = if v.is_empty() {
+        setting(home, "OPENCODE_MCP").trim().to_lowercase()
+    } else {
+        v
+    };
     matches!(v.as_str(), "1" | "on" | "yes" | "true")
 }
 
@@ -559,20 +646,28 @@ pub fn cursor_rules(home: &Path, profile: Profile) {
         if read_text(&mark).unwrap_or_default().trim() == sha(&user_rules_text(home, profile)) {
             skip("Cursor User Rules (pasted in Cursor Settings)");
         } else {
-            warn("the rules changed. Run cursor-rules, then paste in Cursor Settings > Rules > User Rules");
+            warn(
+                "the rules changed. Run cursor-rules, then paste in Cursor Settings > Rules > User Rules",
+            );
         }
         return;
     }
     let overlay = owner_overlay(home, profile);
     let (desc, mode) = if overlay.is_some() {
-        ("Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules", Some(0o600))
+        (
+            "Global rules from the dotfiles repo (claude/CLAUDE.md) and the owner's private rules",
+            Some(0o600),
+        )
     } else {
         if profile == Profile::Owner {
             warn(
                 "no ~/.config/dotfiles/owner.md, so the Cursor rule has no owner-only rules. Add them with: dots settings",
             );
         }
-        ("Global rules from the dotfiles repo (claude/CLAUDE.md)", None)
+        (
+            "Global rules from the dotfiles repo (claude/CLAUDE.md)",
+            None,
+        )
     };
     let mut src_labels: Vec<&str> = vec!["claude/CLAUDE.md"];
     if has_preset_rules(home, profile) {
@@ -581,7 +676,12 @@ pub fn cursor_rules(home: &Path, profile: Profile) {
     if overlay.is_some() {
         src_labels.push("~/.config/dotfiles/owner.md");
     }
-    let body = format!("{}{}{}", stamp(&src_labels), CURSOR_NOTE, rules_text(home, profile));
+    let body = format!(
+        "{}{}{}",
+        stamp(&src_labels),
+        CURSOR_NOTE,
+        rules_text(home, profile)
+    );
     write_generated(&rules.join("claude-global.mdc"), &mdc(desc, &body), mode);
 
     let target = rules.join("claude-output-style.mdc");
@@ -589,16 +689,31 @@ pub fn cursor_rules(home: &Path, profile: Profile) {
         remove_generated(&target, "its source is gone");
         return;
     };
-    let from = format!("claude/output-styles/{}", style_file.file_name().unwrap_or_default().to_string_lossy());
+    let from = format!(
+        "claude/output-styles/{}",
+        style_file.file_name().unwrap_or_default().to_string_lossy()
+    );
     let body = format!("{}# Reply style: {name}\n\n{sbody}", stamp(&[&from]));
-    write_generated(&target, &mdc(&format!("Reply style \"{name}\" (Claude outputStyle)"), &body), None);
+    write_generated(
+        &target,
+        &mdc(
+            &format!("Reply style \"{name}\" (Claude outputStyle)"),
+            &body,
+        ),
+        None,
+    );
 }
 
 /// The `.md` files directly in `dir`, sorted. A missing folder gives none.
 fn md_files(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
-    let mut files: Vec<PathBuf> =
-        entries.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).collect();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
     files.sort();
     files
 }
@@ -614,20 +729,33 @@ struct AgentSrc<'a> {
 
 /// Writes `<dst>/<name>.md` for each `claude/agents/*.md` (its front matter from `front`) and removes
 /// generated files in `dst` whose source is gone.
-fn sync_agents(dst: &Path, front: impl Fn(&AgentSrc) -> Vec<String>) {
+fn sync_agents(dst: &Path, front: impl Fn(&AgentSrc<'_>) -> Vec<String>) {
     let mut wanted: BTreeSet<String> = BTreeSet::new();
     for src in md_files(&claude_dir().join("agents")) {
-        let file = src.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let file = src
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         if file == "README.md" {
             continue;
         }
         let (meta, body) = split_frontmatter(&fs::read_to_string(&src).unwrap_or_default());
-        let name =
-            meta.get("name").cloned().unwrap_or_else(|| src.file_stem().unwrap_or_default().to_string_lossy().into());
-        let tools = meta
-            .get("tools")
-            .map_or_else(BTreeSet::new, |t| t.split(',').map(str::trim).filter(|t| !t.is_empty()).collect());
-        let lines = front(&AgentSrc { name: &name, meta: &meta, tools });
+        let name = meta
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| src.file_stem().unwrap_or_default().to_string_lossy().into());
+        let tools = meta.get("tools").map_or_else(BTreeSet::new, |t| {
+            t.split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .collect()
+        });
+        let lines = front(&AgentSrc {
+            name: &name,
+            meta: &meta,
+            tools,
+        });
         let text = format!(
             "---\n{}\n---\n{}{}",
             lines.join("\n"),
@@ -664,7 +792,9 @@ pub fn cursor_agents(home: &Path) {
 // the non-empty guard path, and the result only lands in hooks.json, which is rebuilt every run.
 // The Python tool is gone, so nothing compares against it.
 fn shlex_quote(s: &str) -> String {
-    if s.bytes().all(|b| b.is_ascii_alphanumeric() || b".,/:=_-@%+".contains(&b)) {
+    if s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b".,/:=_-@%+".contains(&b))
+    {
         s.to_string()
     } else {
         format!("'{}'", s.replace('\'', "'\\''"))
@@ -682,7 +812,7 @@ struct HookEntry {
 
 /// The events the guard hooks into: (event, `guard_cursor` mode, tool matcher).
 ///
-/// `tool` mode runs the shared checks G14-G17 (src/bin/guard_cursor.rs). preToolUse carries the
+/// `tool` mode runs the shared checks G14-G17 (`src/bin/guard_cursor.rs`). preToolUse carries the
 /// deny checks for the shell, read and grep tools; beforeShellExecution and beforeMCPExecution
 /// carry G16, because Cursor enforces `ask` only on those two (docs: cursor.com/docs/hooks).
 /// beforeReadFile carries G15 for reads with the documented `file_path`, so a renamed
@@ -701,7 +831,10 @@ const HOOK_EVENTS: [(&str, &str, Option<&str>); 9] = [
 
 /// True for a hook entry that runs our `guard_cursor`.
 pub(crate) fn is_guard_hook(entry: &Value) -> bool {
-    entry.get("command").and_then(Value::as_str).is_some_and(|c| c.contains("guard_cursor"))
+    entry
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| c.contains("guard_cursor"))
 }
 
 /// Puts the guard hook entries into `~/.cursor/hooks.json`, replacing our old ones and keeping the user's.
@@ -709,25 +842,38 @@ pub fn cursor_hooks(home: &Path) {
     let path = home.join(".cursor").join("hooks.json");
     let Some(old) = load_json(&path) else {
         if path.exists() {
-            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+            warn(&format!(
+                "{} is not valid JSON, left untouched",
+                tilde(&path)
+            ));
         }
         return;
     };
     // Edit a copy of the file's own map, so every other key keeps its place and bytes.
     let Value::Object(mut doc) = old.clone() else {
-        warn(&format!("{} is not a JSON object, left untouched", tilde(&path)));
+        warn(&format!(
+            "{} is not a JSON object, left untouched",
+            tilde(&path)
+        ));
         return;
     };
     doc.entry("version").or_insert(serde_json::json!(1));
     let Value::Object(hooks) = doc.entry("hooks").or_insert_with(|| serde_json::json!({})) else {
-        warn(&format!("{} has a non-object `hooks`, left untouched", tilde(&path)));
+        warn(&format!(
+            "{} has a non-object `hooks`, left untouched",
+            tilde(&path)
+        ));
         return;
     };
     // drop our entries, and note where the first of them sat
     let mut slots: BTreeMap<String, usize> = BTreeMap::new();
     let events: Vec<String> = hooks.keys().cloned().collect();
     for event in events {
-        let entries = hooks.get(&event).and_then(Value::as_array).cloned().unwrap_or_default();
+        let entries = hooks
+            .get(&event)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if let Some(first) = entries.iter().position(is_guard_hook) {
             slots.insert(event.clone(), first);
         }
@@ -744,8 +890,17 @@ pub fn cursor_hooks(home: &Path) {
         let mut placed: BTreeMap<&str, usize> = BTreeMap::new();
         for (event, mode, matcher) in HOOK_EVENTS {
             let command = format!("test -r {q} || exit 0; sh {q} --hook guard_cursor {mode}");
-            let entry = serde_json::to_value(HookEntry { command, timeout: 10, matcher }).unwrap_or_default();
-            let Some(entries) = hooks.entry(event).or_insert_with(|| serde_json::json!([])).as_array_mut() else {
+            let entry = serde_json::to_value(HookEntry {
+                command,
+                timeout: 10,
+                matcher,
+            })
+            .unwrap_or_default();
+            let Some(entries) = hooks
+                .entry(event)
+                .or_insert_with(|| serde_json::json!([]))
+                .as_array_mut()
+            else {
                 continue;
             };
             // an event can hold several of our entries: each goes after the ones placed before it
@@ -770,16 +925,26 @@ pub fn cursor_mcp(home: &Path) {
         .cloned()
         .unwrap_or(serde_json::json!({}));
     let path = home.join(".cursor").join("mcp.json");
-    let old = load_json(&path);
-    if old.is_none() {
+    let Some(old) = load_json(&path) else {
         if path.exists() {
-            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+            warn(&format!(
+                "{} is not valid JSON, left untouched",
+                tilde(&path)
+            ));
         }
         return;
-    }
-    let old = old.unwrap();
+    };
     let mut new = old.clone();
-    let servers = new.as_object_mut().unwrap().entry("mcpServers".to_string()).or_insert(serde_json::json!({}));
+    let Some(new_obj) = new.as_object_mut() else {
+        warn(&format!(
+            "{} is not a JSON object, left untouched",
+            tilde(&path)
+        ));
+        return;
+    };
+    let servers = new_obj
+        .entry("mcpServers".to_string())
+        .or_insert(serde_json::json!({}));
     if let Some(servers) = servers.as_object_mut()
         && let Some(omap) = ours.as_object()
     {
@@ -800,7 +965,9 @@ pub fn translate_permission(rule: &str, kind: &str) -> Option<String> {
         }),
         "Read" => Some(format!("Read({})", rule_path(arg, kind))),
         "Edit" | "Write" => Some(format!("Write({})", rule_path(arg, kind))),
-        "WebFetch" => arg.strip_prefix("domain:").map(|d| format!("WebFetch({d})")),
+        "WebFetch" => arg
+            .strip_prefix("domain:")
+            .map(|d| format!("WebFetch({d})")),
         _ => None,
     }
 }
@@ -829,14 +996,17 @@ fn parse_bash(arg: &str) -> Option<BashRule> {
     let trimmed = arg.trim();
     let (exe, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
     let (exe, rest) = (exe.trim(), rest.trim());
-    (!exe.is_empty() && !rest.is_empty() && !arg.contains('*'))
-        .then(|| BashRule::Exact { exe: exe.to_string(), rest: rest.to_string() })
+    (!exe.is_empty() && !rest.is_empty() && !arg.contains('*')).then(|| BashRule::Exact {
+        exe: exe.to_string(),
+        rest: rest.to_string(),
+    })
 }
 
 /// A path of a Read, Edit or Write rule. A deny rule on a relative path matches it anywhere.
 fn rule_path(arg: &str, kind: &str) -> String {
     let path = arg.strip_prefix("./").unwrap_or(arg);
-    if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**") {
+    if kind == "deny" && !path.starts_with('/') && !path.starts_with('~') && !path.starts_with("**")
+    {
         format!("**/{path}")
     } else {
         path.to_string()
@@ -854,16 +1024,28 @@ struct StatusLine {
 
 /// The strings of a JSON array; anything else in it, or a value that is no array, adds nothing.
 fn strings(v: Option<&Value>) -> Vec<String> {
-    v.and_then(Value::as_array).into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect()
+    v.and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|x| x.as_str().map(String::from))
+        .collect()
 }
 
 /// Merges translated permissions, the no-attribution flags and the status line into
 /// `~/.cursor/cli-config.json`. Rules it added before are tracked in a sidecar file.
+///
+/// # Errors
+///
+/// Returns a [`ConfigError`] when a permission list or a part of `cli-config.json` that dots
+/// edits has the wrong JSON type (not a list, not an object).
 pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
     let path = home.join(".cursor").join("cli-config.json");
     let Some(old) = load_json(&path) else {
         if path.exists() {
-            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+            warn(&format!(
+                "{} is not valid JSON, left untouched",
+                tilde(&path)
+            ));
         }
         return Ok(());
     };
@@ -872,22 +1054,35 @@ pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
         return Err(ConfigError::NotAnObject("cli-config.json"));
     };
     doc.entry("version").or_insert(serde_json::json!(1));
-    doc.entry("editor").or_insert(serde_json::json!({"vimMode": false}));
+    doc.entry("editor")
+        .or_insert(serde_json::json!({"vimMode": false}));
     let src = load_json(&claude_dir().join("settings.json")).unwrap_or(serde_json::json!({}));
     let side = home.join(".cursor").join(MANAGED);
-    let managed = load_json(&side).filter(Value::is_object).unwrap_or(serde_json::json!({}));
+    let managed = load_json(&side)
+        .filter(Value::is_object)
+        .unwrap_or(serde_json::json!({}));
     let mut added: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let Value::Object(perms) = doc.entry("permissions").or_insert(serde_json::json!({})) else {
         return Err(ConfigError::NotAnObject("permissions in cli-config.json"));
     };
     for kind in ["allow", "deny"] {
-        let Some(have) = perms.entry(kind).or_insert(serde_json::json!([])).as_array_mut() else {
+        let Some(have) = perms
+            .entry(kind)
+            .or_insert(serde_json::json!([]))
+            .as_array_mut()
+        else {
             return Err(ConfigError::NotAList(kind));
         };
         let rules = strings(src.get("permissions").and_then(|p| p.get(kind)));
-        let want: Vec<String> = rules.iter().filter_map(|r| translate_permission(r, kind)).collect();
+        let want: Vec<String> = rules
+            .iter()
+            .filter_map(|r| translate_permission(r, kind))
+            .collect();
         let prev: BTreeSet<String> = strings(managed.get(kind)).into_iter().collect();
-        let mut kept: Vec<String> = have.iter().filter_map(|x| x.as_str().map(String::from)).collect();
+        let mut kept: Vec<String> = have
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect();
         kept.retain(|r| want.contains(r) || !prev.contains(r));
         for m in &want {
             if !kept.contains(m) {
@@ -898,7 +1093,11 @@ pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
         added.insert(kind.to_string(), want);
     }
     // attribution
-    let Some(attr) = doc.entry("attribution").or_insert(serde_json::json!({})).as_object_mut() else {
+    let Some(attr) = doc
+        .entry("attribution")
+        .or_insert(serde_json::json!({}))
+        .as_object_mut()
+    else {
         return Err(ConfigError::NotAnObject("attribution in cli-config.json"));
     };
     for flag in ["attributeCommitsToAgent", "attributePRsToAgent"] {
@@ -909,13 +1108,20 @@ pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
     // Older runs wrote `~/.claude/statusline.sh` (gone) and then ran the launcher through bash (slower
     // to start than sh): replace those two, keep any other command.
     let old_statusline = doc.get("statusLine").is_some_and(|s| {
-        s.get("command")
-            .and_then(Value::as_str)
-            .is_some_and(|c| c.contains("statusline.sh") || c == "bash ~/.claude/hooks/rust-bin statusline")
+        s.get("command").and_then(Value::as_str).is_some_and(|c| {
+            c.contains("statusline.sh") || c == "bash ~/.claude/hooks/rust-bin statusline"
+        })
     });
     if (!doc.contains_key("statusLine") || old_statusline) && launcher.exists() {
-        let line = StatusLine { kind: "command", command: "sh ~/.claude/hooks/rust-bin statusline", padding: 0 };
-        doc.insert("statusLine".to_string(), serde_json::to_value(line).unwrap_or_default());
+        let line = StatusLine {
+            kind: "command",
+            command: "sh ~/.claude/hooks/rust-bin statusline",
+            padding: 0,
+        };
+        doc.insert(
+            "statusLine".to_string(),
+            serde_json::to_value(line).unwrap_or_default(),
+        );
     }
     let new = Value::Object(doc);
     save_json(&path, &old, &new, true);
@@ -925,7 +1131,11 @@ pub fn cursor_cli_config(home: &Path) -> Result<(), ConfigError> {
         && after == new
         && managed != serde_json::to_value(&added).ok().unwrap_or(Value::Null)
     {
-        write_or_warn(&side, &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"), None);
+        write_or_warn(
+            &side,
+            &(serde_json::to_string_pretty(&added).unwrap_or_default() + "\n"),
+            None,
+        );
     }
     Ok(())
 }
@@ -941,7 +1151,10 @@ pub fn opencode_agents(home: &Path) {
         lines.push("mode: subagent".to_string());
         lines.push("permission:".to_string());
         // Bash alone does not count here: Opencode's `edit` permission covers file edits only.
-        if !["Write", "Edit", "MultiEdit", "NotebookEdit"].iter().any(|t| a.tools.contains(t)) {
+        if !["Write", "Edit", "MultiEdit", "NotebookEdit"]
+            .iter()
+            .any(|t| a.tools.contains(t))
+        {
             lines.push("  edit: deny".to_string());
         }
         lines.push("  skill: allow".to_string());
@@ -957,7 +1170,11 @@ const OPENCODE_PLUGIN: &str = include_str!("opencode_plugin.ts.tmpl");
 /// that name and no `generated-by` marker is the user's and stays. Without the launcher the generated
 /// plugin is removed.
 pub fn opencode_plugin(home: &Path) {
-    let path = home.join(".config").join("opencode").join("plugins").join("dots-guard.ts");
+    let path = home
+        .join(".config")
+        .join("opencode")
+        .join("plugins")
+        .join("dots-guard.ts");
     let guard = guard_path();
     if !guard.is_file() {
         remove_generated(&path, "the guard launcher is missing");
@@ -966,8 +1183,9 @@ pub fn opencode_plugin(home: &Path) {
     // a JSON string is a valid TypeScript string literal
     let literal = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
     let sh = plugin_sh(dots::os::is_windows(), dots::os::which("sh"));
-    let text =
-        OPENCODE_PLUGIN.replace("__RUST_BIN__", &literal(&guard.to_string_lossy())).replace("__SH__", &literal(&sh));
+    let text = OPENCODE_PLUGIN
+        .replace("__RUST_BIN__", &literal(&guard.to_string_lossy()))
+        .replace("__SH__", &literal(&sh));
     write_generated(&path, &text, None);
 }
 
@@ -988,31 +1206,30 @@ pub fn superlite_wanted(home: &Path) -> bool {
 }
 
 fn superlite_repo() -> String {
-    env::var("DOTS_SUPERLITE_REPO").ok().filter(|r| !r.is_empty()).unwrap_or_else(|| SUPERLITE_REPO.to_string())
+    env::var("DOTS_SUPERLITE_REPO")
+        .ok()
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| SUPERLITE_REPO.to_string())
 }
 
-/// `git -C dir args`, its trimmed stdout when it exited 0.
+/// `git -C dir args`, its stdout when it exited 0.
 fn git_in(dir: &Path, args: &[&str]) -> Option<String> {
-    let o = process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .stdin(process::Stdio::null())
-        .stderr(process::Stdio::null())
-        .output()
-        .ok()?;
-    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    gitutil::git_out(Some(dir), args)
 }
 
 /// The Cursor plugin folder of superlite. Cursor loads a real folder there; a symlink to a folder
 /// outside `~/.cursor/plugins/local` is skipped, so this is a clone, not a link.
 pub fn cursor_superlite_dir(home: &Path) -> PathBuf {
-    home.join(".cursor").join("plugins").join("local").join("superlite")
+    home.join(".cursor")
+        .join("plugins")
+        .join("local")
+        .join("superlite")
 }
 
 /// True when `dir` is our clone: a git folder whose origin is the superlite repo.
 pub fn is_superlite_clone(dir: &Path) -> bool {
-    dir.join(".git").exists() && git_in(dir, &["remote", "get-url", "origin"]).is_some_and(|u| u == superlite_repo())
+    dir.join(".git").exists()
+        && git_in(dir, &["remote", "get-url", "origin"]).is_some_and(|u| u == superlite_repo())
 }
 
 /// Cursor: clone superlite into the local plugin folder, or fast-forward it; remove our clone when
@@ -1023,9 +1240,15 @@ pub fn cursor_superlite(home: &Path) {
     if !superlite_wanted(home) {
         if ours {
             if dry() {
-                info(&format!("would remove {} (superlite is off in Claude Code)", tilde(&dir)));
+                info(&format!(
+                    "would remove {} (superlite is off in Claude Code)",
+                    tilde(&dir)
+                ));
             } else if fs::remove_dir_all(&dir).is_ok() {
-                ok(&format!("removed {} (superlite is off in Claude Code)", tilde(&dir)));
+                ok(&format!(
+                    "removed {} (superlite is off in Claude Code)",
+                    tilde(&dir)
+                ));
             } else {
                 warn(&format!("could not remove {}", tilde(&dir)));
             }
@@ -1033,19 +1256,33 @@ pub fn cursor_superlite(home: &Path) {
         return;
     }
     if dir.exists() && !ours {
-        warn(&format!("{} is not a superlite clone, left untouched", tilde(&dir)));
+        warn(&format!(
+            "{} is not a superlite clone, left untouched",
+            tilde(&dir)
+        ));
         return;
     }
     if dry() {
-        info(&format!("would {} superlite in {}", if ours { "update" } else { "clone" }, tilde(&dir)));
+        info(&format!(
+            "would {} superlite in {}",
+            if ours { "update" } else { "clone" },
+            tilde(&dir)
+        ));
         return;
     }
     if ours {
         let before = git_in(&dir, &["rev-parse", "HEAD"]);
         if git_in(&dir, &["pull", "-q", "--ff-only"]).is_none() {
-            warn(&format!("superlite update failed in {}; try: git -C {} pull", tilde(&dir), tilde(&dir)));
+            warn(&format!(
+                "superlite update failed in {}; try: git -C {} pull",
+                tilde(&dir),
+                tilde(&dir)
+            ));
         } else if git_in(&dir, &["rev-parse", "HEAD"]) != before {
-            ok(&format!("updated superlite in {} (reload Cursor)", tilde(&dir)));
+            ok(&format!(
+                "updated superlite in {} (reload Cursor)",
+                tilde(&dir)
+            ));
         } else {
             skip("superlite (Cursor plugin)");
         }
@@ -1059,24 +1296,39 @@ pub fn cursor_superlite(home: &Path) {
         .status()
         .is_ok_and(|s| s.success());
     if cloned {
-        ok(&format!("cloned superlite into {} (reload Cursor)", tilde(&dir)));
+        ok(&format!(
+            "cloned superlite into {} (reload Cursor)",
+            tilde(&dir)
+        ));
     } else {
-        warn(&format!("superlite clone failed; try: git clone {} {}", superlite_repo(), tilde(&dir)));
+        warn(&format!(
+            "superlite clone failed; try: git clone {} {}",
+            superlite_repo(),
+            tilde(&dir)
+        ));
     }
 }
 
 /// The Opencode plugin list key: `plugin` when the config already uses the V1 key, else `plugins`.
 fn opencode_plugin_key(cfg: &Value) -> &'static str {
-    if cfg.get("plugin").is_some_and(Value::is_array) && cfg.get("plugins").is_none() { "plugin" } else { "plugins" }
+    if cfg.get("plugin").is_some_and(Value::is_array) && cfg.get("plugins").is_none() {
+        "plugin"
+    } else {
+        "plugins"
+    }
 }
 
 /// Adds the superlite spec to the Opencode plugin list when superlite is on in Claude Code, and takes
 /// it out when it is off. Only the exact spec counts, so a pinned `#tag` the user wrote stays.
 pub fn opencode_superlite(cfg: &mut Value, wanted: bool) {
-    let Some(obj) = cfg.as_object_mut() else { return };
+    let Some(obj) = cfg.as_object_mut() else {
+        return;
+    };
     if !wanted {
         for key in ["plugin", "plugins"] {
-            let Some(list) = obj.get_mut(key).and_then(Value::as_array_mut) else { continue };
+            let Some(list) = obj.get_mut(key).and_then(Value::as_array_mut) else {
+                continue;
+            };
             let n = list.len();
             list.retain(|p| p.as_str() != Some(SUPERLITE_OPENCODE));
             if list.is_empty() && n > 0 {
@@ -1086,13 +1338,21 @@ pub fn opencode_superlite(cfg: &mut Value, wanted: bool) {
         return;
     }
     let has_one = |v: &Value| {
-        v.as_str().is_some_and(|p| p == SUPERLITE_OPENCODE || p.starts_with(&format!("{SUPERLITE_OPENCODE}#")))
+        v.as_str().is_some_and(|p| {
+            p == SUPERLITE_OPENCODE || p.starts_with(&format!("{SUPERLITE_OPENCODE}#"))
+        })
     };
-    if ["plugin", "plugins"].iter().any(|k| obj.get(*k).and_then(Value::as_array).is_some_and(|l| l.iter().any(has_one))) {
+    if ["plugin", "plugins"].iter().any(|k| {
+        obj.get(*k)
+            .and_then(Value::as_array)
+            .is_some_and(|l| l.iter().any(has_one))
+    }) {
         return;
     }
     let key = opencode_plugin_key(&Value::Object(obj.clone()));
-    let entry = obj.entry(key.to_string()).or_insert_with(|| serde_json::json!([]));
+    let entry = obj
+        .entry(key.to_string())
+        .or_insert_with(|| serde_json::json!([]));
     if let Some(list) = entry.as_array_mut() {
         list.push(Value::String(SUPERLITE_OPENCODE.to_string()));
     }
@@ -1108,7 +1368,13 @@ fn plugin_sh(windows: bool, found: Option<PathBuf>) -> String {
         return String::new();
     }
     match found {
-        Some(p) if !p.to_string_lossy().to_lowercase().replace('\\', "/").contains("/system32/") => {
+        Some(p)
+            if !p
+                .to_string_lossy()
+                .to_lowercase()
+                .replace('\\', "/")
+                .contains("/system32/") =>
+        {
             p.to_string_lossy().into_owned()
         }
         _ => String::new(),
@@ -1125,7 +1391,9 @@ pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, St
         },
         "Read" => ("read", rule_path(arg, kind), kind),
         "Edit" | "Write" => ("edit", rule_path(arg, kind), kind),
-        "SuggestPluginInstall" | "SearchPlugins" | "SuggestSkills" => ("tool", tool.to_string(), "deny"),
+        "SuggestPluginInstall" | "SearchPlugins" | "SuggestSkills" => {
+            ("tool", tool.to_string(), "deny")
+        }
         _ => return None,
     };
     Some((cat.to_string(), pattern, effect.to_string()))
@@ -1135,61 +1403,93 @@ pub fn opencode_permission(rule: &str, kind: &str) -> Option<(String, String, St
 /// Rules it added before are tracked in a sidecar file.
 pub fn opencode_config(home: &Path) {
     let path = home.join(".config").join("opencode").join("opencode.jsonc");
-    let old = load_json(&path);
-    if old.is_none() {
+    let Some(old) = load_json(&path) else {
         if path.exists() {
-            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+            warn(&format!(
+                "{} is not valid JSON, left untouched",
+                tilde(&path)
+            ));
         }
         return;
-    }
-    let old = old.unwrap();
+    };
     let mut new = old.clone();
+    let Some(new_obj) = new.as_object_mut() else {
+        warn(&format!(
+            "{} is not a JSON object, left untouched",
+            tilde(&path)
+        ));
+        return;
+    };
     let src = load_json(&claude_dir().join("settings.json")).unwrap_or(serde_json::json!({}));
-    let src_perms = src.get("permissions").cloned().unwrap_or(serde_json::json!({}));
-    let perms = new.as_object_mut().unwrap().entry("permission".to_string()).or_insert(serde_json::json!({})).clone();
-    let mut perms = if perms.is_object() { perms } else { serde_json::json!({}) };
+    let src_perms = src
+        .get("permissions")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+    let perms = new_obj
+        .entry("permission".to_string())
+        .or_insert(serde_json::json!({}))
+        .clone();
+    let mut perms_obj = match perms {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
     let mut want: serde_json::Map<String, Value> = serde_json::Map::new();
     for cat in ["bash", "read", "edit", "tool"] {
         want.insert(cat.to_string(), serde_json::json!({}));
     }
     for kind in ["allow", "deny"] {
-        let rules = src_perms.get(kind).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let rules = src_perms
+            .get(kind)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         for r in rules {
             // Deny rules come second, so a pattern in both lists ends as a deny, as in Claude Code.
             if let Some(rulestr) = r.as_str()
                 && let Some((cat, pat, effect)) = opencode_permission(rulestr, kind)
-                && let Some(obj) = want.entry(cat).or_insert(serde_json::json!({})).as_object_mut()
+                && let Some(obj) = want
+                    .entry(cat)
+                    .or_insert(serde_json::json!({}))
+                    .as_object_mut()
             {
                 obj.insert(pat, Value::String(effect));
             }
         }
     }
-    want.entry("skill".to_string())
-        .or_insert(serde_json::json!({}))
-        .as_object_mut()
-        .unwrap()
-        .insert("*".to_string(), Value::String("allow".to_string()));
-    want.entry("ask".to_string())
-        .or_insert(serde_json::json!({}))
-        .as_object_mut()
-        .unwrap()
-        .insert("*".to_string(), Value::String("allow".to_string()));
+    for cat in ["skill", "ask"] {
+        if let Some(obj) = want
+            .entry(cat.to_string())
+            .or_insert(serde_json::json!({}))
+            .as_object_mut()
+        {
+            obj.insert("*".to_string(), Value::String("allow".to_string()));
+        }
+    }
 
     let side = home.join(".config").join("opencode").join(MANAGED);
     let managed = load_json(&side).unwrap_or(serde_json::json!({}));
-    let managed = if managed.is_object() { managed } else { serde_json::json!({}) };
-    let perms_obj = perms.as_object_mut().unwrap();
+    let managed = if managed.is_object() {
+        managed
+    } else {
+        serde_json::json!({})
+    };
     for (cat, ours) in &want {
-        let have = perms_obj.entry(cat.clone()).or_insert(serde_json::json!({}));
+        let have = perms_obj
+            .entry(cat.clone())
+            .or_insert(serde_json::json!({}));
         if !have.is_object() {
             *have = serde_json::json!({});
         }
-        let have_obj = have.as_object_mut().unwrap();
+        let Some(have_obj) = have.as_object_mut() else {
+            continue;
+        };
         let ours_obj = ours.as_object().cloned().unwrap_or_default();
         // A rule we wrote before and the user left alone goes when we drop it or change its effect.
         if let Some(was) = managed.get(cat).and_then(|v| v.as_object()) {
             for (pat, eff) in was {
-                if ours_obj.get(pat) != Some(eff) && have_obj.get(pat).and_then(|v| v.as_str()) == eff.as_str() {
+                if ours_obj.get(pat) != Some(eff)
+                    && have_obj.get(pat).and_then(|v| v.as_str()) == eff.as_str()
+                {
                     have_obj.remove(pat);
                 }
             }
@@ -1202,12 +1502,21 @@ pub fn opencode_config(home: &Path) {
             }
         }
     }
-    new.as_object_mut().unwrap().insert("permission".to_string(), perms);
+    if let Some(o) = new.as_object_mut() {
+        o.insert("permission".to_string(), Value::Object(perms_obj));
+    }
     opencode_superlite(&mut new, superlite_wanted(home));
 
     if opencode_mcp_wanted(home) {
-        let mcp = new.as_object_mut().unwrap().entry("mcp".to_string()).or_insert(serde_json::json!({})).clone();
-        let mut mcp = if mcp.is_object() { mcp } else { serde_json::json!({}) };
+        let mcp = new
+            .get("mcp")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let mut mcp = if mcp.is_object() {
+            mcp
+        } else {
+            serde_json::json!({})
+        };
         let ours = load_json(&cursor_src_dir().join("mcp.json"))
             .unwrap_or(serde_json::json!({}))
             .get("mcpServers")
@@ -1217,14 +1526,19 @@ pub fn opencode_config(home: &Path) {
             for (name, cfg) in ours_obj {
                 if !mcp_obj.contains_key(name) {
                     if let Some(url) = cfg.get("url").and_then(|v| v.as_str()) {
-                        mcp_obj.insert(name.clone(), serde_json::json!({"type":"remote","url":url,"enabled":true}));
+                        mcp_obj.insert(
+                            name.clone(),
+                            serde_json::json!({"type":"remote","url":url,"enabled":true}),
+                        );
                     } else {
                         mcp_obj.insert(name.clone(), cfg.clone());
                     }
                 }
             }
         }
-        new.as_object_mut().unwrap().insert("mcp".to_string(), mcp);
+        if let Some(o) = new.as_object_mut() {
+            o.insert("mcp".to_string(), mcp);
+        }
     }
     save_json(&path, &old, &new, false);
     if !dry()
@@ -1232,7 +1546,11 @@ pub fn opencode_config(home: &Path) {
         && after == new
         && managed != serde_json::to_value(&want).unwrap_or(Value::Null)
     {
-        write_or_warn(&side, &(serde_json::to_string_pretty(&want).unwrap_or_default() + "\n"), None);
+        write_or_warn(
+            &side,
+            &(serde_json::to_string_pretty(&want).unwrap_or_default() + "\n"),
+            None,
+        );
     }
 }
 
@@ -1261,7 +1579,10 @@ pub fn opencode_theme(home: &Path) {
         if let Some(v) = load_json(&path) {
             v
         } else {
-            warn(&format!("{} is not valid JSON, left untouched", tilde(&path)));
+            warn(&format!(
+                "{} is not valid JSON, left untouched",
+                tilde(&path)
+            ));
             return;
         }
     } else {
@@ -1274,7 +1595,11 @@ pub fn opencode_theme(home: &Path) {
         && theme.as_str() != Some("copper")
         && !legacy
     {
-        let copperfile = home.join(".config").join("opencode").join("themes").join("copper.json");
+        let copperfile = home
+            .join(".config")
+            .join("opencode")
+            .join("themes")
+            .join("copper.json");
         let shown = match theme {
             Value::String(s) => s.clone(),
             other => pycompat::py_repr(other),
@@ -1289,9 +1614,16 @@ pub fn opencode_theme(home: &Path) {
     }
     // keep every other key of the file; drop the markers of the older layouts
     let mut new = old.clone();
-    let obj = new.as_object_mut().unwrap();
+    let Some(obj) = new.as_object_mut() else {
+        warn(&format!(
+            "{} is not a JSON object, left untouched",
+            tilde(&path)
+        ));
+        return;
+    };
     obj.retain(|k, _| !["_dotfiles", "theme", "generated-by", "source"].contains(&k.as_str()));
-    obj.entry("$schema".to_string()).or_insert(serde_json::json!("https://opencode.ai/tui.json"));
+    obj.entry("$schema".to_string())
+        .or_insert(serde_json::json!("https://opencode.ai/tui.json"));
     obj.insert("theme".to_string(), Value::String("copper".to_string()));
     save_json(&path, &old, &new, false);
 }
@@ -1300,9 +1632,19 @@ pub fn opencode_theme(home: &Path) {
 /// With no list it reads `DOTFILES_PROJECTS`, then the `OPENCODE_PROJECTS` setting.
 pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
     let projects = projects.unwrap_or_else(|| {
-        let v = env::var("DOTFILES_PROJECTS").unwrap_or_default().trim().to_string();
-        let v = if v.is_empty() { setting(home, "OPENCODE_PROJECTS") } else { v };
-        v.split_whitespace().map(String::from).filter(|s| !s.is_empty()).collect()
+        let v = env::var("DOTFILES_PROJECTS")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let v = if v.is_empty() {
+            setting(home, "OPENCODE_PROJECTS")
+        } else {
+            v
+        };
+        v.split_whitespace()
+            .map(String::from)
+            .filter(|s| !s.is_empty())
+            .collect()
     });
     if projects.is_empty() {
         return;
@@ -1319,7 +1661,10 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
             PathBuf::from(&proj)
         };
         if !proj.is_absolute() {
-            warn(&format!("skipping non-absolute Opencode project path: {}", proj.display()));
+            warn(&format!(
+                "skipping non-absolute Opencode project path: {}",
+                proj.display()
+            ));
             continue;
         }
         let popencode = proj.join(".opencode");
@@ -1331,7 +1676,11 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
                 if let Err(e) = std::os::unix::fs::symlink(&global_cfg, &pcfg) {
                     warn(&format!("couldn't link {}: {}", pcfg.display(), e));
                 } else {
-                    ok(&format!("linked {} → {}", pcfg.display(), global_cfg.display()));
+                    ok(&format!(
+                        "linked {} → {}",
+                        pcfg.display(),
+                        global_cfg.display()
+                    ));
                 }
             }
             #[cfg(not(unix))]
@@ -1350,7 +1699,10 @@ pub fn opencode_projects(home: &Path, projects: Option<Vec<String>>) {
                     .collect();
                 agent_files.sort();
                 for src in agent_files {
-                    let dst = pagents.join(src.file_name().unwrap());
+                    let Some(name) = src.file_name() else {
+                        continue;
+                    };
+                    let dst = pagents.join(name);
                     if dst.exists() {
                         continue;
                     }
@@ -1387,7 +1739,9 @@ fn part<'a>(f: impl FnOnce() + 'a) -> Part<'a> {
 /// is reported as `skipped a part: <why>` and counted. A panic is caught as a last safety net and
 /// reported the same way. Returns how many parts failed.
 fn run_parts(parts: Vec<Part<'_>>) -> usize {
-    let _g = PART_HOOK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _g = PART_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {})); // the warning below is the report, not a backtrace
     let mut failed = 0;
@@ -1411,14 +1765,18 @@ fn run_parts(parts: Vec<Part<'_>>) -> usize {
 /// The `cursor` command: runs each Cursor part. Returns 1 when a part failed, else 0.
 pub fn cmd_cursor(args: &CursorArgs) -> i32 {
     let home = paths::home();
-    header(&format!("Cursor config from {} (profile: {})", tilde(&claude_dir()), args.profile));
+    header(&format!(
+        "Cursor config from {} (profile: {})",
+        tilde(&claude_dir()),
+        args.profile
+    ));
     let parts = vec![
         part(|| cursor_rules(&home, args.profile)),
         part(|| cursor_agents(&home)),
         part(|| cursor_hooks(&home)),
         part(|| cursor_mcp(&home)),
         part(|| cursor_superlite(&home)),
-        Box::new(|| cursor_cli_config(&home)) as Part,
+        Box::new(|| cursor_cli_config(&home)) as Part<'_>,
     ];
     i32::from(run_parts(parts) > 0)
 }
@@ -1457,7 +1815,11 @@ pub fn clipboard_command_in(path: Option<&str>) -> Option<Vec<String>> {
 
 /// The first Linux clipboard tool found on `path`.
 fn linux_clipboard_in(path: Option<&str>) -> Option<Vec<String>> {
-    for cand in [vec!["wl-copy"], vec!["xclip", "-selection", "clipboard"], vec!["xsel", "--clipboard", "--input"]] {
+    for cand in [
+        vec!["wl-copy"],
+        vec!["xclip", "-selection", "clipboard"],
+        vec!["xsel", "--clipboard", "--input"],
+    ] {
         if crate_which(cand[0], path) {
             return Some(cand.into_iter().map(String::from).collect());
         }
@@ -1486,11 +1848,17 @@ pub fn cmd_user_rules(profile: Profile, copy: bool) -> i32 {
         return 0;
     }
     let Some(c) = clipboard_command() else {
-        warn("no clipboard tool found (install wl-clipboard or xclip). Printing the rules instead.");
+        warn(
+            "no clipboard tool found (install wl-clipboard or xclip). Printing the rules instead.",
+        );
         print!("{text}");
         return 1;
     };
-    let Ok(mut child) = process::Command::new(&c[0]).args(&c[1..]).stdin(process::Stdio::piped()).spawn() else {
+    let Ok(mut child) = process::Command::new(&c[0])
+        .args(&c[1..])
+        .stdin(process::Stdio::piped())
+        .spawn()
+    else {
         warn("no clipboard tool found. Printing the rules instead.");
         print!("{text}");
         return 1;
@@ -1501,11 +1869,17 @@ pub fn cmd_user_rules(profile: Profile, copy: bool) -> i32 {
     let _ = child.wait();
     write_or_warn(&home.join(USER_RULES_MARK), &(sha(&text) + "\n"), None);
     for f in ["claude-global.mdc", "claude-output-style.mdc"] {
-        remove_generated(&home.join(".cursor").join("rules").join(f), "the rules move to Cursor User Rules");
+        remove_generated(
+            &home.join(".cursor").join("rules").join(f),
+            "the rules move to Cursor User Rules",
+        );
     }
     ok("copied the rules to the clipboard");
     info("Now: Cursor > Cursor Settings > Rules > User Rules > paste > save.");
-    info(&format!("To go back to the file copy: rm {} && dots", tilde(&home.join(USER_RULES_MARK))));
+    info(&format!(
+        "To go back to the file copy: rm {} && dots",
+        tilde(&home.join(USER_RULES_MARK))
+    ));
     0
 }
 
@@ -1514,10 +1888,7 @@ pub fn cmd_user_rules(profile: Profile, copy: bool) -> i32 {
 pub fn get_path(obj: &Value, path: &[&str]) -> Option<Value> {
     let mut cur = obj;
     for k in path {
-        if !cur.is_object() || cur.get(*k).is_none() {
-            return None;
-        }
-        cur = cur.get(*k).unwrap();
+        cur = cur.as_object()?.get(*k)?;
     }
     Some(cur.clone())
 }
@@ -1545,7 +1916,10 @@ fn is_union(path: &[String]) -> bool {
     let joined = path.join(".");
     matches!(
         joined.as_str(),
-        "permissions.allow" | "permissions.deny" | "permissions.ask" | "permissions.additionalDirectories"
+        "permissions.allow"
+            | "permissions.deny"
+            | "permissions.ask"
+            | "permissions.additionalDirectories"
     )
 }
 
@@ -1555,36 +1929,40 @@ pub fn merge(base: &Value, layer: &Value) -> Value {
     merge_inner(base, layer, &[])
 }
 fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
-    let mut out = base.clone();
-    if let Some(lo) = layer.as_object() {
-        if !out.is_object() {
-            out = serde_json::json!({});
-        }
-        let out_obj = out.as_object_mut().unwrap();
-        for (k, v) in lo {
-            let mut p = path.to_vec();
-            p.push(k.clone());
-            if v.is_null() {
-                out_obj.remove(k);
-            } else if v.is_object() {
-                // merge into an empty object when the base has none, so a nested `null` never lands
-                let empty = serde_json::json!({});
-                let merged = merge_inner(out_obj.get(k).filter(|b| b.is_object()).unwrap_or(&empty), v, &p);
-                out_obj.insert(k.clone(), merged);
-            } else if is_union(&p) && out_obj.get(k).is_some_and(Value::is_array) && v.is_array() {
-                let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();
-                for x in v.as_array().unwrap() {
-                    if !arr.contains(x) {
-                        arr.push(x.clone());
-                    }
+    let Some(lo) = layer.as_object() else {
+        return base.clone();
+    };
+    let mut out_obj = base.as_object().cloned().unwrap_or_default();
+    for (k, v) in lo {
+        let mut p = path.to_vec();
+        p.push(k.clone());
+        if v.is_null() {
+            out_obj.remove(k);
+        } else if v.is_object() {
+            // merge into an empty object when the base has none, so a nested `null` never lands
+            let empty = serde_json::json!({});
+            let merged = merge_inner(
+                out_obj.get(k).filter(|b| b.is_object()).unwrap_or(&empty),
+                v,
+                &p,
+            );
+            out_obj.insert(k.clone(), merged);
+        } else if is_union(&p)
+            && let (Some(have), Some(add)) =
+                (out_obj.get(k).and_then(Value::as_array), v.as_array())
+        {
+            let mut arr = have.clone();
+            for x in add {
+                if !arr.contains(x) {
+                    arr.push(x.clone());
                 }
-                out_obj.insert(k.clone(), Value::Array(arr));
-            } else {
-                out_obj.insert(k.clone(), v.clone());
             }
+            out_obj.insert(k.clone(), Value::Array(arr));
+        } else {
+            out_obj.insert(k.clone(), v.clone());
         }
     }
-    out
+    Value::Object(out_obj)
 }
 
 /// What changed in the live settings since the last build, as a patch for the private layer plus
@@ -1592,8 +1970,12 @@ fn merge_inner(base: &Value, layer: &Value, path: &[String]) -> Value {
 pub fn drift(last: &Value, live: &Value) -> (Value, Vec<(String, Vec<String>, usize)>) {
     drift_inner(last, live, &[])
 }
-fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(String, Vec<String>, usize)>) {
-    let mut patch = serde_json::json!({});
+fn drift_inner(
+    last: &Value,
+    live: &Value,
+    path: &[String],
+) -> (Value, Vec<(String, Vec<String>, usize)>) {
+    let mut patch = serde_json::Map::new();
     let mut notes = Vec::new();
     if let Some(lo) = live.as_object() {
         for (k, v) in lo {
@@ -1602,28 +1984,27 @@ fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(Stri
             let old = last.get(k);
             match old {
                 None => {
-                    patch.as_object_mut().unwrap().insert(k.clone(), v.clone());
+                    patch.insert(k.clone(), v.clone());
                     notes.push(("set".to_string(), p, 0));
                 }
                 Some(oldv) if oldv.is_object() && v.is_object() => {
                     let (sub, n) = drift_inner(oldv, v, &p);
                     if !sub.as_object().is_none_or(serde_json::Map::is_empty) {
-                        patch.as_object_mut().unwrap().insert(k.clone(), sub);
+                        patch.insert(k.clone(), sub);
                     }
                     notes.extend(n);
                 }
                 Some(oldv) if is_union(&p) && oldv.is_array() && v.is_array() => {
-                    let added: Vec<Value> = v
-                        .as_array()
-                        .unwrap()
+                    let old_items: &[Value] = oldv.as_array().map_or(&[], Vec::as_slice);
+                    let new_items: &[Value] = v.as_array().map_or(&[], Vec::as_slice);
+                    let added: Vec<Value> = new_items
                         .iter()
-                        .filter(|x| !oldv.as_array().unwrap().contains(x))
+                        .filter(|x| !old_items.contains(x))
                         .cloned()
                         .collect();
-                    let removed_n =
-                        oldv.as_array().unwrap().iter().filter(|x| !v.as_array().unwrap().contains(x)).count();
+                    let removed_n = old_items.iter().filter(|x| !new_items.contains(x)).count();
                     if !added.is_empty() {
-                        patch.as_object_mut().unwrap().insert(k.clone(), Value::Array(added.clone()));
+                        patch.insert(k.clone(), Value::Array(added.clone()));
                         notes.push(("add".to_string(), p.clone(), added.len()));
                     }
                     if removed_n > 0 {
@@ -1632,7 +2013,7 @@ fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(Stri
                 }
                 Some(oldv) => {
                     if oldv != v {
-                        patch.as_object_mut().unwrap().insert(k.clone(), v.clone());
+                        patch.insert(k.clone(), v.clone());
                         notes.push(("set".to_string(), p, 0));
                     }
                 }
@@ -1644,12 +2025,12 @@ fn drift_inner(last: &Value, live: &Value, path: &[String]) -> (Value, Vec<(Stri
             if live.get(k).is_none() {
                 let mut p = path.to_vec();
                 p.push(k.clone());
-                patch.as_object_mut().unwrap().insert(k.clone(), Value::Null);
+                patch.insert(k.clone(), Value::Null);
                 notes.push(("unset".to_string(), p, 0));
             }
         }
     }
-    (patch, notes)
+    (Value::Object(patch), notes)
 }
 
 /// The layer with a `drift` patch applied to it.
@@ -1657,36 +2038,36 @@ pub fn apply_patch(layer: &Value, patch: &Value) -> Value {
     apply_patch_inner(layer, patch, &[])
 }
 fn apply_patch_inner(layer: &Value, patch: &Value, path: &[String]) -> Value {
-    let mut out = layer.clone();
-    if let Some(po) = patch.as_object() {
-        if !out.is_object() {
-            out = serde_json::json!({});
+    let Some(po) = patch.as_object() else {
+        return layer.clone();
+    };
+    let mut out_obj = layer.as_object().cloned().unwrap_or_default();
+    for (k, v) in po {
+        let mut p = path.to_vec();
+        p.push(k.clone());
+        if let Some(ov) = out_obj.get(k).cloned()
+            && ov.is_object()
+            && v.is_object()
+        {
+            out_obj.insert(k.clone(), apply_patch_inner(&ov, v, &p));
+            continue;
         }
-        let out_obj = out.as_object_mut().unwrap();
-        for (k, v) in po {
-            let mut p = path.to_vec();
-            p.push(k.clone());
-            if let Some(ov) = out_obj.get(k).cloned()
-                && ov.is_object()
-                && v.is_object()
-            {
-                out_obj.insert(k.clone(), apply_patch_inner(&ov, v, &p));
-                continue;
-            }
-            if is_union(&p) && v.is_array() && out_obj.get(k).is_some_and(Value::is_array) {
-                let mut arr = out_obj.get(k).unwrap().as_array().cloned().unwrap_or_default();
-                for x in v.as_array().unwrap() {
-                    if !arr.contains(x) {
-                        arr.push(x.clone());
-                    }
+        if is_union(&p)
+            && let (Some(add), Some(have)) =
+                (v.as_array(), out_obj.get(k).and_then(Value::as_array))
+        {
+            let mut arr = have.clone();
+            for x in add {
+                if !arr.contains(x) {
+                    arr.push(x.clone());
                 }
-                out_obj.insert(k.clone(), Value::Array(arr));
-            } else {
-                out_obj.insert(k.clone(), v.clone());
             }
+            out_obj.insert(k.clone(), Value::Array(arr));
+        } else {
+            out_obj.insert(k.clone(), v.clone());
         }
     }
-    out
+    Value::Object(out_obj)
 }
 
 /// The JSON as pretty text with a closing newline.
@@ -1701,24 +2082,29 @@ pub fn claude_settings_build(home: &Path) -> i32 {
     let layer_f = home.join(LAYER_REL);
     let last_f = home.join(LAST_REL);
     let live_f = home.join(LIVE_REL);
-    let base = load_json(&base_f);
-    let layer = load_json(&layer_f);
-    if base.is_none() || layer.is_none() {
-        let bad = if base.is_none() { &base_f } else { &layer_f };
-        warn(&format!("{} is not valid JSON. Fix it; ~/.claude/settings.json left as it is.", tilde(bad)));
+    let (Some(base), Some(mut layer)) = (load_json(&base_f), load_json(&layer_f)) else {
+        let bad = if load_json(&base_f).is_none() {
+            &base_f
+        } else {
+            &layer_f
+        };
+        warn(&format!(
+            "{} is not valid JSON. Fix it; ~/.claude/settings.json left as it is.",
+            tilde(bad)
+        ));
         return 1;
-    }
-    let base = with_presets(home, &base.unwrap());
-    let mut layer = layer.unwrap();
+    };
+    let base = with_presets(home, &base);
     let was_link = is_symlink(&live_f);
     let mut notes = Vec::new();
     if live_f.exists() && !was_link {
-        let live = load_json(&live_f);
-        if live.is_none() {
-            warn(&format!("{} is not valid JSON (Claude may be writing it). Run dots again.", tilde(&live_f)));
+        let Some(live) = load_json(&live_f) else {
+            warn(&format!(
+                "{} is not valid JSON (Claude may be writing it). Run dots again.",
+                tilde(&live_f)
+            ));
             return 1;
-        }
-        let live = live.unwrap();
+        };
         let last = if last_f.exists() {
             load_json(&last_f).unwrap_or_else(|| merge(&base, &layer))
         } else {
@@ -1729,7 +2115,11 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         if !patch.as_object().is_none_or(serde_json::Map::is_empty) {
             layer = apply_patch(&layer, &patch);
             if dry() {
-                info(&format!("would keep {} change(s) in {}", notes.len(), tilde(&layer_f)));
+                info(&format!(
+                    "would keep {} change(s) in {}",
+                    notes.len(),
+                    tilde(&layer_f)
+                ));
             } else if let Err(e) = atomic_write(&layer_f, &dump(&layer), Some(0o600)) {
                 warn(&format!("could not write {}: {e}", tilde(&layer_f)));
                 return 1;
@@ -1770,14 +2160,20 @@ pub fn claude_settings_build(home: &Path) -> i32 {
         return 0;
     }
     if was_link {
-        info(&format!("{} was a link into the repo; it is now a built file", tilde(&live_f)));
+        info(&format!(
+            "{} was a link into the repo; it is now a built file",
+            tilde(&live_f)
+        ));
         let _ = fs::remove_file(&live_f);
     }
     if let Err(e) = atomic_write(&live_f, &text, Some(0o644)) {
         warn(&format!("could not write {}: {e}", tilde(&live_f)));
         return 1;
     }
-    wrote(&format!("built {} (repo base + private layer)", tilde(&live_f)));
+    wrote(&format!(
+        "built {} (repo base + private layer)",
+        tilde(&live_f)
+    ));
     if !dry() && (!last_f.exists() || fs::read_to_string(&last_f).unwrap_or_default() != text) {
         write_or_warn(&last_f, &text, Some(0o600));
     }
@@ -1789,14 +2185,10 @@ pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
     let path: Vec<&str> = dotted.split('.').collect();
     let base_f = claude_dir().join("settings.json");
     let layer_f = home.join(LAYER_REL);
-    let base = load_json(&base_f);
-    let layer = load_json(&layer_f);
-    if base.is_none() || layer.is_none() {
+    let (Some(base), Some(mut layer)) = (load_json(&base_f), load_json(&layer_f)) else {
         warn("the repo base or the private layer is not valid JSON; nothing moved");
         return 1;
-    }
-    let base = base.unwrap();
-    let mut layer = layer.unwrap();
+    };
     let Some(value) = get_path(&layer, &path) else {
         warn(&format!("{} is not in {}", dotted, tilde(&layer_f)));
         return 1;
@@ -1814,14 +2206,24 @@ pub fn claude_settings_promote(home: &Path, dotted: &str) -> i32 {
     }
     // The base first: when it fails, the key stays in the layer and nothing is lost.
     if let Err(e) = atomic_write(&base_f, &dump(&new_base), None) {
-        warn(&format!("could not write {}: {e}; nothing moved", tilde(&base_f)));
+        warn(&format!(
+            "could not write {}: {e}; nothing moved",
+            tilde(&base_f)
+        ));
         return 1;
     }
     if let Err(e) = atomic_write(&layer_f, &dump(&layer), Some(0o600)) {
-        warn(&format!("could not write {}: {e}; the key is now in both files", tilde(&layer_f)));
+        warn(&format!(
+            "could not write {}: {e}; the key is now in both files",
+            tilde(&layer_f)
+        ));
         return 1;
     }
-    ok(&format!("moved {} to {}. Commit it to share it.", dotted, tilde(&base_f)));
+    ok(&format!(
+        "moved {} to {}. Commit it to share it.",
+        dotted,
+        tilde(&base_f)
+    ));
     claude_settings_build(home)
 }
 
@@ -1832,15 +2234,16 @@ pub fn claude_settings_demote(home: &Path, dotted: &str) -> i32 {
     let path: Vec<&str> = dotted.split('.').collect();
     let live_f = home.join(LIVE_REL);
     let layer_f = home.join(LAYER_REL);
-    let live = load_json(&live_f);
-    let layer = load_json(&layer_f);
-    if live.is_none() || layer.is_none() {
+    let (Some(live), Some(layer)) = (load_json(&live_f), load_json(&layer_f)) else {
         warn("the live settings or the private layer is not valid JSON; nothing moved");
         return 1;
-    }
-    let (live, layer) = (live.unwrap(), layer.unwrap());
+    };
     let Some(value) = get_path(&live, &path) else {
-        info(&format!("{} is not in {}; nothing to keep", dotted, tilde(&live_f)));
+        info(&format!(
+            "{} is not in {}; nothing to keep",
+            dotted,
+            tilde(&live_f)
+        ));
         return 0;
     };
     if get_path(&layer, &path).as_ref() == Some(&value) {
@@ -2016,7 +2419,11 @@ fn cmd_claude_settings_dispatch(a: &ClaudeSettingsArgs) -> i32 {
 fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
     set_dry(a.dry_run);
     let home = paths::home();
-    header(&format!("Opencode config from {} (profile: {})", tilde(&claude_dir()), a.profile));
+    header(&format!(
+        "Opencode config from {} (profile: {})",
+        tilde(&claude_dir()),
+        a.profile
+    ));
     let projects = a
         .projects
         .as_ref()
@@ -2036,7 +2443,8 @@ fn cmd_opencode_dispatch(a: &OpencodeArgs) -> i32 {
 /// Writes `~/.config/opencode/AGENTS.md`: the rules, enabled presets, owner overlay and reply style.
 pub fn opencode_rules(home: &Path, profile: Profile) {
     let path = home.join(".config").join("opencode").join("AGENTS.md");
-    if is_symlink(&path) || (path.exists() && !read_text(&path).unwrap_or_default().contains(MARK)) {
+    if is_symlink(&path) || (path.exists() && !read_text(&path).unwrap_or_default().contains(MARK))
+    {
         warn(&format!(
             "{} exists and is not ours ({} has no {} marker), left untouched. Move your own text into ~/.config/dotfiles/owner.md (dots settings) and it lands here too.",
             tilde(&path),
@@ -2060,9 +2468,19 @@ pub fn opencode_rules(home: &Path, profile: Profile) {
         );
     }
     let stamp_line = stamp(&srcs);
-    let mut text = format!("{}{}{}", stamp_line, OPENCODE_NOTE, rules_text(home, profile));
+    let mut text = format!(
+        "{}{}{}",
+        stamp_line,
+        OPENCODE_NOTE,
+        rules_text(home, profile)
+    );
     if let Some((name, _, sbody)) = output_style(home) {
-        text = format!("{}\n\n# Reply style: {}\n\n{}", text.trim_end_matches('\n'), name, sbody);
+        text = format!(
+            "{}\n\n# Reply style: {}\n\n{}",
+            text.trim_end_matches('\n'),
+            name,
+            sbody
+        );
     }
     write_generated(&path, &text, mode);
 }
@@ -2078,17 +2496,31 @@ mod tests {
         let git = PathBuf::from(r"C:\Program Files\Git\usr\bin\sh.exe");
         assert_eq!(plugin_sh(true, Some(git.clone())), git.to_string_lossy());
         // a System32 path is never written, in any case or slash style; nothing found means `sh` by name
-        assert_eq!(plugin_sh(true, Some(PathBuf::from(r"C:\Windows\System32\sh.exe"))), "");
-        assert_eq!(plugin_sh(true, Some(PathBuf::from("C:/WINDOWS/SYSTEM32/sh.exe"))), "");
+        assert_eq!(
+            plugin_sh(true, Some(PathBuf::from(r"C:\Windows\System32\sh.exe"))),
+            ""
+        );
+        assert_eq!(
+            plugin_sh(true, Some(PathBuf::from("C:/WINDOWS/SYSTEM32/sh.exe"))),
+            ""
+        );
         assert_eq!(plugin_sh(true, None), "");
         // macOS and Linux keep `sh` by name
         assert_eq!(plugin_sh(false, Some(PathBuf::from("/bin/sh"))), "");
     }
     #[test]
     fn opencode_permission_keeps_the_effect() {
-        let t = |cat: &str, pat: &str, eff: &str| Some((cat.to_string(), pat.to_string(), eff.to_string()));
-        assert_eq!(opencode_permission("Read(./foo)", "deny"), t("read", "**/foo", "deny"));
-        assert_eq!(opencode_permission("Bash(git status:*)", "allow"), t("bash", "git status *", "allow"));
+        let t = |cat: &str, pat: &str, eff: &str| {
+            Some((cat.to_string(), pat.to_string(), eff.to_string()))
+        };
+        assert_eq!(
+            opencode_permission("Read(./foo)", "deny"),
+            t("read", "**/foo", "deny")
+        );
+        assert_eq!(
+            opencode_permission("Bash(git status:*)", "allow"),
+            t("bash", "git status *", "allow")
+        );
         assert_eq!(
             opencode_permission("Bash(git push origin main)", "allow"),
             t("bash", "git push origin main", "allow")
@@ -2098,6 +2530,9 @@ mod tests {
             opencode_permission("Bash(git push origin main)", "deny"),
             t("bash", "git push origin main", "deny")
         );
-        assert_eq!(opencode_permission("Bash(rm:*)", "deny"), t("bash", "rm *", "deny"));
+        assert_eq!(
+            opencode_permission("Bash(rm:*)", "deny"),
+            t("bash", "rm *", "deny")
+        );
     }
 }

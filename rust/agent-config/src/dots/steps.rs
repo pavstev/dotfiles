@@ -9,8 +9,12 @@ pub fn names() -> Vec<String> {
     install::STEPS.iter().map(|s| s.name.to_string()).collect()
 }
 
-/// Whether a step runs. `only`: DOTFILES_STEPS (runs just those, also ones in
-/// SKIP_STEPS). `skip`: SKIP_STEPS, when it applies. Err: skipped, with why.
+/// Whether a step runs. `only`: `DOTFILES_STEPS` (runs just those, also ones in
+/// `SKIP_STEPS`). `skip`: `SKIP_STEPS`, when it applies.
+///
+/// # Errors
+///
+/// Returns `Err` when the step is skipped: `Some(why)` to print a reason, `None` to stay quiet.
 pub fn wanted(name: &str, only: &str, skip: &str, windows: bool) -> Result<(), Option<String>> {
     let only_set = !only.is_empty();
     if only_set && !only.split_whitespace().any(|s| s == name) {
@@ -20,15 +24,21 @@ pub fn wanted(name: &str, only: &str, skip: &str, windows: bool) -> Result<(), O
         return Err(None);
     }
     if skip.split_whitespace().any(|s| s == name) {
-        return Err(Some(format!("{name} skipped (Steps to skip, in dots settings)")));
+        return Err(Some(format!(
+            "{name} skipped (Steps to skip, in dots settings)"
+        )));
     }
     Ok(())
 }
 
-/// Run the steps. `own_steps`: DOTFILES_STEPS was set by `dots settings`, not by the user.
+/// Run the steps. `own_steps`: `DOTFILES_STEPS` was set by `dots settings`, not by the user.
 pub fn run_all(repo: &Path, own_steps: bool) {
     let only = std::env::var("DOTFILES_STEPS").unwrap_or_default();
-    let skip = if only.is_empty() || own_steps { settings::get("SKIP_STEPS") } else { String::new() };
+    let skip = if only.is_empty() || own_steps {
+        settings::get("SKIP_STEPS")
+    } else {
+        String::new()
+    };
     for step in install::STEPS {
         let name = step.name;
         match wanted(name, &only, &skip, os::is_windows()) {
@@ -41,7 +51,11 @@ pub fn run_all(repo: &Path, own_steps: bool) {
         }
         step_end();
         // The sign-in step asks questions: no "still working" lines over them.
-        let ticker = if name == "90-sign-in" { None } else { Some(still_working(name)) };
+        let ticker = if name == "90-sign-in" {
+            None
+        } else {
+            Some(still_working(name))
+        };
         (step.run)(repo);
         drop(ticker);
         step_end();
@@ -53,14 +67,26 @@ pub fn run_all(repo: &Path, own_steps: bool) {
 fn still_working(name: &'static str) -> std::sync::mpsc::Sender<()> {
     ticker(20, 60, move |secs| {
         let title = crate::out::step_title();
-        let what = if title.is_empty() { name.to_string() } else { title };
-        format!("still working on {} ({})…", what, crate::out::duration(secs))
+        let what = if title.is_empty() {
+            name.to_string()
+        } else {
+            title
+        };
+        format!(
+            "still working on {} ({})…",
+            what,
+            crate::out::duration(secs)
+        )
     })
 }
 
 /// A thread that prints an info line made by `line(seconds)` after `first` seconds, then every
 /// `every` seconds. It stops when the returned sender drops. `line` must not read the environment.
-pub fn ticker(first: u64, every: u64, line: impl Fn(u64) -> String + Send + 'static) -> std::sync::mpsc::Sender<()> {
+pub fn ticker(
+    first: u64,
+    every: u64,
+    line: impl Fn(u64) -> String + Send + 'static,
+) -> std::sync::mpsc::Sender<()> {
     use std::sync::mpsc::{RecvTimeoutError, channel};
     use std::time::{Duration, Instant};
     let (tx, rx) = channel::<()>();
@@ -95,7 +121,10 @@ mod tests {
         assert_eq!(wanted("30-omz-plugins", "", "", true), Err(None));
         assert!(wanted("57-claude-code", "", "", true).is_ok());
         assert!(wanted("12-tools", "", "", true).is_ok());
-        assert!(matches!(wanted("77-dotfiles-git-hooks", "", "77-dotfiles-git-hooks", false), Err(Some(_))));
+        assert!(matches!(
+            wanted("77-dotfiles-git-hooks", "", "77-dotfiles-git-hooks", false),
+            Err(Some(_))
+        ));
         assert_eq!(wanted("none", "none", "", false), Ok(()));
     }
 }

@@ -35,5 +35,4 @@ You find past Claude Code sessions. You change nothing.
 
 Line 1: `FOUND`, `UNSURE` or `NONE`. Then up to 5 lines: `date  project  session-id  title`, best
 first, with a few words on why it matches. Last line: "Denied or skipped: ..." (or "none").
-Hard cap: 1,500 characters, or the caller's cap when it names one. Count before you hand back: a
-hook sends an over-cap hand-back back to you.
+Hard cap: 1,500 characters, or the caller's cap when it names one.

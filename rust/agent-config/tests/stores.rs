@@ -1,5 +1,7 @@
 //! Store readers: Claude Code sessions in a temp HOME, and the path functions.
 
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
+
 use agent_config::stores::{Doc, claude_root, cursor_db, opencode_db, read_claude};
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,7 +23,10 @@ fn main_file(home: &Path) -> PathBuf {
 }
 
 fn sub_file(home: &Path) -> PathBuf {
-    project_dir(home).join(SESSION).join("subagents").join("agent-a1.jsonl")
+    project_dir(home)
+        .join(SESSION)
+        .join("subagents")
+        .join("agent-a1.jsonl")
 }
 
 const MAIN: &str = concat!(
@@ -53,7 +58,8 @@ fn collect(home: &Path) -> Vec<Doc> {
 }
 
 fn find<'a>(docs: &'a [Doc], role: &str, needle: &str) -> Option<&'a Doc> {
-    docs.iter().find(|d| d.role == role && d.text.contains(needle))
+    docs.iter()
+        .find(|d| d.role == role && d.text.contains(needle))
 }
 
 #[test]
@@ -68,7 +74,11 @@ fn paths_per_os() {
     } else {
         ".config/Cursor/User/globalStorage/state.vscdb"
     };
-    assert!(cursor_db(home).ends_with(tail), "{}", cursor_db(home).display());
+    assert!(
+        cursor_db(home).ends_with(tail),
+        "{}",
+        cursor_db(home).display()
+    );
 }
 
 #[test]
@@ -148,7 +158,9 @@ fn missing_root_is_a_skip() {
 
 #[test]
 fn forbidden_tables_never_named() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("stores");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("stores");
     let mut seen = 0;
     for e in fs::read_dir(&dir).unwrap() {
         let p = e.unwrap().path();
@@ -160,12 +172,23 @@ fn forbidden_tables_never_named() {
         // A SQL string is a string literal that holds a SQL verb.
         for line in text.lines() {
             let l = line.to_lowercase();
-            let sql = l.contains('"') && (l.contains("select ") || l.contains(" from ") || l.contains("join "));
+            let sql = l.contains('"')
+                && (l.contains("select ") || l.contains(" from ") || l.contains("join "));
             if !sql {
                 continue;
             }
-            for name in ["credential", "account", "account_state", "control_account", " kv"] {
-                assert!(!l.contains(name), "{}: SQL names {name}: {line}", p.display());
+            for name in [
+                "credential",
+                "account",
+                "account_state",
+                "control_account",
+                " kv",
+            ] {
+                assert!(
+                    !l.contains(name),
+                    "{}: SQL names {name}: {line}",
+                    p.display()
+                );
             }
         }
     }
@@ -208,7 +231,10 @@ fn error_text_is_redacted_before_the_cut() {
     );
     write(&main_file(home), &format!("{call}\n{result}\n"));
     let docs = collect(home);
-    let err = docs.iter().find(|d| d.role == "tool_error").expect("tool_error doc");
+    let err = docs
+        .iter()
+        .find(|d| d.role == "tool_error")
+        .expect("tool_error doc");
     assert!(!err.text.contains("ghp_"), "{}", err.text);
     assert!(!err.text.contains(&token[..30]), "{}", err.text);
 }

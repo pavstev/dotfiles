@@ -3,9 +3,9 @@
 //! call `run`. See `tools_core.rs` for the resolver.
 //!
 //! mise goes in first when a missing tool has a `mise:` source (the official installer on macOS and
-//! Linux, WinGet on Windows). Short output: one count line when nothing changed
+//! Linux, `WinGet` on Windows). Short output: one count line when nothing changed
 //! ("• Tools: 36 up to date"). A tool that was installed or that failed gets a line. `-v` (or
-//! DOTFILES_VERBOSE=1) prints every tool. `--check` installs nothing: it lists what is missing and
+//! `DOTFILES_VERBOSE=1`) prints every tool. `--check` installs nothing: it lists what is missing and
 //! exits 1. `-q` prints nothing when nothing changed. `--list` prints the plan for this OS (name,
 //! then its sources) and exits 0. Install runs exit 0 even when a tool failed (a warning says so),
 //! so `dots` goes on.
@@ -23,7 +23,9 @@ static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// True the first time `name` fails in this process.
 fn first_failure(name: &str) -> bool {
-    let mut w = WARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut w = WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if w.iter().any(|n| n == name) {
         return false;
     }
@@ -35,7 +37,11 @@ fn color() -> bool {
     std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
 fn c(code: &str, s: &str) -> String {
-    if color() { format!("\x1b[{code}m{s}\x1b[0m") } else { s.to_string() }
+    if color() {
+        format!("\x1b[{code}m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
 }
 fn green(s: &str) -> String {
     c("38;5;108", s)
@@ -64,7 +70,13 @@ fn ensure_mise() -> bool {
     if have() {
         return true;
     }
-    let quiet = |mut c: Command| c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok();
+    let quiet = |mut c: Command| {
+        c.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    };
     if cfg!(windows) {
         if !RealEnv::new().has("winget") {
             out::warn(
@@ -98,7 +110,9 @@ fn ensure_mise() -> bool {
         out::ok("mise installed");
         return true;
     }
-    out::warn("mise did not install. Try: curl https://mise.run | sh   (Windows: winget install jdx.mise)");
+    out::warn(
+        "mise did not install. Try: curl https://mise.run | sh   (Windows: winget install jdx.mise)",
+    );
     false
 }
 
@@ -107,12 +121,17 @@ fn ensure_mise() -> bool {
 fn needs_mise(tools: &[core::Tool], host: Host, only: &[String]) -> bool {
     let env = RealEnv::new();
     let miss = core::missing(tools, host, &env, only);
-    tools.iter().any(|t| miss.contains(&t.name) && t.sources.iter().any(|s| matches!(s, Source::Mise(_))))
+    tools
+        .iter()
+        .any(|t| miss.contains(&t.name) && t.sources.iter().any(|s| matches!(s, Source::Mise(_))))
 }
 
 /// The arguments of `tools`.
 #[derive(clap::Parser, Debug)]
-#[command(name = "tools", about = "Install the command-line tools of tools.list for this OS.")]
+#[command(
+    name = "tools",
+    about = "Install the command-line tools of tools.list for this OS."
+)]
 struct Args {
     /// Install nothing: list what is missing and exit 1.
     #[arg(long)]
@@ -151,7 +170,15 @@ pub fn run(args: Vec<String>) -> u8 {
             return if e.use_stderr() { 2 } else { 0 };
         }
     };
-    let Args { check, list, mut only, host, file, quiet, verbose } = args;
+    let Args {
+        check,
+        list,
+        mut only,
+        host,
+        file,
+        quiet,
+        verbose,
+    } = args;
     only.retain(|s| !s.is_empty());
     let verbose = verbose || out::verbose();
     let host = host.unwrap_or_else(Host::detect);
@@ -159,7 +186,10 @@ pub fn run(args: Vec<String>) -> u8 {
         eprintln!("tools: cannot find tools.list (set DOTFILES_REPO)");
         return 2;
     };
-    let tools = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| core::parse(&t)) {
+    let tools = match std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|t| core::parse(&t))
+    {
         Ok(t) => t,
         Err(e) => {
             eprintln!("tools: {}: {e}", path.display());
@@ -202,14 +232,23 @@ pub fn run(args: Vec<String>) -> u8 {
             }
             Outcome::Installed(n, src) => {
                 installed += 1;
-                println!("{} {} installed {}", green("✓"), n, dim(&format!("({src})")));
+                println!(
+                    "{} {} installed {}",
+                    green("✓"),
+                    n,
+                    dim(&format!("({src})"))
+                );
             }
             Outcome::Failed(n, tried) => {
                 if !first_failure(n) {
                     continue;
                 }
                 failed += 1;
-                let why = if tried.is_empty() { "no source fits this machine".to_string() } else { tried.join("; ") };
+                let why = if tried.is_empty() {
+                    "no source fits this machine".to_string()
+                } else {
+                    tried.join("; ")
+                };
                 out::warn(&format!("{n} did not install: {why}"));
             }
         }
@@ -226,7 +265,11 @@ pub fn run(args: Vec<String>) -> u8 {
             green("✓"),
             installed,
             present,
-            if failed > 0 { format!(", {failed} failed") } else { String::new() }
+            if failed > 0 {
+                format!(", {failed} failed")
+            } else {
+                String::new()
+            }
         );
     }
     if failed > 0 {
@@ -245,7 +288,11 @@ mod tests {
 
     #[test]
     fn a_flag_without_its_value_is_an_error() {
-        assert_eq!(run(vec!["--only".into()]), 2, "an empty --only must not mean every tool");
+        assert_eq!(
+            run(vec!["--only".into()]),
+            2,
+            "an empty --only must not mean every tool"
+        );
         assert_eq!(run(vec!["--host".into()]), 2);
         assert_eq!(run(vec!["--host".into(), "beos".into()]), 2);
         assert_eq!(run(vec!["--file".into()]), 2);

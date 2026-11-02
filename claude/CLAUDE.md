@@ -22,9 +22,7 @@ presets (`dots settings`); personal rules go in `~/.config/dotfiles/owner.md`, n
 ## Environment
 
 - macOS, Linux (Debian, Ubuntu, Fedora, Arch; Alpine without Homebrew) or Windows (Git Bash). Run `uname -s` before an OS-specific command. macOS and Linux: zsh + Oh My Zsh + Starship.
-- `~/dotfiles` is plain git. Most of `$HOME` is symlinked from `~/dotfiles/home`, so edit the
-  source and it is live; check `ls -la` when unsure. `dots` pulls, relinks and provisions; there
-  is no background sync. Repo guide: `~/dotfiles/AGENTS.md`.
+- `~/dotfiles` is plain git, and most of `$HOME` links into it: edit the source there. The rule and the repo guide: `~/dotfiles/AGENTS.md`.
 - CLI defaults (macOS and Linux; Windows has only what is on PATH): `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`/`difftastic`, `lazygit`.
 - Runtimes via `mise`.
 

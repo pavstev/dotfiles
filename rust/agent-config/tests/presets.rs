@@ -1,8 +1,10 @@
 //! The opt-in presets under `claude/presets/`, the neutral core and neutral text in `claude/`, and
 //! `agent-config claude-settings demote`.
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 mod common;
 
-use common::{run_bin, temp_home};
+use common::{rj, run_bin, temp_home, wr};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,18 +12,29 @@ use std::path::{Path, PathBuf};
 const AC: &str = env!("CARGO_BIN_EXE_agent-config");
 
 fn claude_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("claude")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("claude")
 }
 
 fn lines(p: &Path) -> usize {
-    fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())).lines().count()
+    fs::read_to_string(p)
+        .unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+        .lines()
+        .count()
 }
 
 /// `(name, description, guard ids)` from the front matter of a rules file.
 fn front_matter(p: &Path) -> (Option<String>, Option<String>, Option<Vec<String>>) {
     let text = fs::read_to_string(p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
     let mut it = text.lines();
-    assert_eq!(it.next(), Some("---"), "{} must start with front matter", p.display());
+    assert_eq!(
+        it.next(),
+        Some("---"),
+        "{} must start with front matter",
+        p.display()
+    );
     let (mut name, mut desc, mut guard) = (None, None, None);
     for l in it {
         if l == "---" {
@@ -33,7 +46,13 @@ fn front_matter(p: &Path) -> (Option<String>, Option<String>, Option<Vec<String>
             desc = Some(v.trim().to_string());
         } else if let Some(v) = l.strip_prefix("guard:") {
             let inner = v.trim().trim_start_matches('[').trim_end_matches(']');
-            guard = Some(inner.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+            guard = Some(
+                inner
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            );
         }
     }
     (name, desc, guard)
@@ -48,8 +67,15 @@ fn presets_well_formed() {
         let rules = claude_dir().join("presets").join(name).join("rules.md");
         assert!(rules.is_file(), "{} missing", rules.display());
         let (n, d, g) = front_matter(&rules);
-        assert_eq!(n.as_deref(), Some(name.as_str()), "{name}: name must equal the folder");
-        assert!(d.as_deref().is_some_and(|d| !d.is_empty()), "{name}: description is empty");
+        assert_eq!(
+            n.as_deref(),
+            Some(name.as_str()),
+            "{name}: name must equal the folder"
+        );
+        assert!(
+            d.as_deref().is_some_and(|d| !d.is_empty()),
+            "{name}: description is empty"
+        );
         assert!(g.is_some(), "{name}: guard: line missing");
     }
 }
@@ -82,7 +108,10 @@ fn core_is_short() {
 /// Every text file under `claude/` (skips binaries and build output).
 fn claude_text_files() -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
-    for e in walkdir::WalkDir::new(claude_dir()).into_iter().filter_map(Result::ok) {
+    for e in walkdir::WalkDir::new(claude_dir())
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         if !e.file_type().is_file() {
             continue;
         }
@@ -117,7 +146,11 @@ fn no_personal_words() {
             }
         }
     }
-    assert!(hits.is_empty(), "personal words in claude/:\n{}", hits.join("\n"));
+    assert!(
+        hits.is_empty(),
+        "personal words in claude/:\n{}",
+        hits.join("\n")
+    );
 }
 
 #[test]
@@ -138,7 +171,10 @@ fn base_settings_neutral() {
     assert!(base.pointer("/env/CLAUDE_CODE_SUBAGENT_MODEL").is_none());
     for d in base["permissions"]["deny"].as_array().unwrap() {
         let d = d.as_str().unwrap();
-        let id = d.strip_prefix("mcp__").and_then(|r| r.strip_suffix("__*")).unwrap_or("");
+        let id = d
+            .strip_prefix("mcp__")
+            .and_then(|r| r.strip_suffix("__*"))
+            .unwrap_or("");
         let uuid_like = id.len() == 36 && id.matches('-').count() == 4;
         assert!(!uuid_like, "base settings names a connector id: {d}");
     }
@@ -168,7 +204,17 @@ impl Fx {
     }
     fn ac(&self, args: &[&str]) -> (i32, String, String) {
         let (home, repo) = (self.home.to_str().unwrap(), self.repo.to_str().unwrap());
-        run_bin(AC, args, "", &[("HOME", home), ("DOTFILES_REPO", repo), ("DOTFILES_VERBOSE", "1")], None)
+        run_bin(
+            AC,
+            args,
+            "",
+            &[
+                ("HOME", home),
+                ("DOTFILES_REPO", repo),
+                ("DOTFILES_VERBOSE", "1"),
+            ],
+            None,
+        )
     }
     fn live(&self) -> PathBuf {
         self.home.join(".claude/settings.json")
@@ -182,10 +228,6 @@ impl Drop for Fx {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.tmp);
     }
-}
-
-fn rj(p: &Path) -> Value {
-    serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap()
 }
 
 #[test]
@@ -210,14 +252,27 @@ fn demote_copies_live_value() {
 
 #[test]
 fn demote_a_nested_key_keeps_its_siblings() {
-    let fx = Fx::new("presets-demote-nested", &json!({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet", "KEEP": "1"}}));
+    let fx = Fx::new(
+        "presets-demote-nested",
+        &json!({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet", "KEEP": "1"}}),
+    );
     fx.ac(&["claude-settings", "build"]);
     fx.set_base(&json!({"env": {"KEEP": "1"}}));
-    let (code, _, _) = fx.ac(&["claude-settings", "demote", "env.CLAUDE_CODE_SUBAGENT_MODEL"]);
+    let (code, _, _) = fx.ac(&[
+        "claude-settings",
+        "demote",
+        "env.CLAUDE_CODE_SUBAGENT_MODEL",
+    ]);
     assert_eq!(code, 0);
-    assert_eq!(rj(&fx.layer()), json!({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}}));
+    assert_eq!(
+        rj(&fx.layer()),
+        json!({"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}})
+    );
     fx.ac(&["claude-settings", "build"]);
-    assert_eq!(rj(&fx.live())["env"], json!({"KEEP": "1", "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"}));
+    assert_eq!(
+        rj(&fx.live())["env"],
+        json!({"KEEP": "1", "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet"})
+    );
 }
 
 #[test]
@@ -239,18 +294,16 @@ fn demote_missing_key_is_noop() {
 
 use agent_config::presets;
 
-fn wr(p: &Path, text: &str) {
-    fs::create_dir_all(p.parent().unwrap()).unwrap();
-    fs::write(p, text).unwrap();
-}
-
 /// A fake repo (core rules, two presets, the ELI5 output style) in a temp HOME.
 fn px(tag: &str) -> Fx {
     let fx = Fx::new(tag, &json!({}));
     let c = fx.repo.join("claude");
     wr(&c.join("CLAUDE.md"), "# Core\n\ncore line\n");
     wr(&c.join("hooks/rust-bin"), "# fake launcher\n");
-    wr(&c.join("output-styles/ELI5.md"), "---\nname: ELI5\n---\nExplain it simply.\n");
+    wr(
+        &c.join("output-styles/ELI5.md"),
+        "---\nname: ELI5\n---\nExplain it simply.\n",
+    );
     wr(
         &c.join("presets/workflow/rules.md"),
         "---\nname: workflow\ndescription: d\nguard: [G1]\n---\n# Workflow\n\nworkflow line\n",
@@ -259,7 +312,10 @@ fn px(tag: &str) -> Fx {
         &c.join("presets/plain-writing/rules.md"),
         "---\nname: plain-writing\ndescription: d\nguard: []\n---\n# Plain\n\nplain line\n",
     );
-    wr(&c.join("presets/plain-writing/settings.json"), r#"{"outputStyle": "ELI5"}"#);
+    wr(
+        &c.join("presets/plain-writing/settings.json"),
+        r#"{"outputStyle": "ELI5"}"#,
+    );
     fx
 }
 
@@ -297,7 +353,11 @@ fn shared_profile_links_all_but_ship_to_main() {
     assert_eq!(links.len(), preset_names().len() - 1, "{links:?}");
     assert!(!links.contains(&"preset-ship-to-main.md".to_string()));
     let t = fs::read_link(home.join(".claude/rules/preset-clock.md")).unwrap();
-    assert!(t.ends_with("claude/presets/clock/rules.md"), "{}", t.display());
+    assert!(
+        t.ends_with("claude/presets/clock/rules.md"),
+        "{}",
+        t.display()
+    );
     let _ = fs::remove_dir_all(&home);
 }
 
@@ -306,11 +366,17 @@ fn presets_list_unlinks_rest() {
     let home = temp_home("presets-list");
     link_enabled(&home, "owner");
     assert_eq!(preset_links(&home).len(), preset_names().len()); // the owner gets every preset
-    wr(&home.join(".config/dotfiles/settings"), "PRESETS=\"workflow\"\n");
+    wr(
+        &home.join(".config/dotfiles/settings"),
+        "PRESETS=\"workflow\"\n",
+    );
     link_enabled(&home, "owner");
     assert_eq!(preset_links(&home), ["preset-workflow.md"]);
     // "all" and "none" are words too
-    wr(&home.join(".config/dotfiles/settings"), "PRESETS=\"none\"\n");
+    wr(
+        &home.join(".config/dotfiles/settings"),
+        "PRESETS=\"none\"\n",
+    );
     link_enabled(&home, "owner");
     assert_eq!(preset_links(&home), [] as [String; 0]);
     let _ = fs::remove_dir_all(&home);
@@ -321,7 +387,10 @@ fn foreign_preset_file_untouched() {
     let home = temp_home("presets-foreign");
     let mine = home.join(".claude/rules/preset-clock.md");
     wr(&mine, "my own rule\n");
-    wr(&home.join(".config/dotfiles/settings"), "PRESETS=\"workflow\"\n");
+    wr(
+        &home.join(".config/dotfiles/settings"),
+        "PRESETS=\"workflow\"\n",
+    );
     link_enabled(&home, "owner"); // clock off
     assert_eq!(fs::read_to_string(&mine).unwrap(), "my own rule\n");
     assert!(!mine.symlink_metadata().unwrap().file_type().is_symlink());
@@ -343,7 +412,10 @@ fn foreign_preset_file_untouched() {
 #[test]
 fn unknown_preset_warns_and_skips() {
     let home = temp_home("presets-unknown");
-    wr(&home.join(".config/dotfiles/settings"), "PRESETS=\"workflow nope\"\n");
+    wr(
+        &home.join(".config/dotfiles/settings"),
+        "PRESETS=\"workflow nope\"\n",
+    );
     assert_eq!(presets::enabled_quiet(&home, "shared"), ["workflow"]);
     // the warning shows in a real run
     let fx = px("presets-unknown-run");
@@ -379,18 +451,29 @@ fn fragments_leave_with_their_preset() {
     setting_file(&fx, "PRESETS=\"workflow\"\n");
     fx.ac(&["claude-settings", "build"]);
     assert!(rj(&fx.live()).get("outputStyle").is_none());
-    assert!(!fx.layer().exists(), "a preset key must not drift into the private layer");
+    assert!(
+        !fx.layer().exists(),
+        "a preset key must not drift into the private layer"
+    );
 }
 
 #[test]
 fn co_author_switch_follows_the_no_ai_attribution_preset() {
     // the real repo, a temp HOME: built with the preset on, then off
     let home = temp_home("presets-co-author");
-    let (h, r) = (home.to_str().unwrap().to_string(), real_repo().to_str().unwrap().to_string());
+    let (h, r) = (
+        home.to_str().unwrap().to_string(),
+        real_repo().to_str().unwrap().to_string(),
+    );
     let build = |settings: &str| -> Value {
         wr(&home.join(".config/dotfiles/settings"), settings);
-        let (code, out, err) =
-            run_bin(AC, &["claude-settings", "build"], "", &[("HOME", &h), ("DOTFILES_REPO", &r)], None);
+        let (code, out, err) = run_bin(
+            AC,
+            &["claude-settings", "build"],
+            "",
+            &[("HOME", &h), ("DOTFILES_REPO", &r)],
+            None,
+        );
         assert_eq!(code, 0, "{out}{err}");
         rj(&home.join(".claude/settings.json"))
     };
@@ -420,11 +503,17 @@ fn upgrade_keeps_private_layer() {
 #[test]
 fn opencode_rules_include_presets() {
     let fx = px("presets-opencode");
-    wr(&fx.home.join(".config/dotfiles/owner.md"), "## Private\n\nowner line\n");
+    wr(
+        &fx.home.join(".config/dotfiles/owner.md"),
+        "## Private\n\nowner line\n",
+    );
     let (code, _, err) = fx.ac(&["opencode", "--profile", "owner"]);
     assert_eq!(code, 0, "{err}");
     let text = fs::read_to_string(fx.home.join(".config/opencode/AGENTS.md")).unwrap();
-    let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s} missing in\n{text}"));
+    let at = |s: &str| {
+        text.find(s)
+            .unwrap_or_else(|| panic!("{s} missing in\n{text}"))
+    };
     assert!(at("core line") < at("workflow line"));
     assert!(at("plain line") < at("owner line"));
     assert!(at("owner line") < at("# Reply style: ELI5"));
@@ -436,7 +525,10 @@ fn cursor_rule_includes_presets() {
     let (code, _, err) = fx.ac(&["cursor", "--profile", "shared"]);
     assert_eq!(code, 0, "{err}");
     let text = fs::read_to_string(fx.home.join(".cursor/rules/claude-global.mdc")).unwrap();
-    assert!(text.contains("core line") && text.contains("workflow line") && text.contains("plain line"), "{text}");
+    assert!(
+        text.contains("core line") && text.contains("workflow line") && text.contains("plain line"),
+        "{text}"
+    );
     let (_, out, _) = fx.ac(&["user-rules", "--profile", "shared", "--dry-run"]);
     assert!(out.contains("workflow line"), "{out}");
 }
@@ -449,11 +541,18 @@ fn output_style_from_built_settings() {
     wr(&fx.live(), r#"{"outputStyle": "ELI5"}"#);
     assert_eq!(fx.ac(&["opencode", "--profile", "shared"]).0, 0);
     let text = fs::read_to_string(fx.home.join(".config/opencode/AGENTS.md")).unwrap();
-    assert!(text.contains("# Reply style: ELI5") && text.contains("Explain it simply."), "{text}");
+    assert!(
+        text.contains("# Reply style: ELI5") && text.contains("Explain it simply."),
+        "{text}"
+    );
     // and none when the built file says default
     wr(&fx.live(), r#"{"outputStyle": "default"}"#);
     assert_eq!(fx.ac(&["opencode", "--profile", "shared"]).0, 0);
-    assert!(!fs::read_to_string(fx.home.join(".config/opencode/AGENTS.md")).unwrap().contains("Reply style"));
+    assert!(
+        !fs::read_to_string(fx.home.join(".config/opencode/AGENTS.md"))
+            .unwrap()
+            .contains("Reply style")
+    );
 }
 
 #[test]
@@ -465,7 +564,10 @@ fn theme_plain_skips_opencode_theme() {
     let dir = fx.home.join(".config/opencode");
     assert!(!dir.join("themes/copper.json").exists());
     assert!(!dir.join("tui.json").exists());
-    assert!(!format!("{out}{err}").contains("uses your Opencode theme"), "{out}{err}");
+    assert!(
+        !format!("{out}{err}").contains("uses your Opencode theme"),
+        "{out}{err}"
+    );
     // copper still writes it
     setting_file(&fx, "THEME=\"copper\"\n");
     fx.ac(&["opencode", "--profile", "shared"]);
@@ -489,9 +591,18 @@ fn profile_read_only() {
     let home = temp_home("presets-profile");
     wr(&home.join(".config/dotfiles/owner.md"), "x\n");
     assert_eq!(presets::profile(&home), "owner");
-    assert!(!home.join(".config/dotfiles/settings").exists(), "profile() must not write the settings file");
-    wr(&home.join(".config/dotfiles/settings"), "PROFILE=\"shared\"\n");
+    assert!(
+        !home.join(".config/dotfiles/settings").exists(),
+        "profile() must not write the settings file"
+    );
+    wr(
+        &home.join(".config/dotfiles/settings"),
+        "PROFILE=\"shared\"\n",
+    );
     assert_eq!(presets::profile(&home), "shared");
-    assert_eq!(fs::read_to_string(home.join(".config/dotfiles/settings")).unwrap(), "PROFILE=\"shared\"\n");
+    assert_eq!(
+        fs::read_to_string(home.join(".config/dotfiles/settings")).unwrap(),
+        "PROFILE=\"shared\"\n"
+    );
     let _ = fs::remove_dir_all(&home);
 }

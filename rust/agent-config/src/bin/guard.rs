@@ -1,4 +1,4 @@
-//! Claude Code guard hook (PreToolUse, UserPromptSubmit, SubagentStop, Stop), a port of
+//! Claude Code guard hook (`PreToolUse`, `UserPromptSubmit`, `SubagentStop`, `Stop`), a port of
 //! `claude/hooks/guard.py`. Deny = message on stderr + exit 2. Allow = exit 0 silently.
 //! Warn = exit 0 with hookSpecificOutput.additionalContext JSON on stdout.
 //! Fail-open: any bad input, panic or unknown mode exits 0 with no output.
@@ -8,10 +8,18 @@
 //! (a missing transcript) lets the call through.
 //!
 //! `GUARD_OFF` (env, else the setting; ids split by comma or space, any case) turns checks off. The
-//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, G19, G20, H1 and W5 (preset workflow), G8 and
+//! ids, one list in `guard_checks::REGISTRY`: G1 to G7 and G12, G13, G18, G19, G20, H1, H2 and W5 (preset workflow), G8 and
 //! PACE (pace), G9 and ROUTER (models), G10 (ship-to-main), G11 (clock), G17 (no-ai-attribution),
-//! G14, G15 and G16 (core). H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
-//! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session. W5
+//! G14, G15 and G16 (core). G14 and G15 fix instead of denying where they can: a bare `sed -i` on macOS
+//! becomes `sed -i ''`, and a `ps` or `pgrep` that prints command lines loses them (`permissionDecision:
+//! allow` + `updatedInput` + a note, the shape the router uses). They deny only where the rewrite cannot
+//! reach the call (`bash -c`, `find -exec`, `--in-place`, a here-document, `procs`, a `ps` user filter),
+//! and G15 always denies a read of `local.zsh`. H1 is a hint, not a deny: a Bash `sed -n` or `cat` of a code file adds
+//! the context "Tip: ~/.claude/hooks/rust-bin ctx outline ...", at most 3 times per session. H2 is a hint on
+//! `UserPromptSubmit`: a phrase of the user from `guard_checks::H2_PHRASES` (one set per skill, first set wins)
+//! adds `The user said '<phrase>': run /ps:<name> first.` Never for a prompt that starts with `/` or
+//! `<command-message>`, never when the skill ran in the last 3 assistant turns, one hint per prompt. English
+//! only: Serbian words such as "arhiviraj" are out of scope. W5
 //! (preset workflow) is a warning too: a plain check command (`pnpm check`, `cargo test`, ...) that
 //! already passed in this session, with the git work tree unchanged since, gets a note to skip it. G18
 //! (workflow) denies the third try of a Bash command or an edit that failed twice. G19 (workflow) holds an
@@ -19,10 +27,13 @@
 //! (workflow) denies a `Read` of a file over 40,000 bytes with no `offset` or `limit`, once per file per
 //! session; the same call again goes through. Images, PDFs and notebooks are exempt.
 
-use agent_config::guard_checks::{self as gc, Check, FireKind, Verdict, expanduser, is_macos, realpath};
+use agent_config::guard_checks::{
+    self as gc, Check, FireKind, Verdict, basename, check_enabled, expanduser, is_macos, path_join,
+    realpath,
+};
 use agent_config::paths;
 use agent_config::proj;
-use agent_config::pycompat::{days_from_civil, truthy};
+use agent_config::pycompat::{self, truthy};
 use agent_config::transcript;
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -35,21 +46,31 @@ use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use agent_config::pace_core::{self as pace, Model, PaceState};
 
 const POLL_CONTEXT: i64 = 100_000;
-const NUDGE_CONTEXT: i64 = 300_000;
-const SPAWN_CONTEXT: i64 = 350_000;
+const NUDGE_CONTEXT: i64 = 400_000;
+// below the 500K autoCompactWindow, so a session can still spawn until auto-compact
+const SPAWN_CONTEXT: i64 = 475_000;
 const MIN_INTERVAL_MIN: i64 = 30;
 const NUDGE_EVERY: i64 = 5;
 const SPAWN_TTL: f64 = 5400.0;
-const HANDBACK_SLACK: f64 = 1.10;
+/// `SPAWN_TTL` in whole seconds, for the integer clock.
+const SPAWN_TTL_SECS: i64 = 5400;
+/// The 7-day review of 2026-11-02 found the median denied hand-back at 1.24 times the cap and 338
+/// denies in a week, so the slack went up to 2x the same day.
+const HANDBACK_SLACK: f64 = 2.0;
 const HANDBACK_MAX_DENIES: i64 = 2;
 const HANDBACK_DEFAULT_CAP: i64 = 4000;
 const PROMPT_SCAN_LINES: usize = 200;
-const SCRATCH_ROOTS: &[&str] = &["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
+const SCRATCH_ROOTS: &[&str] = &[
+    "/tmp",
+    "/private/tmp",
+    "/var/folders",
+    "/private/var/folders",
+];
 const SCRATCH_DIRS: &[&str] = &[".agents", ".superlite"];
 const ARCHIVE_TOOL: &str = "mcp__ccd_session_mgmt__archive_session";
 const HEAVY_AGENTS: &[&str] = &["general-purpose", "claude"];
@@ -79,62 +100,67 @@ const BIG_READ_TABLE_MAX: usize = 200;
 /// G20 exempts the files the Read tool shows as images, pages or cells.
 const BIG_READ_SKIP_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf", "ipynb"];
 
-const MSG_SCRATCH: &str =
-    "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superlite/.";
-const MSG_POLL: &str =
-    "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
+const MSG_SCRATCH: &str = "guard: this agent writes only scratch files; write under the scratchpad, $TMPDIR, .agents/ or .superlite/.";
+const MSG_POLL: &str = "guard: no polling loops at big context; use Monitor / SendMessage notify_when_idle, or one final report.";
 const MSG_ASK: &str = "guard: an earlier AskUserQuestion in this turn has no answer yet. Wait for it, then ask again. Put all questions of one round in one call.";
 const MSG_HEAVY_TAIL: &str = "subagent loads every tool and skill (about 60K tokens; `worker` starts near 15-20K). Use `worker` (edits, commands), `researcher` (web), `Explore` (search), `task-implementer` (one plan task) or `Plan` (planning).";
 const MSG_PLAN_GATE: &str = "guard: plans run on Opus only in plan mode (opusplan). Call EnterPlanMode first, then save the plan file after you approve it (autopilot: send a `Plan` helper instead).";
 const MSG_PLAN_GATE_APP: &str = "guard: in the desktop app plan mode does not switch a Sonnet session to Opus. For this plan, send a `Plan` helper (Opus by the router), or pick Opus in the model menu.";
 const MSG_G18_WARN: &str = "G18: this step failed twice. Rule: after 2 failed tries on one step, stop and report. Change the approach now, or stop and report to the user.";
 const MSG_G18_DENY: &str = "G18: stop and report: 2 failed tries on this step. Say what failed and what you tried, then wait (autopilot: log the blocker and take the next task). A new user message clears this.";
-const MSG_G13: &str = "G13: 8 tool calls with no text. Write one short status line for the user now, then go on.";
+const MSG_G13: &str =
+    "G13: 8 tool calls with no text. Write one short status line for the user now, then go on.";
+
+/// Compile a regex literal of this file. Every call site passes a constant pattern, so it cannot fail.
+fn lit_re(pattern: &str) -> Regex {
+    Regex::new(pattern).expect("regex literal in guard.rs is valid")
+}
 
 static DEADLINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)deadline|time ?(?:box|limit)|stop at|\d+ ?-?(?:m|mins?|minutes?|h|hrs?|hours?)\b").unwrap()
+    lit_re(r"(?i)deadline|time ?(?:box|limit)|stop at|\d+ ?-?(?:m|mins?|minutes?|h|hrs?|hours?)\b")
 });
 static CAP_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
+    lit_re(
         r"(?i)hand[ -]?back|at most \d[\d,]*|\d[\d,]* ?(?:chars|characters|words|lines)\b|under \d[\d,]*|max(?:imum)? \d[\d,]*|one line|≤ ?\d[\d,]*",
     )
-    .unwrap()
 });
-static CAP_NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(\d[\d,]*) ?(?:chars|characters)\b").unwrap());
-static CAP_HANDBACK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)hand[ -]?backs?\b").unwrap());
+static CAP_NUM: LazyLock<Regex> =
+    LazyLock::new(|| lit_re(r"(?i)(\d[\d,]*) ?(?:chars|characters)\b"));
+static CAP_HANDBACK: LazyLock<Regex> = LazyLock::new(|| lit_re(r"(?i)hand[ -]?backs?\b"));
 static CAP_STRONG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)final message|reply|response|respond|output").unwrap());
-static CAP_WEAK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)answer|return|report|summary").unwrap());
+    LazyLock::new(|| lit_re(r"(?i)final message|reply|response|respond|output"));
+static CAP_WEAK: LazyLock<Regex> = LazyLock::new(|| lit_re(r"(?i)answer|return|report|summary"));
 static CAP_BOUND: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:≤|<=|at most|under|max(?:imum)?|stay|keep|limit|no more than|within)\W*$").unwrap()
+    lit_re(r"(?i)(?:≤|<=|at most|under|max(?:imum)?|stay|keep|limit|no more than|within)\W*$")
 });
-static SENTENCE_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\s|\n").unwrap());
-static PANEL_ANGLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:panel|angle|re-?review)\b").unwrap());
-static FINAL_REVIEW: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\bfinal\b.{0,30}\breview|\bwhole[- ]branch\b|\bbranch[- ]review\b").unwrap());
-static HANDOFF_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/handoffs/[^/]+\.md\n?\z").unwrap());
-static LINK_TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\]\(([^)\s]+)\)").unwrap());
-static TASK_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<task-id>([^<]+)</task-id>").unwrap());
-static TASK_STATUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<status>([a-z_]+)</status>").unwrap());
-static STAR_STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A\*/([0-9]+)\z").unwrap());
-static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9]+\z").unwrap());
+static SENTENCE_END: LazyLock<Regex> = LazyLock::new(|| lit_re(r"\.\s|\n"));
+static PANEL_ANGLE: LazyLock<Regex> =
+    LazyLock::new(|| lit_re(r"(?i)\b(?:panel|angle|re-?review)\b"));
+static FINAL_REVIEW: LazyLock<Regex> = LazyLock::new(|| {
+    lit_re(r"(?i)\bfinal\b.{0,30}\breview|\bwhole[- ]branch\b|\bbranch[- ]review\b")
+});
+static HANDOFF_PATH: LazyLock<Regex> = LazyLock::new(|| lit_re(r"/handoffs/[^/]+\.md\n?\z"));
+static LINK_TARGET: LazyLock<Regex> = LazyLock::new(|| lit_re(r"\]\(([^)\s]+)\)"));
+static TASK_ID: LazyLock<Regex> = LazyLock::new(|| lit_re(r"<task-id>([^<]+)</task-id>"));
+static TASK_STATUS: LazyLock<Regex> = LazyLock::new(|| lit_re(r"<status>([a-z_]+)</status>"));
+static STAR_STEP: LazyLock<Regex> = LazyLock::new(|| lit_re(r"\A\*/([0-9]+)\z"));
+static DIGITS: LazyLock<Regex> = LazyLock::new(|| lit_re(r"\A[0-9]+\z"));
 static MINUTE_PART: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\A([0-9]+)(?:-([0-9]+))?(?:/([0-9]+))?\z").unwrap());
+    LazyLock::new(|| lit_re(r"\A([0-9]+)(?:-([0-9]+))?(?:/([0-9]+))?\z"));
 static NO_PUSH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
+    lit_re(
         r"(?i)do not push|don['’]t push|no push|local only|don['’]t commit|do not commit|\bnot push\b|\bnot to push\b|\bwithout pushing\b|\blet me review (?:it|this|first)\b|\bwait for (?:my )?review\b|\bask before (?:you )?push|\bdo not merge|\bdon['’]t merge",
     )
-    .unwrap()
 });
-static CLOCK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:min(?:ute)?s?|h|hrs?|hours?)\b").unwrap());
-static ISO_TS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\A(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.\d+)?(Z|[+-]\d\d:?\d\d)?\z").unwrap()
+static CLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    lit_re(r"(?i)\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s?(?:min(?:ute)?s?|h|hrs?|hours?)\b")
 });
-static GIT_COMMIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b[^;&|\n]*?\bcommit\b").unwrap());
-static WORDS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w{2,}").unwrap());
-static ENTRYPOINT: LazyLock<regex::bytes::Regex> =
-    LazyLock::new(|| regex::bytes::Regex::new(r#""entrypoint"\s*:\s*"([^"]*)""#).unwrap());
+static GIT_COMMIT: LazyLock<Regex> = LazyLock::new(|| lit_re(r"\bgit\b[^;&|\n]*?\bcommit\b"));
+static WORDS: LazyLock<Regex> = LazyLock::new(|| lit_re(r"\w{2,}"));
+static ENTRYPOINT: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(r#""entrypoint"\s*:\s*"([^"]*)""#)
+        .expect("regex literal in guard.rs is valid")
+});
 
 static NULL: Value = Value::Null;
 
@@ -146,6 +172,15 @@ fn get<'a>(v: &'a Value, k: &str) -> &'a Value {
 /// A JSON number of a transcript field, else 0.
 fn num(v: &Value) -> f64 {
     v.as_f64().unwrap_or(0.0)
+}
+
+/// A JSON number of a transcript field cut to a whole number, else 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float to int cast saturates and never panics; a token count is far below the limit"
+)]
+fn num_i64(v: &Value) -> i64 {
+    num(v) as i64
 }
 
 /// An integer counter of the state file, else 0.
@@ -171,8 +206,10 @@ struct HookInput<'a> {
     stop_hook_active: bool,
     /// `tool_response.interrupted`
     interrupted: bool,
-    /// `is_interrupt` of a PostToolUseFailure: the user stopped the call, it did not fail by itself.
+    /// `is_interrupt` of a `PostToolUseFailure`: the user stopped the call, it did not fail by itself.
     is_interrupt: bool,
+    /// The text of a `UserPromptSubmit`.
+    prompt: Option<&'a str>,
 }
 
 impl<'a> HookInput<'a> {
@@ -194,6 +231,7 @@ impl<'a> HookInput<'a> {
             stop_hook_active: truthy(get(data, "stop_hook_active")),
             interrupted: get(get(data, "tool_response"), "interrupted").as_bool() == Some(true),
             is_interrupt: get(data, "is_interrupt").as_bool() == Some(true),
+            prompt: text("prompt"),
         }
     }
 
@@ -211,12 +249,16 @@ impl<'a> HookInput<'a> {
     }
 
     fn is_main_thread(&self) -> bool {
-        self.agent_id.is_none() && !self.transcript_path.is_some_and(|p| p.contains("/subagents/"))
+        self.agent_id.is_none()
+            && !self
+                .transcript_path
+                .is_some_and(|p| p.contains("/subagents/"))
     }
 
     /// The working folder of the call, else the process folder.
     fn call_cwd(&self) -> PathBuf {
-        self.cwd.map_or_else(|| env::current_dir().unwrap_or_default(), PathBuf::from)
+        self.cwd
+            .map_or_else(|| env::current_dir().unwrap_or_default(), PathBuf::from)
     }
 }
 
@@ -225,16 +267,35 @@ fn has(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn loads(line: &[u8]) -> Option<Value> {
-    serde_json::from_slice::<Value>(line).ok().filter(Value::is_object)
+    serde_json::from_slice::<Value>(line)
+        .ok()
+        .filter(Value::is_object)
 }
 
 /// The `{"hookSpecificOutput": {...}}` line for an event with a context note.
 fn hook_output(event: &str, context: &str) -> String {
-    json!({"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}).to_string()
+    hook_json(event, vec![("additionalContext", json!(context))])
+}
+
+/// The `{"hookSpecificOutput": {...}}` line for `event` with these fields next to `hookEventName`.
+fn hook_json(event: &str, fields: Vec<(&str, Value)>) -> String {
+    let mut hso = json!({"hookEventName": event});
+    for (k, v) in fields {
+        hso[k] = v;
+    }
+    json!({"hookSpecificOutput": hso}).to_string()
 }
 
 fn sanitize_key(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn state_dir() -> PathBuf {
@@ -247,15 +308,14 @@ fn state_dir() -> PathBuf {
 }
 
 fn now_secs() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+    paths::unix_now_f64()
 }
 
-// The check list (`gc::REGISTRY`) and the gate (`gc::Gate`) live in `guard_checks`: one copy for the
-// guard and the Cursor adapter.
+// The check list (`gc::REGISTRY`) and the gate (`gc::check_enabled`) live in `guard_checks`: one copy
+// for the guard and the Cursor adapter.
 
-/// What a hook run reads from the settings: read once per process.
+/// What a hook run reads from the settings besides the gate: read once per process.
 struct Cfg {
-    gate: gc::Gate,
     zone: Option<String>,
 }
 
@@ -265,19 +325,20 @@ fn valid_zone(z: &str) -> bool {
         && z.len() <= 64
         && !z.contains("..")
         && !z.starts_with('/')
-        && z.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'));
+        && z.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '+'));
     let root = Path::new("/usr/share/zoneinfo");
     shape && (!root.is_dir() || root.join(z).is_file())
 }
 
 fn load_cfg() -> Cfg {
-    let all_on = || Cfg { gate: gc::Gate::all_on(), zone: None };
     let home = paths::home();
     std::panic::catch_unwind(|| {
-        let zone = Some(agent_config::setting(&home, "TIMEZONE").trim().to_string()).filter(|z| valid_zone(z));
-        Cfg { gate: gc::Gate::load(&home), zone }
+        let zone = Some(agent_config::setting(&home, "TIMEZONE").trim().to_string())
+            .filter(|z| valid_zone(z));
+        Cfg { zone }
     })
-    .unwrap_or_else(|_| all_on())
+    .unwrap_or(Cfg { zone: None })
 }
 
 fn cfg() -> &'static Cfg {
@@ -285,22 +346,23 @@ fn cfg() -> &'static Cfg {
     CFG.get_or_init(load_cfg)
 }
 
-/// True when check `id` runs: it is not in `GUARD_OFF` (env, else the setting; a comma or space
-/// list) and its preset is on. `core` checks ignore the presets.
-fn check_enabled(check: Check) -> bool {
-    cfg().gate.enabled(check)
-}
-
 /// Locked read-modify-write of the per-session state file (the keys count, pace, spawns). None
 /// when the state folder or file cannot be used.
-fn with_state<T>(data: &HookInput, f: impl FnOnce(&mut Map<String, Value>) -> T) -> Option<T> {
+fn with_state<T>(data: &HookInput<'_>, f: impl FnOnce(&mut Map<String, Value>) -> T) -> Option<T> {
     let sid = sanitize_key(data.session_id.unwrap_or("unknown"));
     let dir = state_dir();
     fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("{sid}.json"));
-    let lock = fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{sid}.json.lock"))).ok()?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(format!("{sid}.json.lock")))
+        .ok()?;
     let _ = lock.lock(); // closing the file releases the lock; no lock support is not fatal
-    let mut state = match fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
+    let mut state = match fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+    {
         Some(Value::Object(m)) => m,
         _ => Map::new(),
     };
@@ -317,7 +379,7 @@ fn with_state<T>(data: &HookInput, f: impl FnOnce(&mut Map<String, Value>) -> T)
     Some(out)
 }
 
-/// One running helper: the tool_use_id of its Agent call and when it started.
+/// One running helper: the `tool_use_id` of its Agent call and when it started.
 #[derive(Clone)]
 struct Slot {
     id: Option<String>,
@@ -326,7 +388,11 @@ struct Slot {
 
 /// The state key of the slots a spawn of this agent type takes: superlite runs have their own pool.
 fn slot_key(kind: Option<&str>) -> &'static str {
-    if kind.is_some_and(|k| k.starts_with(SUPERLITE)) { "sl_spawns" } else { "spawns" }
+    if kind.is_some_and(|k| k.starts_with(SUPERLITE)) {
+        "sl_spawns"
+    } else {
+        "spawns"
+    }
 }
 
 /// Running slots under `key`, oldest first.
@@ -338,7 +404,10 @@ fn live_spawns(state: &Map<String, Value>, key: &str, now: f64) -> Vec<Slot> {
                 && let Some(t) = o.get("t").and_then(Value::as_f64)
                 && now - t < SPAWN_TTL
             {
-                slots.push(Slot { id: o.get("id").and_then(Value::as_str).map(String::from), t });
+                slots.push(Slot {
+                    id: o.get("id").and_then(Value::as_str).map(String::from),
+                    t,
+                });
             }
         }
     }
@@ -352,8 +421,14 @@ fn slots_value(slots: &[Slot]) -> Value {
             .iter()
             .map(|s| {
                 let mut m = Map::new();
-                m.insert("id".into(), s.id.as_deref().map_or(Value::Null, Value::from));
-                m.insert("t".into(), serde_json::Number::from_f64(s.t).map_or(Value::Null, Value::Number));
+                m.insert(
+                    "id".into(),
+                    s.id.as_deref().map_or(Value::Null, Value::from),
+                );
+                m.insert(
+                    "t".into(),
+                    serde_json::Number::from_f64(s.t).map_or(Value::Null, Value::Number),
+                );
                 Value::Object(m)
             })
             .collect(),
@@ -361,8 +436,12 @@ fn slots_value(slots: &[Slot]) -> Value {
 }
 
 fn read_counter(file: &Path, key: &str) -> i64 {
-    let Ok(s) = fs::read_to_string(file) else { return 0 };
-    let Ok(v) = serde_json::from_str::<Value>(&s) else { return 0 };
+    let Ok(s) = fs::read_to_string(file) else {
+        return 0;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&s) else {
+        return 0;
+    };
     counter(v.get(key))
 }
 
@@ -396,7 +475,9 @@ fn is_human_prompt(rec: &Value) -> bool {
         return true;
     }
     if let Some(arr) = content.as_array() {
-        return !arr.iter().any(|b| get(b, "type").as_str() == Some("tool_result"));
+        return !arr
+            .iter()
+            .any(|b| get(b, "type").as_str() == Some("tool_result"));
     }
     false
 }
@@ -405,9 +486,23 @@ fn message_content(rec: &Value) -> &Value {
     get(get(rec, "message"), "content")
 }
 
-/// Earlier AskUserQuestion calls of this turn that still have no tool_result (G4). A call with a
+/// The blocks of a record's `message.content` that are objects, newest first. Empty when the content
+/// is not a list.
+fn blocks_newest_first(rec: &Value) -> impl Iterator<Item = &Value> {
+    message_content(rec)
+        .as_array()
+        .into_iter()
+        .flat_map(|a| a.iter().rev())
+        .filter(|b| b.is_object())
+}
+
+/// Earlier `AskUserQuestion` calls of this turn that still have no `tool_result` (G4). A call with a
 /// result, answered or refused, is done and does not count.
-fn asks_since_last_prompt(path: &Path, tool_use_id: Option<&str>, tool_input: &Value) -> Option<usize> {
+fn asks_since_last_prompt(
+    path: &Path,
+    tool_use_id: Option<&str>,
+    tool_input: &Value,
+) -> Option<usize> {
     let mut found: Vec<(Option<String>, Value)> = Vec::new(); // newest first
     let mut answered: Vec<Option<String>> = Vec::new(); // ids with a tool_result
     let id_of = |b: &Value, key: &str| get(b, key).as_str().map(String::from);
@@ -436,17 +531,17 @@ fn asks_since_last_prompt(path: &Path, tool_use_id: Option<&str>, tool_input: &V
         if rtype != Some("assistant") {
             continue;
         }
-        let Some(content) = message_content(&rec).as_array() else { continue };
-        for b in content.iter().rev() {
-            if !b.is_object() {
-                continue;
-            }
+        for b in blocks_newest_first(&rec) {
             if get(b, "name").as_str() == Some("Skill")
-                && get(get(b, "input"), "skill").as_str().is_some_and(|s| s.contains("askme"))
+                && get(get(b, "input"), "skill")
+                    .as_str()
+                    .is_some_and(|s| s.contains("askme"))
             {
                 return Some(0);
             }
-            if get(b, "type").as_str() == Some("tool_use") && get(b, "name").as_str() == Some("AskUserQuestion") {
+            if get(b, "type").as_str() == Some("tool_use")
+                && get(b, "name").as_str() == Some("AskUserQuestion")
+            {
                 let id = id_of(b, "id");
                 if !answered.contains(&id) {
                     found.push((id, get(b, "input").clone()));
@@ -527,7 +622,11 @@ fn cron_interval_minutes(cron: &str) -> Option<i64> {
         && DIGITS.is_match(&minute)
     {
         let n = big(&h[1]);
-        return if n >= 1 { Some(n.saturating_mul(60)) } else { None };
+        return if n >= 1 {
+            Some(n.saturating_mul(60))
+        } else {
+            None
+        };
     }
     None
 }
@@ -584,7 +683,10 @@ fn loop_interval_seconds(args: &str) -> Option<i64> {
     let mut from = 0;
     while let Some(rel) = s[from..].find("every ") {
         let idx = from + rel;
-        let boundary = s[..idx].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let boundary = s[..idx]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
         if boundary && let Some(v) = loop_chain(s, idx + 6) {
             return Some(v);
         }
@@ -595,7 +697,7 @@ fn loop_interval_seconds(args: &str) -> Option<i64> {
 
 // --- guards -------------------------------------------------------------------
 
-/// pace.status() as the guard uses it: state is one of the CAPS keys, any failure is "unknown".
+/// `pace.status()` as the guard uses it: state is one of the CAPS keys, any failure is "unknown".
 #[derive(Clone)]
 struct PaceSt {
     state: PaceState,
@@ -604,7 +706,11 @@ struct PaceSt {
 }
 
 impl PaceSt {
-    const UNKNOWN: Self = Self { state: PaceState::Unknown, used: None, budget: None };
+    const UNKNOWN: Self = Self {
+        state: PaceState::Unknown,
+        used: None,
+        budget: None,
+    };
 }
 
 fn pace_status() -> PaceSt {
@@ -612,25 +718,29 @@ fn pace_status() -> PaceSt {
         return PaceSt::UNKNOWN; // no pace: caps stay at the base
     }
     match std::panic::catch_unwind(|| pace::status(None)) {
-        Ok(s) => PaceSt { state: s.state, used: s.used, budget: Some(s.budget) },
+        Ok(s) => PaceSt {
+            state: s.state,
+            used: s.used,
+            budget: Some(s.budget),
+        },
         Err(_) => PaceSt::UNKNOWN,
     }
 }
 
+/// G8 cap for helpers. An ahead week keeps the full cap: speed won over pace on
+/// 2026-11-02, so only a critical week stops spawns.
 fn cap_for(state: PaceState) -> usize {
     match state {
-        PaceState::Ahead => 1,
         PaceState::Critical => 0,
-        PaceState::Ok | PaceState::Unknown => 3,
+        PaceState::Ok | PaceState::Ahead | PaceState::Unknown => 3,
     }
 }
 
 /// G8 cap for superlite's own agents, a pool apart from the other helpers.
 fn superlite_cap_for(state: PaceState) -> usize {
     match state {
-        PaceState::Ahead => 3,
         PaceState::Critical => 0,
-        PaceState::Ok | PaceState::Unknown => 10,
+        PaceState::Ok | PaceState::Ahead | PaceState::Unknown => 10,
     }
 }
 
@@ -651,7 +761,11 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     fn new(data: &'a HookInput<'a>) -> Self {
-        Ctx { data, size: Cell::new(None), pace: RefCell::new(None) }
+        Ctx {
+            data,
+            size: Cell::new(None),
+            pace: RefCell::new(None),
+        }
     }
     fn size(&self) -> i64 {
         if let Some(s) = self.size.get() {
@@ -674,7 +788,7 @@ impl<'a> Ctx<'a> {
     }
 }
 
-fn g3_pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
+fn g3_pretool(data: &HookInput<'_>, ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name == Some("Agent") && ctx.size() > SPAWN_CONTEXT {
         return Verdict::Deny(format!(
             "guard: context is {}K (> {}K); do this step yourself instead of spawning a helper. Keep PROGRESS.md current; auto-compact carries the run.",
@@ -686,11 +800,14 @@ fn g3_pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
 }
 
 /// G1: the brief names a deadline and a hand-back cap (the router fills model and effort).
-fn g1_agent(data: &HookInput, _ctx: &Ctx) -> Verdict {
+fn g1_agent(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name != Some("Agent") || !data.tool_input.is_object() {
         return Verdict::Allow;
     }
-    if data.input_str("subagent_type").is_some_and(|k| k.starts_with(SUPERLITE)) {
+    if data
+        .input_str("subagent_type")
+        .is_some_and(|k| k.starts_with(SUPERLITE))
+    {
         return Verdict::Allow; // superlite's `sl` writes these briefs
     }
     let prompt_text = data.input_str("prompt").unwrap_or("");
@@ -711,7 +828,7 @@ fn g1_agent(data: &HookInput, _ctx: &Ctx) -> Verdict {
 }
 
 /// G7: refuse general-purpose, claude and an untyped Agent call.
-fn g7_heavy(data: &HookInput, _ctx: &Ctx) -> Verdict {
+fn g7_heavy(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name != Some("Agent") || !data.tool_input.is_object() {
         return Verdict::Allow;
     }
@@ -727,8 +844,10 @@ fn g7_heavy(data: &HookInput, _ctx: &Ctx) -> Verdict {
     Verdict::Allow
 }
 
-fn g2_polling(data: &HookInput, ctx: &Ctx) -> Verdict {
-    let Some(tool @ ("CronCreate" | "ScheduleWakeup" | "Skill")) = data.tool_name else { return Verdict::Allow };
+fn g2_polling(data: &HookInput<'_>, ctx: &Ctx<'_>) -> Verdict {
+    let Some(tool @ ("CronCreate" | "ScheduleWakeup" | "Skill")) = data.tool_name else {
+        return Verdict::Allow;
+    };
     let ti = data.tool_input;
     if tool == "Skill" && data.input_str("skill") != Some("loop") {
         return Verdict::Allow;
@@ -740,23 +859,32 @@ fn g2_polling(data: &HookInput, ctx: &Ctx) -> Verdict {
         return Verdict::Allow;
     }
     let bad = match tool {
-        "CronCreate" => data.input_str("cron").and_then(cron_interval_minutes).is_some_and(|iv| iv < MIN_INTERVAL_MIN),
+        "CronCreate" => data
+            .input_str("cron")
+            .and_then(cron_interval_minutes)
+            .is_some_and(|iv| iv < MIN_INTERVAL_MIN),
         "ScheduleWakeup" => match ti.get("delaySeconds") {
             Some(Value::Bool(b)) => i64::from(*b) < MIN_INTERVAL_MIN * 60,
-            Some(Value::Number(n)) => n.as_f64().is_some_and(|d| d < (MIN_INTERVAL_MIN * 60) as f64),
+            Some(Value::Number(n)) => n
+                .as_f64()
+                .is_some_and(|d| d < (MIN_INTERVAL_MIN * 60) as f64),
             _ => false,
         },
-        _ => loop_interval_seconds(data.input_str("args").unwrap_or("")).is_some_and(|s| s < MIN_INTERVAL_MIN * 60),
+        _ => loop_interval_seconds(data.input_str("args").unwrap_or(""))
+            .is_some_and(|s| s < MIN_INTERVAL_MIN * 60),
     };
     Verdict::from(bad.then(|| MSG_POLL.to_string()))
 }
 
-fn g4_ask(data: &HookInput, _ctx: &Ctx) -> Verdict {
+fn g4_ask(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name != Some("AskUserQuestion") {
         return Verdict::Allow;
     }
-    let Some(path) = data.transcript_path else { return Verdict::Allow };
-    let open = asks_since_last_prompt(Path::new(path), data.tool_use_id, data.tool_input).unwrap_or(0);
+    let Some(path) = data.transcript_path else {
+        return Verdict::Allow;
+    };
+    let open =
+        asks_since_last_prompt(Path::new(path), data.tool_use_id, data.tool_input).unwrap_or(0);
     Verdict::from((open >= 1).then(|| MSG_ASK.to_string()))
 }
 
@@ -770,7 +898,11 @@ fn text_of(content: &Value) -> Option<String> {
                 .filter(|b| get(b, "type").as_str() == Some("text"))
                 .filter_map(|b| get(b, "text").as_str())
                 .collect();
-            if parts.is_empty() { None } else { Some(parts.join("\n")) }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
         }
         _ => None,
     }
@@ -802,7 +934,7 @@ fn subagent_prompt(path: Option<&str>) -> Option<String> {
     None
 }
 
-fn subagent_transcript(data: &HookInput) -> Option<String> {
+fn subagent_transcript(data: &HookInput<'_>) -> Option<String> {
     if let Some(atp) = data.agent_transcript_path {
         return Some(atp.to_string());
     }
@@ -835,9 +967,10 @@ fn first_sentence(s: &str) -> &str {
 /// A "hand back" tie wins, then strong ties, then weak ones, then a bare bound before the number.
 fn prompt_cap(text: &str) -> Option<i64> {
     let chars: Vec<char> = text.chars().collect();
-    let (mut handback, mut strong, mut weak, mut bound) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut handback, mut strong, mut weak, mut bound) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for m in CAP_NUM.captures_iter(text) {
-        let whole = m.get(0).unwrap();
+        let Some(whole) = m.get(0) else { continue };
         let digits: String = m[1].chars().filter(|c| *c != ',').collect();
         let n = match digits.parse::<i64>() {
             Ok(n) => n,
@@ -868,12 +1001,17 @@ fn prompt_cap(text: &str) -> Option<i64> {
             }
         }
     }
-    [handback, strong, weak, bound].into_iter().find(|v| !v.is_empty()).and_then(|v| v.into_iter().min())
+    [handback, strong, weak, bound]
+        .into_iter()
+        .find(|v| !v.is_empty())
+        .and_then(|v| v.into_iter().min())
 }
 
 fn default_cap(agent_type: Option<&str>) -> i64 {
     match agent_type {
-        Some("task-implementer" | "task-reviewer" | "researcher" | "ui-verifier" | "worker") => 3000,
+        Some("task-implementer" | "task-reviewer" | "researcher" | "ui-verifier" | "worker") => {
+            3000
+        }
         Some("code-reviewer") => 4000,
         Some("repo-scanner") => 2000,
         Some("session-finder") => 1500,
@@ -881,7 +1019,7 @@ fn default_cap(agent_type: Option<&str>) -> i64 {
     }
 }
 
-fn handback_cap(data: &HookInput) -> i64 {
+fn handback_cap(data: &HookInput<'_>) -> i64 {
     let tr = subagent_transcript(data);
     let prompt = subagent_prompt(tr.as_deref());
     match prompt.as_deref().and_then(prompt_cap) {
@@ -890,8 +1028,8 @@ fn handback_cap(data: &HookInput) -> i64 {
     }
 }
 
-/// G5: deny a hand-back over cap x 1.10, at most twice per agent; None = allow.
-fn check_handback(data: &HookInput, text: Option<&str>) -> Option<String> {
+/// G5: deny a hand-back over cap x 2, at most twice per agent; None = allow.
+fn check_handback(data: &HookInput<'_>, text: Option<&str>) -> Option<String> {
     let text = text.filter(|s| !s.is_empty())?;
     let cap = handback_cap(data);
     let n = text.chars().count();
@@ -905,7 +1043,9 @@ fn check_handback(data: &HookInput, text: Option<&str>) -> Option<String> {
     if denies >= HANDBACK_MAX_DENIES {
         return None;
     }
-    if fs::create_dir_all(&dir).is_err() || fs::write(&state_file, format!("{{\"denies\": {}}}", denies + 1)).is_err() {
+    if fs::create_dir_all(&dir).is_err()
+        || fs::write(&state_file, format!("{{\"denies\": {}}}", denies + 1)).is_err()
+    {
         return None; // no counter, no deny: a deny without one could repeat forever
     }
     Some(format!(
@@ -913,15 +1053,26 @@ fn check_handback(data: &HookInput, text: Option<&str>) -> Option<String> {
     ))
 }
 
-fn g5_handback(data: &HookInput, _ctx: &Ctx) -> Verdict {
+fn g5_handback(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name != Some("SubagentHandback") {
         return Verdict::Allow;
     }
     Verdict::from(check_handback(data, data.input_str("message")))
 }
 
-fn basename(p: &str) -> &str {
-    p.rsplit('/').next().unwrap_or(p)
+/// A file in a `handoffs/` folder is a hand-off prompt for the user when its name has none of
+/// `report`, `brief` or `review` (those are findings or briefs the parent reads), or when its body
+/// says `Read <path> and do it`.
+fn is_handoff_prompt(fp: &str, body: &str) -> bool {
+    let name = basename(fp).to_lowercase();
+    let says_read = body.lines().any(|l| {
+        let l = l.trim().trim_end_matches('.');
+        l.starts_with("Read ") && l.ends_with(" and do it")
+    });
+    !["report", "brief", "review"]
+        .iter()
+        .any(|w| name.contains(w))
+        || says_read
 }
 
 /// (hand-off path, assistant text written after it) for the newest hand-off Write since the last
@@ -936,11 +1087,7 @@ fn handoff_this_turn(path: &Path) -> Option<(Option<String>, String)> {
         if get(&rec, "type").as_str() != Some("assistant") {
             continue;
         }
-        let Some(content) = message_content(&rec).as_array() else { continue };
-        for b in content.iter().rev() {
-            if !b.is_object() {
-                continue;
-            }
+        for b in blocks_newest_first(&rec) {
             let btype = get(b, "type").as_str();
             if btype == Some("text") {
                 if let Some(t) = get(b, "text").as_str() {
@@ -950,6 +1097,7 @@ fn handoff_this_turn(path: &Path) -> Option<(Option<String>, String)> {
                 && get(b, "name").as_str() == Some("Write")
                 && let Some(fp) = get(get(b, "input"), "file_path").as_str()
                 && HANDOFF_PATH.is_match(fp)
+                && is_handoff_prompt(fp, get(get(b, "input"), "content").as_str().unwrap_or(""))
             {
                 texts.reverse();
                 return Some((Some(fp.to_string()), texts.join("\n")));
@@ -965,14 +1113,18 @@ fn handoff_given(fp: &str, text: &str) -> bool {
     if !text.contains(&format!("Read {fp} and do it.")) {
         return false;
     }
-    LINK_TARGET.captures_iter(text).any(|c| c[1].ends_with(name))
+    LINK_TARGET
+        .captures_iter(text)
+        .any(|c| c[1].ends_with(name))
 }
 
-fn g6_archive(data: &HookInput, _ctx: &Ctx) -> Verdict {
+fn g6_archive(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name != Some(ARCHIVE_TOOL) {
         return Verdict::Allow;
     }
-    let Some(path) = data.transcript_path else { return Verdict::Allow };
+    let Some(path) = data.transcript_path else {
+        return Verdict::Allow;
+    };
     let own_session = match data.tool_input.get("session_id") {
         None | Some(Value::Null) => true,
         Some(sid) => sid.as_str() == Some("self"),
@@ -980,7 +1132,9 @@ fn g6_archive(data: &HookInput, _ctx: &Ctx) -> Verdict {
     if !own_session {
         return Verdict::Allow;
     }
-    let Some((fp, _)) = handoff_this_turn(Path::new(path)) else { return Verdict::Allow };
+    let Some((fp, _)) = handoff_this_turn(Path::new(path)) else {
+        return Verdict::Allow;
+    };
     let fp = fp.filter(|f| Path::new(f).exists()); // a hand-off deleted since is not owed to the user
     Verdict::from(fp.map(|fp| {
         let name = basename(&fp);
@@ -994,23 +1148,7 @@ fn g6_archive(data: &HookInput, _ctx: &Ctx) -> Verdict {
 
 /// Epoch seconds of an ISO-8601 timestamp string, or None.
 fn timestamp(v: &Value) -> Option<i64> {
-    let m = ISO_TS.captures(v.as_str()?)?;
-    let n = |i: usize| m[i].parse::<i64>().unwrap();
-    let (y, mo, d, h, mi, sec) = (n(1), n(2), n(3), n(4), n(5), n(6));
-    // days from civil (proleptic Gregorian), the same as calendar.timegm
-    let days = days_from_civil(y, mo, d);
-    let mut secs = days * 86400 + h * 3600 + mi * 60 + sec;
-    if let Some(tz) = m.get(7) {
-        let tz = tz.as_str();
-        if tz != "Z" {
-            let digits: Vec<char> = tz.chars().collect();
-            let hh: i64 = digits[1..3].iter().collect::<String>().parse().unwrap_or(0);
-            let mm: i64 = digits[digits.len() - 2..].iter().collect::<String>().parse().unwrap_or(0);
-            let off = hh * 3600 + mm * 60;
-            secs -= if digits[0] == '+' { off } else { -off };
-        }
-    }
-    Some(secs)
+    pycompat::parse_ts_micros(v.as_str()?).map(|(micros, _)| micros.div_euclid(1_000_000))
 }
 
 #[derive(Default)]
@@ -1023,22 +1161,22 @@ struct Turn {
     last_text: Option<String>,
     plan: Vec<(bool, Value)>, // (is wrap_up, input), newest first
     plan_done: bool,
-    bg_started: HashSet<String>, // background Bash and Monitor task ids started this turn
+    bg_started: HashSet<String>, // background Bash, Monitor and async Agent ids: this turn, or an earlier one within the spawn TTL
     bg_ended: HashSet<String>,   // ids that a task notification or TaskStop ended
-    bg_expires: HashMap<String, i64>, // Monitor id -> launch time + its timeout (epoch seconds)
-    failed: HashSet<String>,     // tool_use ids whose result is an error
-    wakeup: bool,                // a ScheduleWakeup this turn: the app wakes the session later
+    bg_expires: HashMap<String, i64>, // id -> when it ends on its own (epoch seconds): a Monitor's timeout, else the spawn TTL
+    failed: HashSet<String>,          // tool_use ids whose result is an error
+    wakeup: bool,                     // a ScheduleWakeup this turn: the app wakes the session later
 }
 
 impl Turn {
-    /// Background work of this turn still runs, or a wakeup is set. A Monitor past its timeout
-    /// has ended even when no notification says so.
+    /// Background work still runs (started this turn or an earlier one), or a wakeup is set. A
+    /// Monitor past its timeout, or a Bash or Agent task past the spawn TTL, has ended even when no
+    /// notification says so: a task that never reports must not mute the checks for good.
     fn bg_open(&self, now: i64) -> bool {
         self.wakeup
-            || self
-                .bg_started
-                .iter()
-                .any(|id| !self.bg_ended.contains(id) && self.bg_expires.get(id).is_none_or(|&end| now < end))
+            || self.bg_started.iter().any(|id| {
+                !self.bg_ended.contains(id) && self.bg_expires.get(id).is_none_or(|&end| now < end)
+            })
     }
 }
 
@@ -1050,10 +1188,23 @@ fn scan_bg(rec: &Value, t: &mut Turn) {
     let res = get(rec, "toolUseResult");
     if let Some(id) = get(res, "backgroundTaskId").as_str() {
         t.bg_started.insert(id.to_string());
-    } else if let (Some(id), Some(ms)) = (get(res, "taskId").as_str(), get(res, "timeoutMs").as_i64()) {
+        if let Some(at) = timestamp(get(rec, "timestamp")) {
+            t.bg_expires.insert(id.to_string(), at + SPAWN_TTL_SECS); // a dev server never reports
+        }
+    } else if let (Some(id), Some(ms)) =
+        (get(res, "taskId").as_str(), get(res, "timeoutMs").as_i64())
+    {
         t.bg_started.insert(id.to_string()); // a Monitor
         if let Some(at) = timestamp(get(rec, "timestamp")) {
             t.bg_expires.insert(id.to_string(), at + ms / 1000);
+        }
+    } else if get(res, "status").as_str() == Some("async_launched")
+        && let Some(id) = get(res, "agentId").as_str()
+    {
+        t.bg_started.insert(id.to_string()); // a helper started in the background; its notification names the same id
+        if let Some(at) = timestamp(get(rec, "timestamp")) {
+            // like a spawn slot, it expires: a notice that never comes must not mute the checks for good
+            t.bg_expires.insert(id.to_string(), at + SPAWN_TTL_SECS);
         }
     }
     for b in message_content(rec).as_array().into_iter().flatten() {
@@ -1065,7 +1216,8 @@ fn scan_bg(rec: &Value, t: &mut Turn) {
         }
     }
     let att = get(rec, "attachment");
-    let text = if get(rec, "type").as_str() == Some("attachment") && get(att, "type").as_str() == Some("queued_command")
+    let text = if get(rec, "type").as_str() == Some("attachment")
+        && get(att, "type").as_str() == Some("queued_command")
     {
         text_of(get(att, "prompt"))
     } else if get(get(rec, "origin"), "kind").as_str() == Some("task-notification") {
@@ -1075,9 +1227,15 @@ fn scan_bg(rec: &Value, t: &mut Turn) {
     };
     let text = text.unwrap_or_default();
     for c in TASK_ID.captures_iter(&text) {
-        let (Some(all), Some(id)) = (c.get(0), c.get(1)) else { continue };
+        let (Some(all), Some(id)) = (c.get(0), c.get(1)) else {
+            continue;
+        };
         let rest = text[all.end()..].split("<task-id>").next().unwrap_or("");
-        if TASK_STATUS.captures(rest).and_then(|s| s.get(1)).is_some_and(|s| s.as_str() != "running") {
+        if TASK_STATUS
+            .captures(rest)
+            .and_then(|s| s.get(1))
+            .is_some_and(|s| s.as_str() != "running")
+        {
             t.bg_ended.insert(id.as_str().trim().to_string());
         }
     }
@@ -1085,11 +1243,7 @@ fn scan_bg(rec: &Value, t: &mut Turn) {
 
 /// Fold one assistant record (newest block first) into the scan result.
 fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
-    let Some(content) = message_content(rec).as_array() else { return };
-    for b in content.iter().rev() {
-        if !b.is_object() {
-            continue;
-        }
+    for b in blocks_newest_first(rec) {
         let btype = get(b, "type").as_str();
         if btype == Some("text") {
             if let Some(text) = get(b, "text").as_str()
@@ -1104,7 +1258,11 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
             continue;
         }
         let name = get(b, "name").as_str();
-        let inp = if get(b, "input").is_object() { get(b, "input") } else { &NULL };
+        let inp = if get(b, "input").is_object() {
+            get(b, "input")
+        } else {
+            &NULL
+        };
         if name == Some(WRAP_TOOL) {
             t.wrapped = t.wrapped || in_turn;
             if !t.plan_done {
@@ -1116,8 +1274,16 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
                 t.plan.push((false, inp.clone()));
                 t.plan_done = get(inp, "items").is_array();
             }
+        } else if name == Some("TaskStop") {
+            // in this turn or an earlier one: the task it names is over
+            if let Some(id) = get(inp, "task_id")
+                .as_str()
+                .or_else(|| get(inp, "shell_id").as_str())
+            {
+                t.bg_ended.insert(id.to_string());
+            }
         } else if !in_turn {
-            // before the turn starts: nothing to count
+            // before the turn starts: nothing else to count
         } else if matches!(name, Some("Edit" | "Write" | "NotebookEdit")) {
             let named = |key: &str| get(inp, key).as_str().filter(|s| !s.is_empty());
             if let Some(p) = named("file_path").or_else(|| named("notebook_path")) {
@@ -1129,27 +1295,55 @@ fn scan_record(rec: &Value, in_turn: bool, t: &mut Turn) {
             }
         } else if name == Some("AskUserQuestion") {
             t.asked = true;
-        } else if name == Some("TaskStop") {
-            if let Some(id) = get(inp, "task_id").as_str().or_else(|| get(inp, "shell_id").as_str()) {
-                t.bg_ended.insert(id.to_string());
-            }
         } else if name == Some("ScheduleWakeup") {
             // a refused or failed call sets no wakeup; its result came first in this scan
-            t.wakeup = t.wakeup || !get(b, "id").as_str().is_some_and(|id| t.failed.contains(id));
+            t.wakeup = t.wakeup
+                || !get(b, "id")
+                    .as_str()
+                    .is_some_and(|id| t.failed.contains(id));
         }
     }
 }
 
-/// One pass from the end of the transcript: this turn's facts and the update_plan calls.
+/// True when the record on `line` carries a `timestamp` before `horizon` (both ISO UTC, compared
+/// as bytes on the `YYYY-MM-DDTHH:MM:SS` prefix): no JSON parse.
+fn older_than(line: &[u8], horizon: &str) -> bool {
+    const KEY: &[u8] = b"\"timestamp\":\"";
+    memchr::memmem::find(line, KEY).is_some_and(|i| {
+        let at = &line[i + KEY.len()..];
+        at.len() >= horizon.len() && at[..horizon.len()] < *horizon.as_bytes()
+    })
+}
+
+/// A line that may start or end background work: a Bash, Monitor or async Agent launch, or a task
+/// notification.
+fn bg_line(line: &[u8]) -> bool {
+    has(line, b"backgroundTaskId")
+        || has(line, b"async_launched")
+        || has(line, b"\"taskId\"")
+        || has(line, b"task-notification")
+}
+
+/// One pass from the end of the transcript: this turn's facts and the `update_plan` calls. Background
+/// work is read further back, to the spawn TTL: a task that an earlier turn started and nothing
+/// ended keeps the Stop checks quiet too. Older launches have expired, so once the plan is known
+/// the scan stops there.
 fn scan_turn(path: &Path) -> Option<Turn> {
     let mut t = Turn::default();
     let mut in_turn = true;
+    let mut bg_done = false; // the records are older than the spawn TTL: no live background work there
+    let horizon = jiff::Timestamp::from_second(paths::unix_now() - SPAWN_TTL_SECS)
+        .unwrap_or_default()
+        .strftime("%Y-%m-%dT%H:%M:%S")
+        .to_string();
     for line in rev_lines(path)? {
         if !in_turn {
-            if t.plan_done {
-                break; // the list is rebuilt: nothing older matters
+            bg_done = bg_done || older_than(&line, &horizon);
+            if t.plan_done && bg_done {
+                break; // the list is rebuilt and the background work is settled: nothing older matters
             }
-            if !has(&line, b"mcp__ccd_turn__") {
+            let bg = !bg_done && (bg_line(&line) || has(&line, b"TaskStop"));
+            if !bg && !has(&line, b"mcp__ccd_turn__") {
                 continue;
             }
         }
@@ -1162,14 +1356,14 @@ fn scan_turn(path: &Path) -> Option<Turn> {
             in_turn = false;
             continue;
         }
+        let is_bg = if in_turn {
+            bg_line(&line) || has(&line, b"\"is_error\":true")
+        } else {
+            !bg_done && bg_line(&line)
+        };
         if get(&rec, "type").as_str() == Some("assistant") {
             scan_record(&rec, in_turn, &mut t);
-        } else if in_turn
-            && (has(&line, b"backgroundTaskId")
-                || has(&line, b"\"taskId\"")
-                || has(&line, b"task-notification")
-                || has(&line, b"\"is_error\":true"))
-        {
+        } else if is_bg {
             scan_bg(&rec, &mut t);
         }
     }
@@ -1179,10 +1373,18 @@ fn scan_turn(path: &Path) -> Option<Turn> {
 fn step_name(item: &Value) -> String {
     match item {
         Value::String(s) => s.clone(),
-        Value::Object(_) => ["content", "step", "title", "name", "text", "label", "description"]
-            .into_iter()
-            .find_map(|k| get(item, k).as_str().filter(|s| !s.is_empty()))
-            .map_or_else(|| item.to_string(), String::from),
+        Value::Object(_) => [
+            "content",
+            "step",
+            "title",
+            "name",
+            "text",
+            "label",
+            "description",
+        ]
+        .into_iter()
+        .find_map(|k| get(item, k).as_str().filter(|s| !s.is_empty()))
+        .map_or_else(|| item.to_string(), String::from),
         other => other.to_string(),
     }
 }
@@ -1191,26 +1393,43 @@ fn step_status(item: &Value) -> String {
     if !item.is_object() {
         return "pending".to_string();
     }
-    let status = get(item, "status").as_str().filter(|s| !s.is_empty()).unwrap_or("pending").to_lowercase();
-    if matches!(status.as_str(), "in_progress" | "in-progress" | "active") { "in_progress".to_string() } else { status }
+    let status = get(item, "status")
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("pending")
+        .to_lowercase();
+    if matches!(status.as_str(), "in_progress" | "in-progress" | "active") {
+        "in_progress".to_string()
+    } else {
+        status
+    }
 }
 
 /// One task-list step: name, status, and whether it was handed to another session (`session`).
 type Step = (String, String, bool);
 
+/// Set the status of step `n` (1-based) when `n` is a JSON number inside the list.
+fn mark(steps: &mut [Step], n: &Value, status: &str) {
+    if let Value::Number(num) = n
+        && let Some(i) = num.as_i64()
+        && let Ok(i) = usize::try_from(i)
+        && let Some(step) = i.checked_sub(1).and_then(|at| steps.get_mut(at))
+    {
+        step.1 = status.to_string();
+    }
+}
+
 fn apply_plan(steps: &mut Vec<Step>, inp: &Value) {
     if let Some(items) = get(inp, "items").as_array() {
-        let session = |i: &Value| get(i, "session").as_str().is_some_and(|s| !s.trim().is_empty());
-        *steps = items.iter().map(|i| (step_name(i), step_status(i), session(i))).collect();
-    }
-    fn mark(steps: &mut [Step], n: &Value, status: &str) {
-        if let Value::Number(num) = n
-            && let Some(i) = num.as_i64()
-            && i >= 1
-            && (i as usize) <= steps.len()
-        {
-            steps[i as usize - 1].1 = status.to_string();
-        }
+        let session = |i: &Value| {
+            get(i, "session")
+                .as_str()
+                .is_some_and(|s| !s.trim().is_empty())
+        };
+        *steps = items
+            .iter()
+            .map(|i| (step_name(i), step_status(i), session(i)))
+            .collect();
     }
     let done = get(inp, "done");
     match done.as_array() {
@@ -1238,7 +1457,12 @@ fn open_plan(events: &[(bool, Value)]) -> Vec<Step> {
             apply_plan(&mut steps, inp);
         }
     }
-    steps.retain(|s| matches!(s.1.as_str(), "pending" | "in_progress" | "in-progress" | "active" | "todo"));
+    steps.retain(|s| {
+        matches!(
+            s.1.as_str(),
+            "pending" | "in_progress" | "in-progress" | "active" | "todo"
+        )
+    });
     steps
 }
 
@@ -1257,9 +1481,14 @@ enum Git {
 }
 
 fn git(args: &[&str], cwd: &str, deadline: Instant) -> Git {
-    let Some(left) = deadline.checked_duration_since(Instant::now()) else { return Git::TimedOut };
+    let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+        return Git::TimedOut;
+    };
     let mut cmd = std::process::Command::new("git");
-    cmd.args(args).current_dir(cwd).env("GIT_OPTIONAL_LOCKS", "0").env("GIT_TERMINAL_PROMPT", "0");
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
     match gc::run_limited(&mut cmd, left) {
         Some(done) if done.success => Git::Out(String::from_utf8_lossy(&done.stdout).into_owned()),
         Some(_) => Git::Failed,
@@ -1285,22 +1514,12 @@ fn said_no_push(path: &Path) -> Option<bool> {
     Some(false)
 }
 
-fn path_join(a: &str, b: &str) -> String {
-    if b.starts_with('/') {
-        b.to_string()
-    } else if a.ends_with('/') {
-        format!("{a}{b}")
-    } else {
-        format!("{a}/{b}")
-    }
-}
-
 /// G10: this turn's work is uncommitted or unpushed in the session's repo. It fires once per repo
 /// state: the session state keeps the last (repo, uncommitted, unpushed) it reported, and the same
 /// tuple at the next Stop stays quiet. A changed tuple, or a clean repo in between, fires again.
 /// It is also quiet while a helper of this session runs (the work is not finished), and `stop`
 /// lets only one of G10 to G12 fire per human turn.
-fn g10_commit(data: &HookInput, t: &Turn) -> Option<String> {
+fn g10_commit(data: &HookInput<'_>, t: &Turn) -> Option<String> {
     let cwd = data.cwd?;
     if t.paths.is_empty() && !t.committed {
         return None;
@@ -1309,7 +1528,9 @@ fn g10_commit(data: &HookInput, t: &Turn) -> Option<String> {
         return None;
     }
     let deadline = Instant::now() + Duration::from_secs_f64(GIT_TIMEOUT);
-    let Git::Out(top) = git(&["rev-parse", "--show-toplevel"], cwd, deadline) else { return None };
+    let Git::Out(top) = git(&["rev-parse", "--show-toplevel"], cwd, deadline) else {
+        return None;
+    };
     let count = match git(&["rev-list", "--count", "@{u}..HEAD"], cwd, deadline) {
         Git::Out(c) => Some(c),
         Git::Failed => None, // no upstream
@@ -1322,8 +1543,14 @@ fn g10_commit(data: &HookInput, t: &Turn) -> Option<String> {
     };
     let mut dirty = 0;
     if !t.paths.is_empty() {
-        let Git::Out(status) = git(&["status", "--porcelain", "-z", "-uall"], cwd, deadline) else { return None };
-        let mine: HashSet<String> = t.paths.iter().map(|p| realpath(&path_join(cwd, p))).collect();
+        let Git::Out(status) = git(&["status", "--porcelain", "-z", "-uall"], cwd, deadline) else {
+            return None;
+        };
+        let mine: HashSet<String> = t
+            .paths
+            .iter()
+            .map(|p| realpath(&path_join(cwd, p)))
+            .collect();
         let parts: Vec<&str> = status.split('\0').collect();
         let mut i = 0;
         while i < parts.len() {
@@ -1359,46 +1586,123 @@ fn g10_commit(data: &HookInput, t: &Turn) -> Option<String> {
     if seen == Some(true) {
         return None;
     }
+    let advice = if ships_to_main(cwd, deadline) {
+        "The ship-to-main preset asks: commit and push now, unless the user said not to or the project's CLAUDE.md says otherwise. Fetch and rebase on origin/main first, run the fast check again, then push."
+    } else {
+        "The ship-to-main preset pushes to main only in repos of the SHIP_OWNERS setting, and this repo is not one: commit on a branch and open a PR, do not push to main."
+    };
     Some(format!(
-        "G10: this turn left work in {}: {} uncommitted file(s), {} unpushed commit(s). The ship-to-main preset asks: commit and push now, unless the user said not to. If the work is not finished, say what is left.",
+        "G10: this turn left work in {}: {} uncommitted file(s), {} unpushed commit(s). {advice} If the work is not finished, say what is left.",
         basename(&top),
         dirty,
         unpushed
     ))
 }
 
-fn final_reply(data: &HookInput, t: &Turn) -> String {
-    data.last_assistant_message.map_or_else(|| t.last_text.clone().unwrap_or_default(), String::from)
+/// The GitHub owner in a remote URL (`git@github.com:o/r.git`, `https://[user@]github.com/o/r`,
+/// `ssh://git@github.com/o/r`); None for any other host or shape.
+fn github_owner(url: &str) -> Option<String> {
+    let url = url.trim();
+    let path = if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest
+    } else {
+        let rest = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("ssh://"))?;
+        let (host, path) = rest.split_once('/')?;
+        if host.rsplit('@').next() != Some("github.com") {
+            return None;
+        }
+        path
+    };
+    let owner = path
+        .split('/')
+        .next()
+        .filter(|o| !o.is_empty() && path.contains('/'))?;
+    Some(owner.to_ascii_lowercase())
+}
+
+/// True when the repo's origin is a GitHub repo whose owner is in `SHIP_OWNERS` (env, even an
+/// empty one, else the setting; a space or comma list, any case). An empty list, another host or
+/// no origin is false: those repos get a branch and a PR.
+fn ships_to_main(cwd: &str, deadline: Instant) -> bool {
+    let raw = env::var("SHIP_OWNERS")
+        .unwrap_or_else(|_| agent_config::setting(&paths::home(), "SHIP_OWNERS"));
+    let owners: Vec<String> = raw
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|o| !o.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if owners.is_empty() {
+        return false;
+    }
+    let Git::Out(url) = git(&["remote", "get-url", "origin"], cwd, deadline) else {
+        return false;
+    };
+    github_owner(&url).is_some_and(|o| owners.contains(&o))
+}
+
+fn final_reply(data: &HookInput<'_>, t: &Turn) -> String {
+    data.last_assistant_message
+        .map_or_else(|| t.last_text.clone().unwrap_or_default(), String::from)
 }
 
 /// True while a helper of this session runs (a live slot in `spawns` or `sl_spawns`). The app wakes
 /// the session when it ends, so the Stop reminders wait.
-fn helpers_running(data: &HookInput) -> bool {
+fn helpers_running(data: &HookInput<'_>) -> bool {
     let running = |st: &mut Map<String, Value>| {
-        ["spawns", "sl_spawns"].iter().any(|k| !live_spawns(st, k, now_secs()).is_empty())
+        ["spawns", "sl_spawns"]
+            .iter()
+            .any(|k| !live_spawns(st, k, now_secs()).is_empty())
     };
     with_state(data, running) == Some(true)
 }
 
 /// True while the session waits on work that wakes it later: background Bash or Monitor tasks
-/// of this turn that no notification or TaskStop ended, a ScheduleWakeup, or a live helper.
-/// G10 to G12 stay quiet then; the app starts a new segment of the turn when the work ends.
-fn busy(data: &HookInput, t: &Turn) -> bool {
-    t.bg_open(now_secs() as i64) || helpers_running(data)
+/// of this turn that no notification or `TaskStop` ended, a `ScheduleWakeup`, or a live helper (a helper
+/// started in the background counts through its launch record too, until it ends or the spawn TTL
+/// passes). The reply's wording ("waiting for the notification") says nothing by itself and is not
+/// read. G19 and G10 to G12 stay quiet then; the app starts a new segment of the turn when the work
+/// ends.
+fn busy(data: &HookInput<'_>, t: &Turn) -> bool {
+    t.bg_open(paths::unix_now()) || helpers_running(data)
+}
+
+/// The local time as `HH:MM`, and the zone's name: the `TIMEZONE` setting when it names a zone, else
+/// the system zone (its IANA name, or None when the system gives none).
+fn local_clock(secs: i64, setting: Option<&str>) -> (String, Option<String>) {
+    let tz = setting
+        .and_then(|z| jiff::tz::TimeZone::get(z).ok())
+        .unwrap_or_else(jiff::tz::TimeZone::system);
+    let name = tz.iana_name().map(String::from);
+    let at = jiff::Timestamp::from_second(secs)
+        .unwrap_or_default()
+        .to_zoned(tz);
+    (at.strftime("%H:%M").to_string(), name)
 }
 
 /// G11: a turn of 10 min or more ends without a clock time or a duration. Quiet while a helper
 /// of this session runs; `stop` lets only one of G10 to G12 fire per human turn.
-fn g11_clock(data: &HookInput, t: &Turn) -> Option<String> {
+fn g11_clock(data: &HookInput<'_>, t: &Turn) -> Option<String> {
     let start = t.start?;
-    let minutes = ((now_secs() - start as f64) / 60.0).floor() as i64;
+    let minutes = (paths::unix_now() - start).div_euclid(60);
     if minutes >= CLOCK_TURN_MIN && !CLOCK.is_match(&final_reply(data, t)) {
         if busy(data, t) {
             return None;
         }
-        let zone = cfg().zone.as_ref().map(|z| format!(" in {z}")).unwrap_or_default();
+        let (now, name) = local_clock(paths::unix_now(), cfg().zone.as_deref());
+        let is_at = match name {
+            Some(z) => format!("It is {now} in {z}."),
+            None => format!("It is {now} on this machine's clock."),
+        };
+        // the zone is asked for only when the user set one
+        let zone = cfg()
+            .zone
+            .as_ref()
+            .map(|z| format!(" in {z}"))
+            .unwrap_or_default();
         return Some(format!(
-            "G11: this turn ran {minutes} min. The clock preset asks: give the clock as a local time (HH:MM){zone} and one estimate with a range."
+            "G11: this turn ran {minutes} min. {is_at} The clock preset asks: give the clock as a local time (HH:MM){zone} and one estimate with a range. No `date` call is needed."
         ));
     }
     None
@@ -1406,7 +1710,7 @@ fn g11_clock(data: &HookInput, t: &Turn) -> Option<String> {
 
 /// G12: task-list steps are still open and the turn asks nothing (quiet while a helper still runs).
 /// `stop` lets only one of G10 to G12 fire per human turn.
-fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
+fn g12_open_steps(data: &HookInput<'_>, t: &Turn) -> Option<String> {
     if t.asked || t.wrapped || final_reply(data, t).trim_end().ends_with('?') {
         return None;
     }
@@ -1424,7 +1728,7 @@ fn g12_open_steps(data: &HookInput, t: &Turn) -> Option<String> {
     ))
 }
 
-fn g6_stop(data: &HookInput) -> Option<String> {
+fn g6_stop(data: &HookInput<'_>) -> Option<String> {
     let (fp, mut text) = handoff_this_turn(Path::new(data.transcript_path?))?;
     if let Some(last) = data.last_assistant_message
         && !text.contains(last)
@@ -1441,7 +1745,7 @@ fn g6_stop(data: &HookInput) -> Option<String> {
 /// Keep the "what is left" file of the session in step with the open task steps: `<n>\t<first
 /// open step>`, written only when the text changed, removed when nothing is open. Every IO error
 /// is ignored: the statusline is a courtesy and must never fail the hook.
-fn write_status(data: &HookInput, t: &Turn) {
+fn write_status(data: &HookInput<'_>, t: &Turn) {
     let Some(sid) = data.session_id else { return };
     let path = agent_config::status_path(sid);
     let names = open_steps(&t.plan);
@@ -1451,7 +1755,10 @@ fn write_status(data: &HookInput, t: &Turn) {
         }
         return;
     };
-    let one_line: String = first.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let one_line: String = first
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     let body = format!("{}\t{}\n", names.len(), one_line.trim());
     if fs::read_to_string(&path).is_ok_and(|old| old == body) {
         return;
@@ -1461,7 +1768,10 @@ fn write_status(data: &HookInput, t: &Turn) {
         return;
     }
     let tmp = dir.join(format!(".status.{}.tmp", std::process::id()));
-    if fs::write(&tmp, &body).and_then(|()| fs::rename(&tmp, &path)).is_err() {
+    if fs::write(&tmp, &body)
+        .and_then(|()| fs::rename(&tmp, &path))
+        .is_err()
+    {
         let _ = fs::remove_file(&tmp);
     }
 }
@@ -1471,17 +1781,45 @@ const STOP_TURN_KEY: &str = "stop_turn";
 
 /// True when G10 to G12 already fired in the human turn that began at `start`. A task notification
 /// starts a new segment of the same turn, so the Stop checks would fire again at each segment end.
-fn reminded_this_turn(data: &HookInput, start: Option<i64>) -> bool {
+fn reminded_this_turn(data: &HookInput<'_>, start: Option<i64>) -> bool {
     let Some(start) = start else { return false };
-    with_state(data, |st| st.get(STOP_TURN_KEY).and_then(Value::as_i64) == Some(start)) == Some(true)
+    with_state(data, |st| {
+        st.get(STOP_TURN_KEY).and_then(Value::as_i64) == Some(start)
+    }) == Some(true)
 }
+
+/// The state key that maps a check id to the turn start of its last shadow log. Apart from
+/// `STOP_TURN_KEY`, so a shadowed check never hides a real hold of another check in the same turn.
+const SHADOW_TURN_KEY: &str = "shadow_turn";
+
+/// True when `check` already logged a shadow hold in the turn that began at `start`; else marks it.
+/// A turn with no timestamp is never deduped.
+fn shadow_logged_this_turn(data: &HookInput<'_>, check: Check, start: Option<i64>) -> bool {
+    let Some(start) = start else { return false };
+    with_state(data, |st| {
+        let mut seen = st
+            .get(SHADOW_TURN_KEY)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        if seen.get(check.id()).and_then(Value::as_i64) == Some(start) {
+            return true;
+        }
+        seen.insert(check.id().into(), Value::from(start));
+        st.insert(SHADOW_TURN_KEY.into(), Value::Object(seen));
+        false
+    }) == Some(true)
+}
+
+/// A Stop check that reads the scanned turn.
+type TurnCheck = fn(&HookInput<'_>, &Turn) -> Option<String>;
 
 /// Stop checks, first message wins: G6, then G19 and G10 to G12 on the main thread. G10 to G12 give
 /// one reminder per human turn together (keyed on the turn start in the session state; a turn with
 /// no timestamp is never deduped); G6 and G19 are not limited. The status file for the statusline
 /// is updated first on the main thread, also on the final Stop after a forced continuation
 /// (`stop_hook_active`), which runs no check.
-fn stop(data: &HookInput) -> Option<String> {
+fn stop(data: &HookInput<'_>) -> Option<String> {
     let path = data.transcript_path?;
     let again = data.stop_hook_active;
     if !again
@@ -1494,10 +1832,16 @@ fn stop(data: &HookInput) -> Option<String> {
     if !data.is_main_thread() {
         return None;
     }
-    type TurnCheck = fn(&HookInput, &Turn) -> Option<String>;
-    let checks: [(Check, TurnCheck); 4] =
-        [(Check::G19, g19_stop), (Check::G10, g10_commit), (Check::G11, g11_clock), (Check::G12, g12_open_steps)];
-    let active: Vec<_> = checks.into_iter().filter(|(check, _)| check_enabled(*check)).collect();
+    let checks: [(Check, TurnCheck); 4] = [
+        (Check::G19, g19_stop),
+        (Check::G10, g10_commit),
+        (Check::G11, g11_clock),
+        (Check::G12, g12_open_steps),
+    ];
+    let active: Vec<_> = checks
+        .into_iter()
+        .filter(|(check, _)| check_enabled(*check))
+        .collect();
     let t = scan_turn(Path::new(path))?;
     write_status(data, &t);
     if again {
@@ -1510,16 +1854,25 @@ fn stop(data: &HookInput) -> Option<String> {
             return None;
         }
         let m = f(data, &t)?;
+        if gc::shadow(check) {
+            // logged once per turn and check; the stop goes through
+            if !shadow_logged_this_turn(data, check, t.start) {
+                gc::shadow_log(check, &Verdict::Deny(m.clone()), &m);
+            }
+            return None;
+        }
         if let (true, Some(start)) = (once, t.start) {
-            let _ = with_state(data, |st| st.insert(STOP_TURN_KEY.into(), Value::from(start)));
+            let _ = with_state(data, |st| {
+                st.insert(STOP_TURN_KEY.into(), Value::from(start))
+            });
         }
         gc::fire_log(check, FireKind::Stop);
         Some(m)
     })
 }
 
-/// SubagentStop: the oldest running spawn of this session, in the pool of its agent type, is done.
-fn spawn_done(data: &HookInput) {
+/// `SubagentStop`: the oldest running spawn of this session, in the pool of its agent type, is done.
+fn spawn_done(data: &HookInput<'_>) {
     let key = slot_key(data.agent_type);
     let _ = with_state(data, |st| {
         let live = live_spawns(st, key, now_secs());
@@ -1528,8 +1881,8 @@ fn spawn_done(data: &HookInput) {
     });
 }
 
-/// PostToolUseFailure on Agent: free the slot of that tool_use_id (a failed spawn never stops).
-fn spawn_failed(data: &HookInput) {
+/// `PostToolUseFailure` on Agent: free the slot of that `tool_use_id` (a failed spawn never stops).
+fn spawn_failed(data: &HookInput<'_>) {
     let Some(tid) = data.tool_use_id else { return };
     if !matches!(data.tool_name, None | Some("Agent")) {
         return;
@@ -1545,12 +1898,16 @@ fn spawn_failed(data: &HookInput) {
     });
 }
 
-fn subagentstop(data: &HookInput) -> Option<String> {
+fn subagentstop(data: &HookInput<'_>) -> Option<String> {
     if data.stop_hook_active {
         spawn_done(data);
         return None;
     }
-    let mut msg = if check_enabled(Check::G5) { check_handback(data, data.last_assistant_message) } else { None };
+    let mut msg = if check_enabled(Check::G5) {
+        check_handback(data, data.last_assistant_message)
+    } else {
+        None
+    };
     if msg.is_some() {
         gc::fire_log(Check::G5, FireKind::Deny);
     } else if check_enabled(Check::G19)
@@ -1559,6 +1916,11 @@ fn subagentstop(data: &HookInput) -> Option<String> {
     // superlite gates its own tests
     {
         msg = g19_gate(data); // a helper always runs unattended
+        // g19_gate has already marked this edit count as held, so turning shadow off later does
+        // not hold it once more; harmless.
+        if let Some(m) = msg.take_if(|_| gc::shadow(Check::G19)) {
+            gc::shadow_log(Check::G19, &Verdict::Deny(m.clone()), &m);
+        }
         if msg.is_some() {
             gc::fire_log(Check::G19, FireKind::Stop);
         }
@@ -1572,14 +1934,12 @@ fn subagentstop(data: &HookInput) -> Option<String> {
 // --- scratch mode -------------------------------------------------------------
 
 /// Allow a write only under a temp or scratchpad folder; None = allow.
-fn scratch(data: &HookInput) -> Option<String> {
+fn scratch(data: &HookInput<'_>) -> Option<String> {
     let named = |key: &str| data.input_str(key).filter(|s| !s.is_empty());
     let path = named("file_path").or_else(|| named("notebook_path"))?;
     let mut path = expanduser(path);
-    if !path.starts_with('/')
-        && let Some(cwd) = data.cwd
-    {
-        path = if cwd.ends_with('/') { format!("{cwd}{path}") } else { format!("{cwd}/{path}") };
+    if let Some(cwd) = data.cwd {
+        path = path_join(cwd, &path);
     }
     let real = realpath(&path);
     let mut roots: Vec<String> = SCRATCH_ROOTS.iter().map(ToString::to_string).collect();
@@ -1590,7 +1950,11 @@ fn scratch(data: &HookInput) -> Option<String> {
     }
     for root in &roots {
         let trimmed = root.trim_end_matches('/');
-        let mut cands = vec![if trimmed.is_empty() { "/".to_string() } else { trimmed.to_string() }];
+        let mut cands = vec![if trimmed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed.to_string()
+        }];
         cands.push(realpath(root));
         for r in cands {
             if real == r || real.starts_with(&format!("{}/", r.trim_end_matches('/'))) {
@@ -1610,7 +1974,7 @@ fn is_browser(name: &str) -> bool {
     BROWSER_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
-/// Browser tool_use blocks since the last human prompt, not counting the current call.
+/// Browser `tool_use` blocks since the last human prompt, not counting the current call.
 fn browser_calls_this_turn(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
     let mut n = 0;
     for line in rev_lines(path)? {
@@ -1624,22 +1988,19 @@ fn browser_calls_this_turn(path: &Path, tool_use_id: Option<&str>) -> Option<usi
         if get(&rec, "type").as_str() != Some("assistant") {
             continue;
         }
-        let Some(content) = message_content(&rec).as_array() else { continue };
-        for b in content {
-            if b.is_object()
-                && get(b, "type").as_str() == Some("tool_use")
-                && is_browser(get(b, "name").as_str().unwrap_or(""))
-                && get(b, "id").as_str() != tool_use_id
-            {
-                n += 1;
-            }
-        }
+        n += blocks_newest_first(&rec)
+            .filter(|b| {
+                get(b, "type").as_str() == Some("tool_use")
+                    && is_browser(get(b, "name").as_str().unwrap_or(""))
+                    && get(b, "id").as_str() != tool_use_id
+            })
+            .count();
     }
     Some(n)
 }
 
 /// W3: a warning after the 5th browser call of a turn in the main window, then every 20th.
-fn w3_browser(data: &HookInput, _ctx: &Ctx) -> Option<String> {
+fn w3_browser(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Option<String> {
     if !is_browser(data.tool_name.unwrap_or("")) || data.agent_id.is_some() {
         return None;
     }
@@ -1648,7 +2009,9 @@ fn w3_browser(data: &HookInput, _ctx: &Ctx) -> Option<String> {
         return None; // a subagent (ui-verifier) is where browser work belongs
     }
     let n = browser_calls_this_turn(Path::new(path), data.tool_use_id)?;
-    if n == BROWSER_WARN_AT || (n > BROWSER_WARN_AT && (n - BROWSER_WARN_AT).is_multiple_of(BROWSER_WARN_EVERY)) {
+    if n == BROWSER_WARN_AT
+        || (n > BROWSER_WARN_AT && (n - BROWSER_WARN_AT).is_multiple_of(BROWSER_WARN_EVERY))
+    {
         return Some(format!(
             "guard (warn): {} browser calls in this window this turn. Page dumps and screenshots fill the main context. For a check (layout, console, a click-through flow, a live URL), dispatch `ui-verifier`; it hands back pass or fail with evidence. Keep going here only when the user asked you to drive the browser for them.",
             n + 1
@@ -1657,7 +2020,7 @@ fn w3_browser(data: &HookInput, _ctx: &Ctx) -> Option<String> {
     None
 }
 
-/// (Agent tool_use blocks so far, sum of totalTokens the finished Agent results report).
+/// (Agent `tool_use` blocks so far, sum of totalTokens the finished Agent results report).
 fn session_spawns(path: &Path) -> Option<(usize, i64)> {
     let data = fs::read(path).ok()?;
     let (mut spawns, mut tokens) = (0usize, 0i64);
@@ -1673,7 +2036,9 @@ fn session_spawns(path: &Path) -> Option<(usize, i64)> {
                 if b.is_object()
                     && get(b, "type").as_str() == Some("tool_use")
                     && get(b, "name").as_str() == Some("Agent")
-                    && get(b, "id").as_str().is_none_or(|id| calls.insert(id.to_string()))
+                    && get(b, "id")
+                        .as_str()
+                        .is_none_or(|id| calls.insert(id.to_string()))
                 {
                     spawns += 1;
                 }
@@ -1685,7 +2050,7 @@ fn session_spawns(path: &Path) -> Option<(usize, i64)> {
         {
             let tur = get(&rec, "toolUseResult");
             if tur.is_object() {
-                tokens += num(get(tur, "totalTokens")) as i64;
+                tokens += num_i64(get(tur, "totalTokens"));
             }
         }
         if has(line, b"\"totalTokens\"")
@@ -1707,7 +2072,7 @@ fn session_spawns(path: &Path) -> Option<(usize, i64)> {
                     format!("n{}", tasks.len())
                 };
                 if tasks.insert(key) {
-                    tokens += num(get(usage, "totalTokens")) as i64;
+                    tokens += num_i64(get(usage, "totalTokens"));
                 }
             }
         }
@@ -1731,7 +2096,7 @@ fn has_tool_use(path: &Path, tool_use_id: &str) -> Option<bool> {
 }
 
 /// W4: a warning when the session spawned many helpers or used many subagent tokens.
-fn w4_budget(data: &HookInput, _ctx: &Ctx) -> Option<String> {
+fn w4_budget(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Option<String> {
     if data.tool_name != Some("Agent") {
         return None;
     }
@@ -1739,12 +2104,16 @@ fn w4_budget(data: &HookInput, _ctx: &Ctx) -> Option<String> {
     let (spawns, tokens) = session_spawns(path)?;
     let mut prior = spawns;
     if let Some(tid) = data.tool_use_id {
-        prior = if has_tool_use(path, tid)? { spawns.saturating_sub(1) } else { spawns };
+        prior = if has_tool_use(path, tid)? {
+            spawns.saturating_sub(1)
+        } else {
+            spawns
+        };
     }
     let over = prior >= SPAWN_CAP || tokens >= TOKEN_CAP;
     if over && prior % BUDGET_EVERY == 0 {
         return Some(format!(
-            "guard (warn): budget. This session has spawned {} agents ({}K subagent tokens; caps {} agents, {}K). Before more: call mcp__ccd_session_mgmt__get_usage, run the fan-out gate (parallel parts? pause? recovery? record? all no means no fan-out), and batch small tasks.",
+            "guard (warn): budget. This session has spawned {} agents ({}K subagent tokens; caps {} agents, {}K). Before more: call mcp__ccd_session_mgmt__get_usage, send only independent parts in parallel, and batch small tasks.",
             prior,
             tokens / 1000,
             SPAWN_CAP,
@@ -1756,45 +2125,87 @@ fn w4_budget(data: &HookInput, _ctx: &Ctx) -> Option<String> {
 
 // --- G14 to G17 live in the library (`agent_config::guard_checks`) ---------------
 
-/// G14: deny a bare BSD `sed -i` on macOS (it eats the script as the backup suffix). A suffix
-/// argument (`-i ''`, `-i.bak`, `-i '.bak'`) passes. Quoted text, `gsed` and `sed -n` pass.
-fn g14_sed(data: &HookInput, _ctx: &Ctx) -> Verdict {
-    let Some(cmd) = data.bash_command() else { return Verdict::Allow };
+/// G14: a bare BSD `sed -i` on macOS (it eats the script as the backup suffix) is rewritten to
+/// `sed -i ''` by [`bash_rewrite`] and let through. It is denied only where the rewrite cannot
+/// reach it. A suffix argument (`-i ''`, `-i.bak`, `-i '.bak'`) passes. Quoted text, `gsed` and
+/// `sed -n` pass.
+fn g14_sed(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
+    let Some(cmd) = data.bash_command() else {
+        return Verdict::Allow;
+    };
     if !check_enabled(Check::G14) {
         return Verdict::Allow;
     }
-    gc::g14_sed(cmd, is_macos())
-}
-
-/// G17 (preset no-ai-attribution): deny an assistant co-author, noreply or "generated with" line in
-/// a commit, tag, merge, revert, note or gh PR, issue or release text. In shadow mode (`GUARD_SHADOW`)
-/// it logs what it would deny and lets the call through.
-fn g17_attr(data: &HookInput, _ctx: &Ctx) -> Verdict {
-    let Some(cmd) = data.bash_command() else { return Verdict::Allow };
-    let cwd = data.call_cwd();
-    let Ok(verdict) = std::panic::catch_unwind(|| gc::g17_attribution(cmd, &cwd)) else { return Verdict::Allow };
-    let Verdict::Deny(msg) = &verdict else { return Verdict::Allow };
-    if gc::shadow(Check::G17) {
-        gc::shadow_log(Check::G17, &verdict, msg);
+    let verdict = gc::g14_sed(cmd, is_macos());
+    if matches!(verdict, Verdict::Deny(_)) && gc::g14_fix(cmd, is_macos()).is_some() {
         return Verdict::Allow;
     }
     verdict
 }
 
-/// G15: deny reading local.zsh (Read, Grep or Bash) and printing full process command lines. The
+/// G17 (preset no-ai-attribution): deny an assistant co-author, noreply or "generated with" line in
+/// a commit, tag, merge, revert, note or gh PR, issue or release text. In shadow mode (`GUARD_SHADOW`)
+/// it logs what it would deny and lets the call through.
+fn g17_attr(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
+    let Some(cmd) = data.bash_command() else {
+        return Verdict::Allow;
+    };
+    let cwd = data.call_cwd();
+    let verdict =
+        std::panic::catch_unwind(|| gc::g17_attribution(cmd, &cwd)).unwrap_or(Verdict::Allow);
+    gc::shadowed(Check::G17, verdict)
+}
+
+/// G15: deny reading local.zsh (Read, Grep or Bash). A `ps` or `pgrep` that prints full process
+/// command lines is rewritten to the safe form by [`bash_rewrite`] and let through; it is denied
+/// only where the rewrite cannot reach it (`procs`, a user filter, a `ps` in `bash -c`). The
 /// message names the safe command for the matched case (`pgrep -f`, `ps -o ... -p`, the exclude flag).
-fn g15_secrets(data: &HookInput, _ctx: &Ctx) -> Verdict {
-    let Some(tool @ ("Read" | "Grep" | "Bash")) = data.tool_name else { return Verdict::Allow };
+fn g15_secrets(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
+    let Some(tool @ ("Read" | "Grep" | "Bash")) = data.tool_name else {
+        return Verdict::Allow;
+    };
     if !check_enabled(Check::G15) {
         return Verdict::Allow;
     }
-    gc::g15_secrets_at(tool, data.tool_input, &data.call_cwd().to_string_lossy())
+    let cwd = data.call_cwd().to_string_lossy().into_owned();
+    let verdict = gc::g15_secrets_at(tool, data.tool_input, &cwd);
+    if matches!(verdict, Verdict::Deny(_))
+        && let Some(cmd) = data.bash_command()
+        && gc::g15_fix(cmd, &cwd).is_some()
+    {
+        return Verdict::Allow;
+    }
+    verdict
+}
+
+const NOTE_G14_REWRITE: &str =
+    "G14: rewrote `sed -i` to `sed -i ''` (BSD sed on macOS needs the suffix word).";
+const NOTE_G15_REWRITE: &str = "G15: rewrote ps or pgrep to print no command lines (ps: `-o pid=,etime=,ucomm=`; pgrep: no -l or -a).";
+
+/// The G14 and G15 fixes of a Bash call: the new command, and the checks that changed it. None when
+/// neither check has anything to fix. The result passes both checks.
+fn bash_rewrite(data: &HookInput<'_>) -> Option<(String, Vec<Check>)> {
+    let mut cmd = data.bash_command()?.to_string();
+    let mut done = Vec::new();
+    if check_enabled(Check::G14)
+        && let Some(fixed) = gc::g14_fix(&cmd, is_macos())
+    {
+        cmd = fixed;
+        done.push(Check::G14);
+    }
+    if check_enabled(Check::G15)
+        && let Some(fixed) = gc::g15_fix(&cmd, &data.call_cwd().to_string_lossy())
+    {
+        cmd = fixed;
+        done.push(Check::G15);
+    }
+    (!done.is_empty()).then_some((cmd, done))
 }
 
 // --- G13 silence note ------------------------------------------------------------
 
 /// Tool calls since the last assistant text with real words (or the last human prompt). With a
-/// tool_use_id the count ends at that call, so parallel calls each see their own number.
+/// `tool_use_id` the count ends at that call, so parallel calls each see their own number.
 fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
     let mut n = 0usize;
     let mut active = tool_use_id.is_none();
@@ -1819,26 +2230,21 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
         if rtype != Some("assistant") {
             continue;
         }
-        if let Some(content) = message_content(&rec).as_array() {
-            for b in content.iter().rev() {
-                if !b.is_object() {
-                    continue;
+        for b in blocks_newest_first(&rec) {
+            let btype = get(b, "type").as_str();
+            if btype == Some("tool_use") {
+                if !active {
+                    active = get(b, "id").as_str() == tool_use_id;
                 }
-                let btype = get(b, "type").as_str();
-                if btype == Some("tool_use") {
-                    if !active {
-                        active = get(b, "id").as_str() == tool_use_id;
-                    }
-                    if active {
-                        n += 1;
-                    }
-                } else if btype == Some("text")
-                    && active
-                    && let Some(text) = get(b, "text").as_str()
-                    && WORDS.is_match(text)
-                {
-                    return Some(n);
+                if active {
+                    n += 1;
                 }
+            } else if btype == Some("text")
+                && active
+                && let Some(text) = get(b, "text").as_str()
+                && WORDS.is_match(text)
+            {
+                return Some(n);
             }
         }
         if n > G13_AFTER {
@@ -1848,12 +2254,14 @@ fn g13_streak(path: &Path, tool_use_id: Option<&str>) -> Option<usize> {
     Some(n)
 }
 
-/// G13 (PostToolUse, main thread): one JSON line after the 8th tool call with no text, else None.
-fn posttool(data: &HookInput) -> Option<String> {
+/// G13 (`PostToolUse`, main thread): one JSON line after the 8th tool call with no text, else None.
+fn posttool(data: &HookInput<'_>) -> Option<String> {
     w5_record(data);
     g18_passed(data);
     g19_record(data);
-    if !check_enabled(Check::G13) || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop") {
+    if !check_enabled(Check::G13)
+        || env::var("CLAUDE_CODE_ENTRYPOINT").as_deref() == Ok("claude-desktop")
+    {
         return None; // the desktop app has its own nudge and its transcript can miss text blocks
     }
     if !data.is_main_thread() {
@@ -1866,46 +2274,67 @@ fn posttool(data: &HookInput) -> Option<String> {
     Some(hook_output("PostToolUse", MSG_G13))
 }
 
+// --- bounded tables in the session state ----------------------------------------------------
+
+/// The object under `key` in `m`, made when missing. None when the entry holds something else.
+fn state_table<'a>(m: &'a mut Map<String, Value>, key: &str) -> Option<&'a mut Map<String, Value>> {
+    m.entry(key)
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
+}
+
+/// Set `key` as the newest entry of the table; at `max` entries the oldest one goes first.
+fn put_bounded(m: &mut Map<String, Value>, key: String, v: Value, max: usize) {
+    // shift_remove keeps insertion order (plain remove is swap_remove under preserve_order), so the
+    // first key stays the oldest one.
+    m.shift_remove(&key);
+    if m.len() >= max
+        && let Some(first) = m.keys().next().cloned()
+    {
+        m.shift_remove(&first);
+    }
+    m.insert(key, v);
+}
+
 // --- W5 check once ------------------------------------------------------------------
 
 /// The `checks` entry of one command: where it ran and the command in one line.
-fn w5_key(data: &HookInput, cmd: &str) -> Option<String> {
+fn w5_key(data: &HookInput<'_>, cmd: &str) -> Option<String> {
     let plain = proj::plain_check(cmd)?;
     Some(format!("{}|{}", data.call_cwd().display(), plain))
 }
 
-/// W5, record side (PostToolUse runs only when the tool succeeded; a failed Bash goes to
+/// W5, record side (`PostToolUse` runs only when the tool succeeded; a failed Bash goes to
 /// PostToolUseFailure): a plain check command that passed is stored with the fingerprint of the work
-/// tree after the run. The table keeps the 40 latest.
-fn w5_record(data: &HookInput) {
+/// tree after the run. The table keeps the `STEP_TABLE_MAX` latest.
+fn w5_record(data: &HookInput<'_>) {
     if !check_enabled(Check::W5) || data.interrupted {
         return;
     }
-    let Some(key) = data.bash_command().and_then(|c| w5_key(data, c)) else { return };
-    let Some(fp) = proj::tree_fingerprint(&data.call_cwd()) else { return };
+    let Some(key) = data.bash_command().and_then(|c| w5_key(data, c)) else {
+        return;
+    };
+    let Some(fp) = proj::tree_fingerprint(&data.call_cwd()) else {
+        return;
+    };
     let _ = with_state(data, |state| {
-        let table = state.entry("checks").or_insert_with(|| Value::Object(Map::new()));
-        if let Some(m) = table.as_object_mut() {
-            // shift_remove keeps insertion order (plain remove is swap_remove under
-            // preserve_order), so the first key stays the oldest one.
-            m.shift_remove(&key);
-            if m.len() >= 40
-                && let Some(first) = m.keys().next().cloned()
-            {
-                m.shift_remove(&first);
-            }
-            m.insert(key, Value::String(fp));
+        if let Some(m) = state_table(state, "checks") {
+            put_bounded(m, key, Value::String(fp), STEP_TABLE_MAX);
         }
     });
 }
 
 /// W5, warn side: the same plain check command passed in this session and the work tree is the same
 /// as right after that run. Any error says nothing.
-fn w5_repeat(data: &HookInput) -> Option<String> {
+fn w5_repeat(data: &HookInput<'_>) -> Option<String> {
     let key = w5_key(data, data.bash_command()?)?;
     let fp = proj::tree_fingerprint(&data.call_cwd())?;
     let same = with_state(data, |state| {
-        state.get("checks").and_then(|t| t.get(&key)).and_then(Value::as_str) == Some(fp.as_str())
+        state
+            .get("checks")
+            .and_then(|t| t.get(&key))
+            .and_then(Value::as_str)
+            == Some(fp.as_str())
     })?;
     same.then(|| {
         "W5: this check already passed in this session and nothing changed since (same commit, no edit, no new file). Skip it, or edit something first.".to_string()
@@ -1914,26 +2343,42 @@ fn w5_repeat(data: &HookInput) -> Option<String> {
 
 // --- G18 failed tries on one step -------------------------------------------------------
 
-/// The key of the step a Bash, Edit, Write or MultiEdit call works on: the same command in the same
+/// The key of the step a Bash, Edit, Write or `MultiEdit` call works on: the same command in the same
 /// folder, or the same file and edit target. It starts with the agent, so a helper's tries are its
 /// own. A hash keeps the state file small.
-fn step_key(data: &HookInput) -> Option<String> {
+fn step_key(data: &HookInput<'_>) -> Option<String> {
     let who = data.agent_id.unwrap_or("main");
     let what = match data.tool_name? {
         "Bash" => {
-            let cmd = data.bash_command()?.split_whitespace().collect::<Vec<_>>().join(" ");
+            let cmd = data
+                .bash_command()?
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             format!("bash|{}|{cmd}", data.call_cwd().display())
         }
-        "Edit" => format!("edit|{}|{}", data.input_str("file_path")?, data.input_str("old_string").unwrap_or("")),
+        "Edit" => format!(
+            "edit|{}|{}",
+            data.input_str("file_path")?,
+            data.input_str("old_string").unwrap_or("")
+        ),
         "Write" => format!("write|{}", data.input_str("file_path")?),
         "MultiEdit" => {
             let olds: Vec<&str> = data
                 .tool_input
                 .get("edits")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|e| e.get("old_string").and_then(Value::as_str)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.get("old_string").and_then(Value::as_str))
+                        .collect()
+                })
                 .unwrap_or_default();
-            format!("multiedit|{}|{}", data.input_str("file_path")?, olds.join("\u{1f}"))
+            format!(
+                "multiedit|{}|{}",
+                data.input_str("file_path")?,
+                olds.join("\u{1f}")
+            )
         }
         _ => return None,
     };
@@ -1946,31 +2391,35 @@ fn step_key(data: &HookInput) -> Option<String> {
 
 /// The work tree fingerprint that tells "nothing changed since the last try" for a Bash step. An
 /// edit between two tries makes the second a new try; an Edit step has no such fingerprint.
-fn step_fingerprint(data: &HookInput) -> Option<String> {
-    if data.tool_name == Some("Bash") { proj::tree_fingerprint(&data.call_cwd()) } else { None }
+fn step_fingerprint(data: &HookInput<'_>) -> Option<String> {
+    if data.tool_name == Some("Bash") {
+        proj::tree_fingerprint(&data.call_cwd())
+    } else {
+        None
+    }
 }
 
 /// G18, record side (PostToolUseFailure): count a failed try of this step. The count restarts when the
 /// work tree changed since the last failure of the same command. Returns the warning on the second
 /// failure. A call the user interrupted is no failed try.
-fn g18_failed(data: &HookInput) -> Option<String> {
+fn g18_failed(data: &HookInput<'_>) -> Option<String> {
     if !check_enabled(Check::G18) || data.is_interrupt {
         return None;
     }
     let key = step_key(data)?;
     let fp = step_fingerprint(data);
     let n = with_state(data, |state| {
-        let table = state.entry("fails").or_insert_with(|| Value::Object(Map::new()));
-        let m = table.as_object_mut()?;
+        let m = state_table(state, "fails")?;
         let old = m.shift_remove(&key);
-        let same = old.as_ref().is_some_and(|e| e.get("fp").and_then(Value::as_str) == fp.as_deref());
-        let n = if same { counter(old.as_ref().and_then(|e| e.get("n"))) + 1 } else { 1 };
-        if m.len() >= STEP_TABLE_MAX
-            && let Some(first) = m.keys().next().cloned()
-        {
-            m.shift_remove(&first);
-        }
-        m.insert(key, json!({"n": n, "fp": fp}));
+        let same = old
+            .as_ref()
+            .is_some_and(|e| e.get("fp").and_then(Value::as_str) == fp.as_deref());
+        let n = if same {
+            counter(old.as_ref().and_then(|e| e.get("n"))) + 1
+        } else {
+            1
+        };
+        put_bounded(m, key, json!({"n": n, "fp": fp}), STEP_TABLE_MAX);
         Some(n)
     })
     .flatten()?;
@@ -1980,8 +2429,8 @@ fn g18_failed(data: &HookInput) -> Option<String> {
     })
 }
 
-/// G18, clear side (PostToolUse runs only on success): the step worked, so its count goes.
-fn g18_passed(data: &HookInput) {
+/// G18, clear side (`PostToolUse` runs only on success): the step worked, so its count goes.
+fn g18_passed(data: &HookInput<'_>) {
     if !check_enabled(Check::G18) {
         return;
     }
@@ -1995,14 +2444,21 @@ fn g18_passed(data: &HookInput) {
 
 /// G18, deny side (PreToolUse): the third try of a step that failed twice. A Bash step counts only
 /// while the work tree is the same as at its last failure. A new user message clears the table.
-fn g18_stuck(data: &HookInput, _ctx: &Ctx) -> Verdict {
-    let Some(key) = step_key(data) else { return Verdict::Allow };
+fn g18_stuck(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
+    let Some(key) = step_key(data) else {
+        return Verdict::Allow;
+    };
     let seen = with_state(data, |state| {
         let e = state.get("fails")?.get(&key)?;
-        Some((counter(e.get("n")), e.get("fp").and_then(Value::as_str).map(String::from)))
+        Some((
+            counter(e.get("n")),
+            e.get("fp").and_then(Value::as_str).map(String::from),
+        ))
     })
     .flatten();
-    let Some((n, fp)) = seen else { return Verdict::Allow };
+    let Some((n, fp)) = seen else {
+        return Verdict::Allow;
+    };
     if n < FAIL_LIMIT {
         return Verdict::Allow;
     }
@@ -2014,33 +2470,46 @@ fn g18_stuck(data: &HookInput, _ctx: &Ctx) -> Verdict {
 
 // --- G20 whole-file Read of a big file ------------------------------------------------------
 
-/// G20 (preset workflow), PreToolUse on `Read`, main thread and helpers: deny a Read with no `offset`
+/// G20 (preset workflow), `PreToolUse` on `Read`, main thread and helpers: deny a Read with no `offset`
 /// and no `limit` of an existing file over `BIG_READ_BYTES`, once per file per session. The deny
 /// records the real path in the session state, so the same call again goes through. Images, PDFs and
 /// notebooks are exempt. Any error reading the size or the state lets the call through.
-fn g20_big_read(data: &HookInput, _ctx: &Ctx) -> Verdict {
+fn g20_big_read(data: &HookInput<'_>, _ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name != Some("Read") {
         return Verdict::Allow;
     }
     let ti = data.tool_input;
-    if ["offset", "limit"].iter().any(|k| ti.get(*k).is_some_and(|v| !v.is_null())) {
+    if ["offset", "limit"]
+        .iter()
+        .any(|k| ti.get(*k).is_some_and(|v| !v.is_null()))
+    {
         return Verdict::Allow;
     }
-    let Some(raw) = data.input_str("file_path").filter(|s| !s.is_empty()) else { return Verdict::Allow };
-    let ext = Path::new(raw).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let Some(raw) = data.input_str("file_path").filter(|s| !s.is_empty()) else {
+        return Verdict::Allow;
+    };
+    let ext = Path::new(raw)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     if BIG_READ_SKIP_EXT.contains(&ext.as_str()) {
         return Verdict::Allow;
     }
     let path = expanduser(raw);
-    let path = if path.starts_with('/') { path } else { format!("{}/{path}", data.call_cwd().display()) };
-    let real = realpath(&path);
-    let Ok(meta) = fs::metadata(&real) else { return Verdict::Allow };
+    let real = realpath(&path_join(&data.call_cwd().to_string_lossy(), &path));
+    let Ok(meta) = fs::metadata(&real) else {
+        return Verdict::Allow;
+    };
     if !meta.is_file() || meta.len() <= BIG_READ_BYTES {
         return Verdict::Allow;
     }
     let first = with_state(data, |state| {
-        let list = state.entry("big_reads").or_insert_with(|| Value::Array(Vec::new()));
-        let Some(a) = list.as_array_mut() else { return false };
+        let list = state
+            .entry("big_reads")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        let Some(a) = list.as_array_mut() else {
+            return false;
+        };
         if a.iter().any(|v| v.as_str() == Some(real.as_str())) {
             return false;
         }
@@ -2053,7 +2522,9 @@ fn g20_big_read(data: &HookInput, _ctx: &Ctx) -> Verdict {
     if first != Some(true) {
         return Verdict::Allow;
     }
-    let name = Path::new(&real).file_name().map_or_else(|| real.clone(), |n| n.to_string_lossy().into_owned());
+    let name = Path::new(&real)
+        .file_name()
+        .map_or_else(|| real.clone(), |n| n.to_string_lossy().into_owned());
     Verdict::Deny(format!(
         "G20: {name} is {}K chars. Read only the part you need with offset and limit, or run ~/.claude/hooks/rust-bin ctx outline {raw} first. Repeat this exact call to read the whole file.",
         meta.len() / 1000
@@ -2065,30 +2536,57 @@ fn g20_big_read(data: &HookInput, _ctx: &Ctx) -> Verdict {
 /// The `edits` entry of the calling agent: `n` project edits so far, `ok` the value of `n` at the last
 /// passing check command, `blocked` the value of `n` at the last stop that was held back, `dir` the
 /// folder of the last edit.
-fn agent_edits<'a>(state: &'a mut Map<String, Value>, data: &HookInput) -> Option<&'a mut Map<String, Value>> {
-    let table = state.entry("edits").or_insert_with(|| Value::Object(Map::new())).as_object_mut()?;
-    table.entry(data.agent_id.unwrap_or("main")).or_insert_with(|| Value::Object(Map::new())).as_object_mut()
+fn agent_edits<'a>(
+    state: &'a mut Map<String, Value>,
+    data: &HookInput<'_>,
+) -> Option<&'a mut Map<String, Value>> {
+    state_table(
+        state_table(state, "edits")?,
+        data.agent_id.unwrap_or("main"),
+    )
 }
 
-/// G19, record side (PostToolUse): an Edit, Write or MultiEdit inside a project counts as an edit, and a
+/// G19, record side (PostToolUse): an Edit, Write or `MultiEdit` inside a project counts as an edit, and a
 /// plain check command that passed counts as the proof for every edit so far.
-fn g19_record(data: &HookInput) {
+fn g19_record(data: &HookInput<'_>) {
     if !check_enabled(Check::G19) || data.interrupted {
         return;
     }
     let edited = matches!(data.tool_name, Some("Edit" | "Write" | "MultiEdit"))
         .then(|| data.input_str("file_path").map(PathBuf::from))
         .flatten()
-        .and_then(|f| f.parent().filter(|d| proj::find_root(d).is_some()).map(Path::to_path_buf));
-    let passed = data.bash_command().is_some_and(|c| proj::plain_check(c).is_some());
+        .and_then(|f| {
+            let f = if f.is_absolute() {
+                f
+            } else {
+                data.call_cwd().join(f)
+            };
+            let dir = f.parent()?.to_path_buf();
+            let root = proj::find_root(&dir)?;
+            // a file in another repo than the one the caller works in (a scratch repo, a sibling
+            // checkout) is not this caller's project work
+            let own = proj::find_root(&data.call_cwd());
+            let same = own.is_none_or(|o| {
+                realpath(&o.to_string_lossy()) == realpath(&root.to_string_lossy())
+            });
+            same.then_some(dir)
+        });
+    let passed = data
+        .bash_command()
+        .is_some_and(|c| proj::plain_check(c).is_some());
     if edited.is_none() && !passed {
         return;
     }
     let _ = with_state(data, |state| {
-        let Some(e) = agent_edits(state, data) else { return };
+        let Some(e) = agent_edits(state, data) else {
+            return;
+        };
         if let Some(dir) = edited {
             e.insert("n".into(), Value::from(counter(e.get("n")) + 1));
-            e.insert("dir".into(), Value::String(dir.to_string_lossy().into_owned()));
+            e.insert(
+                "dir".into(),
+                Value::String(dir.to_string_lossy().into_owned()),
+            );
         } else {
             e.insert("ok".into(), Value::from(counter(e.get("n"))));
         }
@@ -2098,22 +2596,31 @@ fn g19_record(data: &HookInput) {
 /// True when the transcript shows `ps:autopilot` was started: a Skill call or the typed command.
 fn autopilot_run(path: &Path) -> bool {
     static MARK: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#""skill"\s*:\s*"ps:autopilot"|<command-name>/?ps:autopilot</command-name>"#).unwrap()
+        lit_re(r#""skill"\s*:\s*"ps:autopilot"|<command-name>/?ps:autopilot</command-name>"#)
     });
-    let Ok(f) = fs::File::open(path) else { return false };
+    let Ok(f) = fs::File::open(path) else {
+        return false;
+    };
     io::BufReader::new(f)
         .split(b'\n')
         .map_while(Result::ok)
-        .any(|line| has(&line, b"ps:autopilot") && std::str::from_utf8(&line).is_ok_and(|l| MARK.is_match(l)))
+        .any(|line| {
+            has(&line, b"ps:autopilot")
+                && std::str::from_utf8(&line).is_ok_and(|l| MARK.is_match(l))
+        })
 }
 
 /// G19, gate side: the caller edited a project that has a fast check and no check passed since. Holds the
 /// stop back once per edit count: the folder of the last edit is marked, so a second stop goes through
 /// even when the stop hook flag is missing. Returns the message.
-fn g19_gate(data: &HookInput) -> Option<String> {
+fn g19_gate(data: &HookInput<'_>) -> Option<String> {
     let dir = with_state(data, |state| {
         let e = agent_edits(state, data)?;
-        let (n, ok, blocked) = (counter(e.get("n")), counter(e.get("ok")), counter(e.get("blocked")));
+        let (n, ok, blocked) = (
+            counter(e.get("n")),
+            counter(e.get("ok")),
+            counter(e.get("blocked")),
+        );
         if n <= ok || n <= blocked {
             return None;
         }
@@ -2121,17 +2628,35 @@ fn g19_gate(data: &HookInput) -> Option<String> {
         e.get("dir").and_then(Value::as_str).map(PathBuf::from)
     })
     .flatten()?;
-    let fast = proj::detect(&dir)?.check_fast();
-    let line = fast.iter().map(proj::Cmd::line).collect::<Vec<_>>().join(" && ");
+    let project = proj::detect(&dir)?;
+    // the project's own fast check; a bare linter line is no stand-in for it, so a line made of
+    // biome calls is dropped and the full check named instead
+    let line_of = |cmds: Vec<proj::Cmd>| {
+        cmds.iter()
+            .filter(|c| c.argv.first().is_some_and(|a| basename(a) != "biome"))
+            .map(proj::Cmd::line)
+            .collect::<Vec<_>>()
+            .join(" && ")
+    };
+    let mut line = line_of(project.check_fast());
+    if line.is_empty() {
+        line = line_of(project.check_full());
+    }
     (!line.is_empty())
         .then(|| format!("G19: you edited files and no check passed since; run the fast check before you stop: {line}"))
 }
 
 /// G19 on Stop: only in an autopilot session. A normal chat is never held back.
-fn g19_stop(data: &HookInput, _t: &Turn) -> Option<String> {
+fn g19_stop(data: &HookInput<'_>, t: &Turn) -> Option<String> {
+    if busy(data, t) {
+        return None; // work still runs (a helper, a background check) or the reply waits for its notice
+    }
     let pending = with_state(data, |state| {
         let e = agent_edits(state, data)?;
-        Some(counter(e.get("n")) > counter(e.get("ok")) && counter(e.get("n")) > counter(e.get("blocked")))
+        Some(
+            counter(e.get("n")) > counter(e.get("ok"))
+                && counter(e.get("n")) > counter(e.get("blocked")),
+        )
     })
     .flatten()
     .unwrap_or(false);
@@ -2144,8 +2669,8 @@ fn g19_stop(data: &HookInput, _t: &Turn) -> Option<String> {
 // --- G8 helper cap, G9 plan gate, router -----------------------------------------
 
 /// G8: helpers running at once, per session. An allowed call is recorded here, so keep this last.
-/// superlite's own agents have a pool of their own (10, 3 when the week runs ahead).
-fn g8_cap(data: &HookInput, ctx: &Ctx) -> Verdict {
+/// superlite's own agents have a pool of their own (10, none when the week is critical).
+fn g8_cap(data: &HookInput<'_>, ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name != Some("Agent") {
         return Verdict::Allow;
     }
@@ -2155,21 +2680,33 @@ fn g8_cap(data: &HookInput, ctx: &Ctx) -> Verdict {
     let key = slot_key(kind);
     let r = with_state(data, |state| {
         let mut spawns = live_spawns(state, key, now);
-        let cap = if key == "spawns" { cap_for(st.state) } else { superlite_cap_for(st.state) };
+        let cap = if key == "spawns" {
+            cap_for(st.state)
+        } else {
+            superlite_cap_for(st.state)
+        };
         if spawns.len() >= cap {
             let msg = format!(
-                "guard: {} {} running, the cap is {} (week {} used, budget {}, pace {}). Wait for one to finish, or do the step yourself.",
+                "guard: {} {} running, the cap is {} (week {} used, budget {}, pace {}). The cap is the pace preset's setting ({} at once). Wait for a running helper to finish, then send the rest. There is no switch to raise it in a session.",
                 spawns.len(),
-                if spawns.len() == 1 { "helper" } else { "helpers" },
+                if spawns.len() == 1 {
+                    "helper"
+                } else {
+                    "helpers"
+                },
                 cap,
                 pct(st.used),
                 pct(st.budget),
-                st.state
+                st.state,
+                cap
             );
             state.insert(key.into(), slots_value(&spawns));
             return Some(msg);
         }
-        spawns.push(Slot { id: data.tool_use_id.map(String::from), t: now });
+        spawns.push(Slot {
+            id: data.tool_use_id.map(String::from),
+            t: now,
+        });
         state.insert(key.into(), slots_value(&spawns));
         None
     });
@@ -2213,8 +2750,8 @@ fn session_entrypoint(path: Option<&str>) -> Option<String> {
     None
 }
 
-/// G9: planning skills only in plan mode; no plan mode when the week runs ahead.
-fn g9_plan_gate(data: &HookInput, ctx: &Ctx) -> Verdict {
+/// G9: planning skills only in plan mode; no plan mode when the week is critical.
+fn g9_plan_gate(data: &HookInput<'_>, ctx: &Ctx<'_>) -> Verdict {
     if data.tool_name == Some("Skill") {
         let skill = data.input_str("skill");
         if !PLAN_SKILLS.iter().any(|s| skill == Some(s)) || !data.is_main_thread() {
@@ -2251,17 +2788,20 @@ fn g9_plan_gate(data: &HookInput, ctx: &Ctx) -> Verdict {
     Verdict::Allow
 }
 
-/// Router: (new tool_input or None, note or None) for a main-thread Agent call.
+/// Router: (new `tool_input` or None, note or None) for a main-thread Agent call.
 ///
-/// Plan and a final code-reviewer: opus + high (sonnet + high when the week is ahead). Every other
-/// row never raises cost: the lower of the caller's model and the table's (Explore,
-/// claude-code-guide, statusline-setup: haiku; the rest: sonnet), effort high unless the caller
-/// asked for low or medium, none for haiku. xhigh and max never pass. `fork` is left alone.
-fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
+/// Plan and a final code-reviewer: opus + high (sonnet + high when the week is critical). Every other
+/// row never raises cost: the caller's model, else the agent file's `model:` pin, else the table's
+/// (Explore, claude-code-guide, statusline-setup: haiku; the rest: sonnet), each only when not dearer
+/// than the table's. Effort is the caller's low or medium, else the file's low or medium, else high;
+/// none for haiku. xhigh and max never pass. `fork` is left alone.
+fn route_agent(data: &HookInput<'_>, ctx: &Ctx<'_>) -> (Option<Value>, Option<String>) {
     if data.tool_name != Some("Agent") || !data.is_main_thread() {
         return (None, None);
     }
-    let Some(ti) = data.tool_input.as_object() else { return (None, None) };
+    let Some(ti) = data.tool_input.as_object() else {
+        return (None, None);
+    };
     let text = |key: &str| ti.get(key).and_then(Value::as_str);
     let kind = text("subagent_type");
     if kind == Some("fork") {
@@ -2272,7 +2812,8 @@ fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
     }
     let desc = text("description").unwrap_or("");
     let head: String = text("prompt").unwrap_or("").chars().take(400).collect();
-    let final_ = kind == Some("code-reviewer") && (FINAL_REVIEW.is_match(desc) || FINAL_REVIEW.is_match(&head));
+    let final_ = kind == Some("code-reviewer")
+        && (FINAL_REVIEW.is_match(desc) || FINAL_REVIEW.is_match(&head));
     let opus_row = kind == Some("Plan") || (final_ && !PANEL_ANGLE.is_match(desc));
     let mut note: Option<String> = None;
     let model: String;
@@ -2287,14 +2828,32 @@ fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
         model = m.to_string();
         effort = "high";
     } else {
-        let table = if kind.is_some_and(|k| LOOKUP_AGENTS.contains(&k)) { Model::Haiku } else { Model::Sonnet };
+        let table = if kind.is_some_and(|k| LOOKUP_AGENTS.contains(&k)) {
+            Model::Haiku
+        } else {
+            Model::Sonnet
+        };
         // the caller's own model name stays when it is not dearer than the table's
+        // else the agent file's own pin, when it is not dearer; else the table's
+        let pin = kind.and_then(|k| agent_file_meta(k, data.cwd));
+        let pinned = |key: &str| {
+            pin.as_ref()
+                .and_then(|m| m.get(key))
+                .map(|v| v.trim().to_ascii_lowercase())
+        };
         model = match text("model") {
             Some(given) if Model::of(given).is_some_and(|g| g <= table) => given.to_string(),
-            _ => table.name().to_string(),
+            _ => pinned("model")
+                .and_then(|m| Model::of(&m))
+                .filter(|m| *m <= table)
+                .unwrap_or(table)
+                .name()
+                .to_string(),
         };
-        effort = match text("effort") {
-            Some(e @ ("low" | "medium")) => e,
+        effort = match (text("effort"), pinned("effort").as_deref()) {
+            (Some(e @ ("low" | "medium")), _) => e,
+            (_, Some("low")) => "low",
+            (_, Some("medium")) => "medium",
             _ => "high",
         };
     }
@@ -2318,9 +2877,68 @@ fn route_agent(data: &HookInput, ctx: &Ctx) -> (Option<Value>, Option<String>) {
     (Some(Value::Object(new)), Some(msg))
 }
 
+/// The front matter of the agent file whose `name:` is `kind`. The project folders come first
+/// (from `cwd` up to the git root, nearest first; never `$HOME` itself), then `$HOME/.claude/agents`.
+/// None on any error: the router then uses its table.
+fn agent_file_meta(
+    kind: &str,
+    cwd: Option<&str>,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let home = paths::home();
+    let mut left = 400; // files to read in all
+    for dir in Path::new(cwd?).ancestors().take(24) {
+        if dir == home || dir.parent().is_none() {
+            break;
+        }
+        if let Some(m) = scan_agents(&dir.join(".claude/agents"), kind, 4, &mut left) {
+            return Some(m);
+        }
+        if dir.join(".git").exists() {
+            break;
+        }
+    }
+    scan_agents(&home.join(".claude/agents"), kind, 4, &mut left)
+}
+
+fn scan_agents(
+    dir: &Path,
+    kind: &str,
+    depth: u32,
+    left: &mut u32,
+) -> Option<std::collections::BTreeMap<String, String>> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| Some(e.ok()?.path()))
+        .collect();
+    entries.sort();
+    for p in entries {
+        if p.is_dir() {
+            if depth > 0
+                && let Some(m) = scan_agents(&p, kind, depth - 1, left)
+            {
+                return Some(m);
+            }
+        } else if p.extension().is_some_and(|x| x == "md") && p.is_file() {
+            *left = left.checked_sub(1)?;
+            let Ok(text) = fs::read_to_string(&p) else {
+                continue;
+            };
+            let (meta, _) = agent_config::split_frontmatter(&text);
+            if meta.get("name").is_some_and(|n| n.trim() == kind) {
+                return Some(meta);
+            }
+        }
+    }
+    None
+}
+
 /// Router row for a superlite agent: left alone, except an opus-pinned one runs on sonnet when the
 /// week is tight (superlite says a `model` overrides the agent file, so only then is one set).
-fn route_superlite(kind: &str, ti: &Map<String, Value>, ctx: &Ctx) -> (Option<Value>, Option<String>) {
+fn route_superlite(
+    kind: &str,
+    ti: &Map<String, Value>,
+    ctx: &Ctx<'_>,
+) -> (Option<Value>, Option<String>) {
     if !SUPERLITE_OPUS.contains(&kind) {
         return (None, None);
     }
@@ -2330,17 +2948,20 @@ fn route_superlite(kind: &str, ti: &Map<String, Value>, ctx: &Ctx) -> (Option<Va
     }
     let mut new = ti.clone();
     new.insert("model".into(), Value::String("sonnet".into()));
-    let msg = format!("guard router: helper runs on sonnet - the week is {}, so opus became sonnet", st.state);
+    let msg = format!(
+        "guard router: helper runs on sonnet - the week is {}, so opus became sonnet",
+        st.state
+    );
     (Some(Value::Object(new)), Some(msg))
 }
 
 // --- modes --------------------------------------------------------------------
 
-type GuardFn = fn(&HookInput, &Ctx) -> Verdict;
+type GuardFn = fn(&HookInput<'_>, &Ctx<'_>) -> Verdict;
 /// A warning check: a note for the model, or nothing.
-type WarnFn = fn(&HookInput, &Ctx) -> Option<String>;
+type WarnFn = fn(&HookInput<'_>, &Ctx<'_>) -> Option<String>;
 
-fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
+fn pretool(data: &HookInput<'_>, ctx: &Ctx<'_>) -> Verdict {
     // g8_cap records the spawn it allows, so it runs after every other deny
     // each check runs only when its id is enabled (G14 and G15 also test their own id)
     let guards: [(Check, GuardFn); 14] = [
@@ -2364,13 +2985,9 @@ fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
             continue;
         }
         let verdict = g(data, ctx);
-        let kind = match verdict {
-            Verdict::Allow => continue,
-            Verdict::Ask(_) => FireKind::Ask,
-            Verdict::Deny(_) => FireKind::Deny,
-        };
-        gc::fire_log(check, kind);
-        return verdict;
+        if gc::log_verdict(check, &verdict) {
+            return verdict;
+        }
     }
     Verdict::Allow
 }
@@ -2378,41 +2995,26 @@ fn pretool(data: &HookInput, ctx: &Ctx) -> Verdict {
 /// G16 (core): a Bash or MCP call that sends text off the machine and holds a private word or a
 /// secret shape, or a body the guard cannot read. Returns the JSON line of an `ask`, or None. In
 /// shadow mode (`GUARD_SHADOW`) it logs what it would ask and lets the call through.
-fn outbound_ask(data: &HookInput) -> Option<String> {
-    if !check_enabled(Check::G16) {
-        return None;
-    }
+fn outbound_ask(data: &HookInput<'_>) -> Option<String> {
     let tool = data.tool_name?;
-    let input = data.tool_input;
-    let verdict = std::panic::catch_unwind(|| {
-        if !gc::g16_applies(tool, input) {
-            return Verdict::Allow;
-        }
-        let cwd = data.call_cwd();
-        let words = gc::private_words_at(&paths::home(), Some(&cwd));
-        gc::g16_outbound(tool, input, &cwd, &words)
-    })
-    .ok()?;
-    let Verdict::Ask(msg) = &verdict else { return None };
-    if gc::shadow(Check::G16) {
-        gc::shadow_log(Check::G16, &verdict, msg);
+    let Verdict::Ask(msg) = gc::run_gated(Check::G16, || {
+        gc::g16_run(tool, data.tool_input, &data.call_cwd())
+    }) else {
         return None;
-    }
-    gc::fire_log(Check::G16, FireKind::Ask);
-    Some(
-        json!({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "ask",
-            "permissionDecisionReason": msg,
-        }})
-        .to_string(),
-    )
+    };
+    Some(hook_json(
+        "PreToolUse",
+        vec![
+            ("permissionDecision", json!("ask")),
+            ("permissionDecisionReason", json!(msg)),
+        ],
+    ))
 }
 
 /// H1 (preset workflow): a Bash `sed -n` or `cat` of a code file `ctx` can outline gets a one-line
 /// tip (none for text and data files such as md, json, yaml or toml), at most `H1_MAX` times per
 /// session (the count lives in the per-session state, and only a shown tip counts). A call that reads nothing like that costs no file access.
-fn h1_hint(data: &HookInput) -> Option<String> {
+fn h1_hint(data: &HookInput<'_>) -> Option<String> {
     let file = gc::h1_read_target(data.bash_command()?)?;
     let show = with_state(data, |state| {
         let n = counter(state.get("ctx_hints"));
@@ -2430,17 +3032,36 @@ fn h1_hint(data: &HookInput) -> Option<String> {
 
 /// Router and warnings for an allowed call: a JSON line for stdout, or None. The line holds
 /// additionalContext, plus permissionDecision allow and updatedInput when the router changed the call.
-fn pretool_warn(data: &HookInput, ctx: &Ctx) -> Option<String> {
+fn pretool_warn(data: &HookInput<'_>, ctx: &Ctx<'_>) -> Option<String> {
     let mut notes: Vec<String> = Vec::new();
     let mut updated: Option<Value> = None;
     if check_enabled(Check::Router)
-        && let Ok((u, note)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| route_agent(data, ctx)))
+        && let Some((u, note)) = gc::guarded(|| route_agent(data, ctx))
     {
         if u.is_some() || note.is_some() {
             gc::fire_log(Check::Router, FireKind::Route);
         }
         updated = u;
         notes.extend(note);
+    }
+    // G14 and G15 fix a Bash call instead of denying it: the same input with the new command
+    if updated.is_none()
+        && let Some(Some((cmd, done))) = gc::guarded(|| bash_rewrite(data))
+    {
+        let mut input = data.tool_input.clone();
+        input["command"] = json!(cmd);
+        updated = Some(input);
+        for check in done {
+            gc::fire_log(check, FireKind::Rewrite);
+            notes.push(
+                (if check == Check::G14 {
+                    NOTE_G14_REWRITE
+                } else {
+                    NOTE_G15_REWRITE
+                })
+                .to_string(),
+            );
+        }
     }
     // each note is logged under the check that wrote it
     let mut add = |check: Check, kind: FireKind, note: Option<String>| {
@@ -2461,19 +3082,19 @@ fn pretool_warn(data: &HookInput, ctx: &Ctx) -> Option<String> {
         add(
             Check::W5,
             FireKind::Warn,
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w5_repeat(data))).ok().flatten(),
+            gc::guarded(|| w5_repeat(data)).flatten(),
         );
     }
     if notes.is_empty() && updated.is_none() {
         return None;
     }
-    let mut hso = json!({"hookEventName": "PreToolUse"});
+    let mut fields = Vec::new();
     if let Some(u) = updated {
-        hso["permissionDecision"] = json!("allow");
-        hso["updatedInput"] = u;
+        fields.push(("permissionDecision", json!("allow")));
+        fields.push(("updatedInput", u));
     }
-    hso["additionalContext"] = json!(notes.join("\n"));
-    Some(json!({ "hookSpecificOutput": hso }).to_string())
+    fields.push(("additionalContext", json!(notes.join("\n"))));
+    Some(hook_json("PreToolUse", fields))
 }
 
 /// The note for a pace state that was not announced yet (`last` = the state announced before).
@@ -2484,19 +3105,73 @@ fn pace_note(st: &PaceSt, last: Option<&str>) -> Option<String> {
             "guard: the week is critical ({used} used, budget {budget} today). Sonnet only, no helpers. Tell the user once."
         )),
         PaceState::Ahead if last != Some("ahead") => Some(format!(
-            "guard: the week is ahead of pace ({used} used, budget {budget} today). Helpers run on Sonnet, max 1 at once, and plans go without plan mode. If the main model is Opus, tell the user once to pick Sonnet."
+            "guard: the week is ahead of pace ({used} used, budget {budget} today). Nothing is limited: helpers, models and plan mode stay as usual until the week is critical. Tell the user once."
         )),
         _ => None,
     }
 }
 
 /// G3 nudge and pace notes: JSON for stdout (or None); counters live in the per-session state file.
-fn prompt(data: &HookInput, ctx: &Ctx) -> Option<String> {
+/// How many assistant turns back H2 looks for a call of the skill it would name.
+const H2_TURNS: usize = 3;
+
+/// True when `/ps:<skill>` was typed or the Skill tool called with it in the last `H2_TURNS`
+/// assistant turns of the transcript (a turn runs from one human prompt to the next).
+fn skill_called_recently(path: &Path, skill: &str) -> bool {
+    let full = format!("ps:{skill}");
+    let typed = format!("{full}</command-name>");
+    let Some(lines) = rev_lines(path) else {
+        return false;
+    };
+    let (mut turns, mut seen_assistant) = (0, false);
+    for line in lines {
+        let Some(rec) = loads(&line) else { continue };
+        if get(&rec, "type").as_str() == Some("assistant") {
+            seen_assistant = true;
+            for b in blocks_newest_first(&rec) {
+                if get(b, "type").as_str() == Some("tool_use")
+                    && get(b, "name").as_str() == Some("Skill")
+                    && get(get(b, "input"), "skill").as_str() == Some(full.as_str())
+                {
+                    return true;
+                }
+            }
+        } else if is_human_prompt(&rec) {
+            if has(&line, typed.as_bytes()) {
+                return true;
+            }
+            if seen_assistant {
+                turns += 1;
+                seen_assistant = false;
+                if turns >= H2_TURNS {
+                    return false;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// H2 (preset workflow, UserPromptSubmit): a phrase of the user that names a skill adds one line,
+/// `The user said '<phrase>': run /ps:<name> first.` One hint per prompt, none when the skill was
+/// called in the last `H2_TURNS` assistant turns. Arhiviraj and other Serbian phrases are out of scope.
+fn h2_hint(data: &HookInput<'_>) -> Option<String> {
+    let (skill, phrase) = gc::h2_match(data.prompt?)?;
+    if data
+        .transcript_path
+        .is_some_and(|p| skill_called_recently(Path::new(p), skill))
+    {
+        return None;
+    }
+    Some(format!("The user said '{phrase}': run /ps:{skill} first."))
+}
+
+fn prompt(data: &HookInput<'_>, ctx: &Ctx<'_>) -> Option<String> {
     // Rescan the transcripts only when the last scan is partial, older than 2 min or from another
     // week. A fresh status line does not skip it: the scan also saves the calibration.
     if check_enabled(Check::Pace) {
         let _ = std::panic::catch_unwind(|| {
-            let now = now_secs() as i64;
+            let now = paths::unix_now();
             if pace::prompt_needs_refresh(now) {
                 pace::refresh(5.0, Some(now));
             }
@@ -2531,7 +3206,17 @@ fn prompt(data: &HookInput, ctx: &Ctx) -> Option<String> {
         gc::fire_log(Check::Pace, FireKind::Note);
     }
     notes.extend(note);
-    if notes.is_empty() { None } else { Some(hook_output("UserPromptSubmit", &notes.join("\n"))) }
+    if check_enabled(Check::H2)
+        && let Some(Some(hint)) = gc::guarded(|| h2_hint(data))
+    {
+        gc::fire_log(Check::H2, FireKind::Hint);
+        notes.push(hint);
+    }
+    if notes.is_empty() {
+        None
+    } else {
+        Some(hook_output("UserPromptSubmit", &notes.join("\n")))
+    }
 }
 
 fn run() -> i32 {
@@ -2546,8 +3231,12 @@ fn run() -> i32 {
     if io::stdin().read_to_end(&mut raw).is_err() {
         return 0;
     }
-    let Ok(s) = String::from_utf8(raw) else { return 0 };
-    let Ok(data) = serde_json::from_str::<Value>(&s) else { return 0 };
+    let Ok(s) = String::from_utf8(raw) else {
+        return 0;
+    };
+    let Ok(data) = serde_json::from_str::<Value>(&s) else {
+        return 0;
+    };
     if !data.is_object() {
         return 0;
     }
@@ -2568,8 +3257,24 @@ fn run() -> i32 {
             if let Verdict::Deny(m) = pretool(&input, &ctx) {
                 Some(m)
             } else {
-                out = outbound_ask(&input).or_else(|| pretool_warn(&input, &ctx));
-                None
+                out = outbound_ask(&input);
+                // a command G14 or G15 can fix never goes to the user's approval unfixed: deny with
+                // the fixed command, and G16 asks on that clean call
+                let fixed = out
+                    .as_ref()
+                    .and_then(|_| gc::guarded(|| bash_rewrite(&input)))
+                    .flatten();
+                if let Some((cmd, _)) = fixed {
+                    out = None;
+                    Some(format!(
+                        "guard: this command needs a fix (G14 or G15) and also sends text off the machine (G16 would ask). Send this fixed command instead: {cmd}"
+                    ))
+                } else {
+                    if out.is_none() {
+                        out = pretool_warn(&input, &ctx);
+                    }
+                    None
+                }
             }
         }
         "subagentstop" => subagentstop(&input),
@@ -2618,18 +3323,39 @@ mod tests {
             ("Keep your response under 6,000 characters.", Some(6000)),
             ("Limit the output to 5,000 chars.", Some(5000)),
             ("6,000 chars max for the hand-back.", Some(6000)),
-            ("Make truncate() return at most 500 characters. Hand back at most 4,000 chars.", Some(4000)),
-            ("The API summary field holds 300 chars. Hand back at most 2,000 chars.", Some(2000)),
+            (
+                "Make truncate() return at most 500 characters. Hand back at most 4,000 chars.",
+                Some(4000),
+            ),
+            (
+                "The API summary field holds 300 chars. Hand back at most 2,000 chars.",
+                Some(2000),
+            ),
             (
                 "Hand back \u{2264} 3,000 chars. In researcher.md set a hard cap of 2,500 chars on the final message.",
                 Some(3000),
             ),
-            ("Hand back at most 4,000 chars. The summary field holds 300 chars.", Some(4000)),
-            ("Deadline: answer within 8 minutes. Stay \u{2264} 4,000 chars.", Some(4000)),
-            ("Keep it under 2,500 characters. Pad the file to 900 chars.", Some(2500)),
-            ("Reply in 2,000 chars. Final message under 1500 characters. Then hand back 800 chars.", Some(800)),
+            (
+                "Hand back at most 4,000 chars. The summary field holds 300 chars.",
+                Some(4000),
+            ),
+            (
+                "Deadline: answer within 8 minutes. Stay \u{2264} 4,000 chars.",
+                Some(4000),
+            ),
+            (
+                "Keep it under 2,500 characters. Pad the file to 900 chars.",
+                Some(2500),
+            ),
+            (
+                "Reply in 2,000 chars. Final message under 1500 characters. Then hand back 800 chars.",
+                Some(800),
+            ),
             ("Hand back 50 chars.", None),
-            ("Write a description of at most 160 characters for the page.", None),
+            (
+                "Write a description of at most 160 characters for the page.",
+                None,
+            ),
         ];
         for (p, want) in cases {
             assert_eq!(prompt_cap(p), *want, "{p}");
@@ -2657,8 +3383,13 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../claude/presets");
         let mut out = Vec::new();
         for e in fs::read_dir(&dir).unwrap().flatten() {
-            let Ok(text) = fs::read_to_string(e.path().join("rules.md")) else { continue };
-            let line = text.lines().find_map(|l| l.strip_prefix("guard:")).unwrap_or("[]");
+            let Ok(text) = fs::read_to_string(e.path().join("rules.md")) else {
+                continue;
+            };
+            let line = text
+                .lines()
+                .find_map(|l| l.strip_prefix("guard:"))
+                .unwrap_or("[]");
             let ids = line
                 .trim()
                 .trim_start_matches('[')
@@ -2689,7 +3420,11 @@ mod tests {
         from_files.sort();
         from_registry.sort();
         assert_eq!(from_files, from_registry);
-        let core: Vec<&str> = gc::REGISTRY.iter().filter(|(_, p)| *p == "core").map(|(c, _)| c.id()).collect();
+        let core: Vec<&str> = gc::REGISTRY
+            .iter()
+            .filter(|(_, p)| *p == "core")
+            .map(|(c, _)| c.id())
+            .collect();
         assert_eq!(core, ["G14", "G15", "G16"]);
     }
 
@@ -2739,10 +3474,18 @@ mod tests {
         recs.push(result()); // last record has no usage
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.jsonl");
-        let text = recs.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+        let text = recs
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
         fs::write(&path, text).unwrap();
         assert_eq!(context_size(Some(&path.to_string_lossy())), 250_000);
-        assert_eq!(context_size(Some(&dir.path().join("nope.jsonl").to_string_lossy())), 0);
+        assert_eq!(
+            context_size(Some(&dir.path().join("nope.jsonl").to_string_lossy())),
+            0
+        );
     }
 
     #[test]
@@ -2769,7 +3512,12 @@ mod tests {
     #[test]
     fn timestamps() {
         assert_eq!(timestamp(&json!("1970-01-02T00:00:00Z")), Some(86400));
-        assert_eq!(timestamp(&json!("2026-10-19T12:00:00.123+02:00")), Some(1792404000));
+        assert_eq!(
+            timestamp(&json!("2026-10-19T12:00:00.123+02:00")),
+            Some(1_792_404_000)
+        );
         assert_eq!(timestamp(&json!("nope")), None);
+        assert_eq!(timestamp(&json!("2026-13-45T00:00:00Z")), None);
+        assert_eq!(timestamp(&json!(5)), None);
     }
 }

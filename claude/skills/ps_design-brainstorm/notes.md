@@ -2,15 +2,11 @@
 
 Research guidance and the pattern the agent uses to build the `DESIGN` block for `ps:design-artifact` after each interview round.
 
-## Research to do before asking
+## Norms to look up (step 2 of `SKILL.md`)
 
-Look up, don't ask:
 - The component kind's standard anatomy and states (default, hover, focus, disabled, empty).
-- Accessibility norms for it (WCAG contrast 4.5:1 normal / 3:1 large; focus-visible outline; color not the only carrier of meaning).
-- Common token choices for the domain (radius, primary hue, shadow, text size, border/surface).
-- Mobile constraints (min touch target 44 px, readable min font 14–16 px).
-
-Cite the source briefly in your answer (one line, e.g. "WCAG AA requires 4.5:1 for normal text — w3.org/WAI/WCAG21/quickref/#contrast-minimum").
+- Accessibility: WCAG contrast 4.5:1 normal / 3:1 large; focus-visible outline; color not the only carrier of meaning.
+- Mobile: min touch target 44 px, readable min font 14–16 px.
 
 ## Building the DESIGN block
 
@@ -37,11 +33,7 @@ const DESIGN = {
 };
 ```
 
-Token type reference:
-- `range`: continuous — min, max, step, value, unit, css.
-- `color`: hex — value, css.
-- `select`: choice between kinds — options [{label,value}], value, css.
-- `toggle`: on/off — value: true|false, css.
+Token types (`range`, `color`, `select`, `toggle`): see [ps:design-artifact notes](../ps_design-artifact/notes.md).
 
 `renderPreview` returns an HTML string; escape user text with `esc()`. Use `var(--ds-*)` throughout so preview, chips, exports and contrast badges share one source of truth.
 
@@ -49,14 +41,7 @@ Token type reference:
 
 ## Applying the pick back to the project
 
-When you paste `pick: <id> {json}`:
-1. Echo: `<id> <label> → <json values>`.
-2. Map each key to the project — give the exact snippet:
-   - CSS variables: `--ds-radius: 12px; --ds-primary: #b4552d;` in `:root` / `.dark`.
-   - Tailwind: `theme.extend.colors.primary` / `borderRadius.DEFAULT` (use the artifact's export panel).
-   - Component props: `radius="12px" primary="#b4552d"` etc.
-3. Ask for the file path if it is not this session's folder.
-4. Offer to delete the artifact. Delete only on a yes.
+Same as ps:pick ("Apply the pick"); the CSS, Tailwind and props snippets are in the [ps:design-artifact notes](../ps_design-artifact/notes.md).
 
 ## References
 

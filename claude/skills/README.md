@@ -17,14 +17,13 @@ shows up in every agent on every machine after `dots`.
 
 The `name:` keeps the `ps:` prefix on purpose: it namespaces the skill like a plugin
 skill and the slash command stays `/ps:foo`. The folder says `ps_foo`, because Windows
-cannot hold a colon in a file name and `git clone` fails there on one. No tracked path
-may hold a character Windows rejects (`scripts/test-dotfiles.sh` and the pre-commit hook
-check this). The open Agent Skills spec forbids the colon in `name:`, so these are
+cannot hold a colon in a file name and `git clone` fails there on one (all the rules for
+tracked paths: [AGENTS.md](../../AGENTS.md#windows)). The open Agent Skills spec forbids the colon in `name:`, so these are
 Claude Code + Cursor + Opencode skills, not portable ones.
 
 ## Rules every skill follows
 
-The `skill_check` Rust bin enforces these. It runs from the repo's pre-commit hook whenever a file
+The `skill_check` Rust bin enforces most of them. It runs from the repo's pre-commit hook whenever a file
 under `claude/skills/` is staged, and you can run it any time:
 
 ```sh
@@ -33,18 +32,17 @@ bash claude/hooks/rust-bin skill_check ps:askme   # one skill
 cargo test --test runtime_bins                    # its own tests (in rust/agent-config)
 ```
 
-- `name` equals the folder name with `:` written as `_` (`ps:foo` lives in `ps_foo`). Lowercase, digits, hyphens, optional `ps:` prefix.
-- `description` is third person, says what the skill does **and when** to use it, and
-  is quoted whenever it contains `: ` (an unquoted colon silently drops the skill).
-  It never summarises the workflow — an agent that reads a summary skips the body.
-- Body under 500 lines and ~5k tokens. Long material goes in a sibling file linked
-  from `SKILL.md`, one level deep.
-- Bundled scripts are run through an interpreter via `${CLAUDE_SKILL_DIR}`, never a
-  hardcoded `~/.claude/skills/...` path. Pre-approve them with
-  `allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/*)` so they run without a prompt.
-- `allowed-tools` is scoped (`Bash(go *)`), never bare `Bash`. It only skips prompts;
-  it does not fence the agent in.
-- No tool caches or `.DS_Store` inside a skill folder.
+`skill_check` names each failing rule: the `name` and folder match (`ps:foo` lives in `ps_foo`),
+the description (third person, a quoted `: `, length), the body size, hardcoded skill paths, bad
+links and junk files in the folder. What it does not check:
+
+- `description` says what the skill does **and when** to use it. It never summarises the workflow:
+  an agent that reads a summary skips the body.
+- Long material goes in a sibling file linked from `SKILL.md`, one level deep, so the body stays
+  under ~5k tokens.
+- Bundled scripts run through an interpreter via `${CLAUDE_SKILL_DIR}`. Pre-approve them with
+  `allowed-tools: Bash(${CLAUDE_SKILL_DIR}/scripts/*)`. `allowed-tools` only skips prompts; it
+  does not fence the agent in.
 
 ## Add your own
 

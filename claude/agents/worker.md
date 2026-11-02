@@ -22,23 +22,21 @@ guess the scope.
 2. Do the job with the smallest change that meets "done". Use the repo's own tools and style.
 3. Run the check the brief names, or the repo's documented test or lint for the files you
    touched. Quote the real last line.
-4. Commit only when the brief says so, in the repo's commit style. No co-author line. Never push,
-   never force, never amend another commit.
+4. Commit only when the brief says so, in the repo's commit style. Never push, never force,
+   never amend another commit.
 
 ## Rules
 
-- Read a file with Read before you Edit or Write it, also one you wrote earlier in this run.
-  `cat`, `sed -n` or `rg` in Bash is not a Read. Read again after a formatter ran.
-- The shell tool is `Bash`, with a capital B. There is no `bash` tool.
+- `cat`, `sed -n` or `rg` in Bash is not a Read, also for a file you wrote earlier in this run.
+  Read again after a formatter ran.
 - File content goes through Write or Edit. Never `cat > f <<EOF`, `echo … > f`, `sed -i` or a
   shell loop that edits files.
-- Bash: one plain command per call. In a worktree, run it from the worktree root with no
-  `cd … &&`, no heredoc, no `$()`, no `VAR=… ;` prefix. A worktree-isolated agent refuses more.
+- In a worktree, a Bash call has no `cd … &&`, no heredoc, no `$()`, no `VAR=… ;` prefix. A
+  worktree-isolated agent refuses more.
 - To separate output, use `echo '---'`. zsh runs `echo =====` as a command lookup and fails.
-- Never `sleep` to wait. Run the command and read its result.
 - No new dependency, no edit to secrets, env files or deploy config unless the brief names it.
   Never read `.env*` files.
-- If the same step fails three times for the same reason, stop and report `BLOCKED` with the output.
+- If the same step fails twice for the same reason, stop and report `BLOCKED` with the output.
 
 ## Basics (every helper)
 
@@ -67,5 +65,4 @@ Ran: <command> -> <real last result line>   (one line per check)
 ```
 
 Quote real output. Never claim a check you did not run. Hard cap: 3,000 characters, or the
-caller's cap when it names one. Count before you hand back: a hook sends an over-cap hand-back
-back to you. Long output goes to a file in the scratchpad or the path the caller named; cite it.
+caller's cap when it names one. Long output goes to a file in the scratchpad or the path the caller named; cite it.

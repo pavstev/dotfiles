@@ -32,9 +32,9 @@ The guard router sets model and effort: `panel: <angle>` calls run on Sonnet, a 
 
 ## Pace
 
-When `~/.claude/hooks/rust-bin` exists, run `~/.claude/hooks/rust-bin pace status`. Agents at once:
-3 when `ok` or `unknown`, 1 when `ahead`, 0 when `critical` (send nothing: run the repo's checks
-yourself, review the diff yourself, and say the week is spent). The guard enforces the cap.
+When `~/.claude/hooks/rust-bin` exists, run `~/.claude/hooks/rust-bin pace status`. The pace
+preset sets the cap; guard G8 enforces it. At `critical` the cap is 0: send nothing, run the
+repo's checks yourself, review the diff yourself, and say the week is spent.
 
 ## 1. Pin the change (you)
 
@@ -44,7 +44,7 @@ yourself, review the diff yourself, and say the week is spent). The guard enforc
 
 ## 2. Fan out in waves
 
-Wave 1 is the three Sonnet angles, in one message (one at a time when pace is `ahead`). The last
+Wave 1 is the three Sonnet angles, in one message. The last
 agent is the judge: the `correctness` final review (Opus by the router). Send it after the angles
 return, with their findings in its brief. Do not merge until every agent has handed back.
 Never merge partial results.
@@ -112,17 +112,13 @@ description `re-review: <slug>` (Sonnet), with the findings and the fix range. N
 
 ## Review budget
 
-The same budget as the `code-reviewer` and `task-reviewer` agents:
+The workflow preset holds the budget (3 rounds, stop on nits or a round that fixed nothing, what a
+finding is). The brief template in step 2 carries the finding rule. Panel details:
 
-- At most 3 review rounds per change. The panel is round 1, each re-review one more. Count the
-  rounds in the report. Past 3, stop and hand the open findings to the user.
-- Stop when a round returns only nits (style, naming, blank lines, taste). Nits are not findings:
-  leave them out of the report, or list at most 3 as `Nits (not counted)`.
-- Stop when a round fixed nothing: the same blocking findings came back unchanged. Another round
-  will not help. Hand them to the user, even if the 3-round cap is not reached.
-- A finding is a correctness bug, or a gap against a stated requirement (the user's words, the
-  spec, the task text). "I would write it differently" is not a finding. Put this line in every brief.
-- Say it plainly when a reviewer was not satisfied: `Verdict: CHANGES NEEDED` plus a line
+- The panel is round 1, each re-review one more. Count the rounds in the report. Past 3, hand the
+  open findings to the user.
+- Leave nits out of the report, or list at most 3 as `Nits (not counted)`.
+- When a reviewer was not satisfied: `Verdict: CHANGES NEEDED` plus a line
   `Reviewer not satisfied after <n> rounds: <open blocking findings>`. Never turn it into APPROVED.
 
 ## Mistakes

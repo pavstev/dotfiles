@@ -3,6 +3,8 @@
 //! Messages (refusals, not found) go to stdout, so an agent sees them in the same stream as the
 //! code. Only a usage error writes to stderr (exit 2).
 
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
+
 mod common;
 
 use common::{run_bin, temp_home};
@@ -14,7 +16,9 @@ use std::path::{Path, PathBuf};
 const CTX: &str = env!("CARGO_BIN_EXE_ctx");
 
 fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codeview").join(name)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/codeview")
+        .join(name)
 }
 
 fn ctx(args: &[&str]) -> (i32, String, String) {
@@ -37,7 +41,10 @@ fn temp_file(tag: &str, name: &str, bytes: &[u8]) -> PathBuf {
 fn outline_prints_the_golden() {
     let (code, out, _) = ctx(&["outline", &s(&fixture("nested.ts"))]);
     assert_eq!(code, 0);
-    assert_eq!(out, fs::read_to_string(fixture("nested.ts.outline")).unwrap());
+    assert_eq!(
+        out,
+        fs::read_to_string(fixture("nested.ts.outline")).unwrap()
+    );
 }
 
 #[test]
@@ -67,8 +74,11 @@ fn read_prints_header_and_numbered_lines() {
     assert_eq!(code, 0, "{out}");
     let mut lines = out.lines();
     let header = lines.next().unwrap();
-    let re = Regex::new(r"^.+nested\.ts:(\d+)-(\d+)  outer\.inner  scan=c-like  hash=[0-9a-f]{8}$").unwrap();
-    let caps = re.captures(header).unwrap_or_else(|| panic!("bad header: {header}"));
+    let re = Regex::new(r"^.+nested\.ts:(\d+)-(\d+)  outer\.inner  scan=c-like  hash=[0-9a-f]{8}$")
+        .unwrap();
+    let caps = re
+        .captures(header)
+        .unwrap_or_else(|| panic!("bad header: {header}"));
     let (start, end): (usize, usize) = (caps[1].parse().unwrap(), caps[2].parse().unwrap());
     assert_eq!((start, end), (6, 11));
     let src = fs::read_to_string(&path).unwrap();
@@ -85,7 +95,13 @@ fn read_prints_header_and_numbered_lines() {
 fn read_accepts_a_bare_name_when_it_is_unique() {
     let (code, out, _) = ctx(&["read", &s(&fixture("nested.ts")), "innermost"]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.lines().next().unwrap().contains("  outer.inner.innermost  "), "{out}");
+    assert!(
+        out.lines()
+            .next()
+            .unwrap()
+            .contains("  outer.inner.innermost  "),
+        "{out}"
+    );
 }
 
 #[test]
@@ -112,7 +128,13 @@ fn hash_follows_the_file_bytes() {
     let b = temp_file("ctx-hash", "b.ts", b"function f() {\n}\n\n");
     let hash = |p: &Path| {
         let (_, out, _) = ctx(&["read", &s(p), "f"]);
-        out.lines().next().unwrap().rsplit("hash=").next().unwrap().to_string()
+        out.lines()
+            .next()
+            .unwrap()
+            .rsplit("hash=")
+            .next()
+            .unwrap()
+            .to_string()
     };
     assert_eq!(hash(&a), hash(&a));
     assert_ne!(hash(&a), hash(&b));
@@ -198,12 +220,20 @@ fn output_cap() {
     assert!(lines[0].contains(":1-502  big  "), "{}", lines[0]);
     assert_eq!(lines.len(), 1 + 400 + 1, "header, 400 lines, the cut line");
     assert!(lines[400].starts_with("400\t"), "{}", lines[400]);
-    assert_eq!(lines[401], "… cut at 400 of 502 lines; use Read with offset");
+    assert_eq!(
+        lines[401],
+        "… cut at 400 of 502 lines; use Read with offset"
+    );
 }
 
 #[test]
 fn usage_errors_exit_2() {
-    for args in [vec![], vec!["read", "only-a-file.ts"], vec!["frobnicate"], vec!["outline"]] {
+    for args in [
+        vec![],
+        vec!["read", "only-a-file.ts"],
+        vec!["frobnicate"],
+        vec!["outline"],
+    ] {
         let (code, _, err) = ctx(&args);
         assert_eq!(code, 2, "{args:?}: {err}");
         assert_ne!(err, "");

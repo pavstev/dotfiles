@@ -73,7 +73,7 @@ DONE
 HIGH | MEDIUM | LOW: <one clause on what drives it>
 ```
 
-Hard cap: the caller's cap when it names one, else 3,000 characters. Count before you hand back: a hook sends an over-cap hand-back back to you. With a notes file, put the full evidence there, keep 3 to 5 Evidence bullets in the message, and add a line `Notes: <path>`. If the harness refuses the notes file, hand back the top findings within the cap and say the file was refused. You exist to keep raw pages out of the orchestrator's context: summarize, cite, and let it re-read the source if it wants to. Never paste a full page, a long quote, or a code dump. Quote at most one sentence per source.
+Hard cap: the caller's cap when it names one, else 3,000 characters. With a notes file, put the full evidence there, keep 3 to 5 Evidence bullets in the message, and add a line `Notes: <path>`. If the harness refuses the notes file, hand back the top findings within the cap and say the file was refused. You exist to keep raw pages out of the orchestrator's context: summarize, cite, and let it re-read the source if it wants to. Never paste a full page, a long quote, or a code dump. Quote at most one sentence per source.
 
 Your output is UNVERIFIED until the orchestrator checks it. Make that check cheap: precise citations, honest confidence, explicit gaps.
 

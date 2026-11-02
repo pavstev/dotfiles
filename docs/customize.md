@@ -20,7 +20,7 @@ How to change things, set the looks, and uninstall.
 | Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
 | Claude settings (`claude/settings.json`) | the repo base for everyone; your own keys go in `~/.config/dotfiles/claude-settings.json` | `dots` (it builds `~/.claude/settings.json`) |
 | Share a key Claude saved for you | `scripts/agent-config claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
-| Hide a tool Claude never uses (it then costs no tokens) | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal | `dots`, then the next session (a deny beats every allow) |
+| Block a tool Claude never uses | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal. In the desktop app a denied tool still shows in the tool list (a call is only blocked), so turn an unused connector off in the app to save its tokens | `dots`, then the next session (a deny beats every allow) |
 | Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
 | Opencode rules, agents, permissions, theme | `claude/` (shared source); the palette lives in `rust/agent-config/themes/copper.json` | `dots` (regenerates `~/.config/opencode`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |

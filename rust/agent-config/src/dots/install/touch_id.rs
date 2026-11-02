@@ -1,6 +1,6 @@
-//! 72-touch-id-sudo: Touch ID for sudo via /etc/pam.d/sudo_local. sudo_local is included by
+//! 72-touch-id-sudo: Touch ID for sudo via /`etc/pam.d/sudo_local`. `sudo_local` is included by
 //! /etc/pam.d/sudo and survives macOS upgrades. Safe to re-run: stops early when the file
-//! already holds pam_tid.
+//! already holds `pam_tid`.
 
 use super::{feed, only_macos, quiet};
 use crate::out::{self, info, ok, skip, warn};
@@ -8,14 +8,14 @@ use std::path::Path;
 
 const SUDO_LOCAL: &str = "/etc/pam.d/sudo_local";
 
-/// What goes into sudo_local.
+/// What goes into `sudo_local`.
 const BODY: &str = "# sudo_local: local config file which survives system update and is included by /etc/pam.d/sudo\nauth       sufficient     pam_tid.so\n";
 
 fn has_pam_tid(text: &str) -> bool {
     text.contains("pam_tid")
 }
 
-pub fn step(_repo: &Path) {
+pub(super) fn step(_repo: &Path) {
     if !only_macos("Touch ID for sudo") {
         return;
     }
@@ -25,12 +25,18 @@ pub fn step(_repo: &Path) {
         return;
     }
     if !quiet("sudo", &["-n", "true"]) {
-        info(&format!("Need sudo to write {SUDO_LOCAL} — you may be prompted for your password once."));
+        info(&format!(
+            "Need sudo to write {SUDO_LOCAL} — you may be prompted for your password once."
+        ));
     }
     if feed("sudo", &["tee", SUDO_LOCAL], BODY, true) {
-        ok(&format!("Touch ID for sudo enabled ({SUDO_LOCAL} created)."));
+        ok(&format!(
+            "Touch ID for sudo enabled ({SUDO_LOCAL} created)."
+        ));
     } else {
-        warn(&format!("Couldn't write {SUDO_LOCAL} (no sudo/no TTY for a password prompt) — re-run: ./dotfiles"));
+        warn(&format!(
+            "Couldn't write {SUDO_LOCAL} (no sudo/no TTY for a password prompt) — re-run: ./dotfiles"
+        ));
     }
 }
 

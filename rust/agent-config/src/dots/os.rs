@@ -5,7 +5,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// True on macOS.
 pub fn is_macos() -> bool {
@@ -23,8 +22,10 @@ pub fn is_windows() -> bool {
 /// This Linux uses musl, not glibc (Alpine). Homebrew on Linux needs glibc.
 pub fn is_musl() -> bool {
     is_linux()
-        && fs::read_dir("/lib")
-            .is_ok_and(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-")))
+        && fs::read_dir("/lib").is_ok_and(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-"))
+        })
 }
 
 /// The home folder (`paths::home`): $HOME, then %USERPROFILE% on Windows, then the OS answer. In Git
@@ -48,7 +49,11 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
 pub fn which_in(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let exts: Vec<String> = if is_windows() {
         let pe = env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into());
-        pe.split(';').filter(|s| !s.is_empty()).map(str::to_lowercase).chain(std::iter::once(String::new())).collect()
+        pe.split(';')
+            .filter(|s| !s.is_empty())
+            .map(str::to_lowercase)
+            .chain(std::iter::once(String::new()))
+            .collect()
     } else {
         vec![String::new()]
     };
@@ -118,9 +123,9 @@ pub fn path_append(dir: &Path) {
     }
 }
 
-/// scripts/tools-env.sh `tools_add_paths`: where tools from mise, cargo, WinGet and the mise
+/// scripts/tools-env.sh `tools_add_paths`: where tools from mise, cargo, `WinGet` and the mise
 /// installer land. They go on the END of PATH, so a tool already on PATH keeps its place. Not
-/// tested with is_dir: a step that runs later in the same run makes these folders.
+/// tested with `is_dir`: a step that runs later in the same run makes these folders.
 pub fn tool_paths() {
     let h = home();
     for d in [".local/bin", ".local/share/mise/shims", ".cargo/bin"] {
@@ -151,8 +156,14 @@ pub fn brew_env() {
         if !is_executable(&b) {
             continue;
         }
-        let Some(prefix) = b.parent().and_then(|p| p.parent()) else { continue };
-        let repo = if prefix.join("Homebrew/.git").exists() { prefix.join("Homebrew") } else { prefix.to_path_buf() };
+        let Some(prefix) = b.parent().and_then(|p| p.parent()) else {
+            continue;
+        };
+        let repo = if prefix.join("Homebrew/.git").exists() {
+            prefix.join("Homebrew")
+        } else {
+            prefix.to_path_buf()
+        };
         set_env("HOMEBREW_PREFIX", prefix.as_os_str());
         set_env("HOMEBREW_CELLAR", prefix.join("Cellar").into_os_string());
         set_env("HOMEBREW_REPOSITORY", repo.into_os_string());
@@ -173,7 +184,8 @@ pub fn readlink(p: &Path) -> Option<PathBuf> {
 
 /// True if the path itself is a link (a broken one counts).
 pub fn is_symlink(p: &Path) -> bool {
-    p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
+    p.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// The path exists, or is a link (even a broken one).
@@ -182,6 +194,10 @@ pub fn exists_or_link(p: &Path) -> bool {
 }
 
 /// Make the link `dst` -> `src`. On Windows a folder needs a folder link.
+///
+/// # Errors
+///
+/// Returns the I/O error when the link cannot be created (for example `dst` exists).
 pub fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -199,7 +215,9 @@ pub fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
 
 /// Windows only: true when this user can make a real symlink (Developer Mode on).
 pub fn windows_links_ready() -> bool {
-    let Ok(d) = tempfile::tempdir() else { return false };
+    let Ok(d) = tempfile::tempdir() else {
+        return false;
+    };
     let a = d.path().join("a");
     let b = d.path().join("b");
     if fs::write(&a, "").is_err() {
@@ -268,8 +286,7 @@ pub fn utc_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
 
 /// The time now as YYYYmmdd-HHMMSS, for backup names.
 pub fn timestamp() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let (y, mo, d, h, mi, s) = local_parts(secs);
+    let (y, mo, d, h, mi, s) = local_parts(crate::paths::unix_now());
     format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}")
 }
 
@@ -284,7 +301,7 @@ mod tests {
     }
     #[test]
     fn utc_date_math() {
-        assert_eq!(utc_parts(1792413296), (2026, 10, 19, 12, 34, 56));
+        assert_eq!(utc_parts(1_792_413_296), (2026, 10, 19, 12, 34, 56));
         assert_eq!(utc_parts(0), (1970, 1, 1, 0, 0, 0));
     }
     #[test]

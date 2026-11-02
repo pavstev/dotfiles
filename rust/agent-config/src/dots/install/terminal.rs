@@ -1,8 +1,8 @@
 //! 75-terminal-appearance: Apple Terminal appearance, a Nerd Font and a smaller, compact
 //! profile. Ghostty is configured by its own dotfile; Terminal.app keeps font and window
-//! geometry in the app's profile, so AppleScript drives it.
+//! geometry in the app's profile, so `AppleScript` drives it.
 //!
-//! Uses the PostScript name "FiraCodeNFM-Reg" (FiraCode Nerd Font Mono, Regular). Needs the
+//! Uses the PostScript name "FiraCodeNFM-Reg" (`FiraCode` Nerd Font Mono, Regular). Needs the
 //! font-fira-code-nerd-font cask (installed by brew). Tolerant: without the Automation
 //! permission it warns and moves on.
 
@@ -16,7 +16,7 @@ const FONT_SIZE: u32 = 12; // compact
 const COLUMNS: u32 = 100; // tidy, compact default window...
 const ROWS: u32 = 28; // ...geometry (Terminal has no padding control)
 
-/// The AppleScript that sets the font and window size.
+/// The `AppleScript` that sets the font and window size.
 fn script() -> String {
     format!(
         r#"tell application "Terminal"
@@ -39,7 +39,7 @@ end tell
     )
 }
 
-pub fn step(_repo: &Path) {
+pub(super) fn step(_repo: &Path) {
     if !only_macos("Apple Terminal appearance") {
         return;
     }
@@ -56,7 +56,11 @@ pub fn step(_repo: &Path) {
     }
     // Confirm the font is installed (in EITHER location) before touching Terminal.
     let font = "FiraCodeNerdFontMono-Regular.ttf";
-    if !os::home().join("Library").join("Fonts").join(font).is_file()
+    if !os::home()
+        .join("Library")
+        .join("Fonts")
+        .join(font)
+        .is_file()
         && !Path::new("/Library/Fonts").join(font).is_file()
     {
         warn("FiraCode Nerd Font not installed yet — skipping Terminal appearance.");
@@ -68,7 +72,9 @@ pub fn step(_repo: &Path) {
         ));
     } else {
         warn("Couldn't set Apple Terminal appearance automatically.");
-        warn("Grant Automation permission (System Settings → Privacy → Automation), then re-run: ./dotfiles");
+        warn(
+            "Grant Automation permission (System Settings → Privacy → Automation), then re-run: ./dotfiles",
+        );
     }
 }
 

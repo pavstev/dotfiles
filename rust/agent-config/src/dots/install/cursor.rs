@@ -14,23 +14,31 @@ const LEAVE: [&str; 1] = ["ms-python.vscode-pylance"];
 
 /// The `cursor` command inside the app folder.
 fn app_cursor(app: &Path) -> PathBuf {
-    app.join("Contents").join("Resources").join("app").join("bin").join("cursor")
+    app.join("Contents")
+        .join("Resources")
+        .join("app")
+        .join("bin")
+        .join("cursor")
 }
 
-pub fn step(repo: &Path) {
+pub(super) fn step(repo: &Path) {
     os::brew_env();
     out::step("Cursor");
     let home = os::home();
-    let app = [PathBuf::from("/Applications/Cursor.app"), home.join("Applications").join("Cursor.app")]
-        .into_iter()
-        .find(|a| a.is_dir());
+    let app = [
+        PathBuf::from("/Applications/Cursor.app"),
+        home.join("Applications").join("Cursor.app"),
+    ]
+    .into_iter()
+    .find(|a| a.is_dir());
     if app.is_none() && !home.join(".cursor").is_dir() && !os::have("cursor") {
         note("not installed, nothing to set up");
         return;
     }
 
     // 1. CLI. Never probe it with `cursor agent ...`: that runs the installer too.
-    if os::is_executable(&home.join(".local").join("bin").join("agent")) || os::have("cursor-agent") {
+    if os::is_executable(&home.join(".local").join("bin").join("agent")) || os::have("cursor-agent")
+    {
         skip("Cursor CLI");
     } else if curl_pipe_bash(&["-fsS", "--max-time", "60", "https://cursor.com/install"]) {
         ok("Cursor CLI installed (~/.local/bin/agent). Sign in once: agent login");

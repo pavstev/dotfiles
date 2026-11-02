@@ -96,7 +96,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for Str<'a> {
         struct V<'a>(std::marker::PhantomData<&'a ()>);
         impl<'de: 'a, 'a> Visitor<'de> for V<'a> {
             type Value = Str<'a>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_borrowed_str<E: de::Error>(self, s: &'de str) -> Result<Str<'a>, E> {
@@ -124,7 +124,7 @@ impl<'de> Deserialize<'de> for Truthy {
         struct V;
         impl<'de> Visitor<'de> for V {
             type Value = Truthy;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_bool<E: de::Error>(self, b: bool) -> Result<Truthy, E> {
@@ -167,7 +167,7 @@ impl<'de> Deserialize<'de> for Bool {
         struct V;
         impl<'de> Visitor<'de> for V {
             type Value = Bool;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_bool<E: de::Error>(self, b: bool) -> Result<Bool, E> {
@@ -203,38 +203,68 @@ impl<'de> Deserialize<'de> for Num {
         struct V;
         impl<'de> Visitor<'de> for V {
             type Value = Num;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_i64<E: de::Error>(self, n: i64) -> Result<Num, E> {
-                Ok(Num { value: Some(n as f64), present: true })
+                Ok(Num {
+                    value: Some(n as f64),
+                    present: true,
+                })
             }
             fn visit_u64<E: de::Error>(self, n: u64) -> Result<Num, E> {
-                Ok(Num { value: Some(n as f64), present: true })
+                Ok(Num {
+                    value: Some(n as f64),
+                    present: true,
+                })
             }
             fn visit_f64<E: de::Error>(self, n: f64) -> Result<Num, E> {
-                Ok(Num { value: Some(n), present: true })
+                Ok(Num {
+                    value: Some(n),
+                    present: true,
+                })
             }
             fn visit_bool<E: de::Error>(self, _: bool) -> Result<Num, E> {
-                Ok(Num { value: None, present: true })
+                Ok(Num {
+                    value: None,
+                    present: true,
+                })
             }
             fn visit_str<E: de::Error>(self, _: &str) -> Result<Num, E> {
-                Ok(Num { value: None, present: true })
+                Ok(Num {
+                    value: None,
+                    present: true,
+                })
             }
             fn visit_unit<E: de::Error>(self) -> Result<Num, E> {
-                Ok(Num { value: None, present: true })
+                Ok(Num {
+                    value: None,
+                    present: true,
+                })
             }
             fn visit_none<E: de::Error>(self) -> Result<Num, E> {
-                Ok(Num { value: None, present: true })
+                Ok(Num {
+                    value: None,
+                    present: true,
+                })
             }
             fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Num, D::Error> {
-                IgnoredAny::deserialize(d).map(|_| Num { value: None, present: true })
+                IgnoredAny::deserialize(d).map(|_| Num {
+                    value: None,
+                    present: true,
+                })
             }
             fn visit_seq<A: SeqAccess<'de>>(self, s: A) -> Result<Num, A::Error> {
-                skip_seq(s).map(|()| Num { value: None, present: true })
+                skip_seq(s).map(|()| Num {
+                    value: None,
+                    present: true,
+                })
             }
             fn visit_map<A: MapAccess<'de>>(self, m: A) -> Result<Num, A::Error> {
-                skip_map(m).map(|()| Num { value: None, present: true })
+                skip_map(m).map(|()| Num {
+                    value: None,
+                    present: true,
+                })
             }
         }
         d.deserialize_any(V)
@@ -265,7 +295,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for Stamp<'a> {
         struct V<'a>(std::marker::PhantomData<&'a ()>);
         impl<'de: 'a, 'a> Visitor<'de> for V<'a> {
             type Value = Stamp<'a>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_borrowed_str<E: de::Error>(self, s: &'de str) -> Result<Stamp<'a>, E> {
@@ -307,7 +337,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Obj<T> {
         struct V<T>(std::marker::PhantomData<T>);
         impl<'de, T: Deserialize<'de>> Visitor<'de> for V<T> {
             type Value = Obj<T>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_map<A: MapAccess<'de>>(self, m: A) -> Result<Obj<T>, A::Error> {
@@ -339,7 +369,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Arr<T> {
         struct V<T>(std::marker::PhantomData<T>);
         impl<'de, T: Deserialize<'de>> Visitor<'de> for V<T> {
             type Value = Arr<T>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_seq<A: SeqAccess<'de>>(self, s: A) -> Result<Arr<T>, A::Error> {
@@ -392,7 +422,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for Content<'a> {
         struct V<'a>(std::marker::PhantomData<&'a ()>);
         impl<'de: 'a, 'a> Visitor<'de> for V<'a> {
             type Value = Content<'a>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_borrowed_str<E: de::Error>(self, s: &'de str) -> Result<Content<'a>, E> {
@@ -435,7 +465,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for Body<'a> {
         struct V<'a>(std::marker::PhantomData<&'a ()>);
         impl<'de: 'a, 'a> Visitor<'de> for V<'a> {
             type Value = Body<'a>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("any value")
             }
             fn visit_borrowed_str<E: de::Error>(self, s: &'de str) -> Result<Body<'a>, E> {
@@ -618,8 +648,12 @@ impl<'a> Line<'a> {
 
     /// The message, or an empty one.
     pub fn msg(&self) -> &Message<'a> {
-        static NONE: Message<'static> =
-            Message { id: Str(None), model: Str(None), usage: Obj(None), content: Content::None };
+        static NONE: Message<'static> = Message {
+            id: Str(None),
+            model: Str(None),
+            usage: Obj(None),
+            content: Content::None,
+        };
         self.message.0.as_ref().unwrap_or(&NONE)
     }
 }
@@ -628,6 +662,7 @@ impl<'a> Line<'a> {
 
 /// Newest-first lines of a file, read backwards in chunks, so a caller that stops early never
 /// reads the rest of the file. Blank lines are skipped.
+#[derive(Debug)]
 pub struct RevLines {
     f: fs::File,
     pos: u64,
@@ -638,14 +673,26 @@ pub struct RevLines {
 }
 
 /// The lines of `path`, newest first.
+///
+/// # Errors
+///
+/// Returns the I/O error when the file cannot be opened or its length cannot be read.
 pub fn rev_lines(path: &Path) -> io::Result<RevLines> {
     let mut f = fs::File::open(path)?;
     let len = f.seek(SeekFrom::End(0))?;
-    Ok(RevLines { f, pos: len, chunk: 1 << 16, buf: Vec::new(), pending: Vec::new(), finished: false })
+    Ok(RevLines {
+        f,
+        pos: len,
+        chunk: 1 << 16,
+        buf: Vec::new(),
+        pending: Vec::new(),
+        finished: false,
+    })
 }
 
 fn is_blank(b: &[u8]) -> bool {
-    b.iter().all(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+    b.iter()
+        .all(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
 }
 
 impl Iterator for RevLines {
@@ -666,19 +713,28 @@ impl Iterator for RevLines {
             }
             let n = self.chunk.min(self.pos);
             self.pos -= n;
-            let mut data = vec![0u8; n as usize];
-            if self.f.seek(SeekFrom::Start(self.pos)).is_err() || self.f.read_exact(&mut data).is_err() {
+            let data = usize::try_from(n).ok().and_then(|len| {
+                let mut data = vec![0u8; len];
+                (self.f.seek(SeekFrom::Start(self.pos)).is_ok()
+                    && self.f.read_exact(&mut data).is_ok())
+                .then_some(data)
+            });
+            let Some(mut data) = data else {
                 self.pos = 0;
                 self.buf.clear();
                 continue;
-            }
+            };
             data.extend_from_slice(&self.buf);
             let parts: Vec<&[u8]> = data.split(|&b| b == b'\n').collect();
             if parts.len() == 1 {
                 self.chunk *= 2; // one giant line: read bigger pieces
             }
             self.buf = parts[0].to_vec();
-            self.pending = parts[1..].iter().filter(|l| !is_blank(l)).map(|l| l.to_vec()).collect();
+            self.pending = parts[1..]
+                .iter()
+                .filter(|l| !is_blank(l))
+                .map(|l| l.to_vec())
+                .collect();
         }
     }
 }
@@ -689,6 +745,10 @@ fn has(hay: &[u8], needle: &[u8]) -> bool {
 
 /// The context size of the newest assistant record with usage: input plus cache tokens.
 /// 0 when a compact comes first, when the file cannot be read, or when no record has usage.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float to int cast saturates and never panics; a token count is far below the limit"
+)]
 pub fn context_size(path: &Path) -> i64 {
     let Ok(lines) = rev_lines(path) else { return 0 };
     for line in lines {
@@ -697,16 +757,22 @@ pub fn context_size(path: &Path) -> i64 {
         if !compact && !assistant {
             continue;
         }
-        let Some(rec) = Line::parse(&line) else { continue };
-        if compact && (rec.subtype.as_str() == Some("compact_boundary") || rec.is_compact_summary.0) {
+        let Some(rec) = Line::parse(&line) else {
+            continue;
+        };
+        if compact && (rec.subtype.as_str() == Some("compact_boundary") || rec.is_compact_summary.0)
+        {
             return 0;
         }
         if !assistant || rec.kind.as_str() != Some("assistant") {
             continue;
         }
-        let Some(usage) = rec.msg().usage.0.as_ref() else { continue };
-        let total =
-            usage.input_tokens.get() + usage.cache_creation_input_tokens.get() + usage.cache_read_input_tokens.get();
+        let Some(usage) = rec.msg().usage.0.as_ref() else {
+            continue;
+        };
+        let total = usage.input_tokens.get()
+            + usage.cache_creation_input_tokens.get()
+            + usage.cache_read_input_tokens.get();
         if total > 0.0 {
             return total as i64;
         }

@@ -16,7 +16,7 @@ One HTML artifact, live knobs, WCAG contrast, one `pick:` line to copy back into
 2. Copy [template.html](template.html) to the scratchpad and fill the `DESIGN` block: `title`, `tokens` (range/color/select/toggle), `renderPreview(tokens)` and `pickPayload(tokens)`. Add coherent `variants`. Keep everything else as is.
 3. Publish it as one artifact (`icon: "palette"`). One artifact, one file. Zero external dependencies.
 4. The user turns the knobs; the preview repaints live with WCAG AA contrast badges. When they like it, they click "Pick this" and copy `pick: <id> {json}`.
-5. Apply the pick: echo the id and the JSON values, then write them into the project (CSS variables, Tailwind tokens, or component props). Offer to delete the artifact; delete only on a yes.
+5. Apply the pick and handle rework as in [ps:pick](../ps_pick/SKILL.md) ("Apply the pick", "Rework"). The JSON becomes CSS variables, Tailwind tokens or component props; the snippets are in [notes.md](notes.md).
 
 ## What the artifact is
 
@@ -36,18 +36,6 @@ The link, then a three-line legend. Nothing else.
 <id>-<n>: <what this group varies>. Pick a card, turn the knobs, copy the line.
 Paste it back: pick: <id> { "radius": "12px", "primary": "#b4552d" }
 ```
-
-## Apply the pick
-
-When the user pastes `pick: <id> {json}`:
-
-1. Echo one line: the id, its label, and the knob values.
-2. Apply the JSON to the project: set the matching CSS variables, Tailwind tokens, or component props. Give the exact snippet; ask for the file path if it is not this session's folder.
-3. Offer to delete the artifact. Delete only on a yes.
-
-## Rework
-
-Change only the one thing the user named. Keep every id and card the same. Republish to the same URL. Add new variants with new ids. Never renumber.
 
 ## Rules
 

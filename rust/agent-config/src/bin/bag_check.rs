@@ -1,4 +1,4 @@
-//! bag_check: is this Mac safe to put in a bag with Claude still running? Replaces
+//! `bag_check`: is this Mac safe to put in a bag with Claude still running? Replaces
 //! claude/skills/ps_bag-mode/scripts/bag-check.sh (same flags, card and exit codes).
 //!
 //! ```text
@@ -29,7 +29,11 @@ ETA formats: 45  45m  2h  1h30m. Always ends with one \"VERDICT:\" line.
 /// The flags. The last of `--throttle`, `--restore` and `--watch` wins, like the shell script.
 /// Help is printed from `USAGE` in `main`, so clap's own help flag is off.
 #[derive(Parser)]
-#[command(name = "bag_check", disable_help_flag = true, disable_version_flag = true)]
+#[command(
+    name = "bag_check",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 struct Cli {
     /// How long the session still needs: 45, 45m, 2h, 1h30m.
     #[arg(long, value_name = "ETA")]
@@ -67,11 +71,13 @@ static HOURS: LazyLock<Regex> = LazyLock::new(|| regex(r"[0-9]+h"));
 static DIGITS: LazyLock<Regex> = LazyLock::new(|| regex(r"[0-9]+"));
 static BATT_SOURCE: LazyLock<Regex> = LazyLock::new(|| regex(r"'[^']*'"));
 static BATT_PERCENT: LazyLock<Regex> = LazyLock::new(|| regex(r"[0-9]*%"));
-static BATT_REMAINING: LazyLock<Regex> = LazyLock::new(|| regex(r"([0-9]*):([0-9][0-9]) remaining"));
+static BATT_REMAINING: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"([0-9]*):([0-9][0-9]) remaining"));
 static THROTTLE_COMM: LazyLock<Regex> =
     LazyLock::new(|| regex(r"next-server|workerd|vite|webpack|wrangler|mdworker|mds_stores"));
 static AGENT_COMM: LazyLock<Regex> = LazyLock::new(|| regex("claude.app/Contents/MacOS/claude"));
-static DEV_SERVER_COMM: LazyLock<Regex> = LazyLock::new(|| regex("next-server|workerd|vite|webpack"));
+static DEV_SERVER_COMM: LazyLock<Regex> =
+    LazyLock::new(|| regex("next-server|workerd|vite|webpack"));
 static NODE_COMM: LazyLock<Regex> = LazyLock::new(|| regex("(^|/)node$"));
 
 /// "45" | "45m" | "2h" | "1h30m" -> minutes. Anything else counts as 0.
@@ -82,12 +88,19 @@ fn parse_min(s: &str) -> i64 {
         h = m.as_str().trim_end_matches('h').parse::<i64>().unwrap_or(0);
         rest = format!("{}{}", &s[..m.start()], &s[m.end()..]);
     }
-    let m = DIGITS.find(&rest).and_then(|m| m.as_str().parse::<i64>().ok()).unwrap_or(0);
+    let m = DIGITS
+        .find(&rest)
+        .and_then(|m| m.as_str().parse::<i64>().ok())
+        .unwrap_or(0);
     h * 60 + m
 }
 
 fn fmt_min(m: i64) -> String {
-    if m >= 60 { format!("{}h{:02}m", m / 60, m % 60) } else { format!("{m}m") }
+    if m >= 60 {
+        format!("{}h{:02}m", m / 60, m % 60)
+    } else {
+        format!("{m}m")
+    }
 }
 
 fn base(cmd: &str) -> &str {
@@ -99,13 +112,24 @@ fn classify(cmd: &str) -> (String, &'static str) {
     let has = |ks: &[&str]| ks.iter().any(|k| cmd.contains(k));
     if has(&["WindowServer"]) {
         ("🖥  screen drawing".into(), "when the lid closes")
-    } else if has(&["Claude Helper (Renderer)"]) || cmd.ends_with("Claude.app/Contents/MacOS/Claude") {
+    } else if has(&["Claude Helper (Renderer)"])
+        || cmd.ends_with("Claude.app/Contents/MacOS/Claude")
+    {
         ("🪟 Claude window".into(), "when it is hidden")
     } else if has(&["claude-code", "claude.app/"]) || cmd.ends_with("/claude") {
         ("🤖 Claude agent".into(), "when its task ends")
-    } else if has(&["next-server", "vite", "webpack", "workerd", "wrangler", "astro"]) {
+    } else if has(&[
+        "next-server",
+        "vite",
+        "webpack",
+        "workerd",
+        "wrangler",
+        "astro",
+    ]) {
         ("🛠  dev server".into(), "never - stop it")
-    } else if has(&["rustc", "cargo", "tsc", "esbuild", "swc", "biome", "turbo", "pnpm"]) {
+    } else if has(&[
+        "rustc", "cargo", "tsc", "esbuild", "swc", "biome", "turbo", "pnpm",
+    ]) {
         ("🔨 build/lint".into(), "when the build ends")
     } else if has(&["dockerd", "com.docker", "colima", "qemu", "vz"]) {
         ("🐳 container VM".into(), "never - stop if idle")
@@ -157,7 +181,10 @@ impl Card {
             .find(b.lines().next().unwrap_or(""))
             .map(|m| m.as_str().trim_matches('\'').replacen(" Power", "", 1))
             .unwrap_or_default();
-        let pct = BATT_PERCENT.find(&b).map(|m| m.as_str().to_string()).unwrap_or_default();
+        let pct = BATT_PERCENT
+            .find(&b)
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default();
         let rem_min: Option<i64> = BATT_REMAINING.captures(&b).and_then(|c| {
             let v = c[1].parse::<i64>().unwrap_or(0) * 60 + c[2].parse::<i64>().unwrap_or(0);
             (v != 0).then_some(v) // "0:00 remaining" = no estimate yet, not zero minutes
@@ -168,8 +195,11 @@ impl Card {
             bump(2, "Amphetamine is OFF - the Mac will sleep");
             "❌ OFF - the Mac will sleep".to_string()
         };
-        let mut pw =
-            format!("{} on {}", if pct.is_empty() { "?" } else { &pct }, if src.is_empty() { "?" } else { &src });
+        let mut pw = format!(
+            "{} on {}",
+            if pct.is_empty() { "?" } else { &pct },
+            if src.is_empty() { "?" } else { &src }
+        );
         if src == "Battery"
             && let Some(r) = rem_min
         {
@@ -177,7 +207,11 @@ impl Card {
         }
 
         // --- load
-        let l1 = out_of("sysctl", &["-n", "vm.loadavg"]).split_whitespace().nth(1).unwrap_or("").to_string();
+        let l1 = out_of("sysctl", &["-n", "vm.loadavg"])
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("")
+            .to_string();
         let memfree = out_of("memory_pressure", &[])
             .lines()
             .find(|l| l.contains("free percentage"))
@@ -193,7 +227,7 @@ impl Card {
         // --- ETA
         let mut eta_line = "unknown - pass --eta 45m".to_string();
         if self.eta_min > 0 {
-            let el = (self.start.elapsed().as_secs() / 60) as i64;
+            let el = i64::try_from(self.start.elapsed().as_secs() / 60).unwrap_or(i64::MAX);
             let eff = (self.eta_min - el).max(0);
             let need = eff + eff * BUFFER / 100;
             eta_line = format!("~{} (+{BUFFER}% buffer = {})", fmt_min(eff), fmt_min(need));
@@ -201,19 +235,30 @@ impl Card {
                 (true, Some(r)) => {
                     if r < need {
                         eta_line.push_str(" · ⚠️ battery short");
-                        bump(2, &format!("battery ({}) is less than ETA - plug in", fmt_min(r)));
+                        bump(
+                            2,
+                            &format!("battery ({}) is less than ETA - plug in", fmt_min(r)),
+                        );
                     } else {
                         eta_line.push_str(" · ✅ battery ok");
                     }
                 }
                 _ => eta_line.push_str(" · ✅ power ok"),
             }
-        } else if src == "Battery" && pct.trim_end_matches('%').parse::<i64>().is_ok_and(|p| p < 20) {
+        } else if src == "Battery"
+            && pct
+                .trim_end_matches('%')
+                .parse::<i64>()
+                .is_ok_and(|p| p < 20)
+        {
             bump(1, "battery under 20% - plug in");
         }
 
         // --- heavy
-        let top = out_of("top", &["-l", "2", "-n", "25", "-o", "cpu", "-stats", "pid,cpu"]);
+        let top = out_of(
+            "top",
+            &["-l", "2", "-n", "25", "-o", "cpu", "-stats", "pid,cpu"],
+        );
         let mut seen = 0;
         let mut rows: Vec<String> = Vec::new();
         for line in top.lines() {
@@ -225,7 +270,9 @@ impl Card {
                 continue;
             }
             let mut f = line.split_whitespace();
-            let (Some(pid), Some(cpu)) = (f.next(), f.next()) else { continue };
+            let (Some(pid), Some(cpu)) = (f.next(), f.next()) else {
+                continue;
+            };
             if pid.is_empty() || !pid.bytes().all(|c| c.is_ascii_digit()) || num(cpu) < self.heavy {
                 continue;
             }
@@ -289,17 +336,35 @@ fn main() -> ExitCode {
     }
     if !cfg!(target_os = "macos") {
         let os = out_of("uname", &["-s"]);
-        let os = if os.trim().is_empty() { std::env::consts::OS.to_string() } else { os.trim().to_string() };
-        println!("bag-mode is for a Mac laptop (it reads pmset, sysctl and Amphetamine). Nothing to check on {os}.");
+        let os = if os.trim().is_empty() {
+            std::env::consts::OS.to_string()
+        } else {
+            os.trim().to_string()
+        };
+        println!(
+            "bag-mode is for a Mac laptop (it reads pmset, sysctl and Amphetamine). Nothing to check on {os}."
+        );
         println!("VERDICT: NOT APPLICABLE (not a Mac)");
         return ExitCode::SUCCESS;
     }
     let ncpu = num(&out_of("sysctl", &["-n", "hw.ncpu"]));
-    let heavy = std::env::var("BAG_HEAVY_CPU").ok().filter(|v| !v.is_empty()).map_or(15.0, |v| num(&v)); // % of ONE core that counts as "heavy"
+    let heavy = std::env::var("BAG_HEAVY_CPU")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map_or(15.0, |v| num(&v)); // % of ONE core that counts as "heavy"
     let cli = Cli::parse();
     let eta_min = cli.eta.as_deref().map_or(0, parse_min);
-    let interval = cli.watch.as_deref().filter(|n| !n.is_empty()).unwrap_or("60");
-    let card = Card { ncpu, heavy, eta_min, start: Instant::now() };
+    let interval = cli
+        .watch
+        .as_deref()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("60");
+    let card = Card {
+        ncpu,
+        heavy,
+        eta_min,
+        start: Instant::now(),
+    };
     let taskpolicy = |flag: &str, pid: &str| {
         Command::new("taskpolicy")
             .args([flag, "-p", pid])
@@ -313,7 +378,9 @@ fn main() -> ExitCode {
             let _ = Command::new("clear").status();
             print!("{}", out_of("date", &[]));
             card.report();
-            std::thread::sleep(Duration::from_secs_f64(interval.parse::<f64>().unwrap_or(60.0).max(0.0)));
+            std::thread::sleep(Duration::from_secs_f64(
+                interval.parse::<f64>().unwrap_or(60.0).max(0.0),
+            ));
         }
     }
     if cli.throttle {
@@ -341,7 +408,15 @@ mod tests {
 
     #[test]
     fn eta_formats() {
-        for (s, want) in [("45", 45), ("45m", 45), ("2h", 120), ("1h30m", 90), ("1H5M", 65), ("", 0), ("abc", 0)] {
+        for (s, want) in [
+            ("45", 45),
+            ("45m", 45),
+            ("2h", 120),
+            ("1h30m", 90),
+            ("1H5M", 65),
+            ("", 0),
+            ("abc", 0),
+        ] {
             assert_eq!(parse_min(s), want, "{s:?}");
         }
         assert_eq!(fmt_min(5), "5m");
@@ -352,10 +427,19 @@ mod tests {
     #[test]
     fn classify_picks_the_first_match() {
         assert_eq!(classify("/usr/sbin/WindowServer").1, "when the lid closes");
-        assert_eq!(classify("/Applications/Claude.app/Contents/MacOS/Claude").1, "when it is hidden");
+        assert_eq!(
+            classify("/Applications/Claude.app/Contents/MacOS/Claude").1,
+            "when it is hidden"
+        );
         assert_eq!(classify("/usr/local/bin/claude").1, "when its task ends");
         assert_eq!(classify("/x/node_modules/.bin/vite").1, "never - stop it");
-        assert_eq!(classify("/usr/bin/node"), ("📜 script (node)".to_string(), "unknown"));
-        assert_eq!(classify("/usr/libexec/other"), ("❔ other".to_string(), "unknown"));
+        assert_eq!(
+            classify("/usr/bin/node"),
+            ("📜 script (node)".to_string(), "unknown")
+        );
+        assert_eq!(
+            classify("/usr/libexec/other"),
+            ("❔ other".to_string(), "unknown")
+        );
     }
 }

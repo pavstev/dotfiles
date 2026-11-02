@@ -1,6 +1,8 @@
 //! Every test runs the `guard_cursor` binary (`CARGO_BIN_EXE_guard_cursor`). The Cursor.app chat
 //! store is a SQLite file read through the `sqlite3` command line tool. macOS always has it, so
 //! there a missing tool fails the tests; elsewhere they skip (the hook itself reads 0 there).
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 mod common;
 
 use common::run_bin;
@@ -35,7 +37,10 @@ fn merge(mut base: Value, extra: Value) -> Value {
 }
 
 fn have_sqlite() -> bool {
-    Command::new("sqlite3").arg("--version").output().is_ok_and(|o| o.status.success())
+    Command::new("sqlite3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
 }
 
 struct T {
@@ -46,13 +51,20 @@ struct T {
 
 impl T {
     fn new() -> Self {
-        let tmp = tempfile::Builder::new().prefix("cursor-guard-test-").tempdir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("cursor-guard-test-")
+            .tempdir()
+            .unwrap();
         let dir = tmp.path().to_path_buf();
         let app_db = dir.join("no-app.vscdb").to_string_lossy().into_owned(); // never the real app store
-        Self { _tmp: tmp, dir, app_db }
+        Self {
+            _tmp: tmp,
+            dir,
+            app_db,
+        }
     }
 
-    /// A fake Cursor.app state.vscdb: {conversation_id: composerData value}. False when there is no
+    /// A fake Cursor.app state.vscdb: {`conversation_id`: composerData value}. False when there is no
     /// `sqlite3` tool to build it with (the caller returns early). Never false on macOS.
     fn app_store(&mut self, rows: &[(&str, &str)]) -> bool {
         let have = have_sqlite();
@@ -82,15 +94,30 @@ impl T {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(sql.as_bytes()).unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(sql.as_bytes())
+            .unwrap();
         let out = child.wait_with_output().unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         true
     }
 
     fn run_hook_raw(&self, mode: &str, stdin: &str) -> R {
         let d = self.dir.to_string_lossy().into_owned();
-        run_bin(HOOK, &[mode], stdin, &[("TMPDIR", &d), ("CURSOR_GUARD_APP_DB", &self.app_db)], None)
+        run_bin(
+            HOOK,
+            &[mode],
+            stdin,
+            &[("TMPDIR", &d), ("CURSOR_GUARD_APP_DB", &self.app_db)],
+            None,
+        )
     }
 
     fn run_hook(&self, mode: &str, data: &Value) -> R {
@@ -138,8 +165,10 @@ impl T {
     }
 
     fn prompt_x(&self, conv: &str, extra: Value) -> Value {
-        let data =
-            merge(json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": conv, "prompt": "go"}), extra);
+        let data = merge(
+            json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": conv, "prompt": "go"}),
+            extra,
+        );
         let (rc, out, err) = self.run_hook("prompt", &data);
         assert_eq!(rc, 0, "{out} {err}");
         let out: Value = serde_json::from_str(&out).unwrap();
@@ -205,8 +234,16 @@ fn test_compact_clears_record() {
 fn test_transcript_usage_wins_over_record() {
     let t = T::new();
     t.seed(600_000, "c1");
-    assert_silent(&t.spawn("c1", None, json!({"transcript_path": t.transcript(100_000, "t.jsonl")})));
-    assert_deny(&t.spawn("c1", None, json!({"transcript_path": t.transcript(550_000, "big.jsonl")})));
+    assert_silent(&t.spawn(
+        "c1",
+        None,
+        json!({"transcript_path": t.transcript(100_000, "t.jsonl")}),
+    ));
+    assert_deny(&t.spawn(
+        "c1",
+        None,
+        json!({"transcript_path": t.transcript(550_000, "big.jsonl")}),
+    ));
     // unreadable or empty transcript falls back to the record
     let missing = t.dir.join("missing.jsonl").to_string_lossy().into_owned();
     assert_deny(&t.spawn("c1", None, json!({"transcript_path": missing})));
@@ -222,13 +259,19 @@ fn test_app_store_size_denies_and_nudges() {
         return;
     }
     assert_deny(&t.spawn_c1());
-    let (rc, out, _) = t.run_hook("prompt", &json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": "c1"}));
+    let (rc, out, _) = t.run_hook(
+        "prompt",
+        &json!({"hook_event_name": "beforeSubmitPrompt", "conversation_id": "c1"}),
+    );
     assert_eq!(rc, 0);
     let body: Value = serde_json::from_str(&out).unwrap();
     let um = body["user_message"].as_str().unwrap();
     assert!(um.contains("600K"), "{um}");
     let ctx = body["additional_context"].as_str().unwrap();
-    assert!(ctx.starts_with("Start your reply by telling the user"), "{ctx}");
+    assert!(
+        ctx.starts_with("Start your reply by telling the user"),
+        "{ctx}"
+    );
     assert!(ctx.contains(um), "{ctx}");
 }
 
@@ -321,7 +364,10 @@ fn test_summed_input_tokens_ignored() {
 fn test_response_without_usage_is_noop() {
     let t = T::new();
     t.seed(600_000, "c1");
-    assert_silent(&t.run_hook("response", &json!({"conversation_id": "c1", "text": "done"})));
+    assert_silent(&t.run_hook(
+        "response",
+        &json!({"conversation_id": "c1", "text": "done"}),
+    ));
     assert_deny(&t.spawn_c1()); // record untouched
 }
 
@@ -341,7 +387,12 @@ fn test_prompt_below_threshold() {
 fn test_nudge_cadence() {
     let t = T::new();
     t.seed(350_000, "c1");
-    assert!(t.prompt("c1")["user_message"].as_str().unwrap().contains("/ps:handoff")); // 1st
+    assert!(
+        t.prompt("c1")["user_message"]
+            .as_str()
+            .unwrap()
+            .contains("/ps:handoff")
+    ); // 1st
     for _ in 0..NUDGE_EVERY - 1 {
         assert!(!has_user_message(&t.prompt("c1")));
     }
@@ -372,10 +423,12 @@ fn test_fail_open() {
     assert_silent(&t.run_hook_raw("", ""));
     assert_silent(&t.run_hook("compact", &json!({}))); // missing fields
     assert_silent(&t.run_hook("response", &json!({})));
-    let spawn_without_conv =
-        json!({"hook_event_name": "subagentStart", "conversation_id": null, "subagent_type": "general"});
+    let spawn_without_conv = json!({"hook_event_name": "subagentStart", "conversation_id": null, "subagent_type": "general"});
     assert_silent(&t.run_hook("subagent", &spawn_without_conv));
-    assert_silent(&t.run_hook("compact", &json!({"conversation_id": "c1", "context_tokens": "lots"})));
+    assert_silent(&t.run_hook(
+        "compact",
+        &json!({"conversation_id": "c1", "context_tokens": "lots"}),
+    ));
 }
 
 // --- state ---
@@ -385,10 +438,13 @@ fn test_state_isolated_in_tmpdir() {
     let t = T::new();
     t.seed(600_000, "x/../y");
     let state = t.dir.join("cursor-guard");
-    let files: Vec<String> =
-        fs::read_dir(&state).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let files: Vec<String> = fs::read_dir(&state)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
     assert_eq!(files, vec!["x_.._y.json".to_string()]);
-    let st: Value = serde_json::from_str(&fs::read_to_string(state.join(&files[0])).unwrap()).unwrap();
+    let st: Value =
+        serde_json::from_str(&fs::read_to_string(state.join(&files[0])).unwrap()).unwrap();
     assert_eq!(st["ctx"], 600_000);
     assert!(st.get("updated").is_some(), "{st}");
 }
@@ -403,12 +459,19 @@ fn test_state_pruned() {
         let p = d.join(format!("k{i}.json"));
         fs::write(&p, "{}").unwrap();
         if i < 10 {
-            fs::OpenOptions::new().write(true).open(&p).unwrap().set_modified(old).unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
         }
     }
     t.seed(1000, "new");
-    let names: Vec<String> =
-        fs::read_dir(&d).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let names: Vec<String> = fs::read_dir(&d)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
     assert!(names.len() <= MAX_STATE_FILES, "{}", names.len());
     assert!(names.contains(&"new.json".to_string()));
     assert!(!names.contains(&"k0.json".to_string()));
@@ -426,7 +489,11 @@ impl T {
     /// A tool call in this test's world: HOME and TMPDIR are the temp dir.
     fn tool(&self, data: &Value, env: &[(&str, &str)]) -> R {
         let d = self.dir.to_string_lossy().into_owned();
-        let mut e: Vec<(&str, &str)> = vec![("TMPDIR", &d), ("HOME", &d), ("CURSOR_GUARD_APP_DB", &self.app_db)];
+        let mut e: Vec<(&str, &str)> = vec![
+            ("TMPDIR", &d),
+            ("HOME", &d),
+            ("CURSOR_GUARD_APP_DB", &self.app_db),
+        ];
         e.extend_from_slice(env);
         run_bin(HOOK, &["tool"], &data.to_string(), &e, None)
     }
@@ -468,13 +535,19 @@ fn assert_tool_allow(res: &R) {
 
 /// The attribution line G17 refuses, built at run time so this file holds none of it whole.
 fn attr_line() -> String {
-    format!("Co-authored-{}: Claude Opus <noreply@{}>", "by", "anthropic.com")
+    format!(
+        "Co-authored-{}: Claude Opus <noreply@{}>",
+        "by", "anthropic.com"
+    )
 }
 
 #[test]
 fn cursor_tool_sed_denied_on_macos() {
     let t = T::new();
-    assert_tool_deny(&t.shell("sed -i s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "darwin")]), "G14");
+    assert_tool_deny(
+        &t.shell("sed -i s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "darwin")]),
+        "G14",
+    );
     assert_tool_allow(&t.shell("sed -i s/a/b/ /tmp/x", &[("GUARD_PLATFORM", "linux")]));
 }
 
@@ -503,8 +576,14 @@ fn cursor_tool_outbound_asks() {
     assert_eq!(res.0, 0, "{res:?}");
     let body = answer(&res);
     assert_eq!(body["permission"], "ask", "{res:?}");
-    assert!(body["user_message"].as_str().unwrap().starts_with("G16"), "{res:?}");
-    assert!(!res.1.contains("zebrafish"), "the answer must not echo the word: {res:?}");
+    assert!(
+        body["user_message"].as_str().unwrap().starts_with("G16"),
+        "{res:?}"
+    );
+    assert!(
+        !res.1.contains("zebrafish"),
+        "the answer must not echo the word: {res:?}"
+    );
     // an MCP send tool, with the tool input as a JSON string
     let mcp = json!({"hook_event_name": "beforeMCPExecution", "mcp_server_name": "chat", "tool_name": "send_message",
         "tool_input": "{\"text\": \"about zebrafish\"}", "cwd": cwd});
@@ -526,11 +605,15 @@ fn cursor_tool_before_read_file_denies_the_secret_file() {
     assert_eq!(res.0, 2, "{res:?}");
     let body = answer(&res);
     assert_eq!(body["permission"], "deny", "{res:?}");
-    assert!(body["user_message"].as_str().unwrap().starts_with("G15"), "{res:?}");
-    assert!(body.get("agent_message").is_none(), "{res:?}");
-    assert_tool_allow(
-        &t.tool(&json!({"hook_event_name": "beforeReadFile", "file_path": "/etc/hosts", "content": ""}), &[]),
+    assert!(
+        body["user_message"].as_str().unwrap().starts_with("G15"),
+        "{res:?}"
     );
+    assert!(body.get("agent_message").is_none(), "{res:?}");
+    assert_tool_allow(&t.tool(
+        &json!({"hook_event_name": "beforeReadFile", "file_path": "/etc/hosts", "content": ""}),
+        &[],
+    ));
     // GUARD_OFF turns it off like the other G15 entries
     assert_tool_allow(&t.tool(&read, &[("GUARD_OFF", "G15")]));
 }
@@ -538,9 +621,15 @@ fn cursor_tool_before_read_file_denies_the_secret_file() {
 #[test]
 fn cursor_tool_attribution_denied() {
     let t = T::new();
-    assert_tool_deny(&t.shell(&format!("git commit -m \"x\" -m \"{}\"", attr_line()), &[]), "G17");
+    assert_tool_deny(
+        &t.shell(&format!("git commit -m \"x\" -m \"{}\"", attr_line()), &[]),
+        "G17",
+    );
     let res = t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]);
-    assert!(!res.1.contains("noreply") && !res.2.contains("noreply"), "the answer must not echo the line: {res:?}");
+    assert!(
+        !res.1.contains("noreply") && !res.2.contains("noreply"),
+        "the answer must not echo the line: {res:?}"
+    );
 }
 
 #[test]
@@ -578,13 +667,26 @@ fn cursor_tool_uses_the_same_gate_as_the_guard() {
     t.settings("PRESETS=\"workflow\"\n");
     assert_tool_allow(&t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]));
     t.settings("PRESETS=\"no-ai-attribution\"\n");
-    assert_tool_deny(&t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]), "G17");
+    assert_tool_deny(
+        &t.shell(&format!("git commit -m \"{}\"", attr_line()), &[]),
+        "G17",
+    );
     // a core check ignores the presets
-    assert_tool_deny(&t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", "")]), "G14");
+    assert_tool_deny(
+        &t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", "")]),
+        "G14",
+    );
     // shadow mode logs and allows
     let cache = t.dir.join("cache").to_string_lossy().into_owned();
-    let res =
-        t.shell("sed -i s/a/b/ x", &[mac, ("GUARD_OFF", ""), ("GUARD_SHADOW", "G14"), ("XDG_CACHE_HOME", &cache)]);
+    let res = t.shell(
+        "sed -i s/a/b/ x",
+        &[
+            mac,
+            ("GUARD_OFF", ""),
+            ("GUARD_SHADOW", "G14"),
+            ("XDG_CACHE_HOME", &cache),
+        ],
+    );
     assert_tool_allow(&res);
     let log = fs::read_to_string(t.dir.join("cache/dots-guard-shadow.log")).unwrap();
     assert!(log.contains(" G14 deny "), "{log}");

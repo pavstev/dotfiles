@@ -23,7 +23,10 @@ const CAP: usize = 400;
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Parser)]
-#[command(name = "ctx", about = "Outline a source file and read one symbol of it")]
+#[command(
+    name = "ctx",
+    about = "Outline a source file and read one symbol of it"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -55,7 +58,10 @@ fn ok(text: String) -> Reply {
 }
 
 fn refused(file: &str, why: &str) -> Reply {
-    Reply { text: format!("• ctx: {file} skipped: {why}\n"), code: 1 }
+    Reply {
+        text: format!("• ctx: {file} skipped: {why}\n"),
+        code: 1,
+    }
 }
 
 /// The file as text and the first 8 hex chars of the sha256 of its bytes.
@@ -69,7 +75,10 @@ fn load(file: &str) -> Result<(String, String), Reply> {
         return Err(refused(file, "over 2 MB"));
     }
     let digest = Sha256::digest(&buf);
-    let hash = format!("{:02x}{:02x}{:02x}{:02x}", digest[0], digest[1], digest[2], digest[3]);
+    let hash = format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        digest[0], digest[1], digest[2], digest[3]
+    );
     match String::from_utf8(buf) {
         Ok(text) if !text.contains('\0') => Ok((text, hash)),
         _ => Err(refused(file, "not text (binary or not UTF-8)")),
@@ -128,12 +137,16 @@ fn matches(symbols: &[Symbol], paths: &[String], query: &str) -> Vec<usize> {
     if !exact.is_empty() {
         return exact;
     }
-    let bare: Vec<usize> = (0..symbols.len()).filter(|&i| symbols[i].name == query).collect();
+    let bare: Vec<usize> = (0..symbols.len())
+        .filter(|&i| symbols[i].name == query)
+        .collect();
     if !bare.is_empty() {
         return bare;
     }
     let tail = format!(".{query}");
-    (0..symbols.len()).filter(|&i| paths[i].ends_with(&tail)).collect()
+    (0..symbols.len())
+        .filter(|&i| paths[i].ends_with(&tail))
+        .collect()
 }
 
 fn outline_cmd(file: &str) -> Reply {
@@ -143,9 +156,13 @@ fn outline_cmd(file: &str) -> Reply {
     };
     let lines = text.lines().count();
     match codeview::outline(Path::new(file), &text) {
-        Ok(symbols) if symbols.is_empty() => ok(format!("{file}: no symbols found ({lines} lines)\n")),
+        Ok(symbols) if symbols.is_empty() => {
+            ok(format!("{file}: no symbols found ({lines} lines)\n"))
+        }
         Ok(symbols) => ok(codeview::render(&symbols)),
-        Err(Refusal::NoScanner(ext)) => ok(format!("{file}: {lines} lines, {}\n", no_scanner(&ext))),
+        Err(Refusal::NoScanner(ext)) => {
+            ok(format!("{file}: {lines} lines, {}\n", no_scanner(&ext)))
+        }
         Err(r) => refusal_reply(file, &r),
     }
 }
@@ -171,9 +188,16 @@ fn read_cmd(file: &str, query: &str, if_changed: Option<&str>) -> Reply {
             ok(body(file, &text, &symbols[*i], &paths[*i], scan, &hash))
         }
         many => {
-            let mut out = format!("ambiguous: {query} matches {} symbols in {file}; use a longer path\n", many.len());
+            let mut out = format!(
+                "ambiguous: {query} matches {} symbols in {file}; use a longer path\n",
+                many.len()
+            );
             for &i in many {
-                let _ = writeln!(out, "  {file}:{}-{}  {}", symbols[i].start, symbols[i].end, paths[i]);
+                let _ = writeln!(
+                    out,
+                    "  {file}:{}-{}  {}",
+                    symbols[i].start, symbols[i].end, paths[i]
+                );
             }
             Reply { text: out, code: 1 }
         }
@@ -182,10 +206,14 @@ fn read_cmd(file: &str, query: &str, if_changed: Option<&str>) -> Reply {
 
 fn not_found(file: &str, query: &str, symbols: &[Symbol], paths: &[String]) -> Reply {
     if symbols.is_empty() {
-        return Reply { text: format!("not found: {query} ({file} has no symbols)\n"), code: 1 };
+        return Reply {
+            text: format!("not found: {query} ({file} has no symbols)\n"),
+            code: 1,
+        };
     }
-    let mut ranked: Vec<(usize, usize)> =
-        (0..symbols.len()).map(|i| (lev(query, &symbols[i].name).min(lev(query, &paths[i])), i)).collect();
+    let mut ranked: Vec<(usize, usize)> = (0..symbols.len())
+        .map(|i| (lev(query, &symbols[i].name).min(lev(query, &paths[i])), i))
+        .collect();
     ranked.sort_unstable();
     let mut out = format!("not found: {query} in {file}. Closest:\n");
     let mut seen: Vec<&str> = Vec::new();
@@ -197,15 +225,27 @@ fn not_found(file: &str, query: &str, symbols: &[Symbol], paths: &[String]) -> R
             continue;
         }
         seen.push(&paths[i]);
-        let _ = writeln!(out, "  {}  ({}-{})", paths[i], symbols[i].start, symbols[i].end);
+        let _ = writeln!(
+            out,
+            "  {}  ({}-{})",
+            paths[i], symbols[i].start, symbols[i].end
+        );
     }
     Reply { text: out, code: 1 }
 }
 
 fn body(file: &str, text: &str, sym: &Symbol, path: &str, scan: &str, hash: &str) -> String {
-    let mut out = format!("{file}:{}-{}  {path}  scan={scan}  hash={hash}\n", sym.start, sym.end);
+    let mut out = format!(
+        "{file}:{}-{}  {path}  scan={scan}  hash={hash}\n",
+        sym.start, sym.end
+    );
     let total = sym.end - sym.start + 1;
-    for (i, line) in text.lines().enumerate().skip(sym.start - 1).take(total.min(CAP)) {
+    for (i, line) in text
+        .lines()
+        .enumerate()
+        .skip(sym.start - 1)
+        .take(total.min(CAP))
+    {
         let _ = writeln!(out, "{}\t{line}", i + 1);
     }
     if total > CAP {
@@ -218,7 +258,11 @@ fn main() {
     let cli = Cli::parse();
     let reply = match &cli.cmd {
         Cmd::Outline { file } => outline_cmd(file),
-        Cmd::Read { file, symbol, if_changed } => read_cmd(file, symbol, if_changed.as_deref()),
+        Cmd::Read {
+            file,
+            symbol,
+            if_changed,
+        } => read_cmd(file, symbol, if_changed.as_deref()),
     };
     // A closed pipe (`ctx read ... | head`) is not an error worth a panic.
     let _ = std::io::stdout().write_all(reply.text.as_bytes());

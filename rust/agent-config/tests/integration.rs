@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
+
 mod common;
 
 use std::fs;
@@ -24,7 +26,11 @@ fn cursor_smoke() {
         .env("NO_COLOR", "1")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let rule = fs::read_to_string(home.join(".cursor/rules/claude-global.mdc")).unwrap();
     for w in NOTE_WORDS {
         assert!(rule.contains(w), "rule lacks {w}: {rule}");
@@ -47,7 +53,11 @@ fn opencode_smoke() {
         .env("NO_COLOR", "1")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(home.join(".config/opencode/tui.json").exists());
     let _ = fs::remove_dir_all(&tmp);
 }

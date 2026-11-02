@@ -37,6 +37,6 @@ Next: save this note, or turn an idea into a task?
 
 ## Rules
 
-- Follow the user's active output style. No em dashes.
+- Follow the user's active output style.
 - Keep exact commands and names as spoken or shown. Mark a guess as a guess.
 - Auto-captions can mishear names. Say so when a term looks wrong.

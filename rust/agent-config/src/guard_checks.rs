@@ -16,16 +16,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, mpsc};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const SECRET_FILE: &str = "~/.config/zsh/local.zsh";
 
 const MSG_G14: &str = "G14: bare sed -i on macOS eats the script as the backup suffix. Give a suffix: `sed -i '' 's/a/b/' f` (or `-i.bak`). Or use the Edit tool.";
 const MSG_G15_FILE: &str = "G15: never read local.zsh: it holds API keys. Use `test -f` or `git check-ignore` for facts about it, or ask the user.";
-const MSG_G15_PS: &str =
-    "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.";
-const MSG_G15_PGREP: &str =
-    "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
+const MSG_G15_PS: &str = "G15: this ps form prints full command lines, which can hold API keys. Use `ps -o pid=,etime=,ucomm= -p <pid>`.\nIf the output feeds awk, cut, grep, rg, xargs, kill, sed or a $(), use `pgrep -f <pattern>` (pids only) or `ps -o pid=,etime=,ucomm= -p <pid>`: a ps that feeds a command is not rewritten, because its columns would change.";
+const MSG_G15_PGREP: &str = "G15: pgrep with -l or -a prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids.";
 const MSG_G15_PROCS: &str = "G15: procs prints full command lines, which can hold API keys. Use `pgrep -f <name>` for pids, then `ps -o pid=,etime=,ucomm= -p <pid>`.";
 
 /// The G15 message for a search that can reach local.zsh: the exact exclude flag of the tool used.
@@ -39,7 +37,8 @@ fn msg_g15_search(tool: &str) -> String {
     format!("G15: this search can reach local.zsh (API keys). Exclude it with `{flag}`.")
 }
 
-static GLOB_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[*?\[]").unwrap());
+static GLOB_CHARS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[*?\[]").expect("the glob-chars regex literal is valid"));
 
 /// What a check says about one tool call: let it through, ask the user, or refuse.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,11 +70,12 @@ pub fn is_macos() -> bool {
     }
 }
 
-fn basename(p: &str) -> &str {
+pub fn basename(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
 }
 
-fn path_join(a: &str, b: &str) -> String {
+/// `b` under `a`; an absolute `b` stays as it is.
+pub fn path_join(a: &str, b: &str) -> String {
     if b.starts_with('/') {
         b.to_string()
     } else if a.ends_with('/') {
@@ -83,6 +83,19 @@ fn path_join(a: &str, b: &str) -> String {
     } else {
         format!("{a}/{b}")
     }
+}
+
+/// `p` under `cwd` when `cwd` is set and not empty; an absolute `p` stays as it is.
+fn in_cwd(p: String, cwd: Option<&str>) -> String {
+    match cwd.filter(|c| !c.is_empty()) {
+        Some(c) => path_join(c, &p),
+        None => p,
+    }
+}
+
+/// The home folder named by the environment: `HOME`, then `USERPROFILE` on Windows (as `paths::home`).
+fn home_env(windows: bool, get: impl Fn(&str) -> Option<String>) -> Option<String> {
+    get("HOME").or_else(|| if windows { get("USERPROFILE") } else { None })
 }
 
 pub fn expanduser(p: &str) -> String {
@@ -93,8 +106,11 @@ pub fn expanduser(p: &str) -> String {
     if i != 1 {
         return p.to_string(); // ~user form: left as is
     }
-    let home = env::var("HOME").ok().or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
-    let Some(home) = home else { return p.to_string() };
+    let home = home_env(cfg!(windows), |k| env::var(k).ok())
+        .or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().into_owned()));
+    let Some(home) = home else {
+        return p.to_string();
+    };
     let home = home.trim_end_matches('/');
     let out = format!("{}{}", home, &p[i..]);
     if out.is_empty() { "/".to_string() } else { out }
@@ -106,7 +122,8 @@ pub fn realpath(p: &str) -> String {
     let abs = if p.starts_with('/') {
         p.to_string()
     } else {
-        let cwd = env::current_dir().map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned());
+        let cwd = env::current_dir()
+            .map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned());
         format!("{cwd}/{p}")
     };
     let mut resolved = String::from("/");
@@ -122,7 +139,11 @@ pub fn realpath(p: &str) -> String {
             }
             continue;
         }
-        let cand = if resolved == "/" { format!("/{c}") } else { format!("{resolved}/{c}") };
+        let cand = if resolved == "/" {
+            format!("/{c}")
+        } else {
+            format!("{resolved}/{c}")
+        };
         let is_link = fs::symlink_metadata(&cand).is_ok_and(|m| m.file_type().is_symlink());
         if is_link && links < 40 {
             links += 1;
@@ -152,7 +173,11 @@ fn normpath(p: &str) -> String {
     if p.is_empty() {
         return ".".to_string();
     }
-    let initial = if p.starts_with("//") && !p.starts_with("///") { 2 } else { usize::from(p.starts_with('/')) };
+    let initial = if p.starts_with("//") && !p.starts_with("///") {
+        2
+    } else {
+        usize::from(p.starts_with('/'))
+    };
     let mut out: Vec<&str> = Vec::new();
     for c in p.split('/') {
         if c.is_empty() || c == "." {
@@ -195,7 +220,10 @@ fn expandvars(p: &str) -> String {
         if cs[i] == '$' && i + 1 < cs.len() {
             let (name, end) = if cs[i + 1] == '{' {
                 match cs[i + 2..].iter().position(|&c| c == '}') {
-                    Some(k) => (Some(cs[i + 2..i + 2 + k].iter().collect::<String>()), i + 3 + k),
+                    Some(k) => (
+                        Some(cs[i + 2..i + 2 + k].iter().collect::<String>()),
+                        i + 3 + k,
+                    ),
                     None => (None, i),
                 }
             } else {
@@ -203,7 +231,11 @@ fn expandvars(p: &str) -> String {
                 while j < cs.len() && (cs[j].is_ascii_alphanumeric() || cs[j] == '_') {
                     j += 1;
                 }
-                if j > i + 1 { (Some(cs[i + 1..j].iter().collect::<String>()), j) } else { (None, i) }
+                if j > i + 1 {
+                    (Some(cs[i + 1..j].iter().collect::<String>()), j)
+                } else {
+                    (None, i)
+                }
             };
             if let Some(n) = name {
                 if let Ok(v) = env::var(&n) {
@@ -310,7 +342,9 @@ impl Glob {
     fn takes(&self, c: char) -> bool {
         match self {
             Self::Any => true,
-            Self::Class { negated, ranges } => ranges.iter().any(|&(a, b)| a <= c && c <= b) != *negated,
+            Self::Class { negated, ranges } => {
+                ranges.iter().any(|&(a, b)| a <= c && c <= b) != *negated
+            }
             Self::Lit(l) => *l == c,
             Self::Star => false,
         }
@@ -336,7 +370,9 @@ fn fnmatch(name: &str, pat: &str) -> bool {
                 n += 1;
             }
             _ => {
-                let Some((after, took)) = last_star else { return false };
+                let Some((after, took)) = last_star else {
+                    return false;
+                };
                 last_star = Some((after, took + 1));
                 t = after;
                 n = took + 1;
@@ -347,7 +383,11 @@ fn fnmatch(name: &str, pat: &str) -> bool {
 }
 
 fn case_fold(s: &str) -> String {
-    if is_macos() { s.to_lowercase() } else { s.to_string() }
+    if is_macos() {
+        s.to_lowercase()
+    } else {
+        s.to_string()
+    }
 }
 
 /// Where [`shlex_split`] is inside one token.
@@ -370,7 +410,7 @@ enum Resume {
     Quoted(char),
 }
 
-/// `shlex.split(s)` (posix, no comments); None where Python raises ValueError.
+/// `shlex.split(s)` (posix, no comments); None where Python raises `ValueError`.
 fn shlex_split(s: &str) -> Option<Vec<String>> {
     let cs: Vec<char> = s.chars().collect();
     let ws = |c: char| matches!(c, ' ' | '\t' | '\r' | '\n');
@@ -463,7 +503,11 @@ fn heredoc_delims(line: &str) -> Vec<String> {
             while j < cs.len() && cs[j].is_whitespace() {
                 j += 1;
             }
-            let quote = if j < cs.len() && (cs[j] == '\'' || cs[j] == '"') { Some(cs[j]) } else { None };
+            let quote = if j < cs.len() && (cs[j] == '\'' || cs[j] == '"') {
+                Some(cs[j])
+            } else {
+                None
+            };
             let mut k = if quote.is_some() { j + 1 } else { j };
             if k < cs.len() && (cs[k].is_ascii_alphabetic() || cs[k] == '_') {
                 let st = k;
@@ -495,7 +539,8 @@ fn strip_heredocs(cmd: &str) -> String {
 
 /// [`strip_heredocs`], and for each line that is left whether it starts a here-document.
 fn strip_heredocs_marked(cmd: &str) -> (String, Vec<bool>) {
-    let (mut out, mut starts, mut pending): (Vec<&str>, Vec<bool>, Vec<String>) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut out, mut starts, mut pending): (Vec<&str>, Vec<bool>, Vec<String>) =
+        (Vec::new(), Vec::new(), Vec::new());
     for line in cmd.split('\n') {
         if !pending.is_empty() {
             if line.trim() == pending[0] {
@@ -513,7 +558,8 @@ fn strip_heredocs_marked(cmd: &str) -> (String, Vec<bool>) {
 
 /// The text of every here-document in a command (an unterminated one runs to the end).
 fn heredoc_bodies(cmd: &str) -> Vec<String> {
-    let (mut out, mut pending, mut cur): (Vec<String>, Vec<String>, String) = (Vec::new(), Vec::new(), String::new());
+    let (mut out, mut pending, mut cur): (Vec<String>, Vec<String>, String) =
+        (Vec::new(), Vec::new(), String::new());
     for line in cmd.split('\n') {
         if !pending.is_empty() {
             if line.trim() == pending[0] {
@@ -533,54 +579,19 @@ fn heredoc_bodies(cmd: &str) -> Vec<String> {
     out
 }
 
-/// Split a command line at ; | & newline ( ) ` and $( outside quotes. Quotes stay in the text.
+/// Split a command line at `;` `|` `&` newline `(` `)` `` ` `` and `$(` outside quotes. Quotes stay
+/// in the text.
 /// Each piece comes with the line (newlines before it, quoted ones too) it starts on.
 fn segments(cmd: &str) -> Vec<(String, usize)> {
-    let cs: Vec<char> = cmd.chars().collect();
-    let (mut segs, mut cur, mut quote, mut i) = (Vec::new(), String::new(), None::<char>, 0);
-    let (mut line, mut start) = (0usize, 0usize);
-    while i < cs.len() {
-        let c = cs[i];
-        if let Some(q) = quote {
-            cur.push(c);
-            if c == '\n' {
-                line += 1;
-            }
-            if q == '"' && c == '\\' && i + 1 < cs.len() {
-                cur.push(cs[i + 1]);
-                if cs[i + 1] == '\n' {
-                    line += 1;
-                }
-                i += 1;
-            } else if c == q {
-                quote = None;
-            }
-        } else if c == '\\' && i + 1 < cs.len() {
-            cur.push(c);
-            cur.push(cs[i + 1]);
-            if cs[i + 1] == '\n' {
-                line += 1;
-            }
-            i += 1;
-        } else if c == '\'' || c == '"' {
-            quote = Some(c);
-            cur.push(c);
-        } else if ";|&\n()`".contains(c) || (c == '$' && cs.get(i + 1) == Some(&'(')) {
-            segs.push((std::mem::take(&mut cur), start));
-            if c == '\n' {
-                line += 1;
-            }
-            if c == '$' {
-                i += 1;
-            }
-            start = line;
-        } else {
-            cur.push(c);
-        }
-        i += 1;
-    }
-    segs.push((cur, start));
-    segs
+    let (mut line, mut prev) = (0usize, 0usize);
+    segment_ranges(cmd)
+        .into_iter()
+        .map(|(s, e)| {
+            line += cmd[prev..s].matches('\n').count();
+            prev = s;
+            (cmd[s..e].to_string(), line)
+        })
+        .collect()
 }
 
 fn is_assign(t: &str) -> bool {
@@ -616,10 +627,13 @@ fn wrapper_opts(name: &str) -> Option<&'static [&'static str]> {
 
 /// Drop env assignments, reserved words and wrappers (sudo, env, xargs ...) from the front.
 fn peel(mut tokens: Vec<String>) -> Vec<String> {
-    const RESERVED: &[&str] = &["if", "then", "else", "elif", "do", "while", "until", "{", "}", "!"];
+    const RESERVED: &[&str] = &[
+        "if", "then", "else", "elif", "do", "while", "until", "{", "}", "!",
+    ];
     for _ in 0..8 {
         let mut i = 0;
-        while i < tokens.len() && (RESERVED.contains(&tokens[i].as_str()) || is_assign(&tokens[i])) {
+        while i < tokens.len() && (RESERVED.contains(&tokens[i].as_str()) || is_assign(&tokens[i]))
+        {
             i += 1;
         }
         tokens.drain(..i);
@@ -627,14 +641,20 @@ fn peel(mut tokens: Vec<String>) -> Vec<String> {
             return tokens;
         }
         let base = basename(&tokens[0]).to_string();
-        let Some(optval) = wrapper_opts(&base) else { return tokens };
+        let Some(optval) = wrapper_opts(&base) else {
+            return tokens;
+        };
         let mut i = 1;
         while i < tokens.len() && tokens[i].starts_with('-') && tokens[i] != "-" {
             if tokens[i] == "--" {
                 i += 1;
                 break;
             }
-            i += if optval.contains(&tokens[i].as_str()) { 2 } else { 1 };
+            i += if optval.contains(&tokens[i].as_str()) {
+                2
+            } else {
+                1
+            };
         }
         if base == "timeout" {
             i += 1; // the duration
@@ -645,13 +665,7 @@ fn peel(mut tokens: Vec<String>) -> Vec<String> {
 }
 
 fn abspath(p: &str, cwd: Option<&str>) -> String {
-    let mut p = expanduser(&expandvars(p));
-    if !p.starts_with('/')
-        && let Some(c) = cwd.filter(|c| !c.is_empty())
-    {
-        p = path_join(c, &p);
-    }
-    realpath(&p)
+    realpath(&in_cwd(expanduser(&expandvars(p)), cwd))
 }
 
 struct Cmd {
@@ -691,7 +705,12 @@ fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<St
         {
             cwd = Some(abspath(d, cwd.as_deref()));
         }
-        out.push(Cmd { toks: toks.clone(), extra: Vec::new(), cwd: cwd.clone(), heredoc });
+        out.push(Cmd {
+            toks: toks.clone(),
+            extra: Vec::new(),
+            cwd: cwd.clone(),
+            heredoc,
+        });
         if depth >= 3 {
             continue;
         }
@@ -707,15 +726,28 @@ fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<St
                 }
             }
         } else if name == "eval" {
-            out.extend(walk_full(&toks[1..].join(" "), cwd.clone(), depth + 1, unparsed));
+            out.extend(walk_full(
+                &toks[1..].join(" "),
+                cwd.clone(),
+                depth + 1,
+                unparsed,
+            ));
         } else if name == "find" {
             for (j, t) in toks.iter().enumerate() {
                 if matches!(t.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
-                    let sub: Vec<String> =
-                        toks[j + 1..].iter().take_while(|u| u.as_str() != ";" && u.as_str() != "+").cloned().collect();
+                    let sub: Vec<String> = toks[j + 1..]
+                        .iter()
+                        .take_while(|u| u.as_str() != ";" && u.as_str() != "+")
+                        .cloned()
+                        .collect();
                     let sub = peel(sub);
                     if !sub.is_empty() {
-                        out.push(Cmd { toks: sub, extra: toks[1..j].to_vec(), cwd: cwd.clone(), heredoc });
+                        out.push(Cmd {
+                            toks: sub,
+                            extra: toks[1..j].to_vec(),
+                            cwd: cwd.clone(),
+                            heredoc,
+                        });
                     }
                 }
             }
@@ -727,7 +759,10 @@ fn walk_full(cmd: &str, cwd: Option<String>, depth: usize, unparsed: &mut Vec<St
 /// True when the raw text of an unparsed piece names gh, git, curl or wget as a word, also with the
 /// quote characters taken out (`g''h`, `"gh"`).
 fn names_outbound_tool(raw: &str, tools: &[&str]) -> bool {
-    let plain: String = raw.chars().filter(|c| !matches!(c, '\'' | '"' | '\\')).collect();
+    let plain: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect();
     plain
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
         .any(|w| tools.iter().any(|t| w.eq_ignore_ascii_case(t)))
@@ -735,7 +770,10 @@ fn names_outbound_tool(raw: &str, tools: &[&str]) -> bool {
 
 /// The Bash command of a tool input, when there is a non-empty one.
 fn command_of(input: &Value) -> Option<&str> {
-    input.get("command").and_then(Value::as_str).filter(|s| !s.is_empty())
+    input
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
 }
 
 // --- G14 sed -i ----------------------------------------------------------------
@@ -744,12 +782,20 @@ fn command_of(input: &Value) -> Option<&str> {
 /// dot-word such as `.bak`. Anything else is the script, which BSD sed would eat as the suffix.
 fn is_bsd_suffix(word: &str) -> bool {
     word.is_empty()
-        || (word.starts_with('.') && word.len() > 1 && !word.contains(|c: char| c.is_whitespace() || c == '/'))
+        || (word.starts_with('.')
+            && word.len() > 1
+            && !word.contains(|c: char| c.is_whitespace() || c == '/'))
 }
 
 /// True when sed's arguments hold a BSD-unsafe in-place flag: -i, -ni, -Ei, --in-place[=SUFFIX]
 /// with no explicit suffix. `-i.bak`, `-i ''` and `-i .bak` carry one and are safe on BSD sed.
 fn sed_in_place(args: &[String]) -> bool {
+    sed_in_place_at(args).is_some()
+}
+
+/// [`sed_in_place`], and where: the index of the flag word, and whether it is a short flag cluster
+/// that ends in `i` (the only form a suffix word can follow).
+fn sed_in_place_at(args: &[String]) -> Option<(usize, bool)> {
     let mut skip = false;
     for (n, a) in args.iter().enumerate() {
         if skip {
@@ -758,7 +804,7 @@ fn sed_in_place(args: &[String]) -> bool {
             break;
         } else if a.starts_with("--") {
             if a == "--in-place" || a.starts_with("--in-place=") {
-                return true;
+                return Some((n, false));
             }
             skip = matches!(a.as_str(), "--expression" | "--file" | "--line-length");
         } else if a.starts_with('-') && a.chars().count() > 1 {
@@ -767,8 +813,9 @@ fn sed_in_place(args: &[String]) -> bool {
                 if cs[k] == 'i' {
                     // -i.bak: the rest of the word is the suffix. A bare -i is safe only when the
                     // next word is an explicit suffix.
-                    if k == cs.len() - 1 && !args.get(n + 1).is_some_and(|next| is_bsd_suffix(next)) {
-                        return true;
+                    if k == cs.len() - 1 && !args.get(n + 1).is_some_and(|next| is_bsd_suffix(next))
+                    {
+                        return Some((n, true));
                     }
                     skip = k == cs.len() - 1;
                     break;
@@ -780,7 +827,7 @@ fn sed_in_place(args: &[String]) -> bool {
             }
         }
     }
-    false
+    None
 }
 
 /// G14: deny a bare BSD `sed -i` on macOS (it eats the script as the backup suffix). A suffix
@@ -790,17 +837,352 @@ pub fn g14_sed(cmd: &str, macos: bool) -> Verdict {
         return Verdict::Allow;
     }
     let hit = std::panic::catch_unwind(|| {
-        walk(cmd, None, 0).iter().any(|c| basename(&c.toks[0]) == "sed" && sed_in_place(&c.toks[1..]))
+        walk(cmd, None, 0)
+            .iter()
+            .any(|c| basename(&c.toks[0]) == "sed" && sed_in_place(&c.toks[1..]))
     });
     deny_or_allow(hit.unwrap_or(false).then_some(MSG_G14))
+}
+
+// --- rewrites: the fix for a G14 or G15 deny, applied to the raw command line -----
+
+/// One simple command of a raw command line, with the byte span of each of its words.
+struct RawCmd {
+    /// the span of the piece `segments` cuts out
+    seg: (usize, usize),
+    /// the span of every word, and its text with the quotes taken out
+    words: Vec<(usize, usize)>,
+    toks: Vec<String>,
+    /// the index of the command word: env assignments and wrappers (`sudo`, `xargs`) come before it
+    off: usize,
+}
+
+/// A change to the raw text: the bytes `start..end` become `text`.
+struct Edit {
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+/// The byte spans of the pieces [`segments`] cuts a command line into: at `;` `|` `&` newline `(`
+/// `)` `` ` `` and `$(` outside quotes. A backslash escapes the next char; in double quotes too.
+fn segment_ranges(cmd: &str) -> Vec<(usize, usize)> {
+    let cs: Vec<(usize, char)> = cmd.char_indices().collect();
+    let at = |i: usize| cs.get(i).map_or(cmd.len(), |c| c.0);
+    let (mut out, mut start, mut quote, mut i) = (Vec::new(), 0usize, None::<char>, 0usize);
+    while i < cs.len() {
+        let c = cs[i].1;
+        if let Some(q) = quote {
+            if q == '"' && c == '\\' && i + 1 < cs.len() {
+                i += 1;
+            } else if c == q {
+                quote = None;
+            }
+        } else if c == '\\' && i + 1 < cs.len() {
+            i += 1;
+        } else if c == '\'' || c == '"' {
+            quote = Some(c);
+        } else if ";|&\n()`".contains(c) || (c == '$' && cs.get(i + 1).map(|x| x.1) == Some('(')) {
+            out.push((start, cs[i].0));
+            if c == '$' {
+                i += 1;
+            }
+            start = at(i + 1);
+        }
+        i += 1;
+    }
+    out.push((start, cmd.len()));
+    out
+}
+
+/// The byte spans of the words of `cmd[s..e]`, split the way [`shlex_split`] splits.
+fn raw_words(cmd: &str, s: usize, e: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let (mut cur, mut quote) = (None::<usize>, None::<char>);
+    let mut it = cmd[s..e].char_indices().map(|(i, c)| (s + i, c));
+    while let Some((i, c)) = it.next() {
+        if let Some(q) = quote {
+            if q == '"' && c == '\\' {
+                it.next();
+            } else if c == q {
+                quote = None;
+            }
+        } else if c == '\\' {
+            cur.get_or_insert(i);
+            it.next();
+        } else if c == '\'' || c == '"' {
+            cur.get_or_insert(i);
+            quote = Some(c);
+        } else if matches!(c, ' ' | '\t' | '\r' | '\n') {
+            if let Some(st) = cur.take() {
+                out.push((st, i));
+            }
+        } else {
+            cur.get_or_insert(i);
+        }
+    }
+    if let Some(st) = cur {
+        out.push((st, e));
+    }
+    out
+}
+
+/// Every simple command of a command line with its word spans, or None when the line cannot be
+/// followed word for word: a here-document, a piece shlex rejects, words that do not line up.
+fn raw_cmds(cmd: &str) -> Option<Vec<RawCmd>> {
+    if cmd.split('\n').any(|l| !heredoc_delims(l).is_empty()) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (s, e) in segment_ranges(cmd) {
+        let toks = shlex_split(&cmd[s..e])?;
+        let words = raw_words(cmd, s, e);
+        if toks.len() != words.len() {
+            return None;
+        }
+        let left = peel(toks.clone()).len();
+        if left > 0 {
+            out.push(RawCmd {
+                seg: (s, e),
+                words,
+                off: toks.len() - left,
+                toks,
+            });
+        }
+    }
+    Some(out)
+}
+
+/// `text[base..]` is the raw text the edits' offsets point into; apply them (in any order, no overlap).
+fn splice(text: &str, base: usize, edits: &[Edit]) -> String {
+    let mut sorted: Vec<&Edit> = edits.iter().collect();
+    sorted.sort_by_key(|e| e.start);
+    let mut out = String::new();
+    let mut at = 0;
+    for e in sorted {
+        out.push_str(&text[at..e.start - base]);
+        out.push_str(&e.text);
+        at = e.end - base;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
+impl RawCmd {
+    /// The raw text of word `w` equals its cooked text: no quote or escape to keep.
+    fn plain(&self, cmd: &str, w: usize) -> bool {
+        let (s, e) = self.words[w];
+        cmd[s..e] == self.toks[w]
+    }
+
+    /// Replace the whole word `w`.
+    fn replace(&self, w: usize, text: &str) -> Edit {
+        Edit {
+            start: self.words[w].0,
+            end: self.words[w].1,
+            text: text.to_string(),
+        }
+    }
+
+    /// Cut the word `w` with the white space before it.
+    fn cut(&self, w: usize) -> Edit {
+        let start = if w == 0 {
+            self.words[w].0
+        } else {
+            self.words[w - 1].1
+        };
+        Edit {
+            start,
+            end: self.words[w].1,
+            text: String::new(),
+        }
+    }
+}
+
+/// The G14 fix: the command with `-i ''` for every bare `sed -i`, or None when G14 would not deny
+/// it or the flag cannot be fixed in place (`--in-place`, a quoted flag, a `sed` in `bash -c` or
+/// `find -exec`, a here-document). The result passes G14.
+pub fn g14_fix(cmd: &str, macos: bool) -> Option<String> {
+    if !matches!(g14_sed(cmd, macos), Verdict::Deny(_)) {
+        return None;
+    }
+    std::panic::catch_unwind(|| -> Option<String> {
+        let mut edits = Vec::new();
+        for rc in raw_cmds(cmd)? {
+            let toks = &rc.toks[rc.off..];
+            if basename(&toks[0]) != "sed" {
+                continue;
+            }
+            let Some((idx, short)) = sed_in_place_at(&toks[1..]) else {
+                continue;
+            };
+            let w = rc.off + 1 + idx;
+            if !short || !rc.plain(cmd, w) {
+                return None;
+            }
+            let end = rc.words[w].1;
+            edits.push(Edit {
+                start: end,
+                end,
+                text: " ''".to_string(),
+            });
+        }
+        if edits.is_empty() {
+            return None;
+        }
+        let new = splice(cmd, 0, &edits);
+        matches!(g14_sed(&new, macos), Verdict::Allow).then_some(new)
+    })
+    .ok()
+    .flatten()
+}
+
+// --- H2 hint: a phrase of the user names a skill -----------------------------------------
+
+/// The phrases that point to a skill, one set per skill, in priority order: the first set with a
+/// match wins. A phrase matches whole words, in any case, with any run of spaces between its words;
+/// `N` stands for a number and `'` also matches the typographic apostrophe. The Serbian word
+/// "arhiviraj" is out of scope: the sets are English only.
+pub const H2_PHRASES: &[(&str, &[&str])] = &[
+    (
+        "mic-drop",
+        &[
+            "archive this session",
+            "archive this",
+            "do everything yourself",
+            "is it all pushed",
+            "did checks pass",
+            "are we done",
+            "close this session",
+            "wrap up",
+        ],
+    ),
+    (
+        "whatsleft",
+        &[
+            "what is left",
+            "what's left",
+            "what remains",
+            "where are we",
+            "speed up",
+            "speed this up",
+            "hurry",
+            "slow",
+            "laggy",
+            "trim this session",
+        ],
+    ),
+    (
+        "iamrich",
+        &[
+            "iamrich",
+            "a lot of tokens",
+            "plenty of tokens",
+            "parallelize",
+        ],
+    ),
+    (
+        "autopilot",
+        &[
+            "do not ask me",
+            "don't ask me",
+            "overnight",
+            "do not stop until",
+            "don't stop until",
+            "start to finish",
+            "autopilot",
+        ],
+    ),
+    (
+        "sessions",
+        &[
+            "other session",
+            "other sessions",
+            "that session",
+            "monitor the session",
+            "tell the other sessions",
+        ],
+    ),
+    (
+        "captain-research",
+        &[
+            "massive research",
+            "research online",
+            "do a comparison",
+            "find N options",
+        ],
+    ),
+];
+
+/// One skill with its compiled phrase regexes: `(skill, [(phrase, regex)])`.
+type H2Table = Vec<(&'static str, Vec<(&'static str, Regex)>)>;
+
+static H2_REGEXES: LazyLock<H2Table> = LazyLock::new(|| {
+    H2_PHRASES
+        .iter()
+        .map(|(skill, phrases)| {
+            let rx = phrases
+                .iter()
+                .map(|p| {
+                    let words: Vec<String> = p
+                        .split(' ')
+                        .map(|w| {
+                            if w == "N" {
+                                r"\d+".to_string()
+                            } else {
+                                regex::escape(w).replace('\'', "['\u{2019}]")
+                            }
+                        })
+                        .collect();
+                    (
+                        *p,
+                        Regex::new(&format!(r"(?i)\b{}\b", words.join(r"\s+")))
+                            .expect("escaped phrase words make a valid regex"),
+                    )
+                })
+                .collect();
+            (*skill, rx)
+        })
+        .collect()
+});
+
+/// Tags that mark a prompt the harness or another session wrote, not the user.
+// no closing `>`: a tag may carry attributes
+const NOT_HUMAN_MARKERS: [&str; 5] = [
+    "<task-notification",
+    "<side-sessions-event",
+    "<ci-monitor-event",
+    "<cross-session-message",
+    "<system-reminder",
+];
+
+/// H2: the skill (`ps:<name>` without the prefix) and the phrase as the user wrote it, for the first
+/// set that matches `prompt`. No hint for a prompt that is a slash command or a command message, or
+/// that a tool or another session wrote (see `NOT_HUMAN_MARKERS`): a background task notification
+/// that quotes a phrase is no request.
+pub fn h2_match(prompt: &str) -> Option<(&'static str, String)> {
+    let p = prompt.trim_start();
+    if p.starts_with('/')
+        || p.starts_with("<command-message>")
+        || p.starts_with("[SYSTEM NOTIFICATION")
+        || NOT_HUMAN_MARKERS.iter().any(|m| prompt.contains(m))
+    {
+        return None;
+    }
+    H2_REGEXES.iter().find_map(|(skill, phrases)| {
+        phrases
+            .iter()
+            .find_map(|(_, rx)| rx.find(prompt).map(|m| (*skill, m.as_str().to_string())))
+    })
 }
 
 // --- H1 hint: read code with ctx --------------------------------------------------
 
 /// Extensions of plain text and data files: a read of one gets no H1 hint, even where `codeview`
 /// has a scanner (Markdown). Agents ignored these hints.
-const H1_TEXT_EXT: [&str; 12] =
-    ["md", "mdx", "txt", "json", "jsonl", "yaml", "yml", "toml", "css", "csv", "log", "lock"];
+const H1_TEXT_EXT: [&str; 12] = [
+    "md", "mdx", "txt", "json", "jsonl", "yaml", "yml", "toml", "css", "csv", "log", "lock",
+];
 
 fn is_text_file(file: &str) -> bool {
     Path::new(file)
@@ -825,22 +1207,28 @@ pub fn h1_read_target(cmd: &str) -> Option<String> {
                 "sed" => sed_n_file(&c.toks[1..]),
                 _ => None,
             }?;
-            let odd = file.len() > 200 || file.chars().any(|ch| ch.is_control() || "*?$`{}".contains(ch));
-            (!odd && !is_text_file(&file) && crate::codeview::scan_name(Path::new(&file)).is_some()).then_some(file)
+            let odd = file.len() > 200
+                || file
+                    .chars()
+                    .any(|ch| ch.is_control() || "*?$`{}".contains(ch));
+            (!odd && !is_text_file(&file) && crate::codeview::scan_name(Path::new(&file)).is_some())
+                .then_some(file)
         })
     })
     .ok()
     .flatten()
 }
 
-/// A redirection word (`>`, `2>f`, `<in`) ends the file arguments.
+/// A redirection word (`>`, `2>f`, `<in`, `&>f`) ends the file arguments.
 fn is_redirect(t: &str) -> bool {
-    let t = t.trim_start_matches(|c: char| c.is_ascii_digit());
-    t.starts_with('>') || t.starts_with('<')
+    redirect_word(t).is_some()
 }
 
 fn cat_file(args: &[String]) -> Option<String> {
-    args.iter().take_while(|t| !is_redirect(t)).find(|t| !t.starts_with('-')).cloned()
+    args.iter()
+        .take_while(|t| !is_redirect(t))
+        .find(|t| !t.starts_with('-'))
+        .cloned()
 }
 
 /// `sed -n SCRIPT FILE` (or `-n -e SCRIPT FILE`): the file. No `-n` or an in-place edit: None.
@@ -881,10 +1269,11 @@ fn sed_n_file(args: &[String]) -> Option<String> {
 // --- G15 secret reads ----------------------------------------------------------
 
 const SECRET_READERS: &[&str] = &[
-    "cat", "bat", "batcat", "less", "more", "most", "head", "tail", "rg", "grep", "egrep", "fgrep", "ag", "ack", "sed",
-    "gsed", "awk", "gawk", "mawk", "cut", "strings", "xxd", "hexdump", "od", "nl", "tac", "rev", "sort", "uniq",
-    "paste", "fold", "column", "cp", "mv", "scp", "rsync", "open", "code", "cursor", "vim", "vi", "nvim", "nano",
-    "view", "pbcopy", "base64", "jq", "yq", "diff", "cmp", "ln", "install",
+    "cat", "bat", "batcat", "less", "more", "most", "head", "tail", "rg", "grep", "egrep", "fgrep",
+    "ag", "ack", "sed", "gsed", "awk", "gawk", "mawk", "cut", "strings", "xxd", "hexdump", "od",
+    "nl", "tac", "rev", "sort", "uniq", "paste", "fold", "column", "cp", "mv", "scp", "rsync",
+    "open", "code", "cursor", "vim", "vi", "nvim", "nano", "view", "pbcopy", "base64", "jq", "yq",
+    "diff", "cmp", "ln", "install",
 ];
 const SECRET_SEARCHERS: &[&str] = &["rg", "grep", "egrep", "fgrep", "ag", "ack"];
 const ARGS_FIELDS: &[&str] = &["args", "command", "cmd", "command_line", "cmdline"];
@@ -912,25 +1301,29 @@ fn secret_target() -> Target {
     (raw, real)
 }
 
-/// True when `path` (word as typed) is the secret file, a glob that matches it, or (dir_ok) its folder.
+/// True when `path` (word as typed) is the secret file, a glob that matches it, or (`dir_ok`) its folder.
 fn is_secret(path: &str, cwd: Option<&str>, target: &Target, dir_ok: bool) -> bool {
     let (raw, real) = (case_fold(&target.0), case_fold(&target.1));
-    let mut p = expanduser(&expandvars(path));
+    let p = expanduser(&expandvars(path));
     if p.is_empty() || p.starts_with('-') {
         return false;
     }
-    if !p.starts_with('/')
-        && let Some(c) = cwd.filter(|c| !c.is_empty())
-    {
-        p = path_join(c, &p);
-    }
+    let p = in_cwd(p, cwd);
     if GLOB_CHARS.is_match(&p) {
         let norm = normpath(&p);
         let (d, base) = path_split(&norm);
-        return fnmatch(&raw, &case_fold(&norm)) || fnmatch(&real, &case_fold(&path_join(&realpath(&d), &base)));
+        return fnmatch(&raw, &case_fold(&norm))
+            || fnmatch(&real, &case_fold(&path_join(&realpath(&d), &base)));
     }
     let got = case_fold(&realpath(&p));
     got == real || (dir_ok && got == dirname(&real))
+}
+
+/// True when a ps format list (`pid,args`, `command=`) holds a column with the command line.
+fn fmt_leaks(val: &str) -> bool {
+    val.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|f| !f.is_empty())
+        .any(|f| ARGS_FIELDS.contains(&f.split('=').next().unwrap_or("").to_lowercase().as_str()))
 }
 
 /// True for a ps call that lists processes with their command lines (aux, -ef, -o args, ww, eww).
@@ -980,14 +1373,8 @@ fn ps_leaks(args: &[String]) -> bool {
             }
         }
     }
-    for val in &fmt {
-        let hit = val
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .filter(|f| !f.is_empty())
-            .any(|f| ARGS_FIELDS.contains(&f.split('=').next().unwrap_or("").to_lowercase().as_str()));
-        if hit {
-            return true;
-        }
+    if fmt.iter().any(|val| fmt_leaks(val)) {
+        return true;
     }
     if flags.get(&'w').copied().unwrap_or(0) >= 2
         || flags.contains_key(&'f')
@@ -1000,7 +1387,9 @@ fn ps_leaks(args: &[String]) -> bool {
         return true;
     }
     if is_macos() {
-        return !has_o && !flags.contains_key(&'c') && !args.iter().any(|a| a == "--help" || a == "--version");
+        return !has_o
+            && !flags.contains_key(&'c')
+            && !args.iter().any(|a| a == "--help" || a == "--version");
     }
     false
 }
@@ -1153,7 +1542,9 @@ fn search_short(fam: &str, c: char, val: Option<&str>, o: &mut SearchOpts) {
         if let (true, Some(v)) = (c == 'g', val) {
             o.globs.push(v.to_string());
             o.pat = o.pat || fam == "ag"; // ag -g PATTERN replaces the content pattern
-        } else if val.is_none() && (c == 'u' || (c == '.' && fam == "rg") || (c == 'U' && fam == "ag")) {
+        } else if val.is_none()
+            && (c == 'u' || (c == '.' && fam == "rg") || (c == 'U' && fam == "ag"))
+        {
             o.unres = true;
         }
     } else if fam == "ack" && (c == 'g' || c == 'f') {
@@ -1166,7 +1557,10 @@ fn search_long(fam: &str, key: &str, val: &str, o: &mut SearchOpts) {
     if (fam == "grep" || fam == "rg") && (key == "--regexp" || key == "--file") {
         o.pat = true;
     } else if fam == "grep" {
-        if key == "--recursive" || key == "--dereference-recursive" || (key == "--directories" && val == "recurse") {
+        if key == "--recursive"
+            || key == "--dereference-recursive"
+            || (key == "--directories" && val == "recurse")
+        {
             o.rec = true;
         } else if key == "--include" {
             o.inc.push(val.to_string());
@@ -1204,7 +1598,10 @@ fn search_long(fam: &str, key: &str, val: &str, o: &mut SearchOpts) {
 /// Parse the arguments of grep, rg, ag or ack: path operands, recursion, unrestricted flags, excludes.
 fn search_opts(fam: &str, args: &[String]) -> SearchOpts {
     let (short_val, long_val) = search_val(fam);
-    let mut o = SearchOpts { rec: fam == "ack", ..Default::default() };
+    let mut o = SearchOpts {
+        rec: fam == "ack",
+        ..Default::default()
+    };
     let (mut i, n) = (0, args.len());
     while i < n {
         let a = &args[i];
@@ -1261,23 +1658,35 @@ fn glob_hits(g: &str, dirs: &[String], fname: &str, path: &str) -> bool {
     if names.iter().any(|c| fnmatch(c, g)) {
         return true;
     }
-    [g.to_string(), format!("*/{g}"), format!("*/{g}/*")].iter().any(|p| fnmatch(path, p))
+    [g.to_string(), format!("*/{g}"), format!("*/{g}/*")]
+        .iter()
+        .any(|p| fnmatch(path, p))
 }
 
 /// True when the search options leave `path` out (--exclude, --exclude-dir, --include, rg/ag globs).
 fn search_excluded(o: &SearchOpts, path: &str, dirs: &[String], fname: &str) -> bool {
     let path = case_fold(path);
-    if o.xfile.iter().any(|g| fnmatch(fname, &case_fold(g)) || fnmatch(&path, &case_fold(g))) {
+    if o.xfile
+        .iter()
+        .any(|g| fnmatch(fname, &case_fold(g)) || fnmatch(&path, &case_fold(g)))
+    {
         return true;
     }
-    if o.xdir.iter().any(|g| dirs.iter().any(|d| fnmatch(d, case_fold(g).trim_end_matches('/')))) {
+    if o.xdir.iter().any(|g| {
+        dirs.iter()
+            .any(|d| fnmatch(d, case_fold(g).trim_end_matches('/')))
+    }) {
         return true;
     }
     if !o.inc.is_empty() && !o.inc.iter().any(|g| fnmatch(fname, &case_fold(g))) {
         return true;
     }
     let keep: Vec<&String> = o.globs.iter().filter(|g| !g.starts_with('!')).collect();
-    if o.globs.iter().filter(|g| g.starts_with('!')).any(|g| glob_hits(&g[1..], dirs, fname, &path)) {
+    if o.globs
+        .iter()
+        .filter(|g| g.starts_with('!'))
+        .any(|g| glob_hits(&g[1..], dirs, fname, &path))
+    {
         return true;
     }
     if !keep.is_empty() {
@@ -1323,33 +1732,50 @@ fn search_reaches(o: &SearchOpts, root: &str, cand: &str) -> bool {
         return true;
     }
     let parts: Vec<String> = cand[prefix.len()..].split('/').map(String::from).collect();
-    let (fname, dirs) = parts.split_last().unwrap();
+    let (fname, dirs) = parts
+        .split_last()
+        .expect("split always yields at least one part");
     !search_excluded(o, &cand, dirs, fname)
 }
 
 /// True for a recursive search (grep -r, ack, and rg/ag with ignore rules off) that reaches the secret file.
 fn search_leaks(name: &str, args: &[String], cwd: Option<&str>, target: &Target) -> bool {
-    let fam = if matches!(name, "grep" | "egrep" | "fgrep") { "grep" } else { name };
+    let fam = if matches!(name, "grep" | "egrep" | "fgrep") {
+        "grep"
+    } else {
+        name
+    };
     let o = search_opts(fam, args);
     if (fam == "grep" && !o.rec) || ((fam == "rg" || fam == "ag") && !o.unres) {
         return false; // rg and ag skip the hidden, git-ignored file unless told not to
     }
-    let operands: Vec<&String> = if o.pat { o.pos.iter().collect() } else { o.pos.iter().skip(1).collect() };
-    let mut paths: Vec<String> = operands.into_iter().filter(|p| p.as_str() != "-").cloned().collect();
+    let operands: Vec<&String> = if o.pat {
+        o.pos.iter().collect()
+    } else {
+        o.pos.iter().skip(1).collect()
+    };
+    let mut paths: Vec<String> = operands
+        .into_iter()
+        .filter(|p| p.as_str() != "-")
+        .cloned()
+        .collect();
     let cwd_s = cwd.map_or_else(
-        || env::current_dir().map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned()),
+        || {
+            env::current_dir()
+                .map_or_else(|_| "/".to_string(), |c| c.to_string_lossy().into_owned())
+        },
         String::from,
     );
     if paths.is_empty() {
         paths.push(cwd_s.clone());
     }
     for p in &paths {
-        let mut q = expanduser(&expandvars(p));
-        if !q.starts_with('/') {
-            q = path_join(&cwd_s, &q);
-        }
+        let q = path_join(&cwd_s, &expanduser(&expandvars(p)));
         for root in [normpath(&q), realpath(&q)] {
-            if [&target.0, &target.1].iter().any(|cand| search_reaches(&o, &root, cand)) {
+            if [&target.0, &target.1]
+                .iter()
+                .any(|cand| search_reaches(&o, &root, cand))
+            {
                 return true;
             }
         }
@@ -1388,7 +1814,11 @@ fn bash_leaks(cmd: &str, cwd: &str) -> Option<String> {
                 return Some(MSG_G15_FILE.to_string());
             }
         }
-        if name == "dd" && head.iter().any(|a| a.starts_with("if=") && is_secret(&a[3..], ccwd, &target, false)) {
+        if name == "dd"
+            && head
+                .iter()
+                .any(|a| a.starts_with("if=") && is_secret(&a[3..], ccwd, &target, false))
+        {
             return Some(MSG_G15_FILE.to_string());
         }
         if SECRET_READERS.contains(&name.as_str()) {
@@ -1396,11 +1826,16 @@ fn bash_leaks(cmd: &str, cwd: &str) -> Option<String> {
                 return Some(MSG_G15_FILE.to_string());
             }
             if SECRET_SEARCHERS.contains(&name.as_str())
-                && (head.iter().any(|a| is_secret(a, ccwd, &target, true)) || search_leaks(&name, head, ccwd, &target))
+                && (head.iter().any(|a| is_secret(a, ccwd, &target, true))
+                    || search_leaks(&name, head, ccwd, &target))
             {
                 return Some(msg_g15_search(&name));
             }
-            if c.extra.iter().take(200).any(|a| is_secret(a, ccwd, &target, true)) {
+            if c.extra
+                .iter()
+                .take(200)
+                .any(|a| is_secret(a, ccwd, &target, true))
+            {
                 return Some(MSG_G15_FILE.to_string());
             }
         }
@@ -1411,7 +1846,9 @@ fn bash_leaks(cmd: &str, cwd: &str) -> Option<String> {
 /// G15 with the process cwd for relative paths. `tool` is `Read`, `Grep` or `Bash`; `input` is the
 /// tool input.
 pub fn g15_secrets(tool: &str, input: &Value) -> Verdict {
-    let cwd = env::current_dir().map(|c| c.to_string_lossy().into_owned()).unwrap_or_default();
+    let cwd = env::current_dir()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_default();
     g15_secrets_at(tool, input, &cwd)
 }
 
@@ -1427,7 +1864,9 @@ pub fn g15_secrets_at(tool: &str, input: &Value, cwd: &str) -> Verdict {
         }
         let key = if tool == "Read" { "file_path" } else { "path" };
         match input.get(key).and_then(Value::as_str) {
-            Some(p) if !p.is_empty() && is_secret(p, Some(cwd), &secret_target(), tool == "Grep") => {
+            Some(p)
+                if !p.is_empty() && is_secret(p, Some(cwd), &secret_target(), tool == "Grep") =>
+            {
                 Some(MSG_G15_FILE.to_string())
             }
             _ => None,
@@ -1436,18 +1875,314 @@ pub fn g15_secrets_at(tool: &str, input: &Value, cwd: &str) -> Verdict {
     deny_or_allow(r.ok().flatten().as_deref())
 }
 
+// --- G15 rewrites: the same call without the command lines --------------------------
+
+/// The ps columns the G15 rewrite prints: no command line.
+const PS_SAFE_FORMAT: &str = "pid=,etime=,ucomm=";
+
+/// `Some(true)` for a bare redirection operator (`>`, `2>`, `&>`: the target is the next word),
+/// `Some(false)` for a word that holds its target (`>f`, `2>/dev/null`, `&>f`), else None.
+fn redirect_word(w: &str) -> Option<bool> {
+    let rest = w.trim_start_matches(|c: char| c.is_ascii_digit());
+    let rest = rest.strip_prefix('&').unwrap_or(rest);
+    if !(rest.starts_with('>') || rest.starts_with('<')) {
+        return None;
+    }
+    Some(rest.chars().all(|c| matches!(c, '>' | '<' | '&')))
+}
+
+/// The edit that replaces the tail of word `w` from byte `from` on, for a word with no quotes.
+fn tail_edit(cmd: &str, rc: &RawCmd, w: usize, from: usize, text: &str) -> Option<Edit> {
+    if !rc.plain(cmd, w) {
+        return None;
+    }
+    let (s, e) = rc.words[w];
+    Some(Edit {
+        start: s + from,
+        end: e,
+        text: text.to_string(),
+    })
+}
+
+/// The smallest ps fix: every format list that holds a command-line column becomes the safe columns.
+/// None when a list sits in a quoted word.
+fn ps_format_edits(cmd: &str, rc: &RawCmd) -> Option<Vec<Edit>> {
+    let base = rc.off + 1;
+    let args = &rc.toks[base..];
+    let mut edits = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let (a, wi) = (&args[i], base + i);
+        i += 1;
+        if let Some(v) = a.strip_prefix("--format=") {
+            if fmt_leaks(v) {
+                edits.push(tail_edit(cmd, rc, wi, "--format=".len(), PS_SAFE_FORMAT)?);
+            }
+        } else if a.starts_with("--") {
+            if PS_VALUE_LONG.contains(&a.as_str()) && i < args.len() {
+                if a == "--format" && fmt_leaks(&args[i]) {
+                    edits.push(rc.replace(base + i, PS_SAFE_FORMAT));
+                }
+                i += 1;
+            }
+        } else if a.starts_with('-') && a.chars().count() > 1 {
+            let cs: Vec<char> = a.chars().collect();
+            for k in 1..cs.len() {
+                if !"oOpCtuUgGsD".contains(cs[k]) {
+                    continue;
+                }
+                let attached: String = cs[k + 1..].iter().collect();
+                let wants_format = matches!(cs[k], 'o' | 'O');
+                if attached.is_empty() {
+                    if i < args.len() {
+                        if wants_format && fmt_leaks(&args[i]) {
+                            edits.push(rc.replace(base + i, PS_SAFE_FORMAT));
+                        }
+                        i += 1;
+                    }
+                } else if wants_format && fmt_leaks(&attached) {
+                    let from = a.char_indices().nth(k + 1).map_or(a.len(), |x| x.0);
+                    edits.push(tail_edit(cmd, rc, wi, from, &format!(" {PS_SAFE_FORMAT}"))?);
+                }
+                break;
+            }
+        }
+    }
+    Some(edits)
+}
+
+/// The wide ps fix: all arguments become one safe form. A pid list (`-p`) stays; a listing flag
+/// (`a`, `x`, `-e`, `-A`) becomes `-ax`; the rest is dropped. None for an argument it cannot place:
+/// a user, tty or group filter, a sort key, an unknown long option.
+fn ps_full_edits(rc: &RawCmd) -> Option<Vec<Edit>> {
+    let base = rc.off + 1;
+    let args = &rc.toks[base..];
+    let (mut used, mut pids, mut listing) = (Vec::<usize>::new(), Vec::<String>::new(), false);
+    let (mut i, mut target) = (0, false);
+    while i < args.len() {
+        let (a, wi) = (&args[i], base + i);
+        i += 1;
+        if std::mem::take(&mut target) {
+            continue;
+        }
+        if let Some(bare) = redirect_word(a) {
+            target = bare;
+            continue;
+        }
+        used.push(wi);
+        if let Some(v) = a.strip_prefix("--pid=") {
+            pids.push(v.to_string());
+        } else if a == "--pid" || a == "--format" {
+            used.push(base + i);
+            if a == "--pid" {
+                pids.push(args.get(i)?.clone());
+            }
+            i += 1;
+        } else if a.starts_with("--format=") {
+            // dropped with the rest
+        } else if a.starts_with("--") {
+            return None;
+        } else if a.starts_with('-') && a.chars().count() > 1 {
+            let cs: Vec<char> = a.chars().collect();
+            for k in 1..cs.len() {
+                let c = cs[k];
+                if matches!(c, 'o' | 'O' | 'p') {
+                    let mut val: String = cs[k + 1..].iter().collect();
+                    if val.is_empty() {
+                        val.clone_from(args.get(i)?);
+                        used.push(base + i);
+                        i += 1;
+                    }
+                    if c == 'p' {
+                        pids.push(val);
+                    }
+                    break;
+                }
+                if "CtuUgGsD".contains(c) {
+                    return None;
+                }
+                listing |= "eAaxd".contains(c);
+            }
+        } else if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphabetic()) {
+            listing |= a.contains(['a', 'x']);
+        } else {
+            return None;
+        }
+    }
+    if !pids
+        .iter()
+        .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit() || c == ','))
+    {
+        return None;
+    }
+    let new_args = if !pids.is_empty() {
+        format!("-o {PS_SAFE_FORMAT} -p {}", pids.join(","))
+    } else if listing {
+        format!("-axo {PS_SAFE_FORMAT}")
+    } else {
+        format!("-o {PS_SAFE_FORMAT}")
+    };
+    let Some(&first) = used.first() else {
+        let end = rc.words[rc.off].1;
+        return Some(vec![Edit {
+            start: end,
+            end,
+            text: format!(" {new_args}"),
+        }]);
+    };
+    let mut edits = vec![rc.replace(first, &new_args)];
+    edits.extend(used[1..].iter().map(|&w| rc.cut(w)));
+    Some(edits)
+}
+
+/// True when the command at `rc`, with `edits` applied, is not flagged by `leaks` any more.
+fn fixed_cmd_ok(cmd: &str, rc: &RawCmd, edits: &[Edit], leaks: fn(&[String]) -> bool) -> bool {
+    let (s, e) = rc.seg;
+    let cand = splice(&cmd[s..e], s, edits);
+    shlex_split(&cand)
+        .map(peel)
+        .is_some_and(|t| !t.is_empty() && !leaks(&t[1..]))
+}
+
+/// True when the output of the `ps` at `rc` is read by another command: it sits inside `$(...)` or
+/// backticks, or a pipe takes it to anything but `head`, `tail`, `sort` or `wc`. Other columns would
+/// change what that reader sees (`awk '{print $2}'` would read etime, `grep vite` would find
+/// nothing, because `ucomm` holds no arguments), so such a `ps` is not rewritten.
+fn ps_consumed(cmd: &str, rc: &RawCmd) -> bool {
+    // inside a command substitution: an unclosed `$(` or an odd number of backticks before it
+    let (mut depth, mut ticks, mut single, mut double) = (0i32, 0usize, false, false);
+    let before: Vec<char> = cmd[..rc.seg.0].chars().collect();
+    for (i, &c) in before.iter().enumerate() {
+        match c {
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '`' if !single => ticks += 1,
+            '$' if !single && before.get(i + 1) == Some(&'(') => depth += 1,
+            ')' if !single && depth > 0 => depth -= 1,
+            _ => {}
+        }
+    }
+    if depth > 0 || ticks % 2 == 1 {
+        return true;
+    }
+    // every stage after a single `|` must be one of the four
+    let mut rest = cmd[rc.seg.1..].trim_start();
+    while let Some(after) = rest.strip_prefix('|') {
+        if after.starts_with('|') {
+            break; // `||` is a list, not a pipe
+        }
+        let after = after.strip_prefix('&').unwrap_or(after).trim_start();
+        let end = after
+            .find(['|', ';', '&', '\n', ')'])
+            .unwrap_or(after.len());
+        let stage = &after[..end];
+        let word = stage.split_whitespace().next().unwrap_or("");
+        if !matches!(basename(word), "head" | "tail" | "sort" | "wc") {
+            return true;
+        }
+        rest = after[end..].trim_start();
+    }
+    false
+}
+
+fn fix_ps(cmd: &str, rc: &RawCmd) -> Option<Vec<Edit>> {
+    if ps_consumed(cmd, rc) {
+        return None;
+    }
+    if let Some(edits) = ps_format_edits(cmd, rc)
+        && !edits.is_empty()
+        && fixed_cmd_ok(cmd, rc, &edits, ps_leaks)
+    {
+        return Some(edits);
+    }
+    let edits = ps_full_edits(rc)?;
+    fixed_cmd_ok(cmd, rc, &edits, ps_leaks).then_some(edits)
+}
+
+/// pgrep: `-l` and `-a` leave the flag cluster, `--list-full` becomes `-f`.
+fn fix_pgrep(cmd: &str, rc: &RawCmd) -> Option<Vec<Edit>> {
+    let base = rc.off + 1;
+    let args = &rc.toks[base..];
+    let mut edits = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let (a, wi) = (&args[i], base + i);
+        i += 1;
+        if a == "--list-full" {
+            edits.push(rc.replace(wi, "-f"));
+            continue;
+        }
+        if a.starts_with("--") || !a.starts_with('-') || a.chars().count() < 2 {
+            continue;
+        }
+        let cs: Vec<char> = a.chars().collect();
+        let mut keep = String::from("-");
+        for k in 1..cs.len() {
+            if "dFgGLPrstuU".contains(cs[k]) {
+                keep.extend(&cs[k..]);
+                if k == cs.len() - 1 {
+                    i += 1;
+                }
+                break;
+            }
+            if !matches!(cs[k], 'l' | 'a') {
+                keep.push(cs[k]);
+            }
+        }
+        if keep == *a {
+            continue;
+        }
+        if !rc.plain(cmd, wi) {
+            return None;
+        }
+        edits.push(if keep == "-" {
+            rc.cut(wi)
+        } else {
+            rc.replace(wi, &keep)
+        });
+    }
+    fixed_cmd_ok(cmd, rc, &edits, pgrep_leaks).then_some(edits)
+}
+
+/// The G15 fix: the command with no command lines in its `ps` and `pgrep` calls (`-o pid=,etime=,
+/// ucomm=` for ps, no `-l` or `-a` for pgrep), or None when G15 would not deny it or something is
+/// left to deny: a `local.zsh` read, `procs`, a `ps` filter the rewrite cannot place. The result
+/// passes G15.
+pub fn g15_fix(cmd: &str, cwd: &str) -> Option<String> {
+    bash_leaks(cmd, cwd)?;
+    std::panic::catch_unwind(|| -> Option<String> {
+        let mut edits = Vec::new();
+        for rc in raw_cmds(cmd)? {
+            let toks = &rc.toks[rc.off..];
+            let args = &toks[1..];
+            match basename(&toks[0]) {
+                "ps" if ps_leaks(args) => edits.extend(fix_ps(cmd, &rc)?),
+                "pgrep" if pgrep_leaks(args) => edits.extend(fix_pgrep(cmd, &rc)?),
+                _ => {}
+            }
+        }
+        if edits.is_empty() {
+            return None;
+        }
+        let new = splice(cmd, 0, &edits);
+        bash_leaks(&new, cwd).is_none().then_some(new)
+    })
+    .ok()
+    .flatten()
+}
+
 // --- G16 outbound sends --------------------------------------------------------
 
 /// A body file is read only when it is a regular file under this size; a bigger one asks.
 const MAX_BODY: u64 = 1 << 20;
 
-/// The MCP tools the PreToolUse matcher routes here. `claude/settings.json` names the same words
+/// The MCP tools the `PreToolUse` matcher routes here. `claude/settings.json` names the same words
 /// with explicit `[Ss]` case alternatives (a test compares the two lists).
 static MCP_SEND: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)^mcp__.*(send|post|reply|forward|comment|create_?issue|update_?issue|create_?pull_?request|update_?pull_?request|push_?files|create_?or_?update_?file|publish|upload|submit_?review|draft|message|tweet|notify)",
     )
-    .unwrap()
+    .expect("the MCP send regex literal is valid")
 });
 
 static SECRET_SHAPES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
@@ -1461,13 +2196,19 @@ static SECRET_SHAPES: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
     ]
     .into_iter()
-    .map(|(re, kind)| (Regex::new(re).unwrap(), kind))
+    .map(|(re, kind)| {
+        (
+            Regex::new(re).expect("secret-shape regex literal is valid"),
+            kind,
+        )
+    })
     .collect()
 });
 
 /// `$(`, a backtick or `$name` / `${`: text the shell would still change. The heredoc idiom
 /// `$(cat <<'EOF' ...)` is not opaque: the heredoc is scanned on its own.
-static EXPANSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$[A-Za-z_{(]|`").unwrap());
+static EXPANSION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$[A-Za-z_{(]|`").expect("the expansion regex literal is valid"));
 
 fn is_opaque(text: &str) -> bool {
     EXPANSION.is_match(&text.replace("$(cat <<", ""))
@@ -1569,7 +2310,11 @@ fn read_body_file(path: &str, cwd: &Path) -> Result<String, &'static str> {
     if p.is_empty() || p.contains('$') || p.contains('`') {
         return Err("a body file it cannot read");
     }
-    let full = if Path::new(&p).is_absolute() { PathBuf::from(&p) } else { cwd.join(&p) };
+    let full = if Path::new(&p).is_absolute() {
+        PathBuf::from(&p)
+    } else {
+        cwd.join(&p)
+    };
     let meta = fs::metadata(&full).map_err(|_| "a body file it cannot read")?;
     if !meta.is_file() || meta.len() >= MAX_BODY {
         return Err("a body file it cannot read");
@@ -1630,7 +2375,13 @@ fn parse_opts(args: &[String], short_val: &str, long_val: &[&str], abbr: bool) -
                 Some((k, v)) => (format!("--{k}"), Some(v.to_string())),
                 None => (a.clone(), None),
             };
-            let takes = long_val.iter().any(|f| if abbr { long_matches(&key, f) } else { key == *f });
+            let takes = long_val.iter().any(|f| {
+                if abbr {
+                    long_matches(&key, f)
+                } else {
+                    key == *f
+                }
+            });
             let val = match inline {
                 Some(v) => v,
                 None if takes && i < n => {
@@ -1809,8 +2560,12 @@ fn wget_payload(args: &[String]) -> Option<Payload> {
         if !k.starts_with("--") {
             continue;
         }
-        let data = ["--post-data", "--body-data"].iter().any(|f| long_matches(k, f));
-        let file = ["--post-file", "--body-file"].iter().any(|f| long_matches(k, f));
+        let data = ["--post-data", "--body-data"]
+            .iter()
+            .any(|f| long_matches(k, f));
+        let file = ["--post-file", "--body-file"]
+            .iter()
+            .any(|f| long_matches(k, f));
         p.body = p.body || data || file;
         if data {
             p.texts.push(v.clone());
@@ -1846,12 +2601,15 @@ fn gh_api_payload(args: &[String]) -> Option<Payload> {
     let mut sends = false;
     for (k, v) in &o.opts {
         match k.as_str() {
-            "-X" | "--method" => sends = sends || matches!(v.to_uppercase().as_str(), "POST" | "PUT" | "PATCH"),
+            "-X" | "--method" => {
+                sends = sends || matches!(v.to_uppercase().as_str(), "POST" | "PUT" | "PATCH");
+            }
             "-f" | "-F" | "--field" | "--raw-field" => {
                 sends = true;
                 match v.split_once('=').and_then(|(_, rhs)| rhs.strip_prefix('@')) {
                     Some(f) => {
-                        p.texts.push(v.split_once('=').map_or("", |(name, _)| name).to_string());
+                        p.texts
+                            .push(v.split_once('=').map_or("", |(name, _)| name).to_string());
                         p.file(f);
                     }
                     None => p.texts.push(v.clone()),
@@ -1872,7 +2630,12 @@ fn gh_api_payload(args: &[String]) -> Option<Payload> {
 }
 
 const GH_VERBS: &[(&str, &[&str])] = &[
-    ("pr", &["create", "comment", "review", "edit", "merge", "close", "reopen"]),
+    (
+        "pr",
+        &[
+            "create", "comment", "review", "edit", "merge", "close", "reopen",
+        ],
+    ),
     ("issue", &["create", "comment", "edit", "close", "reopen"]),
     ("release", &["create", "edit", "upload"]),
     ("gist", &["create", "edit"]),
@@ -1947,7 +2710,9 @@ fn gh_text_payload(group: &str, verb: &str, args: &[String]) -> Payload {
             p.stdin = true; // the inputs come from stdin
         } else if matches!(k.as_str(), "-F" | "--body-file" | "--notes-file") {
             p.file(v);
-        } else if matches!(k.as_str(), "-R" | "--repo" | "--head" | "--base" | "-B") || (group == "pr" && k == "-H") {
+        } else if matches!(k.as_str(), "-R" | "--repo" | "--head" | "--base" | "-B")
+            || (group == "pr" && k == "-H")
+        {
             // a repo or branch name is an address, not body text
         } else if !v.is_empty() {
             p.texts.push(v.clone());
@@ -2001,7 +2766,10 @@ fn gh_payload(args: &[String]) -> Option<Payload> {
         return gh_api_payload(rest);
     }
     let verbs = GH_VERBS.iter().find(|(name, _)| *name == group)?.1;
-    verbs.contains(&verb).then(|| Payload { body: true, ..gh_text_payload(group, verb, rest) })
+    verbs.contains(&verb).then(|| Payload {
+        body: true,
+        ..gh_text_payload(group, verb, rest)
+    })
 }
 
 /// The payload of one command when it sends text off the machine (gh, curl, wget).
@@ -2027,11 +2795,15 @@ pub fn g16_applies(tool: &str, input: &Value) -> bool {
     if tool.starts_with("mcp__") {
         return MCP_SEND.is_match(tool);
     }
-    let Some(cmd) = (tool == "Bash").then(|| command_of(input)).flatten() else { return false };
+    let Some(cmd) = (tool == "Bash").then(|| command_of(input)).flatten() else {
+        return false;
+    };
     // no raw-text prefilter: `g''h` and `"curl"` are the same words once the shell has run
     let mut bad = Vec::new();
     let cmds = walk_full(cmd, None, 0, &mut bad);
-    bad.iter().any(|raw| names_outbound_tool(raw, OUTBOUND_TOOLS)) || cmds.iter().any(|c| payload_of(c).is_some())
+    bad.iter()
+        .any(|raw| names_outbound_tool(raw, OUTBOUND_TOOLS))
+        || cmds.iter().any(|c| payload_of(c).is_some())
 }
 
 const OUTBOUND_TOOLS: &[&str] = &["gh", "curl", "wget"];
@@ -2050,12 +2822,38 @@ fn scan_url(url: &str, words: &[String], hosts: &[String], kinds: &mut Vec<Strin
 /// (stdin, a shell expansion, a missing, big or odd file) asks too. `words` are the private words;
 /// the hosts of the `PUBLIC_HOSTS` setting are removed from the text before the word match.
 pub fn g16_outbound(tool: &str, input: &Value, cwd: &Path, words: &[String]) -> Verdict {
-    g16_outbound_with(tool, input, cwd, words, &public_hosts(&crate::paths::home()))
+    g16_outbound_with(
+        tool,
+        input,
+        cwd,
+        words,
+        &public_hosts(&crate::paths::home()),
+    )
+}
+
+/// G16 for one tool call: does it apply, then the private words of the home and the folder, then
+/// [`g16_outbound`]. The Claude guard and the Cursor adapter both call this.
+pub fn g16_run(tool: &str, input: &Value, cwd: &Path) -> Verdict {
+    if !g16_applies(tool, input) {
+        return Verdict::Allow;
+    }
+    let words = private_words_at(&crate::paths::home(), Some(cwd));
+    g16_outbound(tool, input, cwd, &words)
 }
 
 /// [`g16_outbound`] with the public hosts given (lower case, from [`public_hosts`]).
-pub fn g16_outbound_with(tool: &str, input: &Value, cwd: &Path, words: &[String], hosts: &[String]) -> Verdict {
-    let words: Vec<String> = words.iter().map(|w| w.trim().to_lowercase()).filter(|w| !w.is_empty()).collect();
+pub fn g16_outbound_with(
+    tool: &str,
+    input: &Value,
+    cwd: &Path,
+    words: &[String],
+    hosts: &[String],
+) -> Verdict {
+    let words: Vec<String> = words
+        .iter()
+        .map(|w| w.trim().to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect();
     let mut kinds: Vec<String> = Vec::new();
     if tool.starts_with("mcp__") {
         if MCP_SEND.is_match(tool) {
@@ -2072,14 +2870,21 @@ pub fn g16_outbound_with(tool: &str, input: &Value, cwd: &Path, words: &[String]
         let mut sends = false;
         let mut bad = Vec::new();
         let cmds = walk_full(cmd, Some(base.clone()), 0, &mut bad);
-        if bad.iter().any(|raw| names_outbound_tool(raw, OUTBOUND_TOOLS)) {
+        if bad
+            .iter()
+            .any(|raw| names_outbound_tool(raw, OUTBOUND_TOOLS))
+        {
             add_kind(&mut kinds, "a command it cannot parse".to_string());
         }
         for c in cmds {
-            let Some(mut p) = payload_of(&c) else { continue };
+            let Some(mut p) = payload_of(&c) else {
+                continue;
+            };
             sends = sends || p.body;
             let here = PathBuf::from(c.cwd.as_deref().unwrap_or(&base));
-            p.urls.iter().for_each(|u| scan_url(u, &words, hosts, &mut kinds));
+            p.urls
+                .iter()
+                .for_each(|u| scan_url(u, &words, hosts, &mut kinds));
             if p.stdin {
                 // the body comes from stdin: a redirect, a here-string or a heredoc that starts
                 // on this command's own line (not one that belongs to another command)
@@ -2108,7 +2913,10 @@ pub fn g16_outbound_with(tool: &str, input: &Value, cwd: &Path, words: &[String]
             }
             for t in &p.texts {
                 if is_opaque(t) {
-                    add_kind(&mut kinds, "a body it cannot read (a shell expansion)".to_string());
+                    add_kind(
+                        &mut kinds,
+                        "a body it cannot read (a shell expansion)".to_string(),
+                    );
                 } else {
                     scan_text(t, &words, hosts, &mut kinds);
                 }
@@ -2125,7 +2933,10 @@ pub fn g16_outbound_with(tool: &str, input: &Value, cwd: &Path, words: &[String]
                 scan_text(b, &words, hosts, &mut kinds);
             }
             if has_substitution(cmd) {
-                add_kind(&mut kinds, "a body it cannot read (a shell expansion)".to_string());
+                add_kind(
+                    &mut kinds,
+                    "a body it cannot read (a shell expansion)".to_string(),
+                );
             }
         }
     }
@@ -2142,12 +2953,23 @@ pub fn g16_outbound_with(tool: &str, input: &Value, cwd: &Path, words: &[String]
 
 static ATTRIBUTION: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     [
-        (r"(?i)co-authored-by\s*[:=]\s*claude", "a co-author line for the assistant"),
-        (r"(?i)noreply@anthropic\.com", "the vendor's no-reply mail address"),
+        (
+            r"(?i)co-authored-by\s*[:=]\s*claude",
+            "a co-author line for the assistant",
+        ),
+        (
+            r"(?i)noreply@anthropic\.com",
+            "the vendor's no-reply mail address",
+        ),
         (r"(?i)generated\s+with\s+\[?claude", "a generated-with line"),
     ]
     .into_iter()
-    .map(|(re, kind)| (Regex::new(re).unwrap(), kind))
+    .map(|(re, kind)| {
+        (
+            Regex::new(re).expect("attribution regex literal is valid"),
+            kind,
+        )
+    })
     .collect()
 });
 
@@ -2176,7 +2998,8 @@ fn git_message(c: &Cmd, base: &str) -> Option<(Payload, PathBuf)> {
                 }
                 i += 2;
             }
-            "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env" | "--super-prefix" => i += 2,
+            "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--config-env"
+            | "--super-prefix" => i += 2,
             a if a.starts_with('-') => i += 1,
             _ => break,
         }
@@ -2206,7 +3029,10 @@ fn git_message(c: &Cmd, base: &str) -> Option<(Payload, PathBuf)> {
         ],
         false,
     );
-    let mut p = Payload { texts: rest.to_vec(), ..Default::default() };
+    let mut p = Payload {
+        texts: rest.to_vec(),
+        ..Default::default()
+    };
     for (k, v) in &o.opts {
         if k == "-F" || k == "--file" {
             p.file(v);
@@ -2227,7 +3053,10 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
     let mut bad = Vec::new();
     let cmds = walk_full(cmd, Some(base.clone()), 0, &mut bad);
     // a piece that cannot be split into words but names git or gh: judge the whole command text
-    if bad.iter().any(|raw| names_outbound_tool(raw, &["git", "gh"])) {
+    if bad
+        .iter()
+        .any(|raw| names_outbound_tool(raw, &["git", "gh"]))
+    {
         whole = true;
         targeted = true;
     }
@@ -2236,11 +3065,14 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
         let name = name.strip_suffix(".exe").unwrap_or(name);
         let found = match name {
             "git" => git_message(&c, &base),
-            "gh" => gh_split(&c.toks[1..]).filter(|(group, _, _)| G17_GH_GROUPS.contains(group)).map(
-                |(group, verb, rest)| {
-                    (gh_text_payload(group, verb, rest), PathBuf::from(c.cwd.as_deref().unwrap_or(&base)))
-                },
-            ),
+            "gh" => gh_split(&c.toks[1..])
+                .filter(|(group, _, _)| G17_GH_GROUPS.contains(group))
+                .map(|(group, verb, rest)| {
+                    (
+                        gh_text_payload(group, verb, rest),
+                        PathBuf::from(c.cwd.as_deref().unwrap_or(&base)),
+                    )
+                }),
             _ => None,
         };
         let Some((p, dir)) = found else { continue };
@@ -2274,6 +3106,7 @@ pub fn g17_attribution(cmd: &str, cwd: &Path) -> Verdict {
 // --- private words, shadow mode ------------------------------------------------------
 
 /// A child that ended in time: whether it exited with success, and what it wrote to stdout.
+#[derive(Debug)]
 pub struct Finished {
     pub success: bool,
     pub stdout: Vec<u8>,
@@ -2283,7 +3116,12 @@ pub struct Finished {
 /// cannot start or runs past the limit; a child past the limit is killed. The one spawn helper of
 /// the guard, the Cursor adapter and the checks.
 pub fn run_limited(cmd: &mut Command, limit: Duration) -> Option<Finished> {
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
     let mut out = child.stdout.take()?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -2313,16 +3151,30 @@ struct GitIdentity {
 }
 
 fn git_identity(home: &Path, dir: Option<&Path>) -> GitIdentity {
-    let mut found = GitIdentity { url: String::new(), email: String::new(), name: String::new() };
+    let mut found = GitIdentity {
+        url: String::new(),
+        email: String::new(),
+        name: String::new(),
+    };
     let mut c = Command::new("git");
-    c.args(["config", "-z", "--get-regexp", r"^(remote\.origin\.url|user\.(email|name))$"]).env("HOME", home);
+    c.args([
+        "config",
+        "-z",
+        "--get-regexp",
+        r"^(remote\.origin\.url|user\.(email|name))$",
+    ])
+    .env("HOME", home);
     if let Some(d) = dir {
         c.current_dir(d);
     }
-    let Some(done) = run_limited(&mut c, GIT_LOOKUP_LIMIT).filter(|d| d.success) else { return found };
+    let Some(done) = run_limited(&mut c, GIT_LOOKUP_LIMIT).filter(|d| d.success) else {
+        return found;
+    };
     // entries are `key\nvalue` split by NUL; the first url and the last identity win, as in `git config`
     for entry in String::from_utf8_lossy(&done.stdout).split('\0') {
-        let Some((key, value)) = entry.split_once('\n') else { continue };
+        let Some((key, value)) = entry.split_once('\n') else {
+            continue;
+        };
         let value = value.trim().to_string();
         match key {
             "remote.origin.url" if found.url.is_empty() => found.url = value,
@@ -2358,7 +3210,12 @@ pub fn private_words_at(home: &Path, dir: Option<&Path>) -> Vec<String> {
     }
     let git = git_identity(home, dir);
     let url = git.url.to_lowercase();
-    let idents = [crate::setting(home, "GIT_EMAIL"), crate::setting(home, "GIT_NAME"), git.email, git.name];
+    let idents = [
+        crate::setting(home, "GIT_EMAIL"),
+        crate::setting(home, "GIT_NAME"),
+        git.email,
+        git.name,
+    ];
     for raw in idents {
         let name = raw.trim().to_lowercase();
         let joined: String = name.split_whitespace().collect();
@@ -2378,7 +3235,11 @@ pub fn public_hosts(home: &Path) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for h in crate::setting(home, "PUBLIC_HOSTS").split(|c: char| c.is_whitespace() || c == ',') {
         let h = h.to_lowercase();
-        if !h.is_empty() && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') && !out.contains(&h) {
+        if !h.is_empty()
+            && h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            && !out.contains(&h)
+        {
             out.push(h);
         }
     }
@@ -2397,49 +3258,57 @@ pub fn strip_hosts(text: &str, hosts: &[String]) -> String {
 /// True when check `id` runs in shadow mode: it is in env `GUARD_SHADOW` (even an empty one wins)
 /// or else in the `GUARD_SHADOW` setting; a comma or space list.
 pub fn shadow(check: Check) -> bool {
-    let raw = env::var("GUARD_SHADOW").unwrap_or_else(|_| crate::setting(&crate::paths::home(), "GUARD_SHADOW"));
-    raw.split(|c: char| c.is_whitespace() || c == ',').any(|p| p.eq_ignore_ascii_case(check.id()))
+    let raw = env::var("GUARD_SHADOW")
+        .unwrap_or_else(|_| crate::setting(&crate::paths::home(), "GUARD_SHADOW"));
+    raw.split(|c: char| c.is_whitespace() || c == ',')
+        .any(|p| p.eq_ignore_ascii_case(check.id()))
 }
 
 fn unix_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    u64::try_from(crate::paths::unix_now()).unwrap_or(0)
 }
 
-/// What a check did when it fired, as the fire log spells it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FireKind {
-    Deny,
-    Ask,
+/// One line per kind: the variant, then the word the fire log spells it with. The enum, the list of
+/// all kinds and `as_str` come from this one table.
+macro_rules! fire_kinds {
+    ($($(#[$doc:meta])* $v:ident => $word:literal,)+) => {
+        /// What a check did when it fired, as the fire log spells it.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum FireKind {
+            $($(#[$doc])* $v,)+
+        }
+
+        impl FireKind {
+            const ALL: &'static [Self] = &[$(Self::$v),+];
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$v => $word,)+
+                }
+            }
+        }
+    };
+}
+
+fire_kinds! {
+    Deny => "deny",
+    Ask => "ask",
     /// a Stop reminder
-    Stop,
-    Warn,
-    Hint,
-    Note,
+    Stop => "stop",
+    Warn => "warn",
+    Hint => "hint",
+    Note => "note",
     /// the router changed or annotated an Agent call
-    Route,
+    Route => "route",
     /// a shadow-mode check that would have fired
-    Shadow,
+    Shadow => "shadow",
+    /// a check fixed the call (`updatedInput`) instead of denying it
+    Rewrite => "rewrite",
 }
 
 impl FireKind {
-    const ALL: [Self; 8] =
-        [Self::Deny, Self::Ask, Self::Stop, Self::Warn, Self::Hint, Self::Note, Self::Route, Self::Shadow];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Deny => "deny",
-            Self::Ask => "ask",
-            Self::Stop => "stop",
-            Self::Warn => "warn",
-            Self::Hint => "hint",
-            Self::Note => "note",
-            Self::Route => "route",
-            Self::Shadow => "shadow",
-        }
-    }
-
     pub fn parse(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|k| k.as_str() == s)
+        Self::ALL.iter().copied().find(|k| k.as_str() == s)
     }
 }
 
@@ -2497,7 +3366,11 @@ pub fn read_fires(text: &str) -> Vec<Fire> {
         .filter_map(|l| {
             let mut p = l.split_whitespace();
             let at = p.next()?.parse().ok()?;
-            Some(Fire { at, check: Check::parse(p.next()?)?, kind: FireKind::parse(p.next()?)? })
+            Some(Fire {
+                at,
+                check: Check::parse(p.next()?)?,
+                kind: FireKind::parse(p.next()?)?,
+            })
         })
         .collect()
 }
@@ -2515,116 +3388,97 @@ pub fn shadow_log(check: Check, v: &Verdict, summary: &str) {
         Verdict::Ask(_) => "ask",
         Verdict::Deny(_) => "deny",
     };
-    let one_line: String = summary.chars().map(|c| if c.is_control() { ' ' } else { c }).take(200).collect();
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("dots-guard-shadow.log")) {
+    let one_line: String = summary
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(200)
+        .collect();
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("dots-guard-shadow.log"))
+    {
         let _ = writeln!(f, "{} {id} {what} {one_line}", unix_secs());
     }
 }
 
 // --- the gate: which checks run ------------------------------------------------------
 
-/// One guard check. The ids match the `guard:` lists in `claude/presets/*/rules.md`; a test compares
-/// the two. The Claude guard, the Cursor adapter and the Opencode plugin (through the guard) all
-/// read [`REGISTRY`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Check {
-    G1,
-    G2,
-    G3,
-    G4,
-    G5,
-    G6,
-    G7,
-    G12,
-    G13,
-    H1,
-    W5,
-    G18,
-    G19,
-    G20,
-    G8,
-    Pace,
-    G9,
-    Router,
-    G10,
-    G11,
-    G17,
-    G14,
-    G15,
-    G16,
+/// One line per guard check: the variant, its id as `GUARD_OFF` and the preset lists spell it, and
+/// the preset that owns it (`core` is always on). The enum, `id` and [`REGISTRY`] come from this one
+/// table, so a new check is one line.
+macro_rules! checks {
+    ($($v:ident => ($id:literal, $preset:literal),)+) => {
+        /// One guard check. The ids match the `guard:` lists in `claude/presets/*/rules.md`; a test
+        /// compares the two. The Claude guard, the Cursor adapter and the Opencode plugin (through
+        /// the guard) all read [`REGISTRY`].
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Check {
+            $($v,)+
+        }
+
+        impl Check {
+            /// The id as `GUARD_OFF` and the preset lists spell it.
+            pub const fn id(self) -> &'static str {
+                match self {
+                    $(Self::$v => $id,)+
+                }
+            }
+        }
+
+        /// Every check and the preset that owns it.
+        pub const REGISTRY: &[(Check, &str)] = &[$((Check::$v, $preset),)+];
+    };
+}
+
+checks! {
+    G1 => ("G1", "workflow"),
+    G2 => ("G2", "workflow"),
+    G3 => ("G3", "workflow"),
+    G4 => ("G4", "workflow"),
+    G5 => ("G5", "workflow"),
+    G6 => ("G6", "workflow"),
+    G7 => ("G7", "workflow"),
+    G12 => ("G12", "workflow"),
+    G13 => ("G13", "workflow"),
+    H1 => ("H1", "workflow"),
+    H2 => ("H2", "workflow"),
+    W5 => ("W5", "workflow"),
+    G18 => ("G18", "workflow"),
+    G19 => ("G19", "workflow"),
+    G20 => ("G20", "workflow"),
+    G8 => ("G8", "pace"),
+    Pace => ("PACE", "pace"),
+    G9 => ("G9", "models"),
+    Router => ("ROUTER", "models"),
+    G10 => ("G10", "ship-to-main"),
+    G11 => ("G11", "clock"),
+    G17 => ("G17", "no-ai-attribution"),
+    G14 => ("G14", "core"),
+    G15 => ("G15", "core"),
+    G16 => ("G16", "core"),
 }
 
 impl Check {
-    /// The id as `GUARD_OFF` and the preset lists spell it.
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::G1 => "G1",
-            Self::G2 => "G2",
-            Self::G3 => "G3",
-            Self::G4 => "G4",
-            Self::G5 => "G5",
-            Self::G6 => "G6",
-            Self::G7 => "G7",
-            Self::G12 => "G12",
-            Self::G13 => "G13",
-            Self::H1 => "H1",
-            Self::W5 => "W5",
-            Self::G18 => "G18",
-            Self::G19 => "G19",
-            Self::G20 => "G20",
-            Self::G8 => "G8",
-            Self::Pace => "PACE",
-            Self::G9 => "G9",
-            Self::Router => "ROUTER",
-            Self::G10 => "G10",
-            Self::G11 => "G11",
-            Self::G17 => "G17",
-            Self::G14 => "G14",
-            Self::G15 => "G15",
-            Self::G16 => "G16",
-        }
-    }
-
     /// The check named `id`, in any case.
     pub fn parse(id: &str) -> Option<Self> {
-        REGISTRY.iter().map(|(c, _)| *c).find(|c| c.id().eq_ignore_ascii_case(id))
+        REGISTRY
+            .iter()
+            .map(|(c, _)| *c)
+            .find(|c| c.id().eq_ignore_ascii_case(id))
     }
 
     /// The preset that owns the check (`core` is always on).
     pub fn preset(self) -> &'static str {
-        REGISTRY.iter().find(|(c, _)| *c == self).map_or("core", |(_, p)| p)
+        REGISTRY
+            .iter()
+            .find(|(c, _)| *c == self)
+            .map_or("core", |(_, p)| p)
     }
 }
 
-/// Every check and the preset that owns it.
-pub const REGISTRY: &[(Check, &str)] = &[
-    (Check::G1, "workflow"),
-    (Check::G2, "workflow"),
-    (Check::G3, "workflow"),
-    (Check::G4, "workflow"),
-    (Check::G5, "workflow"),
-    (Check::G6, "workflow"),
-    (Check::G7, "workflow"),
-    (Check::G12, "workflow"),
-    (Check::G13, "workflow"),
-    (Check::H1, "workflow"),
-    (Check::W5, "workflow"),
-    (Check::G18, "workflow"),
-    (Check::G19, "workflow"),
-    (Check::G20, "workflow"),
-    (Check::G8, "pace"),
-    (Check::Pace, "pace"),
-    (Check::G9, "models"),
-    (Check::Router, "models"),
-    (Check::G10, "ship-to-main"),
-    (Check::G11, "clock"),
-    (Check::G17, "no-ai-attribution"),
-    (Check::G14, "core"),
-    (Check::G15, "core"),
-    (Check::G16, "core"),
-];
-
 /// What the gate reads from the settings: the checks switched off and the presets that are on.
+#[derive(Debug)]
 pub struct Gate {
     pub off: Vec<Check>,
     pub presets: Vec<String>,
@@ -2633,7 +3487,13 @@ pub struct Gate {
 impl Gate {
     /// Every preset on, nothing off: the answer when the settings cannot be read.
     pub fn all_on() -> Self {
-        Self { off: Vec::new(), presets: crate::presets::ALL.iter().map(ToString::to_string).collect() }
+        Self {
+            off: Vec::new(),
+            presets: crate::presets::ALL
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        }
     }
 
     /// Read `GUARD_OFF` (env, even an empty one, else the setting; a comma or space list) and the
@@ -2641,9 +3501,15 @@ impl Gate {
     pub fn load(home: &Path) -> Self {
         std::panic::catch_unwind(|| {
             let raw = env::var("GUARD_OFF").unwrap_or_else(|_| crate::setting(home, "GUARD_OFF"));
-            let off = raw.split(|c: char| c.is_whitespace() || c == ',').filter_map(Check::parse).collect();
+            let off = raw
+                .split(|c: char| c.is_whitespace() || c == ',')
+                .filter_map(Check::parse)
+                .collect();
             let profile = crate::presets::profile(home);
-            Self { off, presets: crate::presets::enabled_quiet(home, &profile) }
+            Self {
+                off,
+                presets: crate::presets::enabled_quiet(home, &profile),
+            }
         })
         .unwrap_or_else(|_| Self::all_on())
     }
@@ -2664,7 +3530,48 @@ impl Gate {
 /// [`Gate::enabled`] for this process, with the gate read once from the user's home.
 pub fn check_enabled(check: Check) -> bool {
     static GATE: std::sync::OnceLock<Gate> = std::sync::OnceLock::new();
-    GATE.get_or_init(|| Gate::load(&crate::paths::home())).enabled(check)
+    GATE.get_or_init(|| Gate::load(&crate::paths::home()))
+        .enabled(check)
+}
+
+/// Run `f`; None when it panicked. The hooks fail open, so a panic in a check never stops a call.
+pub fn guarded<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
+/// A check in shadow mode (`GUARD_SHADOW`) logs what it would have done and lets the call through:
+/// an ask or deny becomes Allow. Any other verdict, or a check not in shadow mode, stays as it is.
+pub fn shadowed(check: Check, v: Verdict) -> Verdict {
+    match &v {
+        Verdict::Ask(m) | Verdict::Deny(m) if shadow(check) => {
+            shadow_log(check, &v, m);
+            Verdict::Allow
+        }
+        _ => v,
+    }
+}
+
+/// Put an ask or a deny of `check` into the fire log. True when it was one (the call is stopped).
+pub fn log_verdict(check: Check, v: &Verdict) -> bool {
+    let kind = match v {
+        Verdict::Allow => return false,
+        Verdict::Ask(_) => FireKind::Ask,
+        Verdict::Deny(_) => FireKind::Deny,
+    };
+    fire_log(check, kind);
+    true
+}
+
+/// Run check `check` when its gate is open (preset on, not in `GUARD_OFF`): `f` is its verdict, a
+/// panic counts as Allow, shadow mode turns an ask or deny into Allow, and an ask or deny goes to the
+/// fire log. The Claude guard and the Cursor adapter share this.
+pub fn run_gated(check: Check, f: impl FnOnce() -> Verdict) -> Verdict {
+    if !check_enabled(check) {
+        return Verdict::Allow;
+    }
+    let v = shadowed(check, guarded(f).unwrap_or(Verdict::Allow));
+    log_verdict(check, &v);
+    v
 }
 
 #[cfg(test)]
@@ -2672,14 +3579,126 @@ mod tests {
     use super::*;
 
     #[test]
+    fn h2_matches_whole_phrases_in_priority_order() {
+        let m = |p: &str| h2_match(p).map(|(s, w)| (s, w.to_lowercase()));
+        assert_eq!(
+            m("Please archive this session now"),
+            Some(("mic-drop", "archive this session".into()))
+        );
+        assert_eq!(m("what\u{2019}s  left?").map(|x| x.0), Some("whatsleft")); // typographic quote, two spaces
+        assert_eq!(m("What's left?"), Some(("whatsleft", "what's left".into())));
+        assert_eq!(m("things are slow"), Some(("whatsleft", "slow".into())));
+        assert_eq!(m("it runs slowly"), None); // whole words only
+        assert_eq!(
+            m("find 5 options for x"),
+            Some(("captain-research", "find 5 options".into()))
+        );
+        assert_eq!(m("find some options"), None);
+        // the first set wins: mic-drop before whatsleft before autopilot
+        assert_eq!(
+            m("wrap up, it is slow, autopilot").map(|x| x.0),
+            Some("mic-drop")
+        );
+        assert_eq!(m("it is slow, autopilot").map(|x| x.0), Some("whatsleft"));
+        // a slash command or a command message gets no hint
+        assert_eq!(m("/ps:autopilot overnight"), None);
+        assert_eq!(m("<command-message>x</command-message> wrap up"), None);
+    }
+
+    #[test]
     fn shlex_matches_python() {
         let split = |s: &str| shlex_split(s);
-        assert_eq!(split("a 'b c' \"d e\" f\\ g"), Some(vec!["a".into(), "b c".into(), "d e".into(), "f g".into()]));
-        assert_eq!(split("echo \"a\\\"b\" 'c\\d'"), Some(vec!["echo".into(), "a\"b".into(), "c\\d".into()]));
-        assert_eq!(split("x '' y"), Some(vec!["x".into(), String::new(), "y".into()]));
+        assert_eq!(
+            split("a 'b c' \"d e\" f\\ g"),
+            Some(vec!["a".into(), "b c".into(), "d e".into(), "f g".into()])
+        );
+        assert_eq!(
+            split("echo \"a\\\"b\" 'c\\d'"),
+            Some(vec!["echo".into(), "a\"b".into(), "c\\d".into()])
+        );
+        assert_eq!(
+            split("x '' y"),
+            Some(vec!["x".into(), String::new(), "y".into()])
+        );
         assert_eq!(split("unbalanced 'quote"), None);
         assert_eq!(split("trailing \\"), None);
         assert_eq!(split("   "), Some(vec![]));
+    }
+
+    #[test]
+    fn segments_carry_the_line_they_start_on() {
+        let got = segments("echo $(ls) `pwd`\nls \\\n -l; echo 'a\nb' | cat\nx");
+        let lines: Vec<(&str, usize)> = got.iter().map(|(t, l)| (t.trim(), *l)).collect();
+        assert_eq!(
+            lines,
+            [
+                ("echo", 0),
+                ("ls", 0),
+                ("", 0),
+                ("pwd", 0),
+                ("", 0),
+                ("ls \\\n -l", 1),
+                ("echo 'a\nb'", 2),
+                ("cat", 3),
+                ("x", 4)
+            ]
+        );
+    }
+
+    #[test]
+    fn home_env_reads_userprofile_only_on_windows() {
+        let only_profile = |k: &str| (k == "USERPROFILE").then(|| "C:/Users/x".to_string());
+        assert_eq!(home_env(true, only_profile).as_deref(), Some("C:/Users/x"));
+        assert_eq!(home_env(false, only_profile), None);
+        let both = |k: &str| Some(if k == "HOME" { "/h" } else { "C:/Users/x" }.to_string());
+        assert_eq!(home_env(true, both).as_deref(), Some("/h"), "HOME wins");
+    }
+
+    #[test]
+    fn ampersand_redirect_ends_the_file_arguments() {
+        for w in ["&>f", "&>", "&>>f", ">f", "2>&1", "<in"] {
+            assert!(is_redirect(w), "{w}");
+        }
+        for w in ["f", "&", "-n", "2"] {
+            assert!(!is_redirect(w), "{w}");
+        }
+        let args = |a: &[&str]| a.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(cat_file(&args(&["&>out", "x"])), None);
+        assert_eq!(cat_file(&args(&["x", "&>out"])).as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn raw_words_match_shlex() {
+        for cmd in [
+            "a 'b c' \"d e\" f\\ g",
+            "x '' y",
+            "  sed   -i\ts/a/b/ ",
+            "echo \"a\\\"b\" 'c\\d'",
+        ] {
+            let spans = raw_words(cmd, 0, cmd.len());
+            let split = shlex_split(cmd).unwrap();
+            assert_eq!(spans.len(), split.len(), "{cmd:?}");
+        }
+        assert_eq!(raw_words("ab  'c d'", 0, 9), vec![(0, 2), (4, 9)]);
+    }
+
+    #[test]
+    fn g14_fix_cases() {
+        assert_eq!(
+            g14_fix("sed -i 's/a/b/' f", true).as_deref(),
+            Some("sed -i '' 's/a/b/' f")
+        );
+        assert_eq!(
+            g14_fix("sed -i 's/a/b/' f", false),
+            None,
+            "Linux sed takes no suffix word"
+        );
+        assert_eq!(g14_fix("sed -i '' s/a/b/ f", true), None);
+        assert_eq!(g14_fix("sed 'unbalanced -i", true), None);
+        assert_eq!(
+            g14_fix("sed -i é f", true).as_deref(),
+            Some("sed -i '' é f")
+        );
     }
 
     #[test]
@@ -2715,8 +3734,14 @@ mod tests {
 
     #[test]
     fn heredoc_bodies_are_collected() {
-        assert_eq!(heredoc_bodies("cat <<E\nsed -i x\nE\nls"), vec!["sed -i x\n"]);
-        assert_eq!(heredoc_bodies("a <<A; b <<B\none\nA\ntwo\nB"), vec!["one\n", "two\n"]);
+        assert_eq!(
+            heredoc_bodies("cat <<E\nsed -i x\nE\nls"),
+            vec!["sed -i x\n"]
+        );
+        assert_eq!(
+            heredoc_bodies("a <<A; b <<B\none\nA\ntwo\nB"),
+            vec!["one\n", "two\n"]
+        );
         assert_eq!(heredoc_bodies("cat <<E\nopen"), vec!["open\n"]);
         assert_eq!(heredoc_bodies("echo hi"), [] as [String; 0]);
     }
@@ -2740,8 +3765,12 @@ mod tests {
         assert!(has_substitution("gh pr create --body \"$(cat f)\""));
         assert!(has_substitution("gh pr create --body `cat f`"));
         assert!(!has_substitution("gh pr create --body '$(cat f)'"));
-        assert!(!has_substitution("gh pr create --body \"$(cat <<'EOF'\nx\nEOF\n)\""));
-        assert!(has_substitution("gh pr create --body \"$(cat <<'EOF'\nx\nEOF\n)\" $(date)"));
+        assert!(!has_substitution(
+            "gh pr create --body \"$(cat <<'EOF'\nx\nEOF\n)\""
+        ));
+        assert!(has_substitution(
+            "gh pr create --body \"$(cat <<'EOF'\nx\nEOF\n)\" $(date)"
+        ));
         assert!(!has_substitution("gh pr create --body \\$(x)"));
     }
 
@@ -2752,19 +3781,41 @@ mod tests {
         fire_log_at(&p, Check::G12, FireKind::Stop);
         fire_log_at(&p, Check::Pace, FireKind::Note);
         let text = fs::read_to_string(&p).unwrap();
-        assert!(text.contains(" G12 stop\n") && text.contains(" PACE note\n"), "{text}");
+        assert!(
+            text.contains(" G12 stop\n") && text.contains(" PACE note\n"),
+            "{text}"
+        );
         let got = read_fires(&text);
         let ids: Vec<_> = got.iter().map(|f| (f.check, f.kind)).collect();
-        assert_eq!(ids, [(Check::G12, FireKind::Stop), (Check::Pace, FireKind::Note)]);
+        assert_eq!(
+            ids,
+            [(Check::G12, FireKind::Stop), (Check::Pace, FireKind::Note)]
+        );
         assert!(got[0].at > 1_700_000_000);
         let bad = "junk\n12 G1\n\nx G2 deny\n5 G99 deny\n5 G1 bark\n5 g1 deny\n";
-        assert_eq!(read_fires(bad), [Fire { at: 5, check: Check::G1, kind: FireKind::Deny }], "bad lines are skipped");
+        assert_eq!(
+            read_fires(bad),
+            [Fire {
+                at: 5,
+                check: Check::G1,
+                kind: FireKind::Deny
+            }],
+            "bad lines are skipped"
+        );
         fs::write(&p, "x".repeat(usize::try_from(FIRE_LOG_MAX).unwrap() + 1)).unwrap();
         fire_log_at(&p, Check::G1, FireKind::Deny);
-        assert_eq!(read_fires(&fs::read_to_string(&p).unwrap()).len(), 1, "a full log moves to .old");
+        assert_eq!(
+            read_fires(&fs::read_to_string(&p).unwrap()).len(),
+            1,
+            "a full log moves to .old"
+        );
         assert!(dir.path().join("sub/fires.log.old").exists());
         fs::write(dir.path().join("sub/fires.log.old"), "7 G2 warn\n").unwrap();
         let both: Vec<_> = read_fire_log(&p).into_iter().map(|f| f.check).collect();
-        assert_eq!(both, [Check::G2, Check::G1], "the rolled file is read first");
+        assert_eq!(
+            both,
+            [Check::G2, Check::G1],
+            "the rolled file is read first"
+        );
     }
 }

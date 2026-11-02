@@ -1,55 +1,21 @@
 //! W5 (preset workflow): a plain check command that already passed in this session, with the git work
 //! tree unchanged since, gets a note to skip it. Warn only. Runs the `guard` bin on a temp git repo.
 
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
+
 mod common;
 
-use common::{run_bin, temp_home};
+use common::GuardRepo as W;
+use common::{git, run_bin, temp_home};
 use serde_json::{Value, json};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::Path;
 
 const GUARD: &str = env!("CARGO_BIN_EXE_guard");
-static SID: AtomicUsize = AtomicUsize::new(0);
-
-struct W {
-    repo: PathBuf,
-    tmp: PathBuf,
-    sid: String,
-}
-
-fn git(repo: &Path, args: &[&str]) {
-    let st = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .unwrap();
-    assert!(st.status.success(), "{args:?}: {}", String::from_utf8_lossy(&st.stderr));
-}
 
 impl W {
     fn new() -> Self {
-        let base = temp_home("w5");
-        let repo = base.join("repo");
-        fs::create_dir_all(&repo).unwrap();
-        fs::write(repo.join("a.txt"), "one\n").unwrap();
-        git(&repo, &["init", "-q"]);
-        git(&repo, &["add", "."]);
-        git(&repo, &["commit", "-qm", "init"]);
-        let n = SID.fetch_add(1, Ordering::SeqCst);
-        Self { repo, tmp: base.join("tmp"), sid: format!("w5-{}-{n}", std::process::id()) }
-    }
-
-    fn run(&self, mode: &str, event: &Value, env: &[(&str, &str)]) -> (i32, String, String) {
-        let tmp = self.tmp.to_string_lossy().into_owned();
-        let home = self.tmp.join("home").to_string_lossy().into_owned();
-        let mut e = vec![("TMPDIR", tmp.as_str()), ("HOME", home.as_str())];
-        e.extend_from_slice(env);
-        fs::create_dir_all(&self.tmp).unwrap();
-        fs::create_dir_all(self.tmp.join("home")).unwrap();
-        run_bin(GUARD, &[mode], &event.to_string(), &e, Some(&self.repo))
+        Self::init("w5", &[("a.txt", "one\n")])
     }
 
     fn event(&self, cmd: &str, cwd: &Path) -> Value {
@@ -68,13 +34,20 @@ impl W {
             return None;
         }
         let v: Value = serde_json::from_str(&out).unwrap();
-        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or("").to_string();
+        let ctx = v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         ctx.contains("W5").then_some(ctx)
     }
 
-    /// The Bash call ended with success (PostToolUse).
+    /// The Bash call ended with success (`PostToolUse`).
     fn passed(&self, cmd: &str) {
-        self.passed_in(cmd, &self.repo, json!({"stdout": "ok", "stderr": "", "interrupted": false}));
+        self.passed_in(
+            cmd,
+            &self.repo,
+            json!({"stdout": "ok", "stderr": "", "interrupted": false}),
+        );
     }
 
     fn passed_in(&self, cmd: &str, cwd: &Path, response: Value) {
@@ -108,7 +81,10 @@ fn an_edit_in_between_clears_it() {
     assert!(w.pre("cargo test").is_none(), "a new file");
     w.passed("cargo test");
     fs::write(w.repo.join("b.txt"), "newer content\n").unwrap();
-    assert!(w.pre("cargo test").is_none(), "an untracked file changed again");
+    assert!(
+        w.pre("cargo test").is_none(),
+        "an untracked file changed again"
+    );
     w.passed("cargo test");
     git(&w.repo, &["add", "."]);
     git(&w.repo, &["commit", "-qm", "more"]);
@@ -125,7 +101,11 @@ fn a_failed_run_does_not_count() {
     w.run("posttoolfailure", &ev, &[]);
     assert!(w.pre("pnpm check").is_none());
     // an interrupted run does not count either
-    w.passed_in("pnpm check", &w.repo, json!({"stdout": "", "stderr": "", "interrupted": true}));
+    w.passed_in(
+        "pnpm check",
+        &w.repo,
+        json!({"stdout": "", "stderr": "", "interrupted": true}),
+    );
     assert!(w.pre("pnpm check").is_none());
 }
 
@@ -133,7 +113,13 @@ fn a_failed_run_does_not_count() {
 fn a_different_command_does_not_count() {
     let w = W::new();
     w.passed("pnpm check");
-    for other in ["pnpm test", "pnpm check:fast", "pnpm run check --staged", "cargo test", "ls"] {
+    for other in [
+        "pnpm test",
+        "pnpm check:fast",
+        "pnpm run check --staged",
+        "cargo test",
+        "ls",
+    ] {
         assert!(w.pre(other).is_none(), "{other}");
     }
     // spaces do not matter
@@ -155,7 +141,10 @@ fn a_cd_step_and_an_env_prefix_are_fine() {
     let w = W::new();
     w.passed("cd app && CI=1 pnpm run test");
     assert!(w.pre("cd app && CI=1 pnpm run test").is_some());
-    assert!(w.pre("pnpm run test").is_none(), "another shape of the same command");
+    assert!(
+        w.pre("pnpm run test").is_none(),
+        "another shape of the same command"
+    );
 }
 
 #[test]
@@ -181,13 +170,22 @@ fn outside_git_it_says_nothing() {
 fn guard_off_turns_it_off() {
     let w = W::new();
     w.passed("pnpm check");
-    assert!(w.pre_in("pnpm check", &w.repo, &[("GUARD_OFF", "W5")]).is_none());
+    assert!(
+        w.pre_in("pnpm check", &w.repo, &[("GUARD_OFF", "W5")])
+            .is_none()
+    );
     assert!(w.pre("pnpm check").is_some());
 }
 
 #[test]
 fn garbage_input_fails_open() {
-    let (code, out, _) = run_bin(GUARD, &["posttool"], "{\"tool_name\": \"Bash\", \"tool_input\": 5}", &[], None);
+    let (code, out, _) = run_bin(
+        GUARD,
+        &["posttool"],
+        "{\"tool_name\": \"Bash\", \"tool_input\": 5}",
+        &[],
+        None,
+    );
     assert_eq!((code, out.as_str()), (0, ""));
     let (code, out, _) = run_bin(
         GUARD,

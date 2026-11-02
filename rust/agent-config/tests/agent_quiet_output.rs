@@ -4,6 +4,8 @@
 //!
 //! The skip and written counters and the verbose switch are process-wide. They live in a test file of
 //! their own, with a lock, so no other test spends the counts.
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 use agent_config::out::{self, capture, header, ok, set_verbose, skip, wrote};
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
@@ -12,7 +14,9 @@ static LOCK: Mutex<()> = Mutex::new(());
 
 /// A quiet run (verbose off, no colour) with the counters spent.
 fn quiet() -> MutexGuard<'static, ()> {
-    let g = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let g = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     set_verbose(false);
     out::set_color(false);
     call(|| out::summary("drain"));
@@ -22,10 +26,13 @@ fn quiet() -> MutexGuard<'static, ()> {
 /// What `f` printed to stdout.
 fn call(f: impl FnOnce()) -> String {
     let ((), lines) = capture(f);
-    lines.iter().filter(|(_, err)| !err).fold(String::new(), |mut acc, (l, _)| {
-        let _ = writeln!(acc, "{l}");
-        acc
-    })
+    lines
+        .iter()
+        .filter(|(_, err)| !err)
+        .fold(String::new(), |mut acc, (l, _)| {
+            let _ = writeln!(acc, "{l}");
+            acc
+        })
 }
 
 #[test]
@@ -37,7 +44,10 @@ fn test_skip_counts_and_summary_prints_one_line() {
         skip("c");
     });
     assert_eq!(o, "");
-    assert_eq!(call(|| out::summary("Opencode config")), "• Opencode config: 3 up to date\n");
+    assert_eq!(
+        call(|| out::summary("Opencode config")),
+        "• Opencode config: 3 up to date\n"
+    );
     assert_eq!(call(|| out::summary("Opencode config")), ""); // the count is spent
 }
 
@@ -51,7 +61,10 @@ fn test_written_files_keep_their_line_and_join_the_count() {
     });
     assert!(o.contains("✓ wrote ~/x"), "{o}");
     assert!(o.contains("✓ removed ~/y"), "{o}");
-    assert_eq!(call(|| out::summary("Cursor config")), "• Cursor config: 1 up to date, 1 written\n");
+    assert_eq!(
+        call(|| out::summary("Cursor config")),
+        "• Cursor config: 1 up to date, 1 written\n"
+    );
 }
 
 #[test]

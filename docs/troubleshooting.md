@@ -11,8 +11,8 @@ means a Rust program is older than its source or not built: run `dots`.
 `still working on <step> (1m20s)…` every minute. The last line is always `dotfiles: done in <time>`.
 No new line for several minutes: press Ctrl-C and run `dots -v` to see every command.
 
-**`~/.claude` did not get linked.** You ran `./dotfiles` inside a Claude Code session, which can
-race Claude rewriting `~/.claude`. Run `dots` again from a plain shell.
+**`~/.claude` did not get linked.** You ran `./dotfiles` inside a Claude Code session
+([why not](install.md)). Run `dots` again from a plain shell.
 
 **`brew bundle` says "Permission denied".** Another user owns Homebrew. Run
 `~/dotfiles/scripts/fix-brew-permissions.sh`, then `dots`.

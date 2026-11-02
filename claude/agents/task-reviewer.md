@@ -39,9 +39,6 @@ earlier findings. If the task text or the diff range is missing, say so in one l
   In round 3, or when the caller says it is the last round, and you are still not satisfied,
   say so plainly on line 1 (`CHANGES NEEDED: not satisfied after round 3`).
 - Pre-existing problems outside the diff are not findings. Name at most one in a "Noted" line.
-- Run git plainly from the repo or worktree root, one command per Bash call: no `cd … &&`,
-  no heredoc, no `$()`. Never `sleep` to wait.
-- To separate output, use `echo '---'`. zsh runs `echo =====` as a command lookup and fails.
 - If a command is denied or fails for a reason that is not the code, say so; do not guess its result.
 
 ## Basics (every helper)
@@ -72,5 +69,4 @@ Findings:
 ```
 
 "No defects" in one line when there are none. Hard cap: 3,000 characters, or the caller's cap
-when it names one. You have no Write tool, so cut to the blocking findings first. Count before
-you hand back: a hook sends an over-cap hand-back back to you.
+when it names one. You have no Write tool, so cut to the blocking findings first.

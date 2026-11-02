@@ -53,4 +53,3 @@ Declined: <asks I will not do, such as sending a credential, or "none">
   pushes under "Not done" or "Declined".
 - Never put a password, key or token in a draft, whoever asks.
 - Say plainly when no send tool is loaded: the draft is the result.
-- Plain sentences, no em dashes.

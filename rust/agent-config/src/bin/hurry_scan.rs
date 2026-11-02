@@ -32,9 +32,27 @@ macro_rules! out {
     ($($a:tt)*) => { let _ = writeln!(io::stdout(), $($a)*); };
 }
 
-static WS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-static MODEL5: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"claude-(opus|sonnet|fable)-5").unwrap());
-static MCP_SERVER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^mcp__(.+?)__").unwrap());
+static WS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+").expect("the literal regex is valid"));
+static MODEL5: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"claude-(opus|sonnet|fable)-5").expect("the literal regex is valid")
+});
+static MCP_SERVER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^mcp__(.+?)__").expect("the literal regex is valid"));
+
+/// A count as an `i64`; a count too big for it saturates.
+fn to_i64(n: usize) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
+}
+
+/// A float as an `i64`; out of range values saturate and NaN gives 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float to int cast saturates and maps NaN to 0, which is the wanted result"
+)]
+fn f64_to_i64(x: f64) -> i64 {
+    x as i64
+}
 
 // ---------------------------------------------------------------------------
 // Python-compat helpers
@@ -55,7 +73,7 @@ fn pyround1(x: f64) -> f64 {
     format!("{x:.1}").parse().unwrap_or(x)
 }
 
-/// json.dumps(v, indent=2) with ensure_ascii.
+/// json.dumps(v, indent=2) with `ensure_ascii`.
 fn dumps_indent(v: &Value, level: usize, out: &mut String) {
     let pad = |n: usize| "  ".repeat(n);
     match v {
@@ -115,13 +133,18 @@ fn clen(s: &str) -> usize {
 /// open(path, errors="replace") with universal newlines.
 fn read_text(p: &Path) -> String {
     match fs::read(p) {
-        Ok(b) => String::from_utf8_lossy(&b).replace("\r\n", "\n").replace('\r', "\n"),
+        Ok(b) => String::from_utf8_lossy(&b)
+            .replace("\r\n", "\n")
+            .replace('\r', "\n"),
         Err(_) => String::new(),
     }
 }
 
 fn load_json(p: &Path) -> Value {
-    match fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+    match fs::read(p)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    {
         Some(v) if v.is_object() => v,
         _ => Value::Object(Map::new()),
     }
@@ -135,7 +158,11 @@ fn human(n: f64) -> String {
     let mut n = n;
     for unit in ["B", "KB", "MB", "GB"] {
         if n < 1024.0 || unit == "GB" {
-            return if unit == "B" { format!("{n:.0}{unit}") } else { format!("{n:.1}{unit}") };
+            return if unit == "B" {
+                format!("{n:.0}{unit}")
+            } else {
+                format!("{n:.1}{unit}")
+            };
         }
         n /= 1024.0;
     }
@@ -143,7 +170,11 @@ fn human(n: f64) -> String {
 }
 
 fn ktok(n: i64) -> String {
-    if n >= 1000 { format!("{:.0}k", n as f64 / 1000.0) } else { n.to_string() }
+    if n >= 1000 {
+        format!("{:.0}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Recursive `**` glob: every non-hidden entry under `root` (symlinks followed) for which `pick` is true.
@@ -168,7 +199,9 @@ fn rglob(root: &Path, pick: impl Fn(&str) -> bool) -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 
 fn cwd_string() -> String {
-    std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
+    std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +213,13 @@ fn result_size(content: &Value) -> usize {
         Value::String(s) => clen(s),
         Value::Array(a) => a
             .iter()
-            .map(|b| if b.is_object() { clen(get(b, "text").as_str().unwrap_or("")) } else { clen(&py_str(b)) })
+            .map(|b| {
+                if b.is_object() {
+                    clen(get(b, "text").as_str().unwrap_or(""))
+                } else {
+                    clen(&py_str(b))
+                }
+            })
             .sum(),
         other => clen(&py_str(other)),
     }
@@ -190,7 +229,15 @@ fn short_input(inp: &Value) -> String {
     if !inp.is_object() {
         return String::new();
     }
-    for key in ["file_path", "command", "pattern", "url", "query", "description", "prompt"] {
+    for key in [
+        "file_path",
+        "command",
+        "pattern",
+        "url",
+        "query",
+        "description",
+        "prompt",
+    ] {
         if let Some(v) = inp.get(key) {
             let s = WS.replace_all(&py_str(v), " ").into_owned();
             return s.chars().take(70).collect();
@@ -248,7 +295,8 @@ fn scan_transcript(path: &Path) -> Transcript {
         mcp_tools: HashSet::new(),
     };
     let mut pending: HashMap<String, (String, String, Option<f64>)> = HashMap::new();
-    let src: Box<dyn Read> = fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
+    let src: Box<dyn Read> =
+        fs::File::open(path).map_or_else(|_| Box::new(io::empty()) as _, |f| Box::new(f) as _);
     let mut reader = BufReader::new(src);
     let mut buf: Vec<u8> = Vec::new();
     loop {
@@ -257,7 +305,9 @@ fn scan_transcript(path: &Path) -> Transcript {
             break;
         }
         let raw = String::from_utf8_lossy(&buf);
-        let Some(o) = Line::parse_str(&raw) else { continue };
+        let Some(o) = Line::parse_str(&raw) else {
+            continue;
+        };
         let ts = o.timestamp.as_str().and_then(parse_ts);
         if let Some(ts) = ts {
             if !s.first_ts.is_some_and(|f| f != 0.0) {
@@ -276,7 +326,13 @@ fn scan_transcript(path: &Path) -> Transcript {
         let msg = o.msg();
         match o.kind.or_empty() {
             "system" if o.subtype.as_str() == Some("compact_boundary") => {
-                let pre = o.compact.0.as_ref().map(|c| &c.pre_tokens).filter(|v| truthy(v)).map(num);
+                let pre = o
+                    .compact
+                    .0
+                    .as_ref()
+                    .map(|c| &c.pre_tokens)
+                    .filter(|v| truthy(v))
+                    .map(num);
                 s.compactions.push(pre);
             }
             "attachment" => {
@@ -288,8 +344,11 @@ fn scan_transcript(path: &Path) -> Transcript {
                 };
                 // The old reader counted a CRLF line without its CR.
                 let len = clen(&raw) - usize::from(raw.ends_with("\r\n"));
-                s.attach_by_type.add(ty, len as i64);
-                for n in att.and_then(|a| a.added_names.0.as_deref()).unwrap_or_default() {
+                s.attach_by_type.add(ty, to_i64(len));
+                for n in att
+                    .and_then(|a| a.added_names.0.as_deref())
+                    .unwrap_or_default()
+                {
                     if let Some(n) = n.as_str().filter(|n| n.starts_with("mcp__")) {
                         s.mcp_tools.insert(n.to_string());
                     }
@@ -302,18 +361,26 @@ fn scan_transcript(path: &Path) -> Transcript {
                     s.model = Some(m.to_string());
                 }
                 let ctx = msg.usage.0.as_ref().map_or(0, |u| {
-                    u.input_tokens.get() as i64
-                        + u.cache_read_input_tokens.get() as i64
-                        + u.cache_creation_input_tokens.get() as i64
+                    f64_to_i64(u.input_tokens.get())
+                        + f64_to_i64(u.cache_read_input_tokens.get())
+                        + f64_to_i64(u.cache_creation_input_tokens.get())
                 });
                 if ctx != 0 && !o.is_sidechain.0 {
                     s.ctx_now = ctx;
                     s.ctx_max = s.ctx_max.max(ctx);
                 }
-                for b in msg.content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_use")) {
+                for b in msg
+                    .content
+                    .blocks()
+                    .iter()
+                    .filter(|b| b.kind.as_str() == Some("tool_use"))
+                {
                     let name = b.name.as_str().unwrap_or("?").to_string();
                     s.tool_calls.add(name.clone(), 1);
-                    pending.insert(b.id.or_empty().to_string(), (name.clone(), short_input(&b.input), ts));
+                    pending.insert(
+                        b.id.or_empty().to_string(),
+                        (name.clone(), short_input(&b.input), ts),
+                    );
                     if name == "Read"
                         && let Some(p) = b.input.get("file_path").filter(|p| truthy(p))
                     {
@@ -322,19 +389,28 @@ fn scan_transcript(path: &Path) -> Transcript {
                 }
             }
             "user" => {
-                for b in msg.content.blocks().iter().filter(|b| b.kind.as_str() == Some("tool_result")) {
-                    let (name, summ, t0) =
-                        pending.remove(b.tool_use_id.or_empty()).unwrap_or(("?".into(), String::new(), None));
+                for b in msg
+                    .content
+                    .blocks()
+                    .iter()
+                    .filter(|b| b.kind.as_str() == Some("tool_result"))
+                {
+                    let (name, summ, t0) = pending.remove(b.tool_use_id.or_empty()).unwrap_or((
+                        "?".into(),
+                        String::new(),
+                        None,
+                    ));
                     let size = match &b.content {
                         Body::Text(t) => clen(t),
                         Body::Json(v) => result_size(v),
                     };
-                    s.tool_bytes.add(name.clone(), size as i64);
+                    s.tool_bytes.add(name.clone(), to_i64(size));
                     s.results.push((size, name.clone(), summ.clone()));
                     if b.is_error.0 {
                         s.errors += 1;
                     }
-                    if let (Some(t0), Some(ts)) = (t0.filter(|x| *x != 0.0), ts.filter(|x| *x != 0.0))
+                    if let (Some(t0), Some(ts)) =
+                        (t0.filter(|x| *x != 0.0), ts.filter(|x| *x != 0.0))
                         && ts - t0 > 20.0
                     {
                         s.slow.push((ts - t0, name, summ));
@@ -351,7 +427,10 @@ fn scan_transcript(path: &Path) -> Transcript {
 fn finish(mut s: Transcript) -> Transcript {
     s.results.sort_by(|a, b| b.cmp(a));
     s.slow.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal).then_with(|| b.1.cmp(&a.1)).then_with(|| b.2.cmp(&a.2))
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
     });
     s
 }
@@ -374,7 +453,11 @@ fn claude_md_files(cwd: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
     if g.exists() {
         found.push(g);
     }
-    let mut d = if cwd.is_empty() { cwd_string() } else { cwd.to_string() };
+    let mut d = if cwd.is_empty() {
+        cwd_string()
+    } else {
+        cwd.to_string()
+    };
     let mut seen: HashSet<String> = HashSet::new();
     let h = paths::home().to_string_lossy().into_owned();
     while !d.is_empty() && d != "/" && !seen.contains(&d) {
@@ -393,7 +476,9 @@ fn claude_md_files(cwd: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
         }
         d = dirname(&d);
     }
-    let rules = rglob(&claude_dir().join("rules"), |n| Path::new(n).extension().is_some_and(|x| x == "md"));
+    let rules = rglob(&claude_dir().join("rules"), |n| {
+        Path::new(n).extension().is_some_and(|x| x == "md")
+    });
     (found, rules)
 }
 
@@ -409,7 +494,10 @@ struct Weight {
 
 impl Weight {
     fn hook(&self, ev: &str) -> i64 {
-        self.hooks.iter().find(|(k, _)| k == ev).map_or(0, |(_, v)| *v)
+        self.hooks
+            .iter()
+            .find(|(k, _)| k == ev)
+            .map_or(0, |(_, v)| *v)
     }
     fn hook_total(&self) -> i64 {
         self.hooks.iter().map(|(_, v)| *v).sum()
@@ -419,9 +507,16 @@ impl Weight {
 fn static_weight(cwd: Option<&str>) -> Weight {
     let cwd_s = cwd.unwrap_or_default().to_string();
     let (files, rules) = claude_md_files(&cwd_s);
-    let claude_md: Vec<(PathBuf, usize)> = files.iter().map(|p| (p.clone(), clen(&read_text(p)))).collect();
+    let claude_md: Vec<(PathBuf, usize)> = files
+        .iter()
+        .map(|p| (p.clone(), clen(&read_text(p))))
+        .collect();
     let rules_w = (rules.len(), rules.iter().map(|p| clen(&read_text(p))).sum());
-    let base = if cwd_s.is_empty() { cwd_string() } else { cwd_s };
+    let base = if cwd_s.is_empty() {
+        cwd_string()
+    } else {
+        cwd_s
+    };
     let settings = load_json(&claude_dir().join("settings.json"));
     let local = load_json(&Path::new(&base).join(".claude").join("settings.json"));
     let mut hooks: Vec<(String, i64)> = vec![];
@@ -432,7 +527,7 @@ fn static_weight(cwd: Option<&str>) -> Weight {
                 if let Some(arr) = groups.as_array() {
                     for g in arr {
                         if g.is_object() {
-                            n += get(g, "hooks").as_array().map_or(0, |a| a.len() as i64);
+                            n += get(g, "hooks").as_array().map_or(0, |a| to_i64(a.len()));
                         }
                     }
                 }
@@ -451,7 +546,11 @@ fn static_weight(cwd: Option<&str>) -> Weight {
             }
         }
     }
-    let mut plugins_on: Vec<String> = plugins.iter().filter(|(_, v)| truthy(v)).map(|(k, _)| k.clone()).collect();
+    let mut plugins_on: Vec<String> = plugins
+        .iter()
+        .filter(|(_, v)| truthy(v))
+        .map(|(k, _)| k.clone())
+        .collect();
     plugins_on.sort();
     let cj = load_json(&paths::home().join(".claude.json"));
     let mut mcp: Vec<String> = vec![];
@@ -466,7 +565,10 @@ fn static_weight(cwd: Option<&str>) -> Weight {
     };
     add_keys(get(&cj, "mcpServers"));
     add_keys(get(get(get(&cj, "projects"), &base), "mcpServers"));
-    add_keys(get(&load_json(&Path::new(&base).join(".mcp.json")), "mcpServers"));
+    add_keys(get(
+        &load_json(&Path::new(&base).join(".mcp.json")),
+        "mcpServers",
+    ));
     mcp.sort();
     Weight {
         claude_md,
@@ -475,7 +577,9 @@ fn static_weight(cwd: Option<&str>) -> Weight {
         plugins_on,
         mcp,
         output_style: get(&settings, "outputStyle").clone(),
-        effort_env: std::env::var("CLAUDE_EFFORT").ok().filter(|s| !s.is_empty()),
+        effort_env: std::env::var("CLAUDE_EFFORT")
+            .ok()
+            .filter(|s| !s.is_empty()),
     }
 }
 
@@ -492,7 +596,8 @@ fn split_none2(s: &str) -> Option<(&str, &str, &str)> {
 }
 
 struct Load {
-    load: Option<f64>,
+    /// The one-minute load average.
+    avg: Option<f64>,
     cpus: usize,
     top: Vec<(f64, i64, String)>,
 }
@@ -503,15 +608,18 @@ unsafe extern "C" {
 }
 
 fn machine_load() -> Load {
-    let mut out =
-        Load { load: None, cpus: std::thread::available_parallelism().map_or(1, std::num::NonZero::get), top: vec![] };
+    let mut out = Load {
+        avg: None,
+        cpus: std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
+        top: vec![],
+    };
     #[cfg(unix)]
     {
         let mut l = [0f64; 3];
         // SAFETY: l holds 3 doubles, the call writes at most 1.
         let n = unsafe { getloadavg(l.as_mut_ptr(), 1) };
         if n >= 1 {
-            out.load = Some(l[0]);
+            out.avg = Some(l[0]);
         }
     }
     if let Ok(o) = Command::new("ps").args(["-Ao", "pcpu,rss,comm"]).output() {
@@ -530,7 +638,10 @@ fn machine_load() -> Load {
         }
         if ok {
             rows.sort_by(|x, y| {
-                y.0.partial_cmp(&x.0).unwrap_or(Ordering::Equal).then_with(|| y.1.cmp(&x.1)).then_with(|| y.2.cmp(&x.2))
+                y.0.partial_cmp(&x.0)
+                    .unwrap_or(Ordering::Equal)
+                    .then_with(|| y.1.cmp(&x.1))
+                    .then_with(|| y.2.cmp(&x.2))
             });
             rows.truncate(3);
             out.top = rows;
@@ -570,9 +681,19 @@ fn plural(n: usize) -> &'static str {
 fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
     let mut f: Vec<Finding> = vec![];
     let mut add = |score: i64, who: &'static str, title: String, why: String, fix: &str| {
-        f.push(Finding { score, who, title, why, fix: fix.to_string() });
+        f.push(Finding {
+            score,
+            who,
+            title,
+            why,
+            fix: fix.to_string(),
+        });
     };
-    let pct = if window != 0 { 100.0 * s.ctx_now as f64 / window as f64 } else { 0.0 };
+    let pct = if window != 0 {
+        100.0 * s.ctx_now as f64 / window as f64
+    } else {
+        0.0
+    };
     if pct >= 75.0 {
         add(
             100,
@@ -595,14 +716,29 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         let total: usize = big.iter().map(|r| r.0).sum();
         let top = big[0];
         add(
-            if total > 200000 { 80 } else { 55 },
+            if total > 200_000 { 80 } else { 55 },
             "me",
-            format!("{} huge tool result{} (~{} tokens)", big.len(), plural(big.len()), ktok(tok(total as i64))),
-            format!("Biggest: {} {} ({}). They stay in context forever.", top.1, human(top.0 as f64), top.2),
+            format!(
+                "{} huge tool result{} (~{} tokens)",
+                big.len(),
+                plural(big.len()),
+                ktok(tok(to_i64(total)))
+            ),
+            format!(
+                "Biggest: {} {} ({}). They stay in context forever.",
+                top.1,
+                human(top.0 as f64),
+                top.2
+            ),
             "I will use offset/limit, rg, head, and subagents for big output.",
         );
     }
-    let rereads: Vec<(String, i64)> = s.reads.iter().filter(|(_, n)| *n >= 3).map(|(p, n)| (p.clone(), n)).collect();
+    let rereads: Vec<(String, i64)> = s
+        .reads
+        .iter()
+        .filter(|(_, n)| *n >= 3)
+        .map(|(p, n)| (p.clone(), n))
+        .collect();
     if !rereads.is_empty() {
         // max(rereads, key=count): first of the maximal
         let mut best = &rereads[0];
@@ -614,7 +750,11 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             50,
             "me",
-            format!("{} file{} read 3+ times", rereads.len(), plural(rereads.len())),
+            format!(
+                "{} file{} read 3+ times",
+                rereads.len(),
+                plural(rereads.len())
+            ),
             format!("Worst: {} read {} times.", basename(&best.0), best.1),
             "I will read once and keep notes. No more re-reads.",
         );
@@ -624,7 +764,11 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             if *d > 120.0 { 65 } else { 45 },
             "me",
-            format!("{} slow tool call{} (over 20s)", s.slow.len(), plural(s.slow.len())),
+            format!(
+                "{} slow tool call{} (over 20s)",
+                s.slow.len(),
+                plural(s.slow.len())
+            ),
             format!("Slowest: {name} {d:.0}s ({summ})."),
             "I will run slow work in the background and add timeouts.",
         );
@@ -652,14 +796,20 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             if cmd_total > 48000 { 60 } else { 45 },
             "you",
-            format!("CLAUDE.md + rules = ~{} tokens", ktok(tok(cmd_total as i64))),
+            format!(
+                "CLAUDE.md + rules = ~{} tokens",
+                ktok(tok(to_i64(cmd_total)))
+            ),
             "Loaded on every turn, even when not needed.".into(),
             "Trim or move rarely used parts into skills.",
         );
     }
     let ab = &s.attach_by_type;
-    let servers: HashSet<String> =
-        s.mcp_tools.iter().filter_map(|n| MCP_SERVER.captures(n).map(|c| c[1].to_string())).collect();
+    let servers: HashSet<String> = s
+        .mcp_tools
+        .iter()
+        .filter_map(|n| MCP_SERVER.captures(n).map(|c| c[1].to_string()))
+        .collect();
     let mcp_bytes = ab.get("deferred_tools_delta") + ab.get("mcp_instructions_delta");
     if s.mcp_tools.len() >= 100 || mcp_bytes > 60000 {
         add(
@@ -687,7 +837,10 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             60,
             "you",
-            format!("Skill list injects ~{} tokens", ktok(tok(ab.get("skill_listing")))),
+            format!(
+                "Skill list injects ~{} tokens",
+                ktok(tok(ab.get("skill_listing")))
+            ),
             "Every skill name and description is sent each session.".into(),
             "Disable plugins with many skills. Remove skills you never use.",
         );
@@ -696,7 +849,10 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
         add(
             45,
             "you",
-            format!("Start hooks inject ~{} tokens", ktok(tok(ab.get("hook_additional_context")))),
+            format!(
+                "Start hooks inject ~{} tokens",
+                ktok(tok(ab.get("hook_additional_context")))
+            ),
             "A SessionStart hook pastes big text into every session.".into(),
             "Shorten what the hook prints.",
         );
@@ -750,14 +906,22 @@ fn judge(s: &Transcript, w: &Weight, m: &Load, window: i64) -> Vec<Finding> {
             "I will stop, read the error once, and change the plan.",
         );
     }
-    if let Some(load) = m.load.filter(|l| *l != 0.0)
+    if let Some(load) = m.avg.filter(|l| *l != 0.0)
         && load > m.cpus as f64 * 0.8
     {
-        let top = m.top.iter().map(|(c, _, n)| format!("{n} {c:.0}%")).collect::<Vec<_>>().join(", ");
+        let top = m
+            .top
+            .iter()
+            .map(|(c, _, n)| format!("{n} {c:.0}%"))
+            .collect::<Vec<_>>()
+            .join(", ");
         add(
             50,
             "you",
-            format!("This machine is busy (load {:.1} on {} cores)", load, m.cpus),
+            format!(
+                "This machine is busy (load {:.1} on {} cores)",
+                load, m.cpus
+            ),
             format!("Top: {top}."),
             "Quit the heavy app. Run ps:bag-mode to see more.",
         );
@@ -783,14 +947,21 @@ fn verdict(f: &[Finding]) -> &'static str {
 
 fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_json: bool) {
     let _ = m;
-    let pct = if window != 0 { 100.0 * s.ctx_now as f64 / window as f64 } else { 0.0 };
+    let pct = if window != 0 {
+        100.0 * s.ctx_now as f64 / window as f64
+    } else {
+        0.0
+    };
     if as_json {
         let mut o = Map::new();
         o.insert("session".into(), Value::from(s.path.clone()));
         o.insert("verdict".into(), Value::from(verdict(f)));
         o.insert("context_tokens".into(), Value::from(s.ctx_now));
         o.insert("window".into(), Value::from(window));
-        o.insert("context_pct".into(), serde_json::Number::from_f64(pyround1(pct)).map_or(Value::Null, Value::Number));
+        o.insert(
+            "context_pct".into(),
+            serde_json::Number::from_f64(pyround1(pct)).map_or(Value::Null, Value::Number),
+        );
         let fs_: Vec<Value> = f
             .iter()
             .map(|x| {
@@ -809,8 +980,12 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
         out!("{}", buf);
         return;
     }
-    let hashes = (pct / 5.0) as i64;
-    let bar = format!("{}{}", "#".repeat(hashes.max(0) as usize), ".".repeat((20 - hashes).max(0) as usize));
+    let hashes = f64_to_i64(pct / 5.0);
+    let bar = format!(
+        "{}{}",
+        "#".repeat(usize::try_from(hashes.max(0)).unwrap_or(0)),
+        ".".repeat(usize::try_from((20 - hashes).max(0)).unwrap_or(0))
+    );
     let mut age = String::new();
     if let (Some(a), Some(b)) = (s.first_ts, s.last_ts)
         && a != 0.0
@@ -818,7 +993,12 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
     {
         age = format!(", {:.1}h old", (b - a) / 3600.0);
     }
-    out!("SESSION  {}  ({}{})", basename(&s.path), human(s.bytes as f64), age);
+    out!(
+        "SESSION  {}  ({}{})",
+        basename(&s.path),
+        human(s.bytes as f64),
+        age
+    );
     let style = match &w.output_style {
         v if truthy(v) => py_str(v),
         _ => "default".to_string(),
@@ -829,7 +1009,13 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
         w.effort_env.clone().unwrap_or_else(|| "?".into()),
         style
     );
-    out!("CONTEXT  [{}] {:.0}%  {} of {} tokens", bar, pct, ktok(s.ctx_now), ktok(window));
+    out!(
+        "CONTEXT  [{}] {:.0}%  {} of {} tokens",
+        bar,
+        pct,
+        ktok(s.ctx_now),
+        ktok(window)
+    );
     out!(
         "TURNS    {} replies, {} tool calls, {} compactions, {} subagent lines",
         s.turns_assistant,
@@ -860,7 +1046,7 @@ fn report(s: &Transcript, w: &Weight, m: &Load, window: i64, f: &[Finding], as_j
     let cmd_total: usize = w.claude_md.iter().map(|(_, n)| *n).sum::<usize>() + w.rules.1;
     out!(
         "STATIC   CLAUDE.md+rules ~{}t | {} plugins on | {} hooks | {} MCP tools",
-        ktok(tok(cmd_total as i64)),
+        ktok(tok(to_i64(cmd_total))),
         w.plugins_on.len(),
         w.hook_total(),
         s.mcp_tools.len()
@@ -903,8 +1089,14 @@ struct Cli {
 
 fn main() {
     let a = Cli::parse();
-    let Some(path) = find_session(a.session.as_deref(), if a.all { Search::All } else { Search::ThisProjectThenAll })
-    else {
+    let Some(path) = find_session(
+        a.session.as_deref(),
+        if a.all {
+            Search::All
+        } else {
+            Search::ThisProjectThenAll
+        },
+    ) else {
         eprintln!("No session transcript found under ~/.claude/projects.");
         std::process::exit(1);
     };
@@ -955,7 +1147,13 @@ mod tests {
 
     #[test]
     fn findings_sort_descending_by_tuple() {
-        let mk = |s, w, t: &str| Finding { score: s, who: w, title: t.into(), why: String::new(), fix: String::new() };
+        let mk = |s, w, t: &str| Finding {
+            score: s,
+            who: w,
+            title: t.into(),
+            why: String::new(),
+            fix: String::new(),
+        };
         let mut v = [mk(50, "me", "a"), mk(50, "you", "a"), mk(70, "me", "z")];
         v.sort_by(|a, b| b.cmp(a));
         assert_eq!(v[0].score, 70);
@@ -964,7 +1162,10 @@ mod tests {
 
     #[test]
     fn split_none2_like_python() {
-        assert_eq!(split_none2("  12.5   345 /usr/bin/x y"), Some(("12.5", "345", "/usr/bin/x y")));
+        assert_eq!(
+            split_none2("  12.5   345 /usr/bin/x y"),
+            Some(("12.5", "345", "/usr/bin/x y"))
+        );
         assert_eq!(split_none2("1 2"), None);
     }
 }

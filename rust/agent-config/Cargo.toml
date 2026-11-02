@@ -32,7 +32,10 @@ jiff = { version = "0.2", features = ["tz-system"] } # see the jiff line above
 inquire = { version = "0.9.4", default-features = false, features = ["console", "editor"] }
 
 [lints.rust]
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
 unsafe_op_in_unsafe_fn = "deny"
+unreachable_pub = "warn"
 unused_qualifications = "warn"
 
 [lints.clippy]
@@ -40,21 +43,16 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 redundant_clone = "warn"
 use_self = "warn"
-# Too noisy for a crate of small command-line tools:
-must_use_candidate = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-doc_markdown = "allow"
-too_many_lines = "allow"
-cast_possible_truncation = "allow"
-cast_precision_loss = "allow"
-cast_sign_loss = "allow"
-cast_possible_wrap = "allow"
-similar_names = "allow"
-many_single_char_names = "allow"
-struct_field_names = "allow"
-items_after_statements = "allow"
-unreadable_literal = "allow"
+# Restriction lints, picked one by one as Clippy advises for that group. Tests may unwrap
+# (clippy.toml), and each test crate allows it.
+allow_attributes_without_reason = "warn"
+unwrap_used = "warn"
+# Pedantic lints that do not fit a crate of small command-line tools:
+must_use_candidate = "allow" # most fns run for their effect or feed a print at once
+too_many_lines = "allow" # each check and install step reads top to bottom
+cast_precision_loss = "allow" # f64 holds token counts and percents, far below 2^52
+similar_names = "allow" # paired short names read well in the parsers and tests
+many_single_char_names = "allow" # short names in the parsers and the test fixtures
 struct_excessive_bools = "allow" # flag structs of the command lines
 
 # Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
@@ -138,3 +136,7 @@ path = "src/bin/sessions.rs"
 [[bin]]
 name = "proj"
 path = "src/bin/proj.rs"
+
+[[bin]]
+name = "port"
+path = "src/bin/port.rs"

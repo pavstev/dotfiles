@@ -18,15 +18,15 @@ pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let yoe = y - era * 400;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
+    era * 146_097 + doe - 719_468
 }
 
 /// The civil date (year, month, day) of a day count since 1970-01-01.
 pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -57,7 +57,11 @@ pub fn parse_ts_micros(s: &str) -> Option<(i64, i64)> {
     let b: Vec<char> = s.chars().collect();
     let num_at = |a: usize, n: usize| -> Option<i64> {
         let t: String = b.get(a..a + n)?.iter().collect();
-        if t.chars().all(|c| c.is_ascii_digit()) { t.parse().ok() } else { None }
+        if t.chars().all(|c| c.is_ascii_digit()) {
+            t.parse().ok()
+        } else {
+            None
+        }
     };
     if b.len() < 10 || b[4] != '-' || b[7] != '-' {
         return None;
@@ -81,7 +85,11 @@ pub fn parse_ts_micros(s: &str) -> Option<(i64, i64)> {
         };
         let parts: Vec<&str> = hms.split(':').collect();
         let pn = |x: &str| -> Option<i64> {
-            if x.len() == 2 && x.chars().all(|c| c.is_ascii_digit()) { x.parse().ok() } else { None }
+            if x.len() == 2 && x.chars().all(|c| c.is_ascii_digit()) {
+                x.parse().ok()
+            } else {
+                None
+            }
         };
         hh = pn(parts.first()?)?;
         if parts.len() > 1 {
@@ -94,7 +102,11 @@ pub fn parse_ts_micros(s: &str) -> Option<(i64, i64)> {
             return None;
         }
         if let Some(f) = frac {
-            if f.is_empty() || f.len() > 9 || !f.chars().all(|c| c.is_ascii_digit()) || parts.len() < 3 {
+            if f.is_empty()
+                || f.len() > 9
+                || !f.chars().all(|c| c.is_ascii_digit())
+                || parts.len() < 3
+            {
                 return None;
             }
             let mut p6 = f;
@@ -110,12 +122,19 @@ pub fn parse_ts_micros(s: &str) -> Option<(i64, i64)> {
         if let Some(tz) = tz {
             let sign = if tz[0] == '-' { -1 } else { 1 };
             let t: String = tz[1..].iter().collect();
-            let p: Vec<&str> = t.split(':').collect();
+            // `+HH:MM[:SS]`, and like Python also `+HHMM` and `+HH`
+            let p: Vec<String> = if t.contains(':') {
+                t.split(':').map(str::to_string).collect()
+            } else if (t.len() == 4 || t.len() == 2) && t.chars().all(|c| c.is_ascii_digit()) {
+                vec![t[..2].to_string(), t.get(2..4).unwrap_or("00").to_string()]
+            } else {
+                return None;
+            };
             if p.len() < 2 || p.len() > 3 {
                 return None;
             }
-            let (th, tm) = (pn(p[0])?, pn(p[1])?);
-            let tsec = if p.len() == 3 { pn(p[2])? } else { 0 };
+            let (th, tm) = (pn(p[0].as_str())?, pn(p[1].as_str())?);
+            let tsec = if p.len() == 3 { pn(p[2].as_str())? } else { 0 };
             if th > 23 || tm > 59 || tsec > 59 {
                 return None;
             }
@@ -136,7 +155,11 @@ pub fn parse_ts(s: &str) -> Option<f64> {
 /// Python `repr(float)`, JSON style: `NaN`, `Infinity` and `-Infinity` for the specials.
 pub fn py_float(f: f64) -> String {
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+        return if f.is_sign_negative() {
+            "-0.0".into()
+        } else {
+            "0.0".into()
+        };
     }
     if !f.is_finite() {
         return if f.is_nan() {
@@ -154,17 +177,25 @@ pub fn py_float(f: f64) -> String {
     let sign = if f < 0.0 { "-" } else { "" };
     let body = if (-4..16).contains(&exp) {
         if exp >= 0 {
-            let int_len = exp as usize + 1;
+            let int_len = usize::try_from(exp).unwrap_or(0) + 1;
             if digits.len() <= int_len {
                 format!("{}{}.0", digits, "0".repeat(int_len - digits.len()))
             } else {
                 format!("{}.{}", &digits[..int_len], &digits[int_len..])
             }
         } else {
-            format!("0.{}{}", "0".repeat((-exp - 1) as usize), digits)
+            format!(
+                "0.{}{}",
+                "0".repeat(usize::try_from(-exp - 1).unwrap_or(0)),
+                digits
+            )
         }
     } else {
-        let m = if digits.len() > 1 { format!("{}.{}", &digits[..1], &digits[1..]) } else { digits };
+        let m = if digits.len() > 1 {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        } else {
+            digits
+        };
         format!("{}e{}{:02}", m, if exp < 0 { "-" } else { "+" }, exp.abs())
     };
     format!("{sign}{body}")
@@ -184,7 +215,7 @@ pub fn truthy(v: &Value) -> bool {
 
 // --- JSON text ------------------------------------------------------------------------------------
 
-/// json.dumps of a string with ensure_ascii, appended to `out`. DEL (0x7f) is escaped, like Python.
+/// json.dumps of a string with `ensure_ascii`, appended to `out`. DEL (0x7f) is escaped, like Python.
 pub fn json_str(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
@@ -208,7 +239,7 @@ pub fn json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-/// json.dumps of a string (ensure_ascii), as a new String.
+/// json.dumps of a string (`ensure_ascii`), as a new String.
 pub fn json_string(s: &str) -> String {
     let mut out = String::new();
     json_str(&mut out, s);
@@ -220,7 +251,11 @@ pub fn json_string(s: &str) -> String {
 /// Python `repr()` of a str for the bins that keep non-ASCII text as is: only control characters
 /// and DEL become `\x..`.
 pub fn py_repr_str(s: &str) -> String {
-    let q = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let q = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
     let mut o = String::new();
     o.push(q);
     for c in s.chars() {
@@ -251,7 +286,10 @@ pub fn py_repr(v: &Value) -> String {
         Value::Object(o) => {
             format!(
                 "{{{}}}",
-                o.iter().map(|(k, x)| format!("{}: {}", py_repr_str(k), py_repr(x))).collect::<Vec<_>>().join(", ")
+                o.iter()
+                    .map(|(k, x)| format!("{}: {}", py_repr_str(k), py_repr(x)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         }
         other => py_str(other),
@@ -303,9 +341,13 @@ pub fn is_printable(c: char) -> bool {
         || (0xFDD0..=0xFDEF).contains(&u))
 }
 
-/// Python's repr() of a str, with `\x..`, `\u....` and `\U........` escapes for unprintable chars.
+/// Python's `repr()` of a str, with `\x..`, `\u....` and `\U........` escapes for unprintable chars.
 pub fn repr_str(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
     let mut out = String::new();
     out.push(quote);
     for c in s.chars() {
@@ -350,18 +392,28 @@ pub enum Item {
 
 /// argparse's `^-\d+$|^-\d*\.\d+$` test for a negative number.
 pub fn negative_number_like(a: &str) -> bool {
-    let Some(r) = a.strip_prefix('-') else { return false };
+    let Some(r) = a.strip_prefix('-') else {
+        return false;
+    };
     if !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()) {
         return true;
     }
     match r.split_once('.') {
-        Some((a, b)) => a.chars().all(|c| c.is_ascii_digit()) && !b.is_empty() && b.chars().all(|c| c.is_ascii_digit()),
+        Some((a, b)) => {
+            a.chars().all(|c| c.is_ascii_digit())
+                && !b.is_empty()
+                && b.chars().all(|c| c.is_ascii_digit())
+        }
         None => false,
     }
 }
 
 /// Sort one word into positional or option. `opts` lists the option names with their action index,
-/// in argparse's registration order. Err is the "ambiguous option" message.
+/// in argparse's registration order.
+///
+/// # Errors
+///
+/// Returns the "ambiguous option" message when an abbreviation matches more than one option.
 pub fn classify_arg(a: &str, opts: &[(&str, usize)]) -> Result<Item, String> {
     let exact = |s: &str| opts.iter().find(|(n, _)| *n == s).map(|(_, i)| *i);
     if a.is_empty() || !a.starts_with('-') {
@@ -380,7 +432,9 @@ pub fn classify_arg(a: &str, opts: &[(&str, usize)]) -> Result<Item, String> {
     }
     // abbreviations and -hX
     let mut hits: Vec<(&str, usize, Option<String>)> = Vec::new();
-    let second = a.chars().nth(1).unwrap();
+    let Some(second) = a.chars().nth(1) else {
+        return Ok(Item::Pos); // one character: handled above
+    };
     if second == '-' {
         let (prefix, explicit) = match a.split_once('=') {
             Some((p, v)) => (p, Some(v.to_string())),
@@ -404,7 +458,11 @@ pub fn classify_arg(a: &str, opts: &[(&str, usize)]) -> Result<Item, String> {
     }
     if hits.len() > 1 {
         let names: Vec<&str> = hits.iter().map(|h| h.0).collect();
-        return Err(format!("ambiguous option: {} could match {}", a, names.join(", ")));
+        return Err(format!(
+            "ambiguous option: {} could match {}",
+            a,
+            names.join(", ")
+        ));
     }
     if let Some((_, i, explicit)) = hits.pop() {
         return Ok(Item::Opt(Some(i), explicit));
@@ -417,7 +475,7 @@ pub fn classify_arg(a: &str, opts: &[(&str, usize)]) -> Result<Item, String> {
 
 // --- whitespace and lines -------------------------------------------------------------------------
 
-/// Python's `str.isspace` for one char (Unicode White_Space plus U+001C to U+001F).
+/// Python's `str.isspace` for one char (Unicode `White_Space` plus U+001C to U+001F).
 pub fn py_is_space(c: char) -> bool {
     c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
 }
@@ -440,7 +498,8 @@ pub fn py_splitlines(s: &str) -> Vec<String> {
                 }
                 out.push(std::mem::take(&mut cur));
             }
-            '\n' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}' | '\u{2029}' => {
+            '\n' | '\x0b' | '\x0c' | '\x1c' | '\x1d' | '\x1e' | '\u{85}' | '\u{2028}'
+            | '\u{2029}' => {
                 out.push(std::mem::take(&mut cur));
             }
             c => cur.push(c),
@@ -461,7 +520,11 @@ pub fn dirname(p: &str) -> String {
         Some(i) => {
             let head = &p[..=i];
             let t = head.trim_end_matches('/');
-            if t.is_empty() { head.to_string() } else { t.to_string() }
+            if t.is_empty() {
+                head.to_string()
+            } else {
+                t.to_string()
+            }
         }
     }
 }
@@ -473,7 +536,9 @@ pub fn basename(p: &str) -> String {
 
 /// The last component of a path as text, or "".
 pub fn fname(p: &Path) -> String {
-    p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    p.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Entries of `dir` whose name does not start with "." (glob "*"), in directory order.
@@ -531,7 +596,10 @@ mod tests {
         let mut z = 0; // 1970-01-01
         while z < days_from_civil(2100, 1, 1) {
             let (y, m, d) = civil_from_days(z);
-            assert!((1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m), "z={z}");
+            assert!(
+                (1..=12).contains(&m) && d >= 1 && d <= days_in_month(y, m),
+                "z={z}"
+            );
             assert_eq!(days_from_civil(y, m, d), z);
             z += 29;
         }
@@ -552,8 +620,8 @@ mod tests {
         assert_eq!(parse_ts("1970-01-01T00:00:00Z"), Some(0.0));
         assert_eq!(parse_ts("1970-01-01T00:00:01.5+01:00"), Some(-3598.5));
         assert_eq!(parse_ts("2026-10-19"), Some(20745.0 * 86400.0));
-        assert_eq!(parse_ts("2026-10-19T12:34:56"), Some(1792413296.0));
-        assert_eq!(parse_ts("2026-10-19 12:34:56+00:00"), Some(1792413296.0));
+        assert_eq!(parse_ts("2026-10-19T12:34:56"), Some(1_792_413_296.0));
+        assert_eq!(parse_ts("2026-10-19 12:34:56+00:00"), Some(1_792_413_296.0));
         assert_eq!(parse_ts("2026-02-30"), None);
         assert_eq!(parse_ts("0000-01-01"), None);
         assert_eq!(parse_ts(""), None);
@@ -566,10 +634,29 @@ mod tests {
 
     #[test]
     fn timestamp_micros_and_offset() {
-        assert_eq!(parse_ts_micros("1970-01-01T00:00:00-05:30"), Some((19_800_000_000, -19_800)));
-        assert_eq!(parse_ts_micros("1970-01-01T00:00:00.1234567Z"), Some((123_456, 0)));
-        assert_eq!(parse_ts_micros("1970-01-01T00:00:00+00:00:30"), Some((-30_000_000, 30)));
+        assert_eq!(
+            parse_ts_micros("1970-01-01T00:00:00-05:30"),
+            Some((19_800_000_000, -19_800))
+        );
+        assert_eq!(
+            parse_ts_micros("1970-01-01T00:00:00.1234567Z"),
+            Some((123_456, 0))
+        );
+        assert_eq!(
+            parse_ts_micros("1970-01-01T00:00:00+00:00:30"),
+            Some((-30_000_000, 30))
+        );
         assert_eq!(parse_ts_micros("1970-01-01"), Some((0, 0)));
+        // an offset without a colon, as some writers emit it
+        assert_eq!(
+            parse_ts_micros("1970-01-01T00:00:00+0200"),
+            Some((-7_200_000_000, 7_200))
+        );
+        assert_eq!(
+            parse_ts_micros("1970-01-01T00:00:00+02"),
+            Some((-7_200_000_000, 7_200))
+        );
+        assert_eq!(parse_ts_micros("1970-01-01T00:00:00+020"), None);
     }
 
     #[test]
@@ -607,7 +694,10 @@ mod tests {
         assert_eq!(json_string(""), "\"\"");
         assert_eq!(json_string("a\u{e9}\"b"), "\"a\\u00e9\\\"b\"");
         assert_eq!(json_string("\u{7f}"), "\"\\u007f\"");
-        assert_eq!(json_string("\u{1}\u{8}\u{c}\n\r\t\\"), "\"\\u0001\\b\\f\\n\\r\\t\\\\\"");
+        assert_eq!(
+            json_string("\u{1}\u{8}\u{c}\n\r\t\\"),
+            "\"\\u0001\\b\\f\\n\\r\\t\\\\\""
+        );
         assert_eq!(json_string("\u{1F600}"), "\"\\ud83d\\ude00\"");
         let mut out = String::from("x=");
         json_str(&mut out, "k");
@@ -634,7 +724,13 @@ mod tests {
         assert_eq!(repr_str("\u{1F600}\u{e9}"), "'\u{1F600}\u{e9}'");
     }
 
-    const OPTS: &[(&str, usize)] = &[("-h", 0), ("--help", 0), ("--prompt-file", 1), ("--prompt", 2), ("--dir", 3)];
+    const OPTS: &[(&str, usize)] = &[
+        ("-h", 0),
+        ("--help", 0),
+        ("--prompt-file", 1),
+        ("--prompt", 2),
+        ("--dir", 3),
+    ];
 
     #[test]
     fn option_sorting() {
@@ -642,9 +738,15 @@ mod tests {
         assert_eq!(classify_arg("word", OPTS), Ok(Item::Pos));
         assert_eq!(classify_arg("-", OPTS), Ok(Item::Pos));
         assert_eq!(classify_arg("--dir", OPTS), Ok(Item::Opt(Some(3), None)));
-        assert_eq!(classify_arg("--dir=x", OPTS), Ok(Item::Opt(Some(3), Some("x".into()))));
+        assert_eq!(
+            classify_arg("--dir=x", OPTS),
+            Ok(Item::Opt(Some(3), Some("x".into())))
+        );
         assert_eq!(classify_arg("--di", OPTS), Ok(Item::Opt(Some(3), None)));
-        assert_eq!(classify_arg("-hx", OPTS), Ok(Item::Opt(Some(0), Some("x".into()))));
+        assert_eq!(
+            classify_arg("-hx", OPTS),
+            Ok(Item::Opt(Some(0), Some("x".into())))
+        );
         assert_eq!(classify_arg("--prompt", OPTS), Ok(Item::Opt(Some(2), None)));
         assert_eq!(
             classify_arg("--pro", OPTS),

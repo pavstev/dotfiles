@@ -9,7 +9,10 @@
 //! transcripts under `$CLAUDE_CONFIG_DIR/projects`. Caches live in `${XDG_CACHE_HOME:-~/.cache}`.
 
 use crate::paths::home;
-use crate::pycompat::{civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float};
+use crate::paths::unix_now;
+use crate::pycompat::{
+    civil_from_days, days_from_civil, days_in_month, json_string as json_str, py_float,
+};
 use crate::transcript::{Arr, Bool, Content, Line, Message, Num, Obj, Stamp, Truthy, Usage};
 use regex::Regex;
 use serde::Deserialize;
@@ -22,7 +25,7 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use walkdir::WalkDir;
 
 const WEEK: i64 = 7 * 86400;
@@ -58,9 +61,10 @@ impl PaceState {
         }
     }
 
-    /// True when the week runs ahead or is critical: helpers and plan mode are limited.
+    /// True when the week is critical: helpers, Opus helpers and plan mode are limited. An ahead
+    /// week is a note only (since 2026-11-02).
     pub const fn is_tight(self) -> bool {
-        matches!(self, Self::Ahead | Self::Critical)
+        matches!(self, Self::Critical)
     }
 }
 
@@ -84,7 +88,9 @@ impl Model {
     /// the price table was.
     pub fn of(name: &str) -> Option<Self> {
         let name = name.to_ascii_lowercase();
-        [Self::Opus, Self::Sonnet, Self::Haiku, Self::Fable].into_iter().find(|m| name.contains(m.name()))
+        [Self::Opus, Self::Sonnet, Self::Haiku, Self::Fable]
+            .into_iter()
+            .find(|m| name.contains(m.name()))
     }
 
     pub const fn name(self) -> &'static str {
@@ -108,6 +114,7 @@ impl Model {
 }
 
 /// The weekly pace: how much is used against how much the week allows so far.
+#[derive(Debug)]
 pub struct Status {
     pub state: PaceState,
     /// Percent of the week used, if known.
@@ -121,6 +128,7 @@ pub struct Status {
 }
 
 /// The outcome of a transcript scan.
+#[derive(Debug)]
 pub struct RefreshResult {
     /// True if every transcript was scanned within the time budget.
     pub complete: bool,
@@ -135,7 +143,7 @@ pub struct RefreshResult {
 /// Where the caches and the transcripts live, and the settings that shape the numbers: the plan
 /// (`pro`, `max5`, ...; `unknown` when unset), the work days a week and the critical use.
 /// Tests build one over a temp dir.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Paths {
     /// The cache folder.
     pub cache: PathBuf,
@@ -151,7 +159,11 @@ pub struct Paths {
 
 /// The critical use from the `PACE_CRITICAL` value: a number from 50 to 100, anything else 85.
 fn critical_of(raw: &str) -> f64 {
-    raw.trim().parse::<f64>().ok().filter(|v| (50.0..=100.0).contains(v)).unwrap_or(CRITICAL)
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| (50.0..=100.0).contains(v))
+        .unwrap_or(CRITICAL)
 }
 
 fn env_nonempty(k: &str) -> Option<String> {
@@ -161,23 +173,36 @@ fn env_nonempty(k: &str) -> Option<String> {
 impl Paths {
     /// The paths and settings of this machine.
     pub fn from_env() -> Self {
-        let cache = crate::paths::cache();
-        let base = env_nonempty("CLAUDE_CONFIG_DIR").map_or_else(|| home().join(".claude"), PathBuf::from);
         // the settings file is read once per process
         static SETTINGS: OnceLock<(String, i64, f64)> = OnceLock::new();
+        let cache = crate::paths::cache();
+        let base =
+            env_nonempty("CLAUDE_CONFIG_DIR").map_or_else(|| home().join(".claude"), PathBuf::from);
         let (plan, days, critical) = SETTINGS.get_or_init(|| {
             let h = home();
             let plan = crate::setting(&h, "PLAN").trim().to_lowercase();
             // the env wins over the settings file, like GUARD_OFF
-            let critical =
-                critical_of(&env_nonempty("PACE_CRITICAL").unwrap_or_else(|| crate::setting(&h, "PACE_CRITICAL")));
+            let critical = critical_of(
+                &env_nonempty("PACE_CRITICAL")
+                    .unwrap_or_else(|| crate::setting(&h, "PACE_CRITICAL")),
+            );
             (
-                if plan.is_empty() { "unknown".to_string() } else { plan },
+                if plan.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    plan
+                },
                 work_days(&crate::setting(&h, "WORK_DAYS")),
                 critical,
             )
         });
-        Self { cache, projects: base.join("projects"), plan: plan.clone(), days: *days, critical: *critical }
+        Self {
+            cache,
+            projects: base.join("projects"),
+            plan: plan.clone(),
+            days: *days,
+            critical: *critical,
+        }
     }
 
     fn file(&self, name: &str) -> PathBuf {
@@ -200,13 +225,12 @@ fn write_text(path: &PathBuf, text: &str) {
         let _ = fs::create_dir_all(dir);
     }
     let tmp = PathBuf::from(format!("{}.{}.tmp", path.display(), std::process::id()));
-    if fs::write(&tmp, text).and_then(|()| fs::rename(&tmp, path)).is_err() {
+    if fs::write(&tmp, text)
+        .and_then(|()| fs::rename(&tmp, path))
+        .is_err()
+    {
         let _ = fs::remove_file(&tmp);
     }
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
 // --- Python-compatible number and JSON text --------------------------------------------------
@@ -226,7 +250,11 @@ fn py_parse_float(s: &str) -> Option<f64> {
     let t = if t.contains('_') {
         let b: Vec<char> = t.chars().collect();
         for (i, c) in b.iter().enumerate() {
-            if *c == '_' && !(i > 0 && b[i - 1].is_ascii_digit() && b.get(i + 1).is_some_and(char::is_ascii_digit)) {
+            if *c == '_'
+                && !(i > 0
+                    && b[i - 1].is_ascii_digit()
+                    && b.get(i + 1).is_some_and(char::is_ascii_digit))
+            {
                 return None;
             }
         }
@@ -238,12 +266,21 @@ fn py_parse_float(s: &str) -> Option<f64> {
     t.parse::<f64>().ok()
 }
 
-/// A whole number from a lenient number field, else None.
-fn whole(n: Num) -> Option<i64> {
-    n.value.filter(|f| f.fract() == 0.0).map(|f| f as i64)
+/// The float cut toward zero as a whole number. It saturates at the ends of `i64`, and NaN gives 0.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float to int cast saturates, and the callers want the cut toward zero"
+)]
+const fn trunc_i64(f: f64) -> i64 {
+    f as i64
 }
 
-/// Python's sum() of floats (3.12+ compensated summation).
+/// A whole number from a lenient number field, else None.
+fn whole(n: Num) -> Option<i64> {
+    n.value.filter(|f| f.fract() == 0.0).map(trunc_i64)
+}
+
+/// Python's `sum()` of floats (3.12+ compensated summation).
 fn py_sum(xs: impl Iterator<Item = f64>) -> f64 {
     let (mut s, mut c) = (0.0f64, 0.0f64);
     for x in xs {
@@ -265,7 +302,11 @@ fn local_ymd(secs: i64) -> (i64, i64, i64) {
     match jiff::Timestamp::from_second(secs) {
         Ok(ts) => {
             let d = ts.to_zoned(jiff::tz::TimeZone::system()).date();
-            (i64::from(d.year()), i64::from(d.month()), i64::from(d.day()))
+            (
+                i64::from(d.year()),
+                i64::from(d.month()),
+                i64::from(d.day()),
+            )
         }
         Err(_) => civil_from_days(secs.div_euclid(86400)),
     }
@@ -301,13 +342,17 @@ fn epoch_f(v: f64) -> Option<i64> {
     if !v.is_finite() {
         return None;
     }
-    Some(if v > 1e11 { (v / 1000.0) as i64 } else { v as i64 })
+    Some(trunc_i64(if v > 1e11 { v / 1000.0 } else { v }))
 }
 
 /// Seconds since the epoch from a number, a numeric string or an ISO UTC string; else None.
-fn epoch(v: &Stamp) -> Option<i64> {
+fn epoch(v: &Stamp<'_>) -> Option<i64> {
     match v {
-        Stamp::Int(i) => Some(if *i > 100_000_000_000 { (*i as f64 / 1000.0) as i64 } else { *i }),
+        Stamp::Int(i) => Some(if *i > 100_000_000_000 {
+            trunc_i64(*i as f64 / 1000.0)
+        } else {
+            *i
+        }),
         Stamp::Float(f) => epoch_f(*f),
         Stamp::Text(s) => match py_parse_float(s) {
             Some(f) => epoch_f(f),
@@ -351,10 +396,10 @@ struct SevenDayLimit {
     used_percentage: Num,
 }
 
-/// The seven_day object of the statusline cache, if it has one.
+/// The `seven_day` object of the statusline cache, if it has one.
 fn c1_seven_day(p: &Paths) -> Option<SevenDayLimit> {
     let bytes = fs::read(p.file("claude-pace.json")).ok()?;
-    let c1: StatuslineCache = serde_json::from_slice(&bytes).ok()?;
+    let c1: StatuslineCache<'_> = serde_json::from_slice(&bytes).ok()?;
     let sd = c1.seven_day.0?;
     Some(SevenDayLimit {
         updated: epoch(&c1.updated),
@@ -429,7 +474,9 @@ fn calib(p: &Paths) -> Option<Calibration> {
 
 /// The weekly weight: a valid calibration, else the plan's default, else None (no way to tell).
 fn week_weight_in(p: &Paths) -> Option<f64> {
-    let calibrated = calib(p).and_then(|c| c.week_weight.value).filter(|f| f.is_finite() && *f > 0.0);
+    let calibrated = calib(p)
+        .and_then(|c| c.week_weight.value)
+        .filter(|f| f.is_finite() && *f > 0.0);
     calibrated.or_else(|| plan_weight(&p.plan))
 }
 
@@ -439,7 +486,13 @@ fn calib_updated(p: &Paths) -> f64 {
 }
 
 /// Store the calibration. `updated` orders them: the newest calibration wins.
-pub fn seed_weight(p: &Paths, week_weight: f64, now: Option<i64>, source: &str, week_start: Option<i64>) {
+pub fn seed_weight(
+    p: &Paths,
+    week_weight: f64,
+    now: Option<i64>,
+    source: &str,
+    week_start: Option<i64>,
+) {
     let now = now.unwrap_or_else(unix_now);
     let ws = week_start.map_or("null".to_string(), |w| w.to_string());
     let text = format!(
@@ -454,7 +507,7 @@ pub fn seed_weight(p: &Paths, week_weight: f64, now: Option<i64>, source: &str, 
 
 // --- statusline cache ------------------------------------------------------------------------
 
-/// (seven_day used %, resets_at) when the statusline cache is fresh, else None.
+/// (`seven_day` used %, `resets_at`) when the statusline cache is fresh, else None.
 fn fresh_c1(p: &Paths, now: i64) -> Option<(f64, i64)> {
     let sd = c1_seven_day(p)?;
     let (updated, resets) = (sd.updated?, sd.resets_at?);
@@ -479,9 +532,10 @@ fn prices(model: &str) -> Option<(f64, f64)> {
 fn cost(u: &Usage, price: (f64, f64)) -> f64 {
     let cc = u.cache_creation_input_tokens.get();
     let (w5, w1) = match &u.cache_creation.0 {
-        Some(d) if d.ephemeral_5m_input_tokens.present || d.ephemeral_1h_input_tokens.present => {
-            (d.ephemeral_5m_input_tokens.get(), d.ephemeral_1h_input_tokens.get())
-        }
+        Some(d) if d.ephemeral_5m_input_tokens.present || d.ephemeral_1h_input_tokens.present => (
+            d.ephemeral_5m_input_tokens.get(),
+            d.ephemeral_1h_input_tokens.get(),
+        ),
         _ => (0.0, cc),
     };
     let cin = u.input_tokens.get() + 1.25 * w5 + 2.0 * w1 + 0.1 * u.cache_read_input_tokens.get();
@@ -533,13 +587,20 @@ fn hit_ts(line: &[u8]) -> Option<i64> {
         }
         Some("system") => {
             texts.extend(d.content.as_str());
-            if let Some(Message { content: Content::Text(s), .. }) = msg {
+            if let Some(Message {
+                content: Content::Text(s),
+                ..
+            }) = msg
+            {
                 texts.push(s);
             }
         }
         _ => {}
     }
-    if !texts.iter().any(|t| t.to_lowercase().contains("hit your weekly limit")) {
+    if !texts
+        .iter()
+        .any(|t| t.to_lowercase().contains("hit your weekly limit"))
+    {
         return None;
     }
     epoch(&d.timestamp)
@@ -564,7 +625,12 @@ impl Msgs {
 
     fn keep_from(&mut self, lo: i64) {
         self.items.retain(|(_, ts, _)| *ts >= lo);
-        self.idx = self.items.iter().enumerate().map(|(i, (k, _, _))| (k.clone(), i)).collect();
+        self.idx = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _, _))| (k.clone(), i))
+            .collect();
     }
 }
 
@@ -578,7 +644,13 @@ struct Ent {
 
 impl Ent {
     fn new() -> Self {
-        Self { size: Some(0), offset: 0, mtime: Value::from(0), msgs: Msgs::default(), hits: Vec::new() }
+        Self {
+            size: Some(0),
+            offset: 0,
+            mtime: Value::from(0),
+            msgs: Msgs::default(),
+            hits: Vec::new(),
+        }
     }
 
     /// The entry of a cache file, or None when it is malformed (then it is scanned again).
@@ -587,10 +659,20 @@ impl Ent {
         let mut msgs = Msgs::default();
         for (k, pair) in raw.msgs.0?.0 {
             let pair = pair.0?;
-            msgs.set(k, pair.first()?.value? as i64, pair.get(1)?.value?);
+            msgs.set(k, trunc_i64(pair.first()?.value?), pair.get(1)?.value?);
         }
-        let hits = raw.hits.0.map(|a| a.iter().filter_map(|n| n.value.map(|f| f as i64)).collect()).unwrap_or_default();
-        Some(Self { size: whole(raw.size), offset, mtime: raw.mtime, msgs, hits })
+        let hits = raw
+            .hits
+            .0
+            .map(|a| a.iter().filter_map(|n| n.value.map(trunc_i64)).collect())
+            .unwrap_or_default();
+        Some(Self {
+            size: whole(raw.size),
+            offset,
+            mtime: raw.mtime,
+            msgs,
+            hits,
+        })
     }
 
     fn write(&self, out: &mut String) {
@@ -612,7 +694,14 @@ impl Ent {
             let _ = write!(out, "{}:[{},{}]", json_str(k), ts, py_float(*w));
         }
         out.push_str("},\"hits\":[");
-        out.push_str(&self.hits.iter().map(ToString::to_string).collect::<Vec<_>>().join(","));
+        out.push_str(
+            &self
+                .hits
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push_str("]}");
     }
 }
@@ -653,7 +742,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Pairs<T> {
         struct V<T>(PhantomData<T>);
         impl<'de, T: Deserialize<'de>> Visitor<'de> for V<T> {
             type Value = Pairs<T>;
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("an object")
             }
             fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<Pairs<T>, A::Error> {
@@ -677,21 +766,35 @@ struct ScanCache {
 }
 
 fn read_scan(p: &Paths) -> ScanCache {
-    let Some(raw) =
-        fs::read(p.file("claude-pace-scan.json")).ok().and_then(|b| serde_json::from_slice::<ScanRaw>(&b).ok())
+    let Some(raw) = fs::read(p.file("claude-pace-scan.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<ScanRaw>(&b).ok())
     else {
         return ScanCache::default();
     };
     if raw.v.value != Some(SCAN_FORMAT) {
         return ScanCache::default();
     }
-    let files = raw.files.0.into_iter().flat_map(|f| f.0).filter_map(|(path, e)| Some((path, Ent::from_raw(e.0?)?)));
-    ScanCache { files: files.collect(), lo: whole(raw.lo), backfilled: raw.backfilled.0 }
+    let files = raw
+        .files
+        .0
+        .into_iter()
+        .flat_map(|f| f.0)
+        .filter_map(|(path, e)| Some((path, Ent::from_raw(e.0?)?)));
+    ScanCache {
+        files: files.collect(),
+        lo: whole(raw.lo),
+        backfilled: raw.backfilled.0,
+    }
 }
 
 /// (cost up to the first weekly-limit hit of week wk, hit time) or None. Needs a complete scan.
 fn limit_hit_calibration(files: &[(String, Ent)], wk: i64) -> Option<(f64, i64)> {
-    let t0 = files.iter().flat_map(|(_, e)| e.hits.iter().copied()).filter(|t| (wk..wk + WEEK).contains(t)).min()?;
+    let t0 = files
+        .iter()
+        .flat_map(|(_, e)| e.hits.iter().copied())
+        .filter(|t| (wk..wk + WEEK).contains(t))
+        .min()?;
     let c = py_sum(
         files
             .iter()
@@ -702,19 +805,23 @@ fn limit_hit_calibration(files: &[(String, Ent)], wk: i64) -> Option<(f64, i64)>
     (c > MIN_HIT_COST).then_some((c, t0))
 }
 
-/// Jsonl files modified since min_mtime, newest first, and the count of all jsonl files.
+/// Jsonl files modified since `min_mtime`, newest first, and the count of all jsonl files.
 fn find_files(root: &PathBuf, min_mtime: f64) -> (Vec<(f64, i64, String)>, usize) {
     let mut found = Vec::new();
     let mut total = 0;
     let walk = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| !(e.depth() > 0 && e.file_type().is_dir() && e.file_name() == "tool-results"));
+        .filter_entry(|e| {
+            !(e.depth() > 0 && e.file_type().is_dir() && e.file_name() == "tool-results")
+        });
     for ent in walk.flatten() {
         if ent.file_type().is_dir() || !ent.file_name().to_string_lossy().ends_with(".jsonl") {
             continue;
         }
-        let Ok(md) = fs::metadata(ent.path()) else { continue };
+        let Ok(md) = fs::metadata(ent.path()) else {
+            continue;
+        };
         if md.is_dir() {
             continue;
         }
@@ -723,12 +830,22 @@ fn find_files(root: &PathBuf, min_mtime: f64) -> (Vec<(f64, i64, String)>, usize
             .modified()
             .ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map_or(0.0, |d| d.as_secs() as f64 + f64::from(d.subsec_nanos()) * 1e-9);
+            .map_or(0.0, |d| {
+                d.as_secs() as f64 + f64::from(d.subsec_nanos()) * 1e-9
+            });
         if mtime >= min_mtime {
-            found.push((mtime, md.len() as i64, ent.path().to_string_lossy().into_owned()));
+            found.push((
+                mtime,
+                i64::try_from(md.len()).unwrap_or(i64::MAX),
+                ent.path().to_string_lossy().into_owned(),
+            ));
         }
     }
-    found.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)).then_with(|| b.2.cmp(&a.2)));
+    found.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+    });
     (found, total)
 }
 
@@ -749,11 +866,15 @@ fn scan_file(path: &str, ent: &mut Ent, ws: i64, deadline: Instant) -> bool {
     let mut n = 0u64;
     if let Ok(f) = fs::File::open(path) {
         let mut r = BufReader::new(f);
-        if pos >= 0 && r.seek(SeekFrom::Start(pos as u64)).is_ok() {
+        if let Ok(start) = u64::try_from(pos)
+            && r.seek(SeekFrom::Start(start)).is_ok()
+        {
             let mut line = Vec::new();
             loop {
                 line.clear();
-                if !matches!(r.read_until(b'\n', &mut line), Ok(k) if k > 0) || line.last() != Some(&b'\n') {
+                if !matches!(r.read_until(b'\n', &mut line), Ok(k) if k > 0)
+                    || line.last() != Some(&b'\n')
+                {
                     break; // end, an error, or a partial last line: wait for the writer
                 }
                 let got = parse_line(&line, pos, ws);
@@ -763,7 +884,7 @@ fn scan_file(path: &str, ent: &mut Ent, ws: i64, deadline: Instant) -> bool {
                 {
                     ent.hits.push(t);
                 }
-                pos += line.len() as i64;
+                pos = pos.saturating_add(i64::try_from(line.len()).unwrap_or(i64::MAX));
                 if let Some((k, ts, w)) = got {
                     ent.msgs.set(k, ts, w); // last record of a message wins
                 }
@@ -828,13 +949,21 @@ fn load_result(p: &Paths) -> Option<CachedResult> {
     })
 }
 
-/// Scan new transcript bytes for at most budget_s seconds (one chunk minimum per call).
+/// Scan new transcript bytes for at most `budget_s` seconds (one chunk minimum per call).
 pub fn refresh_in(p: &Paths, budget_s: f64, now: Option<i64>) -> RefreshResult {
     let now = now.unwrap_or_else(unix_now);
-    let wait = if budget_s.is_finite() { budget_s.clamp(0.0, 1e7) } else { 0.0 };
+    let wait = if budget_s.is_finite() {
+        budget_s.clamp(0.0, 1e7)
+    } else {
+        0.0
+    };
     let deadline = Instant::now() + Duration::from_secs_f64(wait);
     let ws = week_start(p, now);
-    let ScanCache { files: mut old, lo: meta_lo, mut backfilled } = read_scan(p);
+    let ScanCache {
+        files: mut old,
+        lo: meta_lo,
+        mut backfilled,
+    } = read_scan(p);
     let had_valid = !old.is_empty();
     // A cold calibration looks at the previous week too, once, to find its limit hit.
     let back = calib_updated(p) == 0.0 && !backfilled;
@@ -922,9 +1051,19 @@ pub fn refresh_in(p: &Paths, budget_s: f64, now: Option<i64>) -> RefreshResult {
         && weight > 0.0
         && let Some((used, _)) = fresh_c1(p, now).filter(|c| c.0 >= CALIBRATE_MIN)
     {
-        seed_weight(p, weight / (used / 100.0), Some(now), "statusline", Some(ws));
+        seed_weight(
+            p,
+            weight / (used / 100.0),
+            Some(now),
+            "statusline",
+            Some(ws),
+        );
     }
-    RefreshResult { complete, weight, files: total }
+    RefreshResult {
+        complete,
+        weight,
+        files: total,
+    }
 }
 
 /// `refresh_in` over this machine's paths.
@@ -962,20 +1101,42 @@ fn state_of(used: Option<f64>, budget: f64, critical: f64) -> PaceState {
     }
 }
 
-fn out(state: PaceState, used: Option<f64>, budget: f64, source: Option<&str>, resets_at: Option<i64>) -> Status {
-    Status { state, used: used.map(round1), budget: round1(budget), source: source.map(str::to_string), resets_at }
+fn out(
+    state: PaceState,
+    used: Option<f64>,
+    budget: f64,
+    source: Option<&str>,
+    resets_at: Option<i64>,
+) -> Status {
+    Status {
+        state,
+        used: used.map(round1),
+        budget: round1(budget),
+        source: source.map(str::to_string),
+        resets_at,
+    }
 }
 
 fn status_inner(p: &Paths, now: i64) -> Result<Status, ()> {
     let ws = week_start(p, now);
     let budget = budget_for(now, ws, p.days);
     if let Some((used, resets)) = fresh_c1(p, now) {
-        return Ok(out(state_of(Some(used), budget, p.critical), Some(used), budget, Some("statusline"), Some(resets)));
+        return Ok(out(
+            state_of(Some(used), budget, p.critical),
+            Some(used),
+            budget,
+            Some("statusline"),
+            Some(resets),
+        ));
     }
     if let Some(r) = load_result(p)
         && r.ws == ws
     {
-        let positive = if r.files.present { r.files.value.ok_or(())? > 0.0 } else { false };
+        let positive = if r.files.present {
+            r.files.value.ok_or(())? > 0.0
+        } else {
+            false
+        };
         if positive {
             // no calibration and no plan weight (api, unknown): nothing to divide by, so no estimate
             if let Some(total) = week_weight_in(p) {
@@ -1001,7 +1162,8 @@ pub fn status_in(p: &Paths, now: Option<i64>) -> Status {
     if let Ok(Ok(s)) = attempt {
         return s;
     }
-    let budget = std::panic::catch_unwind(|| budget_for(now, fallback_week_start(now), p.days)).unwrap_or(0.0);
+    let budget = std::panic::catch_unwind(|| budget_for(now, fallback_week_start(now), p.days))
+        .unwrap_or(0.0);
     out(PaceState::Unknown, None, budget, None, None)
 }
 
@@ -1018,7 +1180,7 @@ pub fn week_weight() -> Option<f64> {
     week_weight_in(&Paths::from_env())
 }
 
-/// True if a scan result is older than RESULT_TTL_S or from another week.
+/// True if a scan result is older than `RESULT_TTL_S` or from another week.
 fn result_stale(p: &Paths, r: &CachedResult, now: i64) -> bool {
     (now as f64 - r.at).abs() >= RESULT_TTL_S as f64 || r.ws != week_start(p, now)
 }
@@ -1064,7 +1226,12 @@ pub fn status_json(s: &Status) -> String {
 
 /// The scan result as the JSON text the CLI prints.
 pub fn refresh_json(r: &RefreshResult) -> String {
-    format!("{{\"complete\": {}, \"weight\": {}, \"files\": {}}}", r.complete, py_float(r.weight), r.files)
+    format!(
+        "{{\"complete\": {}, \"weight\": {}, \"files\": {}}}",
+        r.complete,
+        py_float(r.weight),
+        r.files
+    )
 }
 
 /// The new weekly weight as the JSON text the CLI prints.
@@ -1072,7 +1239,7 @@ pub fn seed_json(week_weight: f64) -> String {
     format!("{{\"week_weight\": {}}}", py_float(week_weight))
 }
 
-/// `float(arg)` of the CLI: None when Python would raise ValueError.
+/// `float(arg)` of the CLI: None when Python would raise `ValueError`.
 pub fn parse_percent(arg: &str) -> Option<f64> {
     py_parse_float(arg)
 }
@@ -1095,7 +1262,15 @@ mod tests {
     fn iso(t: i64) -> String {
         let (y, m, d) = civil_from_days(t.div_euclid(86400));
         let s = t.rem_euclid(86400);
-        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", y, m, d, s / 3600, s % 3600 / 60, s % 60)
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z",
+            y,
+            m,
+            d,
+            s / 3600,
+            s % 3600 / 60,
+            s % 60
+        )
     }
 
     fn record(t: i64, id: &str, model: &str, inp: i64, out: i64, cc: i64, cr: i64) -> String {
@@ -1135,7 +1310,8 @@ mod tests {
             text.push('\n');
             fs::write(&path, text).unwrap();
             let f = fs::OpenOptions::new().write(true).open(&path).unwrap();
-            f.set_modified(UNIX_EPOCH + Duration::from_secs((mon() + DAY) as u64)).unwrap();
+            f.set_modified(UNIX_EPOCH + Duration::from_secs(u64::try_from(mon() + DAY).unwrap()))
+                .unwrap();
         }
 
         fn c1(&self, updated: i64, used: f64, resets: i64) {
@@ -1148,17 +1324,17 @@ mod tests {
     fn round1_keeps_one_decimal() {
         assert_eq!(round1(0.25), 0.2);
         assert_eq!(round1(41.23456), 41.2);
-        assert_eq!(round1(16.666666666666664), 16.7);
+        assert_eq!(round1(16.666_666_666_666_664), 16.7);
     }
 
     #[test]
     fn epoch_forms() {
-        let ep = |v: Value| epoch(&serde_json::from_str::<Stamp>(&v.to_string()).unwrap());
-        assert_eq!(ep(json!(1760860800)), Some(1760860800));
-        assert_eq!(ep(json!(1760860800000i64)), Some(1760860800));
-        assert_eq!(ep(json!("1760860800")), Some(1760860800));
-        assert_eq!(ep(json!("2025-10-19T08:00:00Z")), Some(1760860800));
-        assert_eq!(ep(json!("2025-10-19T08:00:00.123Z")), Some(1760860800));
+        let ep = |v: Value| epoch(&serde_json::from_str::<Stamp<'_>>(&v.to_string()).unwrap());
+        assert_eq!(ep(json!(1_760_860_800)), Some(1_760_860_800));
+        assert_eq!(ep(json!(1_760_860_800_000_i64)), Some(1_760_860_800));
+        assert_eq!(ep(json!("1760860800")), Some(1_760_860_800));
+        assert_eq!(ep(json!("2025-10-19T08:00:00Z")), Some(1_760_860_800));
+        assert_eq!(ep(json!("2025-10-19T08:00:00.123Z")), Some(1_760_860_800));
         assert_eq!(ep(json!("2025-02-30T08:00:00Z")), None);
         assert_eq!(ep(json!(null)), None);
         assert_eq!(ep(json!("junk")), None);
@@ -1176,7 +1352,9 @@ mod tests {
     fn prompt_scans_past_a_fresh_statusline_and_calibrates() {
         let e = env();
         let now = mon() + DAY;
-        let recs: Vec<String> = (0..10).map(|i| sonnet(mon() + 60, &format!("m{i}"))).collect();
+        let recs: Vec<String> = (0..10)
+            .map(|i| sonnet(mon() + 60, &format!("m{i}")))
+            .collect();
         e.write("a.jsonl", &recs);
         e.c1(now - 10, 10.0, mon() + WEEK);
         // no scan yet: `pace status` trusts the fresh status line, the prompt scans
@@ -1190,7 +1368,8 @@ mod tests {
         // a partial scan is continued on the next prompt
         write_text(
             &e.p.file("claude-pace-result.json"),
-            &json!({"at": now, "ws": mon(), "weight": 1.0, "files": 1, "complete": false}).to_string(),
+            &json!({"at": now, "ws": mon(), "weight": 1.0, "files": 1, "complete": false})
+                .to_string(),
         );
         assert!(prompt_needs_refresh_in(&e.p, now));
         assert!(!needs_refresh_in(&e.p, now));
@@ -1256,7 +1435,13 @@ mod tests {
     }
 
     impl Pc {
-        fn write_in<T: ToString>(&self, name: &str, sub: Option<&str>, recs: &[T], mtime: i64) -> PathBuf {
+        fn write_in<T: ToString>(
+            &self,
+            name: &str,
+            sub: Option<&str>,
+            recs: &[T],
+            mtime: i64,
+        ) -> PathBuf {
             let mut d = self.p.projects.join("proj");
             if let Some(s) = sub {
                 d = d.join(s).join("subagents");
@@ -1270,7 +1455,8 @@ mod tests {
             }
             fs::write(&path, text).unwrap();
             let f = fs::OpenOptions::new().write(true).open(&path).unwrap();
-            f.set_modified(UNIX_EPOCH + Duration::from_secs(mtime as u64)).unwrap(); // the real clock must not matter
+            f.set_modified(UNIX_EPOCH + Duration::from_secs(u64::try_from(mtime).unwrap()))
+                .unwrap(); // the real clock must not matter
             path
         }
 
@@ -1333,10 +1519,17 @@ mod tests {
     // TestBudget
     #[test]
     fn test_budget_per_weekday() {
-        for (i, want) in [16.7, 33.3, 50.0, 66.7, 83.3, 100.0, 100.0].into_iter().enumerate() {
+        for (i, want) in [16.7, 33.3, 50.0, 66.7, 83.3, 100.0, 100.0]
+            .into_iter()
+            .enumerate()
+        {
             let c = pc();
-            let st = c.budget_at(mon() + i as i64 * DAY + 6 * 3600);
-            assert!(close(st.budget, want, 1), "day {i}: {} vs {want}", st.budget);
+            let st = c.budget_at(mon() + i64::try_from(i).unwrap() * DAY + 6 * 3600);
+            assert!(
+                close(st.budget, want, 1),
+                "day {i}: {} vs {want}",
+                st.budget
+            );
         }
     }
 
@@ -1382,8 +1575,14 @@ mod tests {
         assert_eq!(st.used, None);
         assert_eq!(st.source, None);
         let text = status_json(&st);
-        assert!(text.starts_with("{\"state\": \"unknown\", \"used\": null, \"budget\": "), "{text}");
-        assert!(text.ends_with(", \"source\": null, \"resets_at\": null}"), "{text}");
+        assert!(
+            text.starts_with("{\"state\": \"unknown\", \"used\": null, \"budget\": "),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(", \"source\": null, \"resets_at\": null}"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1415,7 +1614,10 @@ mod tests {
         let c = pc();
         let now = mon() + 8 * DAY;
         c.c1(now - 60, 41.2, mon() + WEEK_S);
-        assert_ne!(status_in(&c.p, Some(now)).source.as_deref(), Some("statusline"));
+        assert_ne!(
+            status_in(&c.p, Some(now)).source.as_deref(),
+            Some("statusline")
+        );
     }
 
     #[test]
@@ -1435,10 +1637,17 @@ mod tests {
 
     #[test]
     fn test_states() {
+        use PaceState::{Ahead, Critical, Ok as Fine};
         let c = pc();
         let now = mon() + 2 * DAY; // Wednesday, budget 50
-        use PaceState::{Ahead, Critical, Ok as Fine};
-        let table = [(10.0, Fine), (50.0, Fine), (50.5, Ahead), (84.9, Ahead), (85.0, Critical), (100.0, Critical)];
+        let table = [
+            (10.0, Fine),
+            (50.0, Fine),
+            (50.5, Ahead),
+            (84.9, Ahead),
+            (85.0, Critical),
+            (100.0, Critical),
+        ];
         for (used, want) in table {
             c.c1(now - 10, used, mon() + WEEK_S);
             assert_eq!(status_in(&c.p, Some(now)).state, want, "used {used}");
@@ -1447,10 +1656,13 @@ mod tests {
 
     #[test]
     fn test_critical_setting() {
-        let c = pc();
-        let p = Paths { critical: critical_of("95"), ..c.p.clone() };
-        let now = mon() + 2 * DAY; // Wednesday, budget 50
         use PaceState::{Ahead, Critical};
+        let c = pc();
+        let p = Paths {
+            critical: critical_of("95"),
+            ..c.p.clone()
+        };
+        let now = mon() + 2 * DAY; // Wednesday, budget 50
         for (used, want) in [(85.0, Ahead), (94.9, Ahead), (95.0, Critical)] {
             c.c1(now - 10, used, mon() + WEEK_S);
             assert_eq!(status_in(&p, Some(now)).state, want, "used {used}");
@@ -1476,7 +1688,10 @@ mod tests {
         let body = json!({"v": 2, "at": mon(), "ws": fallback_week_start(mon()), "weight": 1.0, "files": "x", "complete": true});
         write_text(&c.p.file("claude-pace-result.json"), &body.to_string());
         let st = status_in(&c.p, Some(mon()));
-        assert_eq!((st.state.as_str(), st.used, st.source, st.resets_at), ("unknown", None, None, None));
+        assert_eq!(
+            (st.state.as_str(), st.used, st.source, st.resets_at),
+            ("unknown", None, None, None)
+        );
     }
 
     // TestEstimate
@@ -1526,17 +1741,26 @@ mod tests {
             assert_eq!(plan_weight(none), None, "{none}");
         }
         let e = env();
-        let p = Paths { plan: "max5".into(), ..e.p };
+        let p = Paths {
+            plan: "max5".into(),
+            ..e.p
+        };
         assert_eq!(week_weight_in(&p), Some(5.0 * pro));
     }
 
     #[test]
     fn calibration_beats_plan() {
         let e = env();
-        let p = Paths { plan: "max5".into(), ..e.p.clone() };
+        let p = Paths {
+            plan: "max5".into(),
+            ..e.p.clone()
+        };
         seed_weight(&p, 2000.0, Some(mon()), "seed", None);
         assert_eq!(week_weight_in(&p), Some(2000.0));
-        let api = Paths { plan: "api".into(), ..e.p };
+        let api = Paths {
+            plan: "api".into(),
+            ..e.p
+        };
         assert_eq!(week_weight_in(&api), Some(2000.0)); // a calibration also rescues an unknown plan
     }
 
@@ -1544,23 +1768,41 @@ mod tests {
     fn plan_api_is_unknown_without_cache() {
         let c = pc();
         c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
-        let api = Paths { plan: "unknown".into(), ..c.p.clone() };
+        let api = Paths {
+            plan: "unknown".into(),
+            ..c.p.clone()
+        };
         refresh_in(&api, 5.0, Some(mon() + DAY));
         let st = status_in(&api, Some(mon() + DAY));
-        assert_eq!((st.state.as_str(), st.used, st.source), ("unknown", None, None));
+        assert_eq!(
+            (st.state.as_str(), st.used, st.source),
+            ("unknown", None, None)
+        );
         // the same transcripts on a known plan give an estimate
-        let pro = Paths { plan: "pro".into(), ..c.p.clone() };
-        assert_eq!(status_in(&pro, Some(mon() + DAY)).source.as_deref(), Some("estimate"));
+        let pro = Paths {
+            plan: "pro".into(),
+            ..c.p.clone()
+        };
+        assert_eq!(
+            status_in(&pro, Some(mon() + DAY)).source.as_deref(),
+            Some("estimate")
+        );
         // a fresh statusline cache needs no plan
         c.c1(mon() + DAY - 60, 41.2, mon() + WEEK_S);
         let st = status_in(&api, Some(mon() + DAY));
-        assert_eq!((st.source.as_deref(), st.used), (Some("statusline"), Some(41.2)));
+        assert_eq!(
+            (st.source.as_deref(), st.used),
+            (Some("statusline"), Some(41.2))
+        );
     }
 
     #[test]
     fn budget_follows_the_work_days_of_the_paths() {
         let c = pc();
-        let five = Paths { days: 5, ..c.p.clone() };
+        let five = Paths {
+            days: 5,
+            ..c.p.clone()
+        };
         assert_eq!(status_in(&five, Some(mon())).budget, 20.0);
         assert_eq!(status_in(&c.p, Some(mon())).budget, 16.7); // the fixture is mon-sat
     }
@@ -1589,23 +1831,38 @@ mod tests {
             json!({"ephemeral_5m_input_tokens": 1000, "ephemeral_1h_input_tokens": 2000});
         c.lines("a.jsonl", &[r]);
         c.refresh(5.0, mon() + DAY);
-        assert!(close(c.weight(), 5.0 * (1.25 * 1000.0 + 2.0 * 2000.0) / 1e6, 7), "{}", c.weight());
+        assert!(
+            close(c.weight(), 5.0 * (1.25 * 1000.0 + 2.0 * 2000.0) / 1e6, 7),
+            "{}",
+            c.weight()
+        );
     }
 
     #[test]
     fn test_cache_write_without_split_counts_as_1h() {
         let c = pc();
-        assert!(close(c.cost_of("claude-opus-4-8", 0, 0, 3000, 0), 5.0 * 2.0 * 3000.0 / 1e6, 7));
+        assert!(close(
+            c.cost_of("claude-opus-4-8", 0, 0, 3000, 0),
+            5.0 * 2.0 * 3000.0 / 1e6,
+            7
+        ));
     }
 
     #[test]
     fn test_old_cache_formats_are_rebuilt_or_ignored() {
         let c = pc();
         c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
-        write_text(&c.p.file("claude-pace-scan.json"), &json!({"v": 1, "ws": mon(), "files": {}}).to_string());
-        let old = json!({"at": mon() + DAY, "ws": mon(), "weight": 1e9, "files": 5, "complete": true});
+        write_text(
+            &c.p.file("claude-pace-scan.json"),
+            &json!({"v": 1, "ws": mon(), "files": {}}).to_string(),
+        );
+        let old =
+            json!({"at": mon() + DAY, "ws": mon(), "weight": 1e9, "files": 5, "complete": true});
         write_text(&c.p.file("claude-pace-result.json"), &old.to_string());
-        write_text(&c.p.file("claude-pace-calib.json"), &json!({"week_weight": 1.3e9, "updated": mon()}).to_string());
+        write_text(
+            &c.p.file("claude-pace-calib.json"),
+            &json!({"week_weight": 1.3e9, "updated": mon()}).to_string(),
+        );
         assert_eq!(status_in(&c.p, Some(mon() + DAY)).state, PaceState::Unknown); // old result ignored
         assert_eq!(week_weight_in(&c.p), Some(DEFAULT_WEEK_WEIGHT)); // old calibration ignored
         c.refresh(5.0, mon() + DAY);
@@ -1618,7 +1875,15 @@ mod tests {
         let c = pc();
         let mut recs = vec![];
         for (dt, out) in [(60, 10), (61, 200), (62, 500)] {
-            recs.push(rv(mon() + dt, "m1", "claude-sonnet-5-5", 1000, out, 2000, 10000));
+            recs.push(rv(
+                mon() + dt,
+                "m1",
+                "claude-sonnet-5-5",
+                1000,
+                out,
+                2000,
+                10000,
+            ));
         }
         c.lines("a.jsonl", &recs);
         c.estimate(mon() + DAY, Some(WEIGHT * 100.0));
@@ -1638,7 +1903,15 @@ mod tests {
     fn test_free_and_unknown_models_are_skipped() {
         let c = pc();
         let recs = [
-            rv(mon() + 60, "m1", "openai/gpt-oss-120b:free", 1000, 500, 2000, 10000),
+            rv(
+                mon() + 60,
+                "m1",
+                "openai/gpt-oss-120b:free",
+                1000,
+                500,
+                2000,
+                10000,
+            ),
             rv(mon() + 61, "m2", "<synthetic>", 1000, 500, 2000, 10000),
             rv(mon() + 62, "m3", "claude-opus-4-8", 1000, 500, 2000, 10000),
             rv(mon() + 63, "m4", "claude-haiku-4-5", 1000, 500, 2000, 10000),
@@ -1646,8 +1919,13 @@ mod tests {
         ];
         c.lines("a.jsonl", &recs);
         c.estimate(mon() + DAY, None);
-        let per = |pi: f64, po: f64| (pi * (1000.0 + 2.0 * 2000.0 + 0.1 * 10000.0) + po * 500.0) / 1e6;
-        assert!(close(c.weight(), per(5.0, 25.0) + per(1.0, 5.0) + per(15.0, 75.0), 7));
+        let per =
+            |pi: f64, po: f64| (pi * (1000.0 + 2.0 * 2000.0 + 0.1 * 10000.0) + po * 500.0) / 1e6;
+        assert!(close(
+            c.weight(),
+            per(5.0, 25.0) + per(1.0, 5.0) + per(15.0, 75.0),
+            7
+        ));
     }
 
     #[test]
@@ -1682,14 +1960,23 @@ mod tests {
         r["message"]["usage"]["cache_read_input_tokens"] = Value::Null;
         c.lines("a.jsonl", &[r]);
         c.estimate(mon() + DAY, None);
-        assert!(close(c.weight(), (3.0 * (1000.0 + 2.0 * 2000.0) + 15.0 * 500.0) / 1e6, 7));
+        assert!(close(
+            c.weight(),
+            (3.0 * (1000.0 + 2.0 * 2000.0) + 15.0 * 500.0) / 1e6,
+            7
+        ));
     }
 
     #[test]
     fn test_subagent_files_are_counted() {
         let c = pc();
         c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
-        c.write_in("agent-1.jsonl", Some("sess1"), &[rec(mon() + 70, "s1")], mon() + DAY);
+        c.write_in(
+            "agent-1.jsonl",
+            Some("sess1"),
+            &[rec(mon() + 70, "s1")],
+            mon() + DAY,
+        );
         c.estimate(mon() + DAY, None);
         assert!(close(c.weight(), 2.0 * WEIGHT, 7));
     }
@@ -1707,7 +1994,10 @@ mod tests {
         assert!(close(c.weight(), 2.0 * WEIGHT, 7));
         let scan = c.scan();
         let key = path.to_string_lossy().into_owned();
-        assert_eq!(scan["files"][key.as_str()]["offset"].as_u64(), Some(fs::metadata(&path).unwrap().len()));
+        assert_eq!(
+            scan["files"][key.as_str()]["offset"].as_u64(),
+            Some(fs::metadata(&path).unwrap().len())
+        );
     }
 
     #[test]
@@ -1758,7 +2048,10 @@ mod tests {
         let c = pc();
         c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
         c.refresh(5.0, mon() + DAY);
-        assert_eq!(status_in(&c.p, Some(mon() + 8 * DAY)).state, PaceState::Unknown);
+        assert_eq!(
+            status_in(&c.p, Some(mon() + 8 * DAY)).state,
+            PaceState::Unknown
+        );
     }
 
     #[test]
@@ -1804,7 +2097,11 @@ mod tests {
         c.lines("a.jsonl", &ten());
         c.c1(now - 10, 10.0, mon() + WEEK_S);
         c.refresh(5.0, now);
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 10.0 * WEIGHT / 0.10, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            10.0 * WEIGHT / 0.10,
+            7
+        ));
     }
 
     #[test]
@@ -1858,7 +2155,11 @@ mod tests {
         let now = mon() + DAY;
         c.lines("a.jsonl", &ten());
         assert!(seed_in(&c.p, 25.0, Some(now)));
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 10.0 * WEIGHT / 0.25, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            10.0 * WEIGHT / 0.25,
+            7
+        ));
         assert!(close(status_in(&c.p, Some(now)).used.unwrap(), 25.0, 1));
     }
 
@@ -1870,7 +2171,11 @@ mod tests {
         assert!(!c.has_calib());
         c.lines("a.jsonl", &[rec(mon() + 60, "m1")]);
         assert!(seed_in(&c.p, 25.0, Some(mon() + DAY)));
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), WEIGHT / 0.25, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            WEIGHT / 0.25,
+            7
+        ));
     }
 
     #[test]
@@ -1898,12 +2203,23 @@ mod tests {
     fn test_hit_sets_calibration() {
         let c = pc();
         let t0 = mon() + 2 * DAY;
-        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(t0), big(t0 + 60, "after", 100_000_000)]);
+        c.lines(
+            "a.jsonl",
+            &[
+                big2000(mon() + 3600, "b1"),
+                hit(t0),
+                big(t0 + 60, "after", 100_000_000),
+            ],
+        );
         refresh_default(&c);
         let cal = c.calib_json();
         assert!(close(cal["week_weight"].as_f64().unwrap(), 2000.0, 7)); // the record after the hit is not counted
         assert_eq!(
-            (cal["source"].as_str(), cal["week_start"].as_i64(), cal["updated"].as_i64()),
+            (
+                cal["source"].as_str(),
+                cal["week_start"].as_i64(),
+                cal["updated"].as_i64()
+            ),
             (Some("limit-hit"), Some(mon()), Some(t0))
         );
         assert_eq!(week_weight_in(&c.p), cal["week_weight"].as_f64());
@@ -1917,10 +2233,19 @@ mod tests {
         let c = pc();
         let t0 = mon() + 2 * DAY;
         c.lines("a.jsonl", &[big(mon() + 3600, "b1", 200_000_000)]);
-        c.write_in("agent-1.jsonl", Some("s1"), &[big(mon() + 7200, "b2", 200_000_000)], mon() + DAY);
+        c.write_in(
+            "agent-1.jsonl",
+            Some("s1"),
+            &[big(mon() + 7200, "b2", 200_000_000)],
+            mon() + DAY,
+        );
         c.lines("b.jsonl", &[hit(t0)]);
         refresh_default(&c);
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            2000.0,
+            7
+        ));
     }
 
     #[test]
@@ -1935,8 +2260,17 @@ mod tests {
     #[test]
     fn test_a_reply_that_quotes_the_phrase_is_not_a_hit() {
         let c = pc();
-        let mut quote = rv(mon() + 2 * DAY, "q1", "claude-opus-4-8", 1000, 500, 2000, 10000);
-        quote["message"]["content"] = json!([{"type": "text", "text": "You've hit your weekly limit, they said"}]);
+        let mut quote = rv(
+            mon() + 2 * DAY,
+            "q1",
+            "claude-opus-4-8",
+            1000,
+            500,
+            2000,
+            10000,
+        );
+        quote["message"]["content"] =
+            json!([{"type": "text", "text": "You've hit your weekly limit, they said"}]);
         c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), quote]);
         refresh_default(&c);
         assert!(!c.has_calib());
@@ -1945,11 +2279,14 @@ mod tests {
     #[test]
     fn test_phrase_is_case_insensitive_and_system_records_count() {
         let c = pc();
-        let sysrec =
-            json!({"type": "system", "timestamp": iso(mon() + 2 * DAY), "content": "YOU'VE HIT YOUR WEEKLY LIMIT"});
+        let sysrec = json!({"type": "system", "timestamp": iso(mon() + 2 * DAY), "content": "YOU'VE HIT YOUR WEEKLY LIMIT"});
         c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), sysrec]);
         refresh_default(&c);
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            2000.0,
+            7
+        ));
     }
 
     #[test]
@@ -1957,16 +2294,28 @@ mod tests {
         let c = pc();
         c.lines(
             "a.jsonl",
-            &[big2000(mon() + 3600, "b1"), hit(mon() + DAY), big2000(mon() + DAY + 60, "b2"), hit(mon() + 3 * DAY)],
+            &[
+                big2000(mon() + 3600, "b1"),
+                hit(mon() + DAY),
+                big2000(mon() + DAY + 60, "b2"),
+                hit(mon() + 3 * DAY),
+            ],
         );
         refresh_default(&c);
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            2000.0,
+            7
+        ));
     }
 
     #[test]
     fn test_cheap_hit_stores_nothing() {
         let c = pc();
-        c.lines("a.jsonl", &[big(mon() + 3600, "b1", 100_000_000), hit(mon() + DAY)]); // cost 500
+        c.lines(
+            "a.jsonl",
+            &[big(mon() + 3600, "b1", 100_000_000), hit(mon() + DAY)],
+        ); // cost 500
         refresh_default(&c);
         assert!(!c.has_calib());
     }
@@ -1992,7 +2341,10 @@ mod tests {
     #[test]
     fn test_newer_seed_wins() {
         let c = pc();
-        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        c.lines(
+            "a.jsonl",
+            &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)],
+        );
         seed_weight(&c.p, 3000.0, Some(mon() + 2 * DAY + 600), "seed", None); // after the hit
         refresh_default(&c);
         assert_eq!(c.calib_json()["week_weight"].as_f64(), Some(3000.0));
@@ -2002,20 +2354,35 @@ mod tests {
     #[test]
     fn test_newer_hit_wins_over_older_seed() {
         let c = pc();
-        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        c.lines(
+            "a.jsonl",
+            &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)],
+        );
         seed_weight(&c.p, 3000.0, Some(mon() + DAY), "seed", None); // before the hit
         refresh_default(&c);
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            2000.0,
+            7
+        ));
     }
 
     #[test]
     fn test_hit_is_stored_once() {
         let c = pc();
-        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        c.lines(
+            "a.jsonl",
+            &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)],
+        );
         refresh_default(&c);
         let path = c.p.file("claude-pace-calib.json");
         let stamp = UNIX_EPOCH + Duration::from_secs(1);
-        fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(stamp).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
         refresh_default(&c);
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), stamp); // not rewritten
     }
@@ -2023,25 +2390,47 @@ mod tests {
     #[test]
     fn test_no_hit_this_week_keeps_last_week_calibration() {
         let c = pc();
-        c.lines("a.jsonl", &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)]);
+        c.lines(
+            "a.jsonl",
+            &[big2000(mon() + 3600, "b1"), hit(mon() + 2 * DAY)],
+        );
         refresh_default(&c);
         let nxt = mon() + 8 * DAY;
-        c.write_in("b.jsonl", None, &[big(mon() + WEEK_S + 3600, "b9", 100_000_000)], nxt);
+        c.write_in(
+            "b.jsonl",
+            None,
+            &[big(mon() + WEEK_S + 3600, "b9", 100_000_000)],
+            nxt,
+        );
         c.refresh(5.0, nxt);
-        assert!(close(c.calib_json()["week_weight"].as_f64().unwrap(), 2000.0, 7));
-        assert!(close(status_in(&c.p, Some(nxt)).used.unwrap(), 500.0 / 2000.0 * 100.0, 7));
+        assert!(close(
+            c.calib_json()["week_weight"].as_f64().unwrap(),
+            2000.0,
+            7
+        ));
+        assert!(close(
+            status_in(&c.p, Some(nxt)).used.unwrap(),
+            500.0 / 2000.0 * 100.0,
+            7
+        ));
     }
 
     #[test]
     fn test_backfill_finds_the_previous_week_hit_once() {
         let c = pc();
         let prev = mon() - WEEK_S;
-        c.lines("a.jsonl", &[big2000(prev + 3600, "b1"), hit(prev + 5 * DAY)]);
+        c.lines(
+            "a.jsonl",
+            &[big2000(prev + 3600, "b1"), hit(prev + 5 * DAY)],
+        );
         c.lines("b.jsonl", &[big(mon() + 3600, "b2", 100_000_000)]);
         c.refresh(5.0, mon() + DAY);
         let cal = c.calib_json();
         assert!(close(cal["week_weight"].as_f64().unwrap(), 2000.0, 7));
-        assert_eq!((cal["source"].as_str(), cal["week_start"].as_i64()), (Some("limit-hit"), Some(prev)));
+        assert_eq!(
+            (cal["source"].as_str(), cal["week_start"].as_i64()),
+            (Some("limit-hit"), Some(prev))
+        );
         // this week's cost still counts only this week
         assert!(close(c.weight(), 500.0, 7));
     }
@@ -2053,10 +2442,16 @@ mod tests {
         c.lines("a.jsonl", &[big2000(prev + 3600, "b1")]);
         c.refresh(5.0, mon() + DAY);
         let scan = c.scan();
-        assert_eq!((scan["lo"].as_i64(), scan["backfilled"].as_bool()), (Some(prev), Some(true)));
+        assert_eq!(
+            (scan["lo"].as_i64(), scan["backfilled"].as_bool()),
+            (Some(prev), Some(true))
+        );
         c.refresh(5.0, mon() + DAY + 10);
         let scan = c.scan();
-        assert_eq!((scan["lo"].as_i64(), scan["backfilled"].as_bool()), (Some(mon()), Some(true))); // previous week dropped again
+        assert_eq!(
+            (scan["lo"].as_i64(), scan["backfilled"].as_bool()),
+            (Some(mon()), Some(true))
+        ); // previous week dropped again
     }
 
     #[test]
@@ -2064,7 +2459,10 @@ mod tests {
         let c = pc();
         let prev = mon() - WEEK_S;
         seed_weight(&c.p, 3000.0, Some(mon()), "seed", None);
-        c.lines("a.jsonl", &[big2000(prev + 3600, "b1"), hit(prev + 5 * DAY)]);
+        c.lines(
+            "a.jsonl",
+            &[big2000(prev + 3600, "b1"), hit(prev + 5 * DAY)],
+        );
         c.refresh(5.0, mon() + DAY);
         assert_eq!(c.calib_json()["week_weight"].as_f64(), Some(3000.0));
     }

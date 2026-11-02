@@ -11,6 +11,7 @@ Pace: <ok / ahead / critical, from the guard's last note>
 Blockers: <count>
 Budget: <pace | the brief's limit, e.g. 4h, 6 tasks>
 Used: <hours, tasks or pace used, updated each task>
+ETA: <HH:MM (range HH:MM to HH:MM), set after every phase>
 
 ## Tasks
 
@@ -34,7 +35,7 @@ Used: <hours, tasks or pace used, updated each task>
 
 ## Hourly status
 
-<!-- HH:MM · done n/N · now <task> · next <task> · blockers n -->
+<!-- HH:MM · done n/N · now <task> · next <task> · blockers n · ETA HH:MM -->
 
 ## Limit and restart log
 

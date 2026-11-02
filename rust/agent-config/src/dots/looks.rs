@@ -8,8 +8,14 @@ use crate::out::{info, ok, step, warn};
 
 /// Each part: its name in LOOKS and its menu label.
 pub const ALL: [(&str, &str); 3] = [
-    ("starship", "⭐ Starship prompt (colors and icons in the shell prompt)"),
-    ("editor", "📝 VS Code and Cursor settings (theme, Nerd Font, keys)"),
+    (
+        "starship",
+        "⭐ Starship prompt (colors and icons in the shell prompt)",
+    ),
+    (
+        "editor",
+        "📝 VS Code and Cursor settings (theme, Nerd Font, keys)",
+    ),
     ("font", "🔤 Nerd Font and the Apple Terminal look (macOS)"),
 ];
 
@@ -31,7 +37,10 @@ pub fn parse(v: &str) -> Vec<String> {
     if w == "all" {
         return ALL.iter().map(|p| p.0.to_string()).collect();
     }
-    w.split(' ').filter(|n| ALL.iter().any(|p| p.0 == *n)).map(String::from).collect()
+    w.split(' ')
+        .filter(|n| ALL.iter().any(|p| p.0 == *n))
+        .map(String::from)
+        .collect()
 }
 
 /// Whether a part is on. Not set yet counts as off.
@@ -46,39 +55,75 @@ pub fn summary() -> String {
         return "not set (off)".to_string();
     }
     let p = parse(&v);
-    if p.is_empty() { "none".to_string() } else { p.join(" ") }
+    if p.is_empty() {
+        "none".to_string()
+    } else {
+        p.join(" ")
+    }
 }
 
 /// Ask which parts are on and save the answer. The parts this OS can't use keep their value.
 pub fn edit() {
     let offered = offered();
     let now = parse(&settings::get("LOOKS"));
-    let labels: Vec<String> =
-        offered.iter().map(|n| ALL.iter().find(|p| p.0 == *n).map_or(*n, |p| p.1).to_string()).collect();
+    let labels: Vec<String> = offered
+        .iter()
+        .map(|n| {
+            ALL.iter()
+                .find(|p| p.0 == *n)
+                .map_or(*n, |p| p.1)
+                .to_string()
+        })
+        .collect();
     let picked: Vec<&str> = if ask::fancy() {
-        let marked: Vec<usize> =
-            offered.iter().enumerate().filter(|(_, n)| now.iter().any(|x| x == *n)).map(|(i, _)| i).collect();
+        let marked: Vec<usize> = offered
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| now.iter().any(|x| x == *n))
+            .map(|(i, _)| i)
+            .collect();
         if let Some(v) = ask::many(
             "🎨 Look changes: Space marks one · Enter saves (none marked: keep your own look)",
             &labels,
             &marked,
         ) {
-            offered.iter().zip(&labels).filter(|(_, l)| v.contains(l)).map(|(n, _)| *n).collect()
+            offered
+                .iter()
+                .zip(&labels)
+                .filter(|(_, l)| v.contains(l))
+                .map(|(n, _)| *n)
+                .collect()
         } else {
             info("looks: not changed");
             return;
         }
     } else {
         info(&format!("looks: {} (or none)", offered.join(" ")));
-        let Some(v) = ask::value("🎨 Look changes that are on, split by spaces", &now.join(" "), "none") else {
+        let Some(v) = ask::value(
+            "🎨 Look changes that are on, split by spaces",
+            &now.join(" "),
+            "none",
+        ) else {
             return;
         };
         let p = parse(&v);
-        offered.iter().copied().filter(|n| p.iter().any(|x| x == n)).collect()
+        offered
+            .iter()
+            .copied()
+            .filter(|n| p.iter().any(|x| x == n))
+            .collect()
     };
-    let mut keep: Vec<String> = now.into_iter().filter(|n| !offered.contains(&n.as_str())).collect();
+    let mut keep: Vec<String> = now
+        .into_iter()
+        .filter(|n| !offered.contains(&n.as_str()))
+        .collect();
     keep.extend(picked.iter().map(ToString::to_string));
-    let v = ALL.iter().map(|p| p.0).filter(|n| keep.iter().any(|k| k == n)).collect::<Vec<_>>().join(" ");
+    let v = ALL
+        .iter()
+        .map(|p| p.0)
+        .filter(|n| keep.iter().any(|k| k == n))
+        .collect::<Vec<_>>()
+        .join(" ");
     let v = if v.is_empty() { "none".to_string() } else { v };
     if settings::set("LOOKS", &v) {
         ok(&format!("looks: {v}"));

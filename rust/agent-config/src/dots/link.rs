@@ -14,7 +14,9 @@ pub fn take_count() -> usize {
 }
 
 fn base(p: &Path) -> String {
-    p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    p.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Link `dst` -> `src`. A link that is right is counted as up to date. Anything else at
@@ -32,7 +34,10 @@ pub fn link_item(src: &Path, dst: &Path, quiet: bool) {
         if fs::rename(dst, &bak).is_ok() {
             warn(&format!("backed up existing {} → {}", base(dst), bak));
         } else {
-            warn(&format!("couldn't back up {} — leaving it in place, skipping link", dst.display()));
+            warn(&format!(
+                "couldn't back up {} — leaving it in place, skipping link",
+                dst.display()
+            ));
             return;
         }
     }
@@ -45,7 +50,11 @@ pub fn link_item(src: &Path, dst: &Path, quiet: bool) {
             ok(&format!("linked {}", base(dst)));
         }
     } else {
-        warn(&format!("couldn't link {} → {}", dst.display(), src.display()));
+        warn(&format!(
+            "couldn't link {} → {}",
+            dst.display(),
+            src.display()
+        ));
     }
 }
 
@@ -55,7 +64,10 @@ pub fn unlink_item(src: &Path, dst: &Path) {
     if !os::is_symlink(dst) || os::readlink(dst).as_deref() != Some(src) {
         return;
     }
-    if fs::remove_file(dst).or_else(|_| fs::remove_dir(dst)).is_err() {
+    if fs::remove_file(dst)
+        .or_else(|_| fs::remove_dir(dst))
+        .is_err()
+    {
         warn(&format!("couldn't remove the link {}", dst.display()));
         return;
     }
@@ -70,7 +82,10 @@ pub fn unlink_item(src: &Path, dst: &Path) {
         .max_by_key(fs::DirEntry::file_name);
     match newest {
         Some(b) if fs::rename(b.path(), dst).is_ok() => {
-            ok(&format!("removed the link {}, your old file is back", dst.display()));
+            ok(&format!(
+                "removed the link {}, your old file is back",
+                dst.display()
+            ));
         }
         _ => ok(&format!("removed the link {}", dst.display())),
     }

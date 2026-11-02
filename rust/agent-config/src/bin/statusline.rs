@@ -107,6 +107,10 @@ struct ContextWindow {
 
 #[derive(Default, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the fields keep the JSON key names"
+)]
 struct Usage {
     input_tokens: Option<Value>,
     cache_creation_input_tokens: Option<Value>,
@@ -119,7 +123,11 @@ impl Usage {
     fn tokens(&self) -> Option<f64> {
         let mut sum = 0.0;
         let mut any = false;
-        for v in [&self.input_tokens, &self.cache_creation_input_tokens, &self.cache_read_input_tokens] {
+        for v in [
+            &self.input_tokens,
+            &self.cache_creation_input_tokens,
+            &self.cache_read_input_tokens,
+        ] {
             match v {
                 None => {}
                 Some(Value::Number(n)) => {
@@ -173,7 +181,9 @@ impl View {
         };
         let cwd = jq_str(input.workspace.get().current_dir.as_ref()).filter(|s| !s.is_empty());
         Self {
-            cwd: cwd.or_else(|| jq_str(input.cwd.as_ref())).unwrap_or_default(),
+            cwd: cwd
+                .or_else(|| jq_str(input.cwd.as_ref()))
+                .unwrap_or_default(),
             model: jq_str(input.model.get().display_name.as_ref()).unwrap_or_default(),
             ctx_tokens: usage.or(total),
             ctx_percent: int_text(ctx.used_percentage.as_ref()),
@@ -188,7 +198,11 @@ fn basename(path: &str) -> String {
     let is_sep = |c: char| c == '/' || (cfg!(windows) && c == '\\');
     let trimmed = path.trim_end_matches(is_sep);
     if trimmed.is_empty() {
-        return if path.is_empty() { String::new() } else { "/".to_string() };
+        return if path.is_empty() {
+            String::new()
+        } else {
+            "/".to_string()
+        };
     }
     trimmed.rsplit(is_sep).next().unwrap_or(trimmed).to_string()
 }
@@ -204,17 +218,29 @@ fn git_branch(cwd: &str) -> String {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim_end_matches(['\n', '\r'])
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
 /// Env vars that change how git finds the repo. With one set, only git itself can answer.
-const GIT_ENV: [&str; 5] =
-    ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"];
+const GIT_ENV: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
 
 /// The branch without a git process, or `None` when git must answer.
 fn fast_branch(cwd: &str) -> Option<String> {
-    if GIT_ENV.iter().any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty())) {
+    if GIT_ENV
+        .iter()
+        .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+    {
         return None;
     }
     branch_from_head(Path::new(cwd))
@@ -285,10 +311,20 @@ fn parse_head(head: &str) -> Option<String> {
 
 /// Build the line. `branch` is looked up by the caller so tests can pass it in.
 fn render(input: &View, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bool) -> String {
-    let cwd = if input.cwd.is_empty() { pwd } else { &input.cwd };
+    let cwd = if input.cwd.is_empty() {
+        pwd
+    } else {
+        &input.cwd
+    };
     let dir = basename(cwd);
     let branch = branch_of(cwd);
-    let paint = |code: &str, text: &str| if color { format!("{code}{text}{RST}") } else { text.to_string() };
+    let paint = |code: &str, text: &str| {
+        if color {
+            format!("{code}{text}{RST}")
+        } else {
+            text.to_string()
+        }
+    };
 
     let mut line = paint(COPPER, &format!(" {dir}"));
     if !branch.is_empty() {
@@ -301,6 +337,10 @@ fn render(input: &View, pwd: &str, branch_of: &dyn Fn(&str) -> String, color: bo
     }
 
     if let Some(tok) = input.ctx_tokens {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a float to int cast saturates and maps NaN to 0, so odd input cannot panic"
+        )]
         let k = (tok.round_ties_even() as i64) / 1000;
         let code = if k >= CTX_WARN_K { COPPER } else { STONE };
         let mut ctx = format!("ctx {k}K");
@@ -354,8 +394,13 @@ fn left_segment(input: &View, color: bool) -> Option<String> {
     if input.session_id.is_empty() {
         return None;
     }
-    let text = left_text(&std::fs::read_to_string(agent_config::status_path(&input.session_id)).ok()?)?;
-    Some(if color { format!("{COPPER}{text}{RST}") } else { text })
+    let text =
+        left_text(&std::fs::read_to_string(agent_config::status_path(&input.session_id)).ok()?)?;
+    Some(if color {
+        format!("{COPPER}{text}{RST}")
+    } else {
+        text
+    })
 }
 
 /// The pace cache JSON, field order as in the shell: `updated`, `five_hour`, `seven_day`.
@@ -375,7 +420,10 @@ fn pace_json(input: &Value, now: u64) -> Option<String> {
         Some(v) => pick(v),
     };
     out.insert("five_hour".into(), five);
-    out.insert("seven_day".into(), pick(at(input, &["rate_limits", "seven_day"])?));
+    out.insert(
+        "seven_day".into(),
+        pick(at(input, &["rate_limits", "seven_day"])?),
+    );
     serde_json::to_string(&Value::Object(out)).ok()
 }
 
@@ -397,14 +445,19 @@ fn main() {
     let _ = std::io::stdin().read_to_end(&mut raw);
     let doc: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
 
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let now = u64::try_from(agent_config::paths::unix_now()).unwrap_or(0);
     if let Some(json) = pace_json(&doc, now) {
-        let _ = write_atomic(&agent_config::paths::cache().join("claude-pace.json"), &format!("{json}\n"));
+        let _ = write_atomic(
+            &agent_config::paths::cache().join("claude-pace.json"),
+            &format!("{json}\n"),
+        );
     }
 
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let plain = agent_config::setting(&home_dir(), "THEME") == "plain";
-    let pwd = std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default();
+    let pwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
     let color = !(no_color || plain);
     let input = View::from_json(&doc);
     let mut line = render(&input, &pwd, &git_branch, color);
@@ -434,8 +487,19 @@ mod tests {
 
     #[test]
     fn percents_round_half_to_even() {
-        for (given, shown) in [(0.5, "0"), (1.5, "2"), (2.5, "2"), (3.5, "4"), (-0.4, "-0"), (97.0, "97")] {
-            assert_eq!(int_text(Some(&Value::from(given))).as_deref(), Some(shown), "{given}");
+        for (given, shown) in [
+            (0.5, "0"),
+            (1.5, "2"),
+            (2.5, "2"),
+            (3.5, "4"),
+            (-0.4, "-0"),
+            (97.0, "97"),
+        ] {
+            assert_eq!(
+                int_text(Some(&Value::from(given))).as_deref(),
+                Some(shown),
+                "{given}"
+            );
         }
         assert_eq!(int_text(Some(&Value::from(" 2.5 "))).as_deref(), Some("2"));
         assert_eq!(int_text(Some(&Value::Bool(true))), None);
@@ -450,7 +514,12 @@ mod tests {
                 "rate_limits": {"five_hour": {"used_percentage": 10.5}, "seven_day": {"used_percentage": 40}}}"#,
         )
         .unwrap();
-        let line = render(&View::from_json(&doc), "/elsewhere", &|_| "main".into(), false);
+        let line = render(
+            &View::from_json(&doc),
+            "/elsewhere",
+            &|_| "main".into(),
+            false,
+        );
         assert_eq!(line, " app   main  Opus  ctx 2K 2%  5h 10% · 7d 40%");
         // no workspace and no cwd: the process folder
         let line = render(&View::default(), "/elsewhere", &|_| String::new(), false);
@@ -459,7 +528,10 @@ mod tests {
 
     #[test]
     fn branch_with_slash_from_a_subdir() {
-        assert_eq!(branch_from_head(repo("ref: refs/heads/main\n").path()), Some("main".into()));
+        assert_eq!(
+            branch_from_head(repo("ref: refs/heads/main\n").path()),
+            Some("main".into())
+        );
         let t = repo("ref: refs/heads/feat/x\n");
         let sub = t.path().join("a/b");
         fs::create_dir_all(&sub).unwrap();
@@ -505,8 +577,11 @@ mod tests {
         fs::write(gitdir_file.path().join(".git"), "nonsense\n").unwrap();
         let no_head = tempfile::tempdir().unwrap();
         fs::create_dir(no_head.path().join(".git")).unwrap();
-        let (invalid, unknown, main) =
-            (repo("ref: refs/heads/.invalid\n"), repo("garbage\n"), repo("ref: refs/heads/main\n"));
+        let (invalid, unknown, main) = (
+            repo("ref: refs/heads/.invalid\n"),
+            repo("garbage\n"),
+            repo("ref: refs/heads/main\n"),
+        );
         let plain = tempfile::tempdir().unwrap();
         let dirs = [
             gitdir_file.path().to_path_buf(),
@@ -555,12 +630,27 @@ mod tests {
         };
         let t = tempfile::tempdir().unwrap();
         let ok = |r: std::io::Result<std::process::Output>| r.is_ok_and(|o| o.status.success());
-        assert!(ok(git(t.path(), &["init", "-q", "-b", "main"])), "git is needed for this test");
-        let commit = ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"];
+        assert!(
+            ok(git(t.path(), &["init", "-q", "-b", "main"])),
+            "git is needed for this test"
+        );
+        let commit = [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ];
         assert!(ok(git(t.path(), &commit)));
         let want = |dir: &Path| {
             let o = git(dir, &["branch", "--show-current"]).unwrap();
-            String::from_utf8_lossy(&o.stdout).trim_end_matches(['\n', '\r']).to_string()
+            String::from_utf8_lossy(&o.stdout)
+                .trim_end_matches(['\n', '\r'])
+                .to_string()
         };
         assert_eq!(branch_from_head(t.path()), Some(want(t.path())));
         assert!(ok(git(t.path(), &["checkout", "-q", "-b", "feat/y"])));

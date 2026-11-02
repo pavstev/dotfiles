@@ -1,4 +1,4 @@
-//! yt_transcribe: get a YouTube transcript. Captions first (yt-dlp), local Whisper
+//! `yt_transcribe`: get a YouTube transcript. Captions first (yt-dlp), local Whisper
 //! (whisper.cpp) when there are none. Ported from a private Python tool; the CLI,
 //! the link parser and the output formats match it.
 //!
@@ -75,7 +75,10 @@ enum CapErr {
 
 /// `" ".join(s.split())`
 fn collapse_ws(s: &str) -> String {
-    s.split(py_is_space).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ")
+    s.split(py_is_space)
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `urllib.parse.unquote`: percent escapes decode as UTF-8, bad bytes become U+FFFD.
@@ -87,8 +90,18 @@ fn unquote(s: &str) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() && b[i + 1].is_ascii_hexdigit() && b[i + 2].is_ascii_hexdigit() {
-            let h = |c: u8| (c as char).to_digit(16).unwrap() as u8;
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && b[i + 1].is_ascii_hexdigit()
+            && b[i + 2].is_ascii_hexdigit()
+        {
+            // both bytes were checked as hex digits above, so the fallback 0 never happens
+            let h = |c: u8| {
+                char::from(c)
+                    .to_digit(16)
+                    .and_then(|d| u8::try_from(d).ok())
+                    .unwrap_or(0)
+            };
             out.push(h(b[i + 1]) * 16 + h(b[i + 2]));
             i += 3;
         } else {
@@ -103,9 +116,12 @@ fn unquote(s: &str) -> String {
 // ids: pull the 11-character video ID out of any YouTube link form (pure, no network)
 // ---------------------------------------------------------------------------
 
-static URL_IN_TEXT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)(?:https?:)?//[^\s<>"'`]+|(?:[\w-]+\.)+[a-z]{2,}/[^\s<>"'`]*"#).unwrap());
-static PCT_3F: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)%3F").unwrap());
+static URL_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(?:https?:)?//[^\s<>"'`]+|(?:[\w-]+\.)+[a-z]{2,}/[^\s<>"'`]*"#)
+        .expect("the literal regex is valid")
+});
+static PCT_3F: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)%3F").expect("the literal regex is valid"));
 
 const YT_DOMAINS: [&str; 3] = ["youtube.com", "youtube-nocookie.com", "youtubekids.com"];
 const SHORT_HOSTS: [&str; 2] = ["youtu.be", "yt.be"];
@@ -119,22 +135,34 @@ const IMG_HOSTS: [&str; 8] = [
     "i9.ytimg.com",
     "s.ytimg.com",
 ];
-const ID_PATH_PREFIXES: [&str; 8] = ["embed", "shorts", "live", "v", "e", "vi", "vi_webp", "watch"];
+const ID_PATH_PREFIXES: [&str; 8] = [
+    "embed", "shorts", "live", "v", "e", "vi", "vi_webp", "watch",
+];
 /// Query keys that carry another link (share redirects, oembed, login bounce).
-const NESTED_KEYS: [&str; 7] = ["u", "q", "url", "continue", "next", "next_url", "redirect_uri"];
+const NESTED_KEYS: [&str; 7] = [
+    "u",
+    "q",
+    "url",
+    "continue",
+    "next",
+    "next_url",
+    "redirect_uri",
+];
 const MAX_DEPTH: u32 = 4;
 /// Path words that are 11 characters long but are not video IDs.
 const NOT_IDS: [&str; 2] = ["videoseries", "live_stream"];
 /// Schemes for which `urlparse` splits `;params` off the path.
 const USES_PARAMS: [&str; 15] = [
-    "", "ftp", "hdl", "prospero", "http", "imap", "https", "shttp", "rtsp", "rtspu", "sip", "sips", "mms", "sftp",
-    "tel",
+    "", "ftp", "hdl", "prospero", "http", "imap", "https", "shttp", "rtsp", "rtspu", "sip", "sips",
+    "mms", "sftp", "tel",
 ];
 
 /// `^[A-Za-z0-9_-]{11}$` the Python way: `$` also matches before one final newline.
 fn id_match(c: &str) -> bool {
     let c = c.strip_suffix('\n').unwrap_or(c);
-    c.len() == 11 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    c.len() == 11
+        && c.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn host_ok(host: &str, domain: &str) -> bool {
@@ -156,22 +184,32 @@ struct Parsed {
     fragment: String,
 }
 
-/// `urllib.parse.urlparse` plus `.hostname`. None where Python raises ValueError.
+/// `urllib.parse.urlparse` plus `.hostname`. None where Python raises `ValueError`.
 fn urlparse(url: &str) -> Option<Parsed> {
-    let url: String =
-        url.trim_start_matches(|c: char| c <= ' ').chars().filter(|c| !matches!(c, '\t' | '\r' | '\n')).collect();
+    let url: String = url
+        .trim_start_matches(|c: char| c <= ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\r' | '\n'))
+        .collect();
     let mut rest: &str = &url;
     let mut scheme = String::new();
     if let Some(i) = rest.find(':') {
         let first_ok = rest.chars().next().is_some_and(|c| c.is_ascii_alphabetic());
-        if i > 0 && first_ok && rest[..i].chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) {
+        if i > 0
+            && first_ok
+            && rest[..i]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+        {
             scheme = rest[..i].to_lowercase();
             rest = &rest[i + 1..];
         }
     }
     let mut netloc = "";
     if rest.starts_with("//") {
-        let end = rest[2..].find(['/', '?', '#']).map_or(rest.len(), |p| p + 2);
+        let end = rest[2..]
+            .find(['/', '?', '#'])
+            .map_or(rest.len(), |p| p + 2);
         netloc = &rest[2..end];
         rest = &rest[end..];
         let open = netloc.contains('[');
@@ -180,7 +218,9 @@ fn urlparse(url: &str) -> Option<Parsed> {
             return None;
         }
         if open {
-            let inner = netloc.split_once('[').map_or("", |(_, r)| r.split(']').next().unwrap_or(""));
+            let inner = netloc
+                .split_once('[')
+                .map_or("", |(_, r)| r.split(']').next().unwrap_or(""));
             if !inner.starts_with('v') && inner.parse::<std::net::Ipv6Addr>().is_err() {
                 return None;
             }
@@ -217,14 +257,21 @@ fn urlparse(url: &str) -> Option<Parsed> {
         Some((h, z)) => format!("{}%{}", h.to_lowercase(), z),
         None => host.to_lowercase(),
     };
-    Some(Parsed { host, path: tail, query, fragment })
+    Some(Parsed {
+        host,
+        path: tail,
+        query,
+        fragment,
+    })
 }
 
 /// `urllib.parse.parse_qs`: decoded (key, value) pairs in order; blank values are dropped.
 fn parse_qs(q: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for nv in q.split('&') {
-        let Some((k, v)) = nv.split_once('=') else { continue };
+        let Some((k, v)) = nv.split_once('=') else {
+            continue;
+        };
         if v.is_empty() {
             continue;
         }
@@ -234,11 +281,15 @@ fn parse_qs(q: &str) -> Vec<(String, String)> {
 }
 
 fn qget<'a>(q: &'a [(String, String)], key: &str) -> Vec<&'a str> {
-    q.iter().filter(|(k, _)| k == key).map(|(_, v)| v.as_str()).collect()
+    q.iter()
+        .filter(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+        .collect()
 }
 
 fn ok_id(c: Option<&str>) -> Option<String> {
-    c.filter(|c| id_match(c) && !NOT_IDS.contains(c)).map(str::to_string)
+    c.filter(|c| id_match(c) && !NOT_IDS.contains(c))
+        .map(str::to_string)
 }
 
 fn from_url(value: &str, depth: u32) -> Option<String> {
@@ -252,22 +303,34 @@ fn from_url(value: &str, depth: u32) -> Option<String> {
     if PCT_3F.is_match(value.split('?').next().unwrap_or("")) {
         value = unquote(&value);
     }
-    let s = if value.contains("://") || value.starts_with("//") { value } else { format!("//{value}") };
+    let s = if value.contains("://") || value.starts_with("//") {
+        value
+    } else {
+        format!("//{value}")
+    };
     let u = urlparse(&s)?;
     let host = u.host.to_lowercase();
     let host = host.trim_end_matches('.');
     if host.is_empty() {
         return None;
     }
-    let parts: Vec<String> = u.path.split('/').filter(|p| !p.is_empty()).map(unquote).collect();
+    let parts: Vec<String> = u
+        .path
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(unquote)
+        .collect();
     let query = parse_qs(&u.query);
     let mut frag = u.fragment.as_str();
     if let Some(f) = frag.strip_prefix('!') {
         frag = f; // old "#!/watch?v=ID" style
     }
     if frag.starts_with('/') || frag.contains("v=") {
-        let tail =
-            if frag.starts_with('/') { frag.to_string() } else { format!("/watch?{}", frag.trim_start_matches('?')) };
+        let tail = if frag.starts_with('/') {
+            frag.to_string()
+        } else {
+            format!("/watch?{}", frag.trim_start_matches('?'))
+        };
         if let Some(inner) = from_url(&format!("//{host}{tail}"), depth + 1) {
             return Some(inner);
         }
@@ -312,7 +375,7 @@ fn from_url(value: &str, depth: u32) -> Option<String> {
 /// Accepts: bare ID; watch, youtu.be, shorts, live, embed, /v/, /e/, /vi/ thumbnails;
 /// m., music., gaming., www. and nocookie hosts; http, https, no scheme, //host;
 /// ports, extra query keys, playlists with v=, #! fragments, percent-encoded links,
-/// share redirects (attribution_link, redirect, oembed), and a link inside pasted text.
+/// share redirects (`attribution_link`, redirect, oembed), and a link inside pasted text.
 /// Rejects: playlist-only, channel, clip and other non-video links (no guessing).
 fn extract_video_id(value: &str) -> Result<String, String> {
     let text = clean(value);
@@ -353,10 +416,19 @@ fn extract_video_id(value: &str) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 fn stamp(seconds: f64) -> String {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a float to int cast saturates: negative and NaN give 0, huge gives u64::MAX"
+    )]
     let s = seconds as u64;
     let (h, rem) = (s / 3600, s % 3600);
     let (m, sec) = (rem / 60, rem % 60);
-    if h > 0 { format!("{h:02}:{m:02}:{sec:02}") } else { format!("{m:02}:{sec:02}") }
+    if h > 0 {
+        format!("{h:02}:{m:02}:{sec:02}")
+    } else {
+        format!("{m:02}:{sec:02}")
+    }
 }
 
 /// Python `round(x, 2)`: round the exact binary value to 2 decimals.
@@ -366,7 +438,12 @@ fn round2(x: f64) -> f64 {
 
 fn render(t: &Transcript, fmt: &str) -> Result<String, String> {
     match fmt {
-        "text" => Ok(t.segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join("\n")),
+        "text" => Ok(t
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")),
         "json" => {
             let segs: Vec<Value> = t
                 .segments
@@ -382,7 +459,10 @@ fn render(t: &Transcript, fmt: &str) -> Result<String, String> {
             let mut m = Map::new();
             m.insert("video_id".into(), Value::from(t.video_id.clone()));
             m.insert("source".into(), Value::from(t.source));
-            m.insert("language".into(), t.language.clone().map_or(Value::Null, Value::from));
+            m.insert(
+                "language".into(),
+                t.language.clone().map_or(Value::Null, Value::from),
+            );
             m.insert("segments".into(), Value::Array(segs));
             serde_json::to_string_pretty(&Value::Object(m)).map_err(|e| e.to_string())
         }
@@ -391,8 +471,11 @@ fn render(t: &Transcript, fmt: &str) -> Result<String, String> {
             if let Some(l) = t.language.as_deref().filter(|l| !l.is_empty()) {
                 let _ = write!(head, " ({l})");
             }
-            let lines: Vec<String> =
-                t.segments.iter().map(|s| format!("- **[{}]** {}", stamp(s.start), s.text)).collect();
+            let lines: Vec<String> = t
+                .segments
+                .iter()
+                .map(|s| format!("- **[{}]** {}", stamp(s.start), s.text))
+                .collect();
             Ok(format!("{head}\n\n{}", lines.join("\n")))
         }
         other => Err(format!("unknown format: {other}")),
@@ -405,7 +488,11 @@ fn render(t: &Transcript, fmt: &str) -> Result<String, String> {
 
 fn find_tool(name: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
     for dir in std::env::split_paths(&paths) {
         for ext in exts {
             let p = dir.join(format!("{name}{ext}"));
@@ -434,10 +521,17 @@ fn install_hint(tool: &str) -> String {
 }
 
 fn missing_tool(tool: &str, why: &str) -> String {
-    format!("{tool} is not installed, and {why} needs it. Install it: {}.", install_hint(tool))
+    format!(
+        "{tool} is not installed, and {why} needs it. Install it: {}.",
+        install_hint(tool)
+    )
 }
 
-fn need_tool(tool: &str, why: &str, finder: &dyn Fn(&str) -> Option<PathBuf>) -> Result<PathBuf, String> {
+fn need_tool(
+    tool: &str,
+    why: &str,
+    finder: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<PathBuf, String> {
     finder(tool).ok_or_else(|| missing_tool(tool, why))
 }
 
@@ -447,7 +541,8 @@ fn need_tool(tool: &str, why: &str, finder: &dyn Fn(&str) -> Option<PathBuf>) ->
 
 const MSG_UNAVAILABLE: &str = "Video is unavailable (removed, private, or the link is wrong).";
 const MSG_UNPLAYABLE: &str = "Video cannot be played (private, members-only, or removed).";
-const MSG_AGE: &str = "Video is age-restricted. Captions need a signed-in session; try cookies with yt-dlp.";
+const MSG_AGE: &str =
+    "Video is age-restricted. Captions need a signed-in session; try cookies with yt-dlp.";
 // Captions and the Whisper audio both come through yt-dlp, so a block stops both.
 const MSG_BLOCKED: &str = "YouTube blocked this IP (bot check or too many requests). \
      Wait an hour and try again, or open the video in a browser and read its captions there.";
@@ -457,11 +552,21 @@ const MSG_SIGNIN: &str = "YouTube asks for sign-in (age or bot check). Try again
 fn map_ytdlp_error(stderr: &str) -> Option<&'static str> {
     let low = stderr.to_lowercase();
     let has = |ks: &[&str]| ks.iter().any(|k| low.contains(k));
-    if has(&["private video", "members-only", "members only", "join this channel"]) {
+    if has(&[
+        "private video",
+        "members-only",
+        "members only",
+        "join this channel",
+    ]) {
         Some(MSG_UNPLAYABLE)
     } else if has(&["confirm your age", "age-restricted", "age restricted"]) {
         Some(MSG_AGE)
-    } else if has(&["not a bot", "http error 429", "too many requests", "blocked"]) {
+    } else if has(&[
+        "not a bot",
+        "http error 429",
+        "too many requests",
+        "blocked",
+    ]) {
         Some(MSG_BLOCKED)
     } else if has(&[
         "video unavailable",
@@ -481,13 +586,20 @@ fn map_ytdlp_error(stderr: &str) -> Option<&'static str> {
 
 /// The last `ERROR:` line of yt-dlp's stderr, else its last line.
 fn ytdlp_message(stderr: &str) -> String {
-    let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     lines
         .iter()
         .rev()
         .find(|l| l.starts_with("ERROR:"))
         .or(lines.last())
-        .map_or_else(|| "yt-dlp failed".into(), |l| l.trim_start_matches("ERROR:").trim().to_string())
+        .map_or_else(
+            || "yt-dlp failed".into(),
+            |l| l.trim_start_matches("ERROR:").trim().to_string(),
+        )
 }
 
 /// Parse a json3 caption file: `events[].tStartMs`, `dDurationMs`, `segs[].utf8`.
@@ -495,18 +607,32 @@ fn ytdlp_message(stderr: &str) -> String {
 fn parse_json3(text: &str) -> Result<Vec<Segment>, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("bad caption file: {e}"))?;
     let mut out = Vec::new();
-    for ev in v.get("events").and_then(Value::as_array).into_iter().flatten() {
+    for ev in v
+        .get("events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         if ev.get("aAppend").is_some() {
             continue;
         }
-        let Some(segs) = ev.get("segs").and_then(Value::as_array) else { continue };
-        let raw: String = segs.iter().filter_map(|s| s.get("utf8").and_then(Value::as_str)).collect();
+        let Some(segs) = ev.get("segs").and_then(Value::as_array) else {
+            continue;
+        };
+        let raw: String = segs
+            .iter()
+            .filter_map(|s| s.get("utf8").and_then(Value::as_str))
+            .collect();
         let text = collapse_ws(&raw);
         if text.is_empty() {
             continue;
         }
         let ms = |k: &str| ev.get(k).and_then(Value::as_f64).unwrap_or(0.0);
-        out.push(Segment { start: ms("tStartMs") / 1000.0, duration: ms("dDurationMs") / 1000.0, text });
+        out.push(Segment {
+            start: ms("tStartMs") / 1000.0,
+            duration: ms("dDurationMs") / 1000.0,
+            text,
+        });
     }
     Ok(out)
 }
@@ -522,7 +648,13 @@ fn from_captions(video_id: &str, langs: &[String]) -> Result<Transcript, CapErr>
         .tempdir()
         .map_err(|e| CapErr::Fatal(format!("Cannot make a temp folder: {e}")))?;
     let out = Command::new(&ytdlp)
-        .args(["--skip-download", "--write-subs", "--write-auto-subs", "--sub-format", "json3"])
+        .args([
+            "--skip-download",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-format",
+            "json3",
+        ])
         .args(["--no-playlist", "--no-warnings", "--no-progress", "--quiet"])
         .arg("--sub-langs")
         .arg(langs.join(","))
@@ -543,7 +675,9 @@ fn from_captions(video_id: &str, langs: &[String]) -> Result<Transcript, CapErr>
     // manual track over an auto track for the same language.
     for lang in langs {
         let path = dir.path().join(format!("{video_id}.{lang}.json3"));
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let segments = parse_json3(&text).map_err(CapErr::Lookup)?;
         if segments.is_empty() {
             continue;
@@ -555,7 +689,10 @@ fn from_captions(video_id: &str, langs: &[String]) -> Result<Transcript, CapErr>
             segments,
         });
     }
-    Err(CapErr::Lookup(format!("no caption track for {}", langs.join(", "))))
+    Err(CapErr::Lookup(format!(
+        "no caption track for {}",
+        langs.join(", ")
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -565,11 +702,16 @@ fn from_captions(video_id: &str, langs: &[String]) -> Result<Transcript, CapErr>
 const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
 fn valid_model_name(m: &str) -> bool {
-    !m.is_empty() && m.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    !m.is_empty()
+        && m.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
 fn run_checked(cmd: &mut Command, what: &str) -> Result<std::process::Output, String> {
-    let out = cmd.stdin(Stdio::null()).output().map_err(|e| format!("Cannot run {what}: {e}"))?;
+    let out = cmd
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("Cannot run {what}: {e}"))?;
     if out.status.success() {
         return Ok(out);
     }
@@ -577,7 +719,12 @@ fn run_checked(cmd: &mut Command, what: &str) -> Result<std::process::Output, St
     if let Some(msg) = map_ytdlp_error(&err).filter(|_| what == "yt-dlp") {
         return Err(msg.to_string());
     }
-    let tail: Vec<&str> = err.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
+    let tail: Vec<&str> = err
+        .lines()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(3)
+        .collect();
     let tail = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
     Err(format!("{what} failed: {tail}"))
 }
@@ -585,38 +732,67 @@ fn run_checked(cmd: &mut Command, what: &str) -> Result<std::process::Output, St
 fn download_audio(ytdlp: &Path, video_id: &str, dir: &Path) -> Result<PathBuf, String> {
     let r = run_checked(
         Command::new(ytdlp)
-            .args(["-f", "bestaudio/best", "--no-playlist", "--no-warnings", "--no-progress", "--quiet"])
+            .args([
+                "-f",
+                "bestaudio/best",
+                "--no-playlist",
+                "--no-warnings",
+                "--no-progress",
+                "--quiet",
+            ])
             .arg("-o")
             .arg(dir.join("%(id)s.%(ext)s"))
             .arg(watch_url(video_id)),
         "yt-dlp",
     );
     if let Err(msg) = r {
-        let known = [MSG_UNAVAILABLE, MSG_UNPLAYABLE, MSG_AGE, MSG_BLOCKED, MSG_SIGNIN];
-        return Err(if known.contains(&msg.as_str()) { msg } else { format!("Audio download failed: {msg}") });
+        let known = [
+            MSG_UNAVAILABLE,
+            MSG_UNPLAYABLE,
+            MSG_AGE,
+            MSG_BLOCKED,
+            MSG_SIGNIN,
+        ];
+        return Err(if known.contains(&msg.as_str()) {
+            msg
+        } else {
+            format!("Audio download failed: {msg}")
+        });
     }
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let partial = matches!(p.extension().and_then(|x| x.to_str()), Some("part" | "ytdl"));
+            let partial = matches!(
+                p.extension().and_then(|x| x.to_str()),
+                Some("part" | "ytdl")
+            );
             n.starts_with(&format!("{video_id}.")) && !partial
         })
         .collect();
     files.sort();
-    files.into_iter().next().ok_or_else(|| "Audio download produced no file.".to_string())
+    files
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Audio download produced no file.".to_string())
 }
 
 fn model_path(model: &str) -> Result<PathBuf, String> {
     let base = dirs::cache_dir().ok_or("Cannot find the user cache folder.")?;
-    Ok(base.join("yt-transcribe").join("models").join(format!("ggml-{model}.bin")))
+    Ok(base
+        .join("yt-transcribe")
+        .join("models")
+        .join(format!("ggml-{model}.bin")))
 }
 
 /// Download `ggml-<model>.bin` once into the user cache folder.
 fn ensure_model(model: &str) -> Result<PathBuf, String> {
     if !valid_model_name(model) {
-        return Err(format!("Bad Whisper model name {}. Use tiny, base, small, medium or large.", py_repr(model)));
+        return Err(format!(
+            "Bad Whisper model name {}. Use tiny, base, small, medium or large.",
+            py_repr(model)
+        ));
     }
     let path = model_path(model)?;
     if path.metadata().is_ok_and(|m| m.len() > 0) {
@@ -629,7 +805,10 @@ fn ensure_model(model: &str) -> Result<PathBuf, String> {
     let dir = path.parent().ok_or("bad model path")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("Cannot make {}: {e}", dir.display()))?;
     let part = dir.join(format!("ggml-{model}.bin.part"));
-    eprintln!("yt_transcribe: downloading the Whisper model ggml-{model}.bin once to {}", dir.display());
+    eprintln!(
+        "yt_transcribe: downloading the Whisper model ggml-{model}.bin once to {}",
+        dir.display()
+    );
     let status = Command::new(&curl)
         .args(["-L", "--fail", "--progress-bar", "-o"])
         .arg(&part)
@@ -652,23 +831,43 @@ fn ensure_model(model: &str) -> Result<PathBuf, String> {
 /// Parse whisper.cpp `-oj` output: `transcription[].offsets.{from,to}` (ms) and `.text`.
 fn parse_whisper_json(text: &str) -> Result<(Option<String>, Vec<Segment>), String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("bad Whisper output: {e}"))?;
-    let lang = v.pointer("/result/language").and_then(Value::as_str).map(str::to_string);
+    let lang = v
+        .pointer("/result/language")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut segs = Vec::new();
-    for t in v.get("transcription").and_then(Value::as_array).into_iter().flatten() {
+    for t in v
+        .get("transcription")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let text = py_strip(t.get("text").and_then(Value::as_str).unwrap_or("")).to_string();
         if text.is_empty() {
             continue;
         }
-        let off = |k: &str| t.pointer(&format!("/offsets/{k}")).and_then(Value::as_f64).unwrap_or(0.0);
+        let off = |k: &str| {
+            t.pointer(&format!("/offsets/{k}"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+        };
         let (from, to) = (off("from"), off("to"));
-        segs.push(Segment { start: from / 1000.0, duration: (to - from) / 1000.0, text });
+        segs.push(Segment {
+            start: from / 1000.0,
+            duration: (to - from) / 1000.0,
+            text,
+        });
     }
     Ok((lang, segs))
 }
 
 fn from_whisper(video_id: &str, model: &str, language: Option<&str>) -> Result<Transcript, String> {
     let ffmpeg = need_tool("ffmpeg", "the Whisper fallback", &find_tool)?;
-    let whisper = need_tool_any(&["whisper-cli", "whisper-cpp"], "the Whisper fallback", &find_tool)?;
+    let whisper = need_tool_any(
+        &["whisper-cli", "whisper-cpp"],
+        "the Whisper fallback",
+        &find_tool,
+    )?;
     let ytdlp = need_tool("yt-dlp", "the Whisper fallback", &find_tool)?;
     let model_file = ensure_model(model)?;
     // The folder and the audio in it are deleted when `tmp` drops, on every path.
@@ -704,11 +903,23 @@ fn from_whisper(video_id: &str, model: &str, language: Option<&str>) -> Result<T
     let json = std::fs::read_to_string(tmp.path().join("out.json"))
         .map_err(|e| format!("Whisper wrote no output file: {e}"))?;
     let (language, segments) = parse_whisper_json(&json)?;
-    Ok(Transcript { video_id: video_id.to_string(), source: "whisper", language, segments })
+    Ok(Transcript {
+        video_id: video_id.to_string(),
+        source: "whisper",
+        language,
+        segments,
+    })
 }
 
-fn need_tool_any(names: &[&str], why: &str, finder: &dyn Fn(&str) -> Option<PathBuf>) -> Result<PathBuf, String> {
-    names.iter().find_map(|n| finder(n)).ok_or_else(|| missing_tool(names[0], why))
+fn need_tool_any(
+    names: &[&str],
+    why: &str,
+    finder: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    names
+        .iter()
+        .find_map(|n| finder(n))
+        .ok_or_else(|| missing_tool(names[0], why))
 }
 
 // ---------------------------------------------------------------------------
@@ -725,11 +936,15 @@ fn transcribe_with(
     model: &str,
     force_whisper: bool,
     no_whisper: bool,
-    captions: CaptionsFn,
-    whisper: WhisperFn,
+    captions: CaptionsFn<'_>,
+    whisper: WhisperFn<'_>,
 ) -> Result<Transcript, String> {
     let vid = extract_video_id(video)?;
-    let langs: Vec<String> = if languages.is_empty() { vec!["en".into()] } else { languages.to_vec() };
+    let langs: Vec<String> = if languages.is_empty() {
+        vec!["en".into()]
+    } else {
+        languages.to_vec()
+    };
     if !force_whisper {
         match captions(&vid, &langs) {
             Ok(t) => return Ok(t),
@@ -813,17 +1028,29 @@ fn parse_fetch_args(args: &[String]) -> Option<FetchArgs> {
 
 /// `~/.cache/yt-learn`: the cache of `fetch` (HOME first, like the shell script it replaced).
 fn fetch_dir() -> PathBuf {
-    let home =
-        std::env::var_os("HOME").map(PathBuf::from).filter(|p| !p.as_os_str().is_empty()).or_else(dirs::home_dir);
-    home.unwrap_or_else(|| PathBuf::from(".")).join(".cache").join("yt-learn")
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(dirs::home_dir);
+    home.unwrap_or_else(|| PathBuf::from("."))
+        .join(".cache")
+        .join("yt-learn")
 }
 
 /// `fetch <url>`: print the path of a timestamped markdown transcript, `~/.cache/yt-learn/<id>.md`.
 /// A cached, non-empty file is returned at once with no network, with or without `--force-whisper`.
 fn fetch(url: &str, force_whisper: bool) -> i32 {
     fetch_with(url, &fetch_dir(), &|id| {
-        transcribe_with(id, &[], "base", force_whisper, false, &from_captions, &from_whisper)
-            .and_then(|t| render(&t, "markdown"))
+        transcribe_with(
+            id,
+            &[],
+            "base",
+            force_whisper,
+            false,
+            &from_captions,
+            &from_whisper,
+        )
+        .and_then(|t| render(&t, "markdown"))
     })
 }
 
@@ -844,7 +1071,10 @@ fn fetch_with(url: &str, dir: &Path, make: &dyn Fn(&str) -> Result<String, Strin
         Ok(t) => t,
         Err(e) => return fail(&e),
     };
-    let tmp = match tempfile::Builder::new().prefix(&format!(".{id}.")).tempfile_in(dir) {
+    let tmp = match tempfile::Builder::new()
+        .prefix(&format!(".{id}."))
+        .tempfile_in(dir)
+    {
         Ok(t) => t,
         Err(e) => return fail(&format!("Cannot write in {}: {e}", dir.display())),
     };
@@ -869,7 +1099,9 @@ fn main() {
                 println!("{FETCH_USAGE}");
                 std::process::exit(0);
             }
-            Some(FetchArgs::Run { url, force_whisper }) => std::process::exit(fetch(&url, force_whisper)),
+            Some(FetchArgs::Run { url, force_whisper }) => {
+                std::process::exit(fetch(&url, force_whisper))
+            }
             None => {
                 eprintln!("{FETCH_USAGE}");
                 std::process::exit(2);
@@ -922,9 +1154,13 @@ mod tests {
             format!("https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}"),
             format!("https://img.youtube.com/vi/{v}/maxresdefault.jpg"),
             format!("https://i.ytimg.com/vi/{v}/hqdefault.jpg"),
-            format!("https://www.youtube.com/attribution_link?a=x&u=%2Fwatch%3Fv%3D{v}%26feature%3Dshare"),
+            format!(
+                "https://www.youtube.com/attribution_link?a=x&u=%2Fwatch%3Fv%3D{v}%26feature%3Dshare"
+            ),
             format!("https://www.youtube.com/redirect?q=https%3A%2F%2Fyoutu.be%2F{v}&event=x"),
-            format!("https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}&format=json"),
+            format!(
+                "https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}&format=json"
+            ),
             format!(
                 "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D{v}"
             ),
@@ -978,12 +1214,16 @@ mod tests {
 
     #[test]
     fn ids_hints() {
-        let e = extract_video_id("https://www.youtube.com/playlist?list=PLabcdefghijk").unwrap_err();
+        let e =
+            extract_video_id("https://www.youtube.com/playlist?list=PLabcdefghijk").unwrap_err();
         assert!(e.contains("playlist"), "{e}");
         let e = extract_video_id("https://www.youtube.com/clip/UgkxAbcdefghijklmnop").unwrap_err();
         assert!(e.contains("Clip links"), "{e}");
         let e = extract_video_id("nonsense").unwrap_err();
-        assert_eq!(e, "Cannot find a YouTube video ID in 'nonsense'. Pass a video link or the 11-character ID.");
+        assert_eq!(
+            e,
+            "Cannot find a YouTube video ID in 'nonsense'. Pass a video link or the 11-character ID."
+        );
     }
 
     fn sample() -> Transcript {
@@ -992,8 +1232,16 @@ mod tests {
             source: "captions",
             language: Some("en".into()),
             segments: vec![
-                Segment { start: 0.0, duration: 2.0, text: "hi".into() },
-                Segment { start: 3725.0, duration: 1.0, text: "bye".into() },
+                Segment {
+                    start: 0.0,
+                    duration: 2.0,
+                    text: "hi".into(),
+                },
+                Segment {
+                    start: 3725.0,
+                    duration: 1.0,
+                    text: "bye".into(),
+                },
             ],
         }
     }
@@ -1008,20 +1256,30 @@ mod tests {
         let md = render(&t, "markdown").unwrap();
         assert!(md.contains("**[00:00]** hi"), "{md}");
         assert!(md.contains("**[01:02:05]** bye"), "{md}");
-        assert!(md.starts_with("# Transcript: abc\n\nSource: captions (en)\n\n- "), "{md}");
+        assert!(
+            md.starts_with("# Transcript: abc\n\nSource: captions (en)\n\n- "),
+            "{md}"
+        );
         assert!(render(&t, "pdf").is_err());
     }
 
     #[test]
     fn json_rounds_to_two_decimals() {
         let mut t = sample();
-        t.segments = vec![Segment { start: 1.23456, duration: 0.007, text: "x".into() }];
+        t.segments = vec![Segment {
+            start: 1.23456,
+            duration: 0.007,
+            text: "x".into(),
+        }];
         t.language = None;
         let s = render(&t, "json").unwrap();
         assert!(s.contains("\"start\": 1.23,"), "{s}");
         assert!(s.contains("\"duration\": 0.01,"), "{s}");
         assert!(s.contains("\"language\": null"), "{s}");
-        assert!(s.starts_with("{\n  \"video_id\": \"abc\",\n  \"source\": \"captions\","), "{s}");
+        assert!(
+            s.starts_with("{\n  \"video_id\": \"abc\",\n  \"source\": \"captions\","),
+            "{s}"
+        );
     }
 
     #[test]
@@ -1041,14 +1299,26 @@ mod tests {
     }
 
     fn whisper_ok() -> impl Fn(&str, &str, Option<&str>) -> Result<Transcript, String> {
-        |id, _, _| Ok(Transcript { video_id: id.into(), source: "whisper", language: None, segments: vec![] })
+        |id, _, _| {
+            Ok(Transcript {
+                video_id: id.into(),
+                source: "whisper",
+                language: None,
+                segments: vec![],
+            })
+        }
     }
 
     #[test]
     fn flow_no_whisper_without_captions() {
-        let w = |_: &str, _: &str, _: Option<&str>| -> Result<Transcript, String> { panic!("whisper must not run") };
+        let w = |_: &str, _: &str, _: Option<&str>| -> Result<Transcript, String> {
+            panic!("whisper must not run")
+        };
         let e = transcribe_with(V, &[], "base", false, true, &none(), &w).unwrap_err();
-        assert!(e.contains("No captions found") && e.contains("Whisper is off"), "{e}");
+        assert!(
+            e.contains("No captions found") && e.contains("Whisper is off"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -1059,7 +1329,9 @@ mod tests {
 
     #[test]
     fn flow_force_whisper_skips_captions() {
-        let c = |_: &str, _: &[String]| -> Result<Transcript, CapErr> { panic!("captions must not run") };
+        let c = |_: &str, _: &[String]| -> Result<Transcript, CapErr> {
+            panic!("captions must not run")
+        };
         let t = transcribe_with(V, &[], "base", true, false, &c, &whisper_ok()).unwrap();
         assert_eq!(t.source, "whisper");
     }
@@ -1067,12 +1339,20 @@ mod tests {
     #[test]
     fn fetch_args_take_the_flag_in_any_position() {
         let v = |xs: &[&str]| xs.iter().map(ToString::to_string).collect::<Vec<_>>();
-        let run = |url: &str, force_whisper| Some(FetchArgs::Run { url: url.into(), force_whisper });
+        let run = |url: &str, force_whisper| {
+            Some(FetchArgs::Run {
+                url: url.into(),
+                force_whisper,
+            })
+        };
         assert_eq!(parse_fetch_args(&v(&[V])), run(V, false));
         assert_eq!(parse_fetch_args(&v(&["--force-whisper", V])), run(V, true));
         assert_eq!(parse_fetch_args(&v(&[V, "--force-whisper"])), run(V, true));
         // an ID may start with a dash: it is the link, not an unknown flag
-        assert_eq!(parse_fetch_args(&v(&["--force-whisper", "-abcdefghij"])), run("-abcdefghij", true));
+        assert_eq!(
+            parse_fetch_args(&v(&["--force-whisper", "-abcdefghij"])),
+            run("-abcdefghij", true)
+        );
         assert_eq!(parse_fetch_args(&v(&[V, "--help"])), Some(FetchArgs::Help));
         assert_eq!(parse_fetch_args(&v(&[])), None);
         assert_eq!(parse_fetch_args(&v(&["--force-whisper"])), None);
@@ -1083,22 +1363,37 @@ mod tests {
     #[test]
     fn blocked_message_does_not_promise_whisper() {
         // the Whisper audio also comes through yt-dlp, so a block stops it too
-        assert!(!MSG_BLOCKED.contains("whisper") && !MSG_BLOCKED.contains("Whisper"), "{MSG_BLOCKED}");
-        assert!(MSG_BLOCKED.contains("Wait") && MSG_BLOCKED.contains("browser"), "{MSG_BLOCKED}");
+        assert!(
+            !MSG_BLOCKED.contains("whisper") && !MSG_BLOCKED.contains("Whisper"),
+            "{MSG_BLOCKED}"
+        );
+        assert!(
+            MSG_BLOCKED.contains("Wait") && MSG_BLOCKED.contains("browser"),
+            "{MSG_BLOCKED}"
+        );
     }
 
     #[test]
     fn flow_captions_win() {
-        let w = |_: &str, _: &str, _: Option<&str>| -> Result<Transcript, String> { panic!("whisper must not run") };
+        let w = |_: &str, _: &str, _: Option<&str>| -> Result<Transcript, String> {
+            panic!("whisper must not run")
+        };
         let t = transcribe_with(V, &[], "base", false, false, &cap(sample()), &w).unwrap();
         assert_eq!(t.source, "captions");
     }
 
     #[test]
     fn flow_fatal_not_retried() {
-        let c = |_: &str, _: &[String]| -> Result<Transcript, CapErr> { Err(CapErr::Fatal("private".into())) };
-        let w = |_: &str, _: &str, _: Option<&str>| -> Result<Transcript, String> { panic!("whisper must not run") };
-        assert_eq!(transcribe_with(V, &[], "base", false, false, &c, &w).unwrap_err(), "private");
+        let c = |_: &str, _: &[String]| -> Result<Transcript, CapErr> {
+            Err(CapErr::Fatal("private".into()))
+        };
+        let w = |_: &str, _: &str, _: Option<&str>| -> Result<Transcript, String> {
+            panic!("whisper must not run")
+        };
+        assert_eq!(
+            transcribe_with(V, &[], "base", false, false, &c, &w).unwrap_err(),
+            "private"
+        );
     }
 
     #[test]
@@ -1109,7 +1404,12 @@ mod tests {
         };
         let w = |_: &str, m: &str, l: Option<&str>| -> Result<Transcript, String> {
             assert_eq!((m, l), ("tiny", None));
-            Ok(Transcript { video_id: "x".into(), source: "whisper", language: None, segments: vec![] })
+            Ok(Transcript {
+                video_id: "x".into(),
+                source: "whisper",
+                language: None,
+                segments: vec![],
+            })
         };
         transcribe_with(V, &[], "tiny", false, false, &c, &w).unwrap();
         let c2 = |_: &str, langs: &[String]| -> Result<Transcript, CapErr> {
@@ -1118,14 +1418,37 @@ mod tests {
         };
         let w2 = |_: &str, _: &str, l: Option<&str>| -> Result<Transcript, String> {
             assert_eq!(l, Some("de"));
-            Ok(Transcript { video_id: "x".into(), source: "whisper", language: None, segments: vec![] })
+            Ok(Transcript {
+                video_id: "x".into(),
+                source: "whisper",
+                language: None,
+                segments: vec![],
+            })
         };
-        transcribe_with(V, &["de".into(), "en".into()], "base", false, false, &c2, &w2).unwrap();
+        transcribe_with(
+            V,
+            &["de".into(), "en".into()],
+            "base",
+            false,
+            false,
+            &c2,
+            &w2,
+        )
+        .unwrap();
     }
 
     #[test]
     fn flow_bad_link_stops_early() {
-        let e = transcribe_with("nonsense", &[], "base", false, false, &none(), &whisper_ok()).unwrap_err();
+        let e = transcribe_with(
+            "nonsense",
+            &[],
+            "base",
+            false,
+            false,
+            &none(),
+            &whisper_ok(),
+        )
+        .unwrap_err();
         assert!(e.starts_with("Cannot find a YouTube video ID"), "{e}");
     }
 
@@ -1133,10 +1456,20 @@ mod tests {
     fn missing_tools_name_the_install_line() {
         let nothing = |_: &str| -> Option<PathBuf> { None };
         let e = need_tool("ffmpeg", "the Whisper fallback", &nothing).unwrap_err();
-        assert!(e.contains("ffmpeg") && e.contains("Install it:") && e.contains("install"), "{e}");
-        let e = need_tool_any(&["whisper-cli", "whisper-cpp"], "the Whisper fallback", &nothing).unwrap_err();
+        assert!(
+            e.contains("ffmpeg") && e.contains("Install it:") && e.contains("install"),
+            "{e}"
+        );
+        let e = need_tool_any(
+            &["whisper-cli", "whisper-cpp"],
+            "the Whisper fallback",
+            &nothing,
+        )
+        .unwrap_err();
         assert!(e.contains("whisper-cli") && e.contains("whisper"), "{e}");
-        let some = |n: &str| -> Option<PathBuf> { (n == "whisper-cpp").then(|| PathBuf::from("/x/whisper-cpp")) };
+        let some = |n: &str| -> Option<PathBuf> {
+            (n == "whisper-cpp").then(|| PathBuf::from("/x/whisper-cpp"))
+        };
         assert_eq!(
             need_tool_any(&["whisper-cli", "whisper-cpp"], "w", &some).unwrap(),
             PathBuf::from("/x/whisper-cpp")
@@ -1146,19 +1479,35 @@ mod tests {
     #[test]
     fn ytdlp_errors_map_to_user_messages() {
         assert_eq!(
-            map_ytdlp_error("ERROR: [youtube] x: Private video. Sign in if you've been granted access"),
+            map_ytdlp_error(
+                "ERROR: [youtube] x: Private video. Sign in if you've been granted access"
+            ),
             Some(MSG_UNPLAYABLE)
         );
-        assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Video unavailable"), Some(MSG_UNAVAILABLE));
         assert_eq!(
-            map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate"),
+            map_ytdlp_error("ERROR: [youtube] x: Video unavailable"),
+            Some(MSG_UNAVAILABLE)
+        );
+        assert_eq!(
+            map_ytdlp_error(
+                "ERROR: [youtube] x: Sign in to confirm your age. This video may be inappropriate"
+            ),
             Some(MSG_AGE)
         );
-        assert_eq!(map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm you're not a bot"), Some(MSG_BLOCKED));
-        assert_eq!(map_ytdlp_error("ERROR: unable to download: HTTP Error 429: Too Many Requests"), Some(MSG_BLOCKED));
+        assert_eq!(
+            map_ytdlp_error("ERROR: [youtube] x: Sign in to confirm you're not a bot"),
+            Some(MSG_BLOCKED)
+        );
+        assert_eq!(
+            map_ytdlp_error("ERROR: unable to download: HTTP Error 429: Too Many Requests"),
+            Some(MSG_BLOCKED)
+        );
         assert_eq!(map_ytdlp_error("ERROR: Sign in required"), Some(MSG_SIGNIN));
         assert_eq!(map_ytdlp_error("ERROR: something odd"), None);
-        assert_eq!(ytdlp_message("WARNING: a\nERROR: [youtube] x: boom\n"), "[youtube] x: boom");
+        assert_eq!(
+            ytdlp_message("WARNING: a\nERROR: [youtube] x: boom\n"),
+            "[youtube] x: boom"
+        );
     }
 
     #[test]
@@ -1174,8 +1523,16 @@ mod tests {
         assert_eq!(
             s,
             vec![
-                Segment { start: 0.16, duration: 2.5, text: "hello big world".into() },
-                Segment { start: 3.0, duration: 1.5, text: "again".into() },
+                Segment {
+                    start: 0.16,
+                    duration: 2.5,
+                    text: "hello big world".into()
+                },
+                Segment {
+                    start: 3.0,
+                    duration: 1.5,
+                    text: "again".into()
+                },
             ]
         );
         assert!(parse_json3("not json").is_err());
@@ -1193,8 +1550,16 @@ mod tests {
         assert_eq!(
             segs,
             vec![
-                Segment { start: 0.0, duration: 2.5, text: "Hello there.".into() },
-                Segment { start: 3.0, duration: 1.25, text: "Bye.".into() },
+                Segment {
+                    start: 0.0,
+                    duration: 2.5,
+                    text: "Hello there.".into()
+                },
+                Segment {
+                    start: 3.0,
+                    duration: 1.25,
+                    text: "Bye.".into()
+                },
             ]
         );
     }

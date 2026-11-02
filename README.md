@@ -38,8 +38,8 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/pavstev/dotfiles/main/bo
 ```
 
 A few questions come first: your git name and email, the settings, and the optional looks.
-Then it installs. A long step says `still working…` each minute, and the last line is
-`dotfiles: done in <time>`. Step by step, with what each OS needs: [docs/install.md](docs/install.md).
+Then it installs; the last line is `dotfiles: done in <time>`. Step by step, with what each OS
+needs: [docs/install.md](docs/install.md). Stuck? [Troubleshooting](docs/troubleshooting.md).
 
 ## ✨ What you get
 
@@ -49,7 +49,7 @@ Then it installs. A long step says `still working…` each minute, and the last 
 | 🛡️ **Guard hooks** | A Rust guard checks each tool call: risky git, secrets in files, private words, runaway helpers. |
 | 🧩 **Presets** | Opt-in working habits: workflow, pace, models, clock, plain writing and more. |
 | 🦀 **One command** | `dots` pulls, links and installs. It is idempotent, short, and `dots doctor` checks the result. |
-| 🧰 **41 CLI tools** | `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`, `lazygit` and more, from one [`tools.list`](tools.list) via mise. |
+| 🧰 **40+ CLI tools** | `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`, `lazygit` and more, from one [`tools.list`](tools.list) via mise. |
 | 🎨 **Optional looks** | Starship prompt, VS Code and Cursor settings, Nerd Font. Off until you pick them. |
 | 🔒 **Private by design** | Settings and personal rules stay on the machine. Git hooks block secrets and private words. |
 | ✅ **Tested everywhere** | `/os-check` runs the setup on macOS, five Linux distros and a Windows VM. |
@@ -61,9 +61,8 @@ Then it installs. A long step says `still working…` each minute, and the last 
 | `dots` | Get the newest setup: pull, link, install what is missing. |
 | `dots settings` | Change a setting: git identity, presets, looks, Java, private rules. |
 | `dots doctor` | Check the setup. One PASS or FAIL line per check, with the fix. |
-| `dots update` | macOS: find the updates of every package manager (Homebrew, mise, rustup, npm and more) and install them. `--check` only looks. |
-| `dots -v` | The same run, with every command shown. |
-| `dots uninstall` | Take it all back: links, generated files, merged entries. Your tools and settings stay. |
+
+More (`dots update`, `dots -v`, `dots uninstall`): [Features](docs/features.md#daily-workflow).
 
 In Claude Code, Opencode or Cursor, type `/ps:` to see the skills.
 Edit files in `~/dotfiles/home/` and `~/dotfiles/claude/`: they are linked, so a change is live at once.

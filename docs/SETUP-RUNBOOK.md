@@ -41,8 +41,7 @@ it) and wait until the user has done it.
 ## 2. Bootstrap
 
 The one-line setup is in [Install](install.md). Use the section for the OS ("Set up macOS", "Set
-up Linux" or "Set up Windows"). Do not copy the line into this file: Install is the one place
-that holds it.
+up Linux" or "Set up Windows"). Do not copy the line into this file: read it from Install.
 
 `[CONFIRM]` Tell the user to paste that line in a plain terminal, not in a Claude Code window.
 The run asks questions and may ask for a password, and a Claude Code window can race with the
@@ -67,9 +66,8 @@ The bootstrap already ran `dotfiles` once. Its questions are:
 - on a Mac, whether to install the Claude desktop app
 
 `[RUN]` If the user pasted the output, read its last line. It should say `dotfiles: done in <time>`.
-A line with warnings is fine: read the `!` lines above it and report them. A long step prints
-`still working on <step> (…)` each minute. No new line for several minutes means it is stuck:
-Ctrl-C, then `bash ~/dotfiles/dotfiles -v`.
+A line with warnings is fine: read the `!` lines above it and report them. Stuck for several
+minutes ([Troubleshooting](troubleshooting.md)): Ctrl-C, then `bash ~/dotfiles/dotfiles -v`.
 
 `[RUN]` Run it again to see that nothing changes:
 
@@ -82,9 +80,8 @@ minutes on a Mac and 5 to 10 on Windows.
 
 ## 4. Presets and settings
 
-Presets are opt-in working habits: `workflow`, `pace`, `models`, `clock`, `plain-writing`,
-`no-ai-attribution` and `ship-to-main` (off by default: a push to a work repo's main can hurt).
-A preset that is off costs no tokens. What each one does: [AI agents](ai-agents.md#presets).
+Presets are opt-in working habits. What each one does: [Presets](../claude/presets/README.md).
+`ship-to-main` is off by default: a push to a work repo's main can hurt.
 
 `[ASK]` Ask these together:
 

@@ -21,7 +21,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "leftovers", about = "Optional work of one project, parked for later", version)]
+#[command(
+    name = "leftovers",
+    about = "Optional work of one project, parked for later",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -36,7 +40,10 @@ struct Where {
 
 impl Where {
     fn store(&self) -> Result<Store, Error> {
-        let dir = self.repo.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let dir = self
+            .repo
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         Store::at(&dir)
     }
 }
@@ -104,13 +111,18 @@ enum Cmd {
 
 fn parse_map(s: &str) -> Result<(String, PathBuf), String> {
     match s.split_once('=') {
-        Some((name, path)) if !name.is_empty() && !path.is_empty() => Ok((name.to_string(), PathBuf::from(path))),
+        Some((name, path)) if !name.is_empty() && !path.is_empty() => {
+            Ok((name.to_string(), PathBuf::from(path)))
+        }
         _ => Err("expected NAME=PATH".to_string()),
     }
 }
 
 fn say_ignored(store: &Store) {
-    println!("added .agents/ to {} (commit it)", store.root().join(".gitignore").display());
+    println!(
+        "added .agents/ to {} (commit it)",
+        store.root().join(".gitignore").display()
+    );
 }
 
 fn run(cmd: Cmd) -> Result<ExitCode, Error> {
@@ -127,8 +139,14 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
             let store = at.store()?;
             let items = store.items();
             if json {
-                let shown: Vec<_> = items.iter().filter(|i| all || i.status == Status::Open).collect();
-                println!("{}", serde_json::to_string(&shown).expect("items are plain data"));
+                let shown: Vec<_> = items
+                    .iter()
+                    .filter(|i| all || i.status == Status::Open)
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string(&shown).expect("items are plain data")
+                );
             } else if !store.path().is_file() {
                 println!("no leftovers here ({})", store.path().display());
             } else {
@@ -145,12 +163,19 @@ fn run(cmd: Cmd) -> Result<ExitCode, Error> {
             let store = at.store()?;
             if store.path().is_file() {
                 let (kept, removed) = store.compact()?;
-                println!("compacted {}: kept {kept}, removed {removed}", store.path().display());
+                println!(
+                    "compacted {}: kept {kept}, removed {removed}",
+                    store.path().display()
+                );
             } else {
                 println!("no leftovers here ({})", store.path().display());
             }
         }
-        Cmd::Import { file, maps, dry_run } => return import(file, &maps, dry_run),
+        Cmd::Import {
+            file,
+            maps,
+            dry_run,
+        } => return import(file, &maps, dry_run),
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -177,11 +202,20 @@ struct Grouped<'a> {
 fn group<'a>(items: &'a [OldItem], maps: &[(String, PathBuf)], bases: &[PathBuf]) -> Grouped<'a> {
     let mut grouped = Grouped::default();
     for item in items {
-        let store = leftovers::resolve_repo(&item.name, maps, bases).and_then(|dir| Store::at(&dir).ok());
+        let store =
+            leftovers::resolve_repo(&item.name, maps, bases).and_then(|dir| Store::at(&dir).ok());
         match store {
             Some(store) => {
                 let key = store.root().to_path_buf();
-                grouped.found.entry(key).or_insert_with(|| Project { store, items: Vec::new() }).items.push(item);
+                grouped
+                    .found
+                    .entry(key)
+                    .or_insert_with(|| Project {
+                        store,
+                        items: Vec::new(),
+                    })
+                    .items
+                    .push(item);
             }
             None => grouped.lost.push(item),
         }
@@ -191,7 +225,7 @@ fn group<'a>(items: &'a [OldItem], maps: &[(String, PathBuf)], bases: &[PathBuf]
 
 /// Add the old items of one project, keeping their dates. An item that is already in (same date and
 /// text) is skipped, so a second run adds nothing.
-fn import_project(project: &Project, dry_run: bool) -> Result<(), Error> {
+fn import_project(project: &Project<'_>, dry_run: bool) -> Result<(), Error> {
     let Project { store, items } = project;
     let have: HashSet<(String, String)> = store
         .events()
@@ -210,18 +244,32 @@ fn import_project(project: &Project, dry_run: bool) -> Result<(), Error> {
         fresh += 1;
         if !dry_run {
             let id = leftovers::new_id(&at, &item.text);
-            store.append(&Event::Add { id, at, text: item.text.clone(), tags: Vec::new(), from: item.name.clone() })?;
+            store.append(&Event::Add {
+                id,
+                at,
+                text: item.text.clone(),
+                tags: Vec::new(),
+                from: item.name.clone(),
+            })?;
         }
     }
     let verb = if dry_run { "would import" } else { "imported" };
-    println!("{}: {verb} {fresh} of {}", store.root().display(), items.len());
+    println!(
+        "{}: {verb} {fresh} of {}",
+        store.root().display(),
+        items.len()
+    );
     if fresh > 0 && !dry_run && store.ensure_ignored()? {
         say_ignored(store);
     }
     Ok(())
 }
 
-fn import(file: Option<PathBuf>, maps: &[(String, PathBuf)], dry_run: bool) -> Result<ExitCode, Error> {
+fn import(
+    file: Option<PathBuf>,
+    maps: &[(String, PathBuf)],
+    dry_run: bool,
+) -> Result<ExitCode, Error> {
     let home = paths::home();
     let file = file.unwrap_or_else(|| home.join(".claude").join("leftovers.md"));
     let text = std::fs::read_to_string(&file).map_err(|e| Error::Io(file.clone(), e))?;
@@ -233,7 +281,10 @@ fn import(file: Option<PathBuf>, maps: &[(String, PathBuf)], dry_run: bool) -> R
     }
     let unresolved = grouped.lost.len() + odd.len();
     for item in &grouped.lost {
-        println!("unresolved: {} · **{}** · {}", item.date, item.name, item.text);
+        println!(
+            "unresolved: {} · **{}** · {}",
+            item.date, item.name, item.text
+        );
     }
     for line in &odd {
         println!("unresolved: {line}");
@@ -244,7 +295,10 @@ fn import(file: Option<PathBuf>, maps: &[(String, PathBuf)], dry_run: bool) -> R
         std::fs::remove_file(&file).map_err(|e| Error::Io(file.clone(), e))?;
         println!("removed {}", file.display());
     } else {
-        println!("kept {}: {unresolved} unresolved (use --map NAME=PATH)", file.display());
+        println!(
+            "kept {}: {unresolved} unresolved (use --map NAME=PATH)",
+            file.display()
+        );
         return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)

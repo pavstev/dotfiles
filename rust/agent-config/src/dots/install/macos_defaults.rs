@@ -19,12 +19,42 @@ const BEFORE_SCREENSHOTS: [Pref; 16] = [
     ("com.apple.finder", "AppleShowAllFiles", "-bool", "true"),
     ("com.apple.finder", "ShowPathbar", "-bool", "true"),
     ("com.apple.finder", "ShowStatusBar", "-bool", "true"),
-    ("com.apple.finder", "_FXShowPosixPathInTitle", "-bool", "true"),
-    ("com.apple.finder", "FXPreferredViewStyle", "-string", "Nlsv"),
-    ("com.apple.finder", "FXDefaultSearchScope", "-string", "SCcf"), // search current folder
-    ("com.apple.finder", "FXEnableExtensionChangeWarning", "-bool", "false"),
-    ("com.apple.desktopservices", "DSDontWriteNetworkStores", "-bool", "true"),
-    ("com.apple.desktopservices", "DSDontWriteUSBStores", "-bool", "true"),
+    (
+        "com.apple.finder",
+        "_FXShowPosixPathInTitle",
+        "-bool",
+        "true",
+    ),
+    (
+        "com.apple.finder",
+        "FXPreferredViewStyle",
+        "-string",
+        "Nlsv",
+    ),
+    (
+        "com.apple.finder",
+        "FXDefaultSearchScope",
+        "-string",
+        "SCcf",
+    ), // search current folder
+    (
+        "com.apple.finder",
+        "FXEnableExtensionChangeWarning",
+        "-bool",
+        "false",
+    ),
+    (
+        "com.apple.desktopservices",
+        "DSDontWriteNetworkStores",
+        "-bool",
+        "true",
+    ),
+    (
+        "com.apple.desktopservices",
+        "DSDontWriteUSBStores",
+        "-bool",
+        "true",
+    ),
     ("-g", "NSNavPanelExpandedStateForSaveMode", "-bool", "true"),
     ("-g", "NSNavPanelExpandedStateForSaveMode2", "-bool", "true"),
     ("-g", "PMPrintingExpandedStateForPrint", "-bool", "true"),
@@ -42,16 +72,35 @@ const AFTER_SCREENSHOTS: [Pref; 4] = [
     ("com.apple.dock", "autohide-time-modifier", "-float", "0.15"),
     ("com.apple.dock", "mru-spaces", "-bool", "false"),
     ("-g", "NSAutomaticCapitalizationEnabled", "-bool", "false"),
-    ("-g", "NSAutomaticSpellingCorrectionEnabled", "-bool", "false"),
+    (
+        "-g",
+        "NSAutomaticSpellingCorrectionEnabled",
+        "-bool",
+        "false",
+    ),
 ];
 
 /// Every `defaults write` argument list, in the order they run.
 fn writes(home: &Path) -> Vec<Vec<String>> {
     let shots = home.join("Screenshots").to_string_lossy().into_owned();
-    let line = |(d, k, t, v): Pref| -> Vec<String> { ["write", d, k, t, v].iter().map(ToString::to_string).collect() };
+    let line = |(d, k, t, v): Pref| -> Vec<String> {
+        ["write", d, k, t, v]
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
     let mut all: Vec<Vec<String>> = BEFORE_SCREENSHOTS.iter().copied().map(line).collect();
     all.push(
-        ["write", "com.apple.screencapture", "location", "-string", &shots].iter().map(ToString::to_string).collect(),
+        [
+            "write",
+            "com.apple.screencapture",
+            "location",
+            "-string",
+            &shots,
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect(),
     );
     all.extend(SCREENSHOTS.iter().copied().map(line));
     all.extend(AFTER_SCREENSHOTS.iter().copied().map(line));
@@ -64,7 +113,9 @@ fn same_value(ty: &str, want: &str, read: &str) -> bool {
     let read = read.trim();
     match ty {
         "-bool" => read == if want == "true" { "1" } else { "0" },
-        "-float" => matches!((read.parse::<f64>(), want.parse::<f64>()), (Ok(r), Ok(w)) if (r - w).abs() < 1e-9),
+        "-float" => {
+            matches!((read.parse::<f64>(), want.parse::<f64>()), (Ok(r), Ok(w)) if (r - w).abs() < 1e-9)
+        }
         _ => read == want,
     }
 }
@@ -79,7 +130,7 @@ fn owner_app(domain: &str) -> Option<&'static str> {
     }
 }
 
-pub fn step(_repo: &Path) {
+pub(super) fn step(_repo: &Path) {
     if !only_macos("macOS defaults") {
         return;
     }
@@ -92,8 +143,13 @@ pub fn step(_repo: &Path) {
     let mut changed = 0;
     let mut restart: Vec<&str> = Vec::new();
     for args in writes(&home) {
-        let [_, domain, key, ty, value] = <[String; 5]>::try_from(args.clone()).expect("five words");
-        if same_value(&ty, &value, &stdout_of("defaults", &["read", &domain, &key])) {
+        let [_, domain, key, ty, value] =
+            <[String; 5]>::try_from(args.clone()).expect("five words");
+        if same_value(
+            &ty,
+            &value,
+            &stdout_of("defaults", &["read", &domain, &key]),
+        ) {
             continue;
         }
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -111,7 +167,9 @@ pub fn step(_repo: &Path) {
     for app in restart {
         quiet("killall", &[app]);
     }
-    ok(&format!("macOS defaults: {changed} changed (a few need logout/login to take effect)"));
+    ok(&format!(
+        "macOS defaults: {changed} changed (a few need logout/login to take effect)"
+    ));
 }
 
 #[cfg(test)]
@@ -123,7 +181,10 @@ mod tests {
         let w = writes(Path::new("/h"));
         assert!(w.iter().all(|a| a.len() == 5 && a[0] == "write"), "{w:?}");
         let shots = "write com.apple.screencapture location -string /h/Screenshots";
-        assert!(w.iter().any(|a| a.join(" ") == shots), "the screenshot folder is under HOME");
+        assert!(
+            w.iter().any(|a| a.join(" ") == shots),
+            "the screenshot folder is under HOME"
+        );
     }
 
     #[test]
@@ -131,7 +192,10 @@ mod tests {
         assert!(same_value("-bool", "true", "1\n"));
         assert!(same_value("-bool", "false", "0"));
         assert!(!same_value("-bool", "true", "0"));
-        assert!(!same_value("-bool", "true", ""), "a missing key is a change");
+        assert!(
+            !same_value("-bool", "true", ""),
+            "a missing key is a change"
+        );
         assert!(same_value("-float", "0.15", "0.15"));
         assert!(same_value("-int", "2", "2"));
         assert!(same_value("-string", "Nlsv", "Nlsv\n"));

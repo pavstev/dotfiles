@@ -52,10 +52,22 @@ impl Host {
     /// `macos`, `linux`, `linux-musl` or `windows`: the names `--host` takes.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "macos" => Some(Self { os: Os::Macos, musl: false }),
-            "linux" => Some(Self { os: Os::Linux, musl: false }),
-            "linux-musl" | "alpine" => Some(Self { os: Os::Linux, musl: true }),
-            "windows" => Some(Self { os: Os::Windows, musl: false }),
+            "macos" => Some(Self {
+                os: Os::Macos,
+                musl: false,
+            }),
+            "linux" => Some(Self {
+                os: Os::Linux,
+                musl: false,
+            }),
+            "linux-musl" | "alpine" => Some(Self {
+                os: Os::Linux,
+                musl: true,
+            }),
+            "windows" => Some(Self {
+                os: Os::Windows,
+                musl: false,
+            }),
             _ => None,
         }
     }
@@ -68,7 +80,7 @@ pub enum Source {
     Mise(String),
     /// An Alpine package.
     Apk(String),
-    /// A WinGet package.
+    /// A `WinGet` package.
     Winget(String),
     /// A Scoop package.
     Scoop(String),
@@ -162,7 +174,9 @@ fn parse_os_field(s: &str) -> Result<(Vec<Os>, bool), String> {
 }
 
 fn parse_source(t: &str) -> Result<Source, String> {
-    let (k, a) = t.split_once(':').ok_or_else(|| format!("source '{t}' needs the form kind:arg"))?;
+    let (k, a) = t
+        .split_once(':')
+        .ok_or_else(|| format!("source '{t}' needs the form kind:arg"))?;
     if a.is_empty() {
         return Err(format!("source '{t}' has no argument"));
     }
@@ -180,7 +194,12 @@ fn parse_source(t: &str) -> Result<Source, String> {
     })
 }
 
-/// Parse the text of `tools.list`. Blank lines and `#` lines are skipped. An error names the line.
+/// Parse the text of `tools.list`. Blank lines and `#` lines are skipped.
+///
+/// # Errors
+///
+/// Returns a message that names the line when a line has the wrong number of fields, an empty or
+/// repeated name, a bad link, no commands, a bad OS field, or no usable source.
 pub fn parse(text: &str) -> Result<Vec<Tool>, String> {
     let mut tools: Vec<Tool> = Vec::new();
     for (i, raw) in text.lines().enumerate() {
@@ -222,7 +241,14 @@ pub fn parse(text: &str) -> Result<Vec<Tool>, String> {
         if sources.is_empty() {
             return Err(at("no sources".into()));
         }
-        tools.push(Tool { name: f[0].to_string(), cmds, links, oses, no_musl, sources });
+        tools.push(Tool {
+            name: f[0].to_string(),
+            cmds,
+            links,
+            oses,
+            no_musl,
+            sources,
+        });
     }
     Ok(tools)
 }
@@ -245,12 +271,24 @@ pub trait Env {
     /// Does this command start? False for a binary that cannot run here (glibc on Alpine).
     fn runs(&self, cmd: &str) -> bool;
     /// Can this source be used on this machine now (its installer is there, root for apk)?
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason the source cannot be used here.
     fn usable(&self, host: Host, src: &Source) -> Result<(), String>;
     /// Install from this source.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason the install failed.
     fn install(&mut self, host: Host, src: &Source) -> Result<(), String>;
     /// Undo a source that installed a command that does not start.
     fn undo(&mut self, src: &Source);
     /// Make `link` point at `cmd` (a copy on Windows). Ok when the link is there.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason the link could not be made.
     fn link(&mut self, cmd: &str, link: &str) -> Result<(), String>;
 }
 
@@ -262,11 +300,18 @@ pub fn resolve(tools: &[Tool], host: Host, env: &mut dyn Env, only: &[String]) -
         if !t.applies(host) {
             continue;
         }
-        if !only.is_empty() && !only.iter().any(|o| o == &t.name || t.cmds.iter().any(|c| c == o)) {
+        if !only.is_empty()
+            && !only
+                .iter()
+                .any(|o| o == &t.name || t.cmds.iter().any(|c| c == o))
+        {
             continue;
         }
         // On Alpine a glibc binary from an earlier run (or another tool) can sit on PATH and not start.
-        let present = t.cmds.iter().any(|c| env.has(c) && (!host.musl || env.runs(c)));
+        let present = t
+            .cmds
+            .iter()
+            .any(|c| env.has(c) && (!host.musl || env.runs(c)));
         if present {
             link_all(t, env);
             out.push(Outcome::Present(t.name.clone()));
@@ -289,7 +334,9 @@ pub fn resolve(tools: &[Tool], host: Host, env: &mut dyn Env, only: &[String]) -
                     break;
                 }
                 env.undo(src);
-                tried.push(format!("{src}: installed, but the command does not start here"));
+                tried.push(format!(
+                    "{src}: installed, but the command does not start here"
+                ));
             }
         }
         match done {
@@ -326,7 +373,12 @@ pub fn missing(tools: &[Tool], host: Host, env: &dyn Env, only: &[String]) -> Ve
     tools
         .iter()
         .filter(|t| t.applies(host))
-        .filter(|t| only.is_empty() || only.iter().any(|o| o == &t.name || t.cmds.iter().any(|c| c == o)))
+        .filter(|t| {
+            only.is_empty()
+                || only
+                    .iter()
+                    .any(|o| o == &t.name || t.cmds.iter().any(|c| c == o))
+        })
         .filter(|t| !t.cmds.iter().any(|c| env.has(c)))
         .map(|t| t.name.clone())
         .collect()
@@ -349,27 +401,46 @@ pub fn mise_shims() -> PathBuf {
     {
         return PathBuf::from(d).join("mise").join("shims");
     }
-    home().join(".local").join("share").join("mise").join("shims")
+    home()
+        .join(".local")
+        .join("share")
+        .join("mise")
+        .join("shims")
 }
 
 /// The directories a tool may land in that a bare script PATH misses.
 pub fn extra_dirs() -> Vec<PathBuf> {
     let h = home();
-    let mut v = vec![h.join(".local").join("bin"), mise_shims(), h.join(".cargo").join("bin")];
+    let mut v = vec![
+        h.join(".local").join("bin"),
+        mise_shims(),
+        h.join(".cargo").join("bin"),
+    ];
     if !cfg!(windows) {
-        for p in ["/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"] {
+        for p in [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/home/linuxbrew/.linuxbrew/bin",
+        ] {
             v.push(PathBuf::from(p));
         }
     } else if let Some(l) = env::var_os("LOCALAPPDATA") {
         // WinGet puts the programs it installs (mise, ...) here.
-        v.push(PathBuf::from(l).join("Microsoft").join("WinGet").join("Links"));
+        v.push(
+            PathBuf::from(l)
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links"),
+        );
     }
     v
 }
 
 /// PATH with the extra directories on the end (a command already on PATH keeps its place).
 pub fn full_path() -> std::ffi::OsString {
-    let mut dirs: Vec<PathBuf> = env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = env::var_os("PATH")
+        .map(|p| env::split_paths(&p).collect())
+        .unwrap_or_default();
     for d in extra_dirs() {
         if !dirs.contains(&d) {
             dirs.push(d);
@@ -384,6 +455,7 @@ pub fn find_in_path(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
 }
 
 /// The `Env` that checks PATH and runs the real installers.
+#[derive(Debug)]
 pub struct RealEnv {
     /// The PATH used to find and run commands.
     pub path: std::ffi::OsString,
@@ -396,30 +468,45 @@ impl RealEnv {
     }
 
     fn command(&self, prog: &str) -> Command {
-        let mut c = Command::new(find_in_path(prog, &self.path).unwrap_or_else(|| PathBuf::from(prog)));
+        let mut c =
+            Command::new(find_in_path(prog, &self.path).unwrap_or_else(|| PathBuf::from(prog)));
         c.env("PATH", &self.path).stdin(Stdio::null());
         c
     }
 
     fn run(mut c: Command) -> Result<(), String> {
-        let out = c.stdout(Stdio::piped()).stderr(Stdio::piped()).output().map_err(|e| e.to_string())?;
+        let out = c
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| e.to_string())?;
         if out.status.success() {
             return Ok(());
         }
-        let text = String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout);
-        let last = text.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("failed");
+        let text = String::from_utf8_lossy(&out.stderr).to_string()
+            + &String::from_utf8_lossy(&out.stdout);
+        let last = text
+            .lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .unwrap_or("failed");
         Err(last.chars().take(160).collect())
     }
 
     fn is_root() -> bool {
-        Command::new("id").arg("-u").output().is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+        Command::new("id")
+            .arg("-u")
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
     }
 
     /// True when mise has at least one version of `tool` installed.
     fn mise_has(&self, tool: &str) -> bool {
         let mut c = self.command("mise");
         c.args(["ls", "--installed", tool]);
-        c.output().is_ok_and(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        c.output().is_ok_and(|o| {
+            o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()
+        })
     }
 }
 
@@ -436,7 +523,9 @@ impl Env for RealEnv {
 
     fn runs(&self, cmd: &str) -> bool {
         // The real file, not a mise shim: the shim starts even when the tool behind it cannot.
-        let Some(p) = find_real(cmd, &self.path) else { return false };
+        let Some(p) = find_real(cmd, &self.path) else {
+            return false;
+        };
         // `cmd --version`: a spawn error (a glibc binary on Alpine has no loader) or exit 126/127 means
         // it cannot run here. Any other exit status means it started. A slow start counts as started.
         let Ok(mut child) = Command::new(&p)
@@ -464,15 +553,27 @@ impl Env for RealEnv {
     }
 
     fn usable(&self, host: Host, src: &Source) -> Result<(), String> {
-        let need = |c: &str| if self.has(c) { Ok(()) } else { Err(format!("{c} is not installed")) };
+        let need = |c: &str| {
+            if self.has(c) {
+                Ok(())
+            } else {
+                Err(format!("{c} is not installed"))
+            }
+        };
         match src {
             Source::Mise(_) => need("mise"),
             Source::Apk(_) if !host.musl => Err("not Alpine".into()),
             Source::Apk(_) => {
                 need("apk")?;
-                if Self::is_root() || self.has("sudo") { Ok(()) } else { Err("needs root".into()) }
+                if Self::is_root() || self.has("sudo") {
+                    Ok(())
+                } else {
+                    Err("needs root".into())
+                }
             }
-            Source::Winget(_) | Source::Scoop(_) if host.os != Os::Windows => Err("not Windows".into()),
+            Source::Winget(_) | Source::Scoop(_) if host.os != Os::Windows => {
+                Err("not Windows".into())
+            }
             Source::Winget(_) => need("winget"),
             Source::Scoop(_) => need("scoop"),
             Source::Cargo(_) => need("cargo"),
@@ -571,7 +672,11 @@ impl Env for RealEnv {
         let target = find_real(cmd, &self.path).ok_or_else(|| format!("{cmd} not found"))?;
         let dir = home().join(".local").join("bin");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let name = if cfg!(windows) { format!("{link}.exe") } else { link.to_string() };
+        let name = if cfg!(windows) {
+            format!("{link}.exe")
+        } else {
+            link.to_string()
+        };
         let dst = dir.join(name);
         if dst.symlink_metadata().is_ok() {
             // An earlier link that still points at a working target stays; a dangling one is redone.
@@ -588,10 +693,11 @@ impl Env for RealEnv {
 fn find_real(cmd: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     let found = find_in_path(cmd, path)?;
     if found.starts_with(mise_shims())
-        && let Ok(o) = Command::new(find_in_path("mise", path).unwrap_or_else(|| PathBuf::from("mise")))
-            .env("PATH", path)
-            .args(["which", cmd])
-            .output()
+        && let Ok(o) =
+            Command::new(find_in_path("mise", path).unwrap_or_else(|| PathBuf::from("mise")))
+                .env("PATH", path)
+                .args(["which", cmd])
+                .output()
     {
         let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
         if o.status.success() && !p.is_empty() {
@@ -617,10 +723,22 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
 
-    const MAC: Host = Host { os: Os::Macos, musl: false };
-    const LINUX: Host = Host { os: Os::Linux, musl: false };
-    const ALPINE: Host = Host { os: Os::Linux, musl: true };
-    const WIN: Host = Host { os: Os::Windows, musl: false };
+    const MAC: Host = Host {
+        os: Os::Macos,
+        musl: false,
+    };
+    const LINUX: Host = Host {
+        os: Os::Linux,
+        musl: false,
+    };
+    const ALPINE: Host = Host {
+        os: Os::Linux,
+        musl: true,
+    };
+    const WIN: Host = Host {
+        os: Os::Windows,
+        musl: false,
+    };
 
     /// A fake machine: some commands present; sources that work and what they provide.
     #[derive(Default)]
@@ -643,7 +761,8 @@ mod tests {
             }
         }
         fn provide(mut self, src: &str, cmds: &[&str]) -> Self {
-            self.provides.insert(src.into(), cmds.iter().map(ToString::to_string).collect());
+            self.provides
+                .insert(src.into(), cmds.iter().map(ToString::to_string).collect());
             self
         }
     }
@@ -657,7 +776,9 @@ mod tests {
         fn usable(&self, host: Host, src: &Source) -> Result<(), String> {
             match src {
                 Source::Apk(_) if !host.musl => Err("not Alpine".into()),
-                Source::Winget(_) | Source::Scoop(_) if host.os != Os::Windows => Err("not Windows".into()),
+                Source::Winget(_) | Source::Scoop(_) if host.os != Os::Windows => {
+                    Err("not Windows".into())
+                }
                 _ if self.tools.contains(src.kind()) => Ok(()),
                 _ => Err(format!("{} is not installed", src.kind())),
             }
@@ -675,7 +796,12 @@ mod tests {
         }
         fn undo(&mut self, src: &Source) {
             self.log.push(format!("undo {src}"));
-            for c in self.provides.get(&src.to_string()).cloned().unwrap_or_default() {
+            for c in self
+                .provides
+                .get(&src.to_string())
+                .cloned()
+                .unwrap_or_default()
+            {
                 self.cmds.remove(&c);
             }
         }
@@ -695,7 +821,13 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].name, "rg");
         assert_eq!(t[0].oses, vec![Os::Macos, Os::Linux, Os::Windows]);
-        assert_eq!(t[0].sources, vec![Source::Mise("aqua:BurntSushi/ripgrep".into()), Source::Cargo("ripgrep".into())]);
+        assert_eq!(
+            t[0].sources,
+            vec![
+                Source::Mise("aqua:BurntSushi/ripgrep".into()),
+                Source::Cargo("ripgrep".into())
+            ]
+        );
     }
 
     #[test]
@@ -719,16 +851,38 @@ mod tests {
     #[test]
     fn parse_errors_name_the_line() {
         assert!(parse("a | a | all\n").unwrap_err().starts_with("line 1:"));
-        assert!(parse("# x\na | a | all | nope:x\n").unwrap_err().starts_with("line 2:"));
-        assert!(parse("a | a | planet | mise:x\n").unwrap_err().contains("unknown OS"));
-        assert!(parse("a | a | all | mise\n").unwrap_err().contains("kind:arg"));
-        assert!(parse("a | a | all | mise:x\na | a | all | mise:x\n").unwrap_err().contains("twice"));
-        assert!(parse("a | | all | mise:x\n").unwrap_err().contains("no commands"));
+        assert!(
+            parse("# x\na | a | all | nope:x\n")
+                .unwrap_err()
+                .starts_with("line 2:")
+        );
+        assert!(
+            parse("a | a | planet | mise:x\n")
+                .unwrap_err()
+                .contains("unknown OS")
+        );
+        assert!(
+            parse("a | a | all | mise\n")
+                .unwrap_err()
+                .contains("kind:arg")
+        );
+        assert!(
+            parse("a | a | all | mise:x\na | a | all | mise:x\n")
+                .unwrap_err()
+                .contains("twice")
+        );
+        assert!(
+            parse("a | | all | mise:x\n")
+                .unwrap_err()
+                .contains("no commands")
+        );
     }
 
     #[test]
     fn the_real_list_parses_and_has_no_duplicates() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools.list")).unwrap();
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools.list"))
+                .unwrap();
         let t = parse(&text).unwrap();
         assert!(t.len() > 30);
         let mut cmds = HashSet::new();
@@ -738,21 +892,30 @@ mod tests {
             }
         }
         // mise is the one tool every OS needs first.
-        assert!(t.iter().any(|x| x.name == "mise" && x.sources == vec![Source::Boot("mise".into())]));
+        assert!(
+            t.iter()
+                .any(|x| x.name == "mise" && x.sources == vec![Source::Boot("mise".into())])
+        );
     }
 
     #[test]
     fn present_tools_are_left_alone() {
         let t = list("rg | rg | all | mise:x\n");
         let mut f = Fake::with(&["rg"], &["mise"]);
-        assert_eq!(resolve(&t, MAC, &mut f, &[]), vec![Outcome::Present("rg".into())]);
+        assert_eq!(
+            resolve(&t, MAC, &mut f, &[]),
+            vec![Outcome::Present("rg".into())]
+        );
         assert_eq!(f.log, [] as [String; 0]);
     }
 
     #[test]
     fn on_alpine_a_present_command_that_does_not_start_counts_as_missing() {
-        let t = list("fastfetch | fastfetch | unix | apk:fastfetch mise:aqua:fastfetch-cli/fastfetch\n");
-        let mut f = Fake::with(&["fastfetch"], &["apk", "mise"]).provide("apk:fastfetch", &["fastfetch"]);
+        let t = list(
+            "fastfetch | fastfetch | unix | apk:fastfetch mise:aqua:fastfetch-cli/fastfetch\n",
+        );
+        let mut f =
+            Fake::with(&["fastfetch"], &["apk", "mise"]).provide("apk:fastfetch", &["fastfetch"]);
         f.broken.insert("fastfetch".into());
         // On Alpine a binary that does not start counts as missing, so apk installs it again.
         // The fake keeps it broken, so only the attempt is checked.
@@ -760,13 +923,18 @@ mod tests {
         assert!(f.log.contains(&"apk:fastfetch".to_string()), "{out:?}");
         let mut g = Fake::with(&["fastfetch"], &["apk"]);
         g.broken.insert("fastfetch".into());
-        assert!(matches!(resolve(&t, LINUX, &mut g, &[])[0], Outcome::Present(_)));
+        assert!(matches!(
+            resolve(&t, LINUX, &mut g, &[])[0],
+            Outcome::Present(_)
+        ));
     }
 
     #[test]
     fn installs_from_the_first_source_that_works() {
         let t = list("rg | rg | all | mise:x cargo:ripgrep\n");
-        let mut f = Fake::with(&[], &["mise", "cargo"]).provide("mise:x", &["rg"]).provide("cargo:ripgrep", &["rg"]);
+        let mut f = Fake::with(&[], &["mise", "cargo"])
+            .provide("mise:x", &["rg"])
+            .provide("cargo:ripgrep", &["rg"]);
         let out = resolve(&t, LINUX, &mut f, &[]);
         assert_eq!(out, vec![Outcome::Installed("rg".into(), "mise:x".into())]);
         assert_eq!(f.log, vec!["mise:x"]);
@@ -778,7 +946,10 @@ mod tests {
         let mut f = Fake::with(&[], &["mise", "cargo"]).provide("cargo:ripgrep", &["rg"]);
         f.failing.insert("mise:x".into());
         let out = resolve(&t, LINUX, &mut f, &[]);
-        assert_eq!(out, vec![Outcome::Installed("rg".into(), "cargo:ripgrep".into())]);
+        assert_eq!(
+            out,
+            vec![Outcome::Installed("rg".into(), "cargo:ripgrep".into())]
+        );
         assert_eq!(f.log, vec!["mise:x", "cargo:ripgrep"]);
     }
 
@@ -787,8 +958,9 @@ mod tests {
         // The glibc build from mise cannot run on Alpine: apk comes first there, but when apk is
         // not usable (no root) mise installs it, the check fails, and cargo takes over.
         let t = list("eza | eza | unix | apk:eza mise:aqua:eza cargo:eza\n");
-        let mut f =
-            Fake::with(&[], &["mise", "cargo"]).provide("mise:aqua:eza", &["eza"]).provide("cargo:eza", &["eza2"]);
+        let mut f = Fake::with(&[], &["mise", "cargo"])
+            .provide("mise:aqua:eza", &["eza"])
+            .provide("cargo:eza", &["eza2"]);
         f.broken.insert("eza".into());
         let out = resolve(&t, ALPINE, &mut f, &[]);
         assert!(
@@ -801,10 +973,20 @@ mod tests {
     #[test]
     fn apk_is_first_on_alpine_and_skipped_elsewhere() {
         let t = list("eza | eza | unix | apk:eza mise:aqua:eza\n");
-        let mut alp = Fake::with(&[], &["apk", "mise"]).provide("apk:eza", &["eza"]).provide("mise:aqua:eza", &["eza"]);
-        assert_eq!(resolve(&t, ALPINE, &mut alp, &[]), vec![Outcome::Installed("eza".into(), "apk:eza".into())]);
-        let mut lin = Fake::with(&[], &["apk", "mise"]).provide("apk:eza", &["eza"]).provide("mise:aqua:eza", &["eza"]);
-        assert_eq!(resolve(&t, LINUX, &mut lin, &[]), vec![Outcome::Installed("eza".into(), "mise:aqua:eza".into())]);
+        let mut alp = Fake::with(&[], &["apk", "mise"])
+            .provide("apk:eza", &["eza"])
+            .provide("mise:aqua:eza", &["eza"]);
+        assert_eq!(
+            resolve(&t, ALPINE, &mut alp, &[]),
+            vec![Outcome::Installed("eza".into(), "apk:eza".into())]
+        );
+        let mut lin = Fake::with(&[], &["apk", "mise"])
+            .provide("apk:eza", &["eza"])
+            .provide("mise:aqua:eza", &["eza"]);
+        assert_eq!(
+            resolve(&t, LINUX, &mut lin, &[]),
+            vec![Outcome::Installed("eza".into(), "mise:aqua:eza".into())]
+        );
         assert_eq!(lin.log, vec!["mise:aqua:eza"]);
     }
 
@@ -824,7 +1006,10 @@ mod tests {
         match &out[0] {
             Outcome::Failed(n, tried) => {
                 assert_eq!(n, "ff");
-                assert_eq!(tried, &vec!["mise:conda:ffmpeg: mise is not installed".to_string()]);
+                assert_eq!(
+                    tried,
+                    &vec!["mise:conda:ffmpeg: mise is not installed".to_string()]
+                );
             }
             o => panic!("{o:?}"),
         }
@@ -833,9 +1018,14 @@ mod tests {
     #[test]
     fn only_filters_by_name_or_command() {
         let t = list("ripgrep | rg | all | mise:x\nfd | fd | all | mise:y\n");
-        let mut f = Fake::with(&[], &["mise"]).provide("mise:x", &["rg"]).provide("mise:y", &["fd"]);
+        let mut f = Fake::with(&[], &["mise"])
+            .provide("mise:x", &["rg"])
+            .provide("mise:y", &["fd"]);
         let out = resolve(&t, MAC, &mut f, &["rg".to_string()]);
-        assert_eq!(out, vec![Outcome::Installed("ripgrep".into(), "mise:x".into())]);
+        assert_eq!(
+            out,
+            vec![Outcome::Installed("ripgrep".into(), "mise:x".into())]
+        );
         assert_eq!(f.log, vec!["mise:x"]);
     }
 
@@ -855,7 +1045,9 @@ mod tests {
 
     #[test]
     fn missing_lists_names_for_this_os_only() {
-        let t = list("ripgrep | rg | all | mise:x\ntmux | tmux | unix | mise:t\nfd | fd | all | mise:y\n");
+        let t = list(
+            "ripgrep | rg | all | mise:x\ntmux | tmux | unix | mise:t\nfd | fd | all | mise:y\n",
+        );
         let f = Fake::with(&["fd"], &[]);
         assert_eq!(missing(&t, WIN, &f, &[]), vec!["ripgrep"]);
         assert_eq!(missing(&t, MAC, &f, &[]), vec!["ripgrep", "tmux"]);
@@ -872,7 +1064,11 @@ mod tests {
     fn path_search_finds_a_file_and_skips_a_missing_one() {
         let d = env::temp_dir().join(format!("tools-core-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        let name = if cfg!(windows) { "faketool.exe" } else { "faketool" };
+        let name = if cfg!(windows) {
+            "faketool.exe"
+        } else {
+            "faketool"
+        };
         let p = d.join(name);
         std::fs::write(&p, "x").unwrap();
         #[cfg(unix)]

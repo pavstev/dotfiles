@@ -34,8 +34,8 @@ offers `opencode auth login`.
 | `includeCoAuthoredBy`, `attribution` | none | Opencode attributes commits as the user; nothing to force off |
 | `statusLine` | none | no status line |
 
-A `~/.config/opencode/AGENTS.md` without the marker is yours. `dots` leaves it and says to put
-personal rules in `~/.config/dotfiles/owner.md` instead.
+For a `~/.config/opencode/AGENTS.md` without the marker, `dots` says to put personal rules in
+`~/.config/dotfiles/owner.md` instead.
 
 A sidecar file, `~/.config/opencode/.dotfiles-managed.json`, records the permission rules `dots`
 added, so a rule dropped from `claude/settings.json` goes on the next run, unless you changed its
@@ -89,8 +89,7 @@ The plugin is removed when `claude/hooks/rust-bin` is gone. Which check runs whe
 ## Decisions
 
 - Agents inherit the session model, so a wrong `provider/model-id` can never break a session.
-- `AGENTS.md` is generated, not linked, because a hand-written file would hide the owner rules and
-  the output style that the `CLAUDE.md` fallback does not carry.
+- `AGENTS.md` is generated, not linked ([why](ai-agents.md#opencode)).
 - `opencode.jsonc` is merged, never linked: Opencode rewrites it.
 - `DOTFILES_MCP=on` turns MCP on for Cursor and Opencode at once; `CURSOR_MCP` and `OPENCODE_MCP`
   control each app on its own.

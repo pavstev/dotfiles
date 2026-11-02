@@ -1,7 +1,7 @@
 //! `dots`: the dotfiles setup (pull, link, provision). `./dotfiles` is a small bash shim that
 //! builds and runs it.
 //!
-//! A run prints one short line per step. `dots -v` (or DOTFILES_VERBOSE=1) prints
+//! A run prints one short line per step. `dots -v` (or `DOTFILES_VERBOSE=1`) prints
 //! everything. `dots settings` (or `dots private`) opens the settings menu, then
 //! refreshes the links, the Cursor rule and the Opencode config. `dots doctor` checks the
 //! result and changes nothing. `dots update` (macOS) checks every package manager and installs
@@ -30,7 +30,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The repo: DOTFILES_REPO (the shim sets it), else four folders up from this binary
+/// The repo: `DOTFILES_REPO` (the shim sets it), else four folders up from this binary
 /// (rust/agent-config/target/release/dots).
 pub fn repo() -> PathBuf {
     if let Ok(v) = env::var("DOTFILES_REPO")
@@ -41,7 +41,13 @@ pub fn repo() -> PathBuf {
     // `rust-bin` starts the exe as `~/.claude/hooks/../../rust/...`: resolve it, or the root is `~/.claude/hooks/../..`
     env::current_exe()
         .ok()
-        .map(|e| if os::is_windows() { e } else { fs::canonicalize(&e).unwrap_or(e) })
+        .map(|e| {
+            if os::is_windows() {
+                e
+            } else {
+                fs::canonicalize(&e).unwrap_or(e)
+            }
+        })
         .and_then(|e| e.ancestors().nth(5).map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -152,7 +158,11 @@ pub fn main() -> i32 {
             .unwrap_or_default();
     }
     os::set_env("DOTFILES_WARN_FILE", &warn_file);
-    out::set_warn_file(Some(&warn_file).filter(|f| !f.is_empty()).map(PathBuf::from));
+    out::set_warn_file(
+        Some(&warn_file)
+            .filter(|f| !f.is_empty())
+            .map(PathBuf::from),
+    );
     // Read verbose, color and the warn file now: from here on a ticker thread prints while the
     // main thread may still set variables for child processes.
     out::init();
@@ -169,13 +179,17 @@ pub fn main() -> i32 {
             }
             uptodate("up to date");
         } else {
-            warn("couldn't pull (no network, local commits, or a changed file), so this run uses what is here");
+            warn(
+                "couldn't pull (no network, local commits, or a changed file), so this run uses what is here",
+            );
             let changed = git::changed(&repo);
             if !changed.is_empty() {
                 info(&format!("changed here: {changed}"));
             }
             if format!(" {changed} ").contains(" claude/CLAUDE.md ") {
-                info("keep your own rules in your private rules (dots settings), not in claude/CLAUDE.md");
+                info(
+                    "keep your own rules in your private rules (dots settings), not in claude/CLAUDE.md",
+                );
             }
         }
     }
@@ -183,7 +197,9 @@ pub fn main() -> i32 {
     // Windows needs real symlinks (Developer Mode). Stop first, once, with the fix.
     if os::is_windows() && !os::windows_links_ready() {
         warn("Windows can't make links yet. Turn on Developer Mode:");
-        info("Settings > System > For developers > Developer Mode (On). Then run the same command again.");
+        info(
+            "Settings > System > For developers > Developer Mode (On). Then run the same command again.",
+        );
         return 1;
     }
 
@@ -230,7 +246,8 @@ pub fn main() -> i32 {
         name = ask::text("👤 Your name, for git commits", "Jane Doe", false).unwrap_or_default();
     }
     if email.is_empty() {
-        email = ask::email("✉️  Your email, for git commits", "jane@example.com").unwrap_or_default();
+        email =
+            ask::email("✉️  Your email, for git commits", "jane@example.com").unwrap_or_default();
     }
     if !name.is_empty() && !email.is_empty() {
         if settings::get("GIT_NAME") != name && !settings::set("GIT_NAME", &name) {
@@ -261,11 +278,17 @@ pub fn main() -> i32 {
     os::set_env("DOTFILES_PROFILE", profile.as_str());
 
     // An optional extra, offered once: on the first run, at a terminal. "No" comes first.
-    if os::is_macos() && first_run && os::at_terminal() && !Path::new("/Applications/Claude.app").is_dir() {
+    if os::is_macos()
+        && first_run
+        && os::at_terminal()
+        && !Path::new("/Applications/Claude.app").is_dir()
+    {
         step("Extras");
         let no = "⏭️  No, skip it".to_string();
         let app = "🖥️  Yes, install the Claude desktop app".to_string();
-        if ask::one("✨ Install the Claude desktop app too?", &[no, app.clone()]).as_deref() == Some(app.as_str()) {
+        if ask::one("✨ Install the Claude desktop app too?", &[no, app.clone()]).as_deref()
+            == Some(app.as_str())
+        {
             info("Installing the Claude app");
             if quiet(Command::new("brew").args(["install", "--cask", "--quiet", "claude"])) {
                 ok("Claude desktop app installed");
@@ -301,7 +324,10 @@ pub fn main() -> i32 {
     if os::is_windows() {
         // One line instead of eleven; the whole output only when something fails.
         let (good, lines) = out::capture(|| agent_config(&oc));
-        let n = lines.iter().filter(|(l, _)| l.starts_with('✓') || l.contains("✓\x1b[0m")).count();
+        let n = lines
+            .iter()
+            .filter(|(l, _)| l.starts_with('✓') || l.contains("✓\x1b[0m"))
+            .count();
         if good && n > 0 && !verbose() {
             ok(&format!("Opencode config written ({n} files)"));
         } else {
@@ -321,8 +347,17 @@ pub fn main() -> i32 {
     // Step 40 can bring the Rust toolchain during this run, so build the Rust tools now. A
     // no-op when they are fresh. A HOME with no toolchain (a temp HOME, a bare box) skips it.
     if env::var("DOTFILES_STEPS").unwrap_or_default().is_empty() {
-        if os::have("cargo") && quiet(Command::new("cargo").arg("--version").env("RUSTUP_AUTO_INSTALL", "0")) {
-            let _ = Command::new(os::bash()).arg(repo.join("scripts").join("agent-config")).arg("--bins").status();
+        if os::have("cargo")
+            && quiet(
+                Command::new("cargo")
+                    .arg("--version")
+                    .env("RUSTUP_AUTO_INSTALL", "0"),
+            )
+        {
+            let _ = Command::new(os::bash())
+                .arg(repo.join("scripts").join("agent-config"))
+                .arg("--bins")
+                .status();
         }
         // again: the cargo source works now if step 40 just brought cargo
         crate::tools_cli::run(vec!["--quiet".into()]);
@@ -341,10 +376,15 @@ pub fn main() -> i32 {
             );
         }
     } else if os::is_macos() && !os::have("brew") {
-        warn("Homebrew is missing, so the apps did not install. Fix the error above, then run dots again.");
+        warn(
+            "Homebrew is missing, so the apps did not install. Fix the error above, then run dots again.",
+        );
     } else if first_run {
-        let new_shell =
-            if os::is_macos() { "Open a new Terminal window." } else { "Open a new terminal, or run: exec zsh" };
+        let new_shell = if os::is_macos() {
+            "Open a new Terminal window."
+        } else {
+            "Open a new terminal, or run: exec zsh"
+        };
         ask::banner(
             "✅ All set",
             &[
@@ -367,7 +407,9 @@ pub fn main() -> i32 {
     let took = out::duration(started.elapsed().as_secs());
     if nwarn > 0 {
         let w = if nwarn == 1 { "warning" } else { "warnings" };
-        warn(&format!("dotfiles: done in {took} with {nwarn} {w} (profile: {profile}). Read the ! lines above."));
+        warn(&format!(
+            "dotfiles: done in {took} with {nwarn} {w} (profile: {profile}). Read the ! lines above."
+        ));
     } else {
         ok(&format!("dotfiles: done in {took} (profile: {profile})"));
     }
@@ -388,7 +430,9 @@ fn quiet(cmd: &mut Command) -> bool {
 /// shim runs a copy of it there (Windows locks a running .exe).
 fn restart(repo: &Path) -> i32 {
     let mut cmd = Command::new(os::bash());
-    cmd.arg(repo.join("dotfiles")).args(env::args().skip(1)).env("DOTFILES_PULLED", "1");
+    cmd.arg(repo.join("dotfiles"))
+        .args(env::args().skip(1))
+        .env("DOTFILES_PULLED", "1");
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -448,7 +492,10 @@ pub fn editor_links(repo: &Path, home: &Path) -> Vec<(PathBuf, PathBuf)> {
     for app in ["Code", "Cursor"] {
         for f in ["settings.json", "keybindings.json"] {
             v.push((
-                repo.join("home/Library/Application Support").join(app).join("User").join(f),
+                repo.join("home/Library/Application Support")
+                    .join(app)
+                    .join("User")
+                    .join(f),
                 home.join(editor_cfg).join(app).join("User").join(f),
             ));
         }
@@ -495,7 +542,10 @@ fn claude_config(repo: &Path, profile: Profile) {
     let src = repo.join("claude");
     let dst = os::home().join(".claude");
     if !src.is_dir() {
-        warn(&format!("{} missing — skipping Claude config link", src.display()));
+        warn(&format!(
+            "{} missing — skipping Claude config link",
+            src.display()
+        ));
         return;
     }
     if fs::create_dir_all(&dst).is_err() {
@@ -517,7 +567,10 @@ fn claude_config(repo: &Path, profile: Profile) {
     let on = crate::presets::enabled(&os::home(), profile);
     crate::presets::link_all(repo, &os::home(), &on);
     if verbose() {
-        info(&format!("presets: {}", crate::presets::summary(&os::home(), profile)));
+        info(&format!(
+            "presets: {}",
+            crate::presets::summary(&os::home(), profile)
+        ));
     }
     let n = link::take_count();
     if n > 0 {
@@ -536,7 +589,9 @@ fn claude_config(repo: &Path, profile: Profile) {
         link::link_item(&owner, &rule, false);
     } else {
         if profile == Profile::Owner {
-            warn("owner profile, but no private rules on this machine. Add them with: dots settings");
+            warn(
+                "owner profile, but no private rules on this machine. Add them with: dots settings",
+            );
         }
         if os::is_symlink(&rule)
             && os::readlink(&rule).as_deref() == Some(owner.as_path())

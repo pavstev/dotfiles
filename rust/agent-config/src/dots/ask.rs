@@ -12,7 +12,7 @@ const COPPER: Color = Color::AnsiValue(173);
 const STONE: Color = Color::AnsiValue(245);
 const DIM: Color = Color::AnsiValue(240);
 
-/// inquire menus: a person can answer, and DOTS_PLAIN_PROMPTS is not set.
+/// inquire menus: a person can answer, and `DOTS_PLAIN_PROMPTS` is not set.
 pub fn fancy() -> bool {
     os::at_terminal() && std::env::var_os("DOTS_PLAIN_PROMPTS").is_none()
 }
@@ -55,7 +55,10 @@ pub fn text(label: &str, hint: &str, empty_ok: bool) -> Option<String> {
             theme();
             match inquire::Text::new(label).with_placeholder(hint).prompt() {
                 Ok(v) => v,
-                Err(inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted) => {
+                Err(
+                    inquire::InquireError::OperationCanceled
+                    | inquire::InquireError::OperationInterrupted,
+                ) => {
                     return None;
                 }
                 Err(_) => read_line(&format!("{label}: "))?,
@@ -77,7 +80,8 @@ pub fn looks_like_email(v: &str) -> bool {
             return false;
         }
         let rest = &v[i + 1..];
-        rest.char_indices().any(|(j, c2)| c2 == '.' && j > 0 && j + 1 < rest.len())
+        rest.char_indices()
+            .any(|(j, c2)| c2 == '.' && j > 0 && j + 1 < rest.len())
     })
 }
 
@@ -97,7 +101,11 @@ pub fn email(label: &str, hint: &str) -> Option<String> {
 pub fn value(label: &str, now: &str, hint: &str) -> Option<String> {
     let v = if fancy() {
         theme();
-        inquire::Text::new(label).with_initial_value(now).with_placeholder(hint).prompt().ok()?
+        inquire::Text::new(label)
+            .with_initial_value(now)
+            .with_placeholder(hint)
+            .prompt()
+            .ok()?
     } else {
         let v = read_line(&format!("{label} [{now}]: "))?;
         if v.is_empty() {
@@ -122,7 +130,10 @@ pub fn menu(header: &str, start: &str, labels: &[String]) -> Option<String> {
             .prompt()
         {
             Ok(v) => return Some(v),
-            Err(inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted) => {
+            Err(
+                inquire::InquireError::OperationCanceled
+                | inquire::InquireError::OperationInterrupted,
+            ) => {
                 return None;
             }
             Err(_) => {}
@@ -133,7 +144,12 @@ pub fn menu(header: &str, start: &str, labels: &[String]) -> Option<String> {
         eprintln!("  {}) {}", i + 1, l);
     }
     let a = read_line(&format!("  Number [{}]: ", n + 1))?;
-    let i = a.trim().parse::<usize>().ok().filter(|i| *i >= 1 && *i <= labels.len()).unwrap_or(n + 1);
+    let i = a
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|i| *i >= 1 && *i <= labels.len())
+        .unwrap_or(n + 1);
     labels.get(i - 1).cloned()
 }
 
@@ -221,10 +237,25 @@ pub fn banner(title: &str, lines: &[&str]) {
     let c = "\x1b[38;5;173m";
     let bold = "\x1b[1;38;5;173m";
     let z = "\x1b[0m";
-    let width = std::iter::once(title).chain(lines.iter().copied()).map(display_width).max().unwrap_or(0) + 4;
+    let width = std::iter::once(title)
+        .chain(lines.iter().copied())
+        .map(display_width)
+        .max()
+        .unwrap_or(0)
+        + 4;
     let row = |text: &str, style: &str| {
         let pad = width - 4 - display_width(text);
-        println!("{}│{}  {}{}{}{}  {}│{}", c, z, style, text, z, " ".repeat(pad), c, z);
+        println!(
+            "{}│{}  {}{}{}{}  {}│{}",
+            c,
+            z,
+            style,
+            text,
+            z,
+            " ".repeat(pad),
+            c,
+            z
+        );
     };
     println!();
     println!("{}╭{}╮{}", c, "─".repeat(width - 2), z);

@@ -10,11 +10,7 @@ Cursor and Opencode read `AGENTS.md` themselves; Claude Code reads it through th
 **Edit the source, never `$HOME` by surprise.** Most of `$HOME` is symlinked from `home/` and
 `claude/`, so an edit on either side is the same file and is live at once. New files, packages
 and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link, provision).
-
-- A managed dotfile (shell, prompt, terminal, git): edit under `home/`.
-- Claude config (settings, skills, agents, hooks): edit under `claude/`.
-- Unsure whether a `$HOME` file is a link back here: `ls -la`.
-- No background sync. This machine pushes; others run `dots` to catch up. Commit and push yourself.
+No background sync. This machine pushes; others run `dots` to catch up. Commit and push yourself.
 
 ## Layout
 
@@ -38,8 +34,9 @@ Each file's header says what it does. The rows below hold a gotcha.
 
 ## Tests
 
-- `cargo test` in `rust/agent-config`: every unit and process test. The pre-commit hook runs
-  `rust-bin skill_check` and `cargo test --test skill_bins` for a staged skill change.
+- `cargo test` in `rust/agent-config`: every unit and process test. For a staged skill change the
+  pre-commit hook also runs `cargo test --test skill_bins` (and `skill_check`, see
+  `claude/skills/README.md`).
 - `bash scripts/test-dotfiles.sh`: `./dotfiles` in a temp HOME with a temp repo and origin. About
   20 seconds, nothing installs.
 - `scripts/os-check.sh` (or `/os-check` in Claude Code): the manual check on all three OSes, run
@@ -61,8 +58,6 @@ Each file's header says what it does. The rows below hold a gotcha.
 - `dots doctor` (`rust/agent-config/src/dots/doctor.rs`): `bins-fresh` is the one place a stale
   binary shows, because `rust-bin` never checks. New check: add it to `checks()` and give it a pass
   test and a fail test in `tests/doctor.rs`.
-- A new or edited agent (`claude/agents/*.md`) loads only in a new session: test it with a
-  headless `claude -p` run, not in the session that edited it (`claude/agents/README.md`).
 - Guard checks have an off switch: `GUARD_OFF="G10,G13"` in the env turns those checks off
   (the doc comment in `rust/agent-config/src/bin/guard.rs` lists every check).
 - `claude/hooks/` is live in every session. Merge helper branches that touch it in a worktree
@@ -85,35 +80,29 @@ Accepted for now:
 
 ## Skills
 
-`dots` links each `claude/skills/<name>` into `~/.claude/skills`, never touching skills it does not
-own (on a name clash the local one wins). Cursor and Opencode read `~/.claude/skills` natively;
-nothing goes into `~/.cursor/skills`. New skill: copy `claude/skills/_template/`, keep folder name
-== `name:`, run `dots`.
+On a name clash in `~/.claude/skills` the local skill wins, and nothing goes into `~/.cursor/skills`.
+The rules and the new-skill steps: `claude/skills/README.md`.
 
 ## Cursor
 
-`claude/` is the source for Cursor too: edit it, then run `dots`. Step `60-cursor` runs only when
-Cursor is present. What Cursor gets: `docs/ai-agents.md` "Cursor" and `docs/cursor-port.md`.
+`claude/` is the source for Cursor too. Step `60-cursor` runs only when Cursor is present. What
+Cursor gets, the marker rule and the `cursor-rules` paste: `docs/ai-agents.md` "Cursor" and
+`docs/cursor-port.md`.
 
-- Generated Markdown carries a `generated-by: dotfiles` marker. A file without it is the user's.
 - Never edit the generated files under `~/.cursor`; the next `dots` overwrites them.
 - Never symlink `~/.cursor/cli-config.json` or `~/.cursor/mcp.json`. Cursor rewrites them.
-- Rules in every folder: run `cursor-rules`, paste in Cursor Settings > Rules > User Rules.
-  `dots` then skips the file rule and warns when to paste again.
 - superlite follows the Claude Code switch. `DOTS_SUPERLITE_REPO` points its clone at another repo (tests).
 
 ## Opencode
 
-Opencode uses the same `claude/` source: edit it, then run `dots`. `agent-config opencode` runs in
-`./dotfiles` itself, not as a step, so `dots settings` runs it too. Skills need no step.
+Opencode uses the same `claude/` source. `agent-config opencode` runs in `./dotfiles` itself, not
+as a step, so `dots settings` runs it too. Skills need no step.
 
-- A generated file carries the `generated-by: dotfiles` marker. A file without it, and a
-  `tui.json` that names another theme, is the user's and stays.
-- A Claude `model:` pin is dropped from the agents (Opencode names models `provider/model-id`).
-- The guard plugin `plugins/dots-guard.ts` is generated from
-  `rust/agent-config/src/opencode_plugin.ts.tmpl`. Edit the template, never the output.
-- What each piece holds and which guard checks run there: [`docs/ai-agents.md`](docs/ai-agents.md)
-  "Opencode". Mapping and gaps: [`docs/opencode-port.md`](docs/opencode-port.md).
+- Edit the guard plugin template `rust/agent-config/src/opencode_plugin.ts.tmpl`, never the
+  generated `plugins/dots-guard.ts`.
+- What each piece holds, the marker rule and which guard checks run there:
+  [`docs/ai-agents.md`](docs/ai-agents.md) "Opencode". Mapping, the dropped `model:` pin and gaps:
+  [`docs/opencode-port.md`](docs/opencode-port.md).
 
 ## Platforms
 
@@ -134,33 +123,29 @@ OS only where the behavior really differs.
 
 What users see: [`docs/platforms.md`](docs/platforms.md#linux). No Homebrew on Linux.
 
-- Tools come from `tools.list` (step `12-tools`, `scripts/tools`): mise first. The system package
-  manager installs only `LINUX_PREREQS` (`scripts/linux-prereqs.txt`, step `05-linux-prereqs`) and,
-  on Alpine only, the `apk:` sources of `tools.list`. Never add a system install of tools
-  anywhere else.
-- Editor settings keep their macOS path under `home/Library/Application Support/` and link to
-  `~/.config/{Code,Cursor}/User` on Linux.
+- The system package manager installs only `LINUX_PREREQS` (`scripts/linux-prereqs.txt`, step
+  `05-linux-prereqs`) and, on Alpine only, the `apk:` sources of `tools.list`. Never add a system
+  install of tools anywhere else. How tools install (mise first) is in `docs/platforms.md`.
+- Editor settings keep their macOS path under `home/Library/Application Support/`; the Linux
+  links are in `docs/platforms.md`.
 
 ## Windows
 
-`./dotfiles` runs in Git Bash (MSYS/MINGW); WSL counts as Linux. Only `12-tools` and
-`57-claude-code` run there. What users see: [`docs/platforms.md`](docs/platforms.md#windows).
+`./dotfiles` runs in Git Bash (MSYS/MINGW). What users see (steps that run, WSL, links, the git
+identity file): [`docs/platforms.md`](docs/platforms.md#windows). The gotchas:
 
-- **Links:** Git Bash `ln -s` copies unless `MSYS=winsymlinks:nativestrict` (set in `setup-lib.sh`), and a
-  native link needs Developer Mode. `./dotfiles` checks this first and stops with the fix. `~/.gitconfig`
-  is not linked (it sets `delta` and `code`): the git identity goes to `~/.gitconfig.local`, which the
-  user's own `~/.gitconfig` includes.
+- **Links:** Git Bash `ln -s` copies unless `MSYS=winsymlinks:nativestrict` (set in `setup-lib.sh`),
+  and a native link needs Developer Mode. `./dotfiles` checks this first and stops with the fix.
+  `~/.gitconfig` is not linked because it sets `delta` and `code`.
 - **Clone-safe paths:** a tracked path with `: < > " | ? *` or `\`, a trailing dot or space, or a device
   name (`con`, `nul`, ...) makes `git clone` fail on Windows ("invalid path") and leaves a clone with no
   checkout. So a skill folder is `ps_foo` while its `name:` stays `ps:foo`. The pre-commit hook and
   `scripts/test-dotfiles.sh` reject such paths. `.gitattributes` forces LF, and `bootstrap.sh` clones with
   `core.autocrlf=false` and repairs a clone that has no `./dotfiles` (a re-run of the one-liner fixes it).
-- **Rust:** `./dotfiles` runs the Rust `dots` here. With no Rust it installs rustup with the
-  `x86_64-pc-windows-gnu` host (no Visual Studio Build Tools; Windows on Arm runs it under x64
-  emulation) and `llvm-tools`: that build needs LLVM's dlltool, which the shim copies to
-  `~/.cargo/dlltool` (`win_dlltool` in `setup-lib.sh`, only for a `-windows-gnu` host: a machine that
-  already has the MSVC toolchain builds with it and needs none). It runs a copy of `dots.exe`, because
-  Windows locks a running `.exe`. Python is not needed.
+- **Rust:** the `-windows-gnu` host the shim installs (`docs/platforms.md`; Windows on Arm runs it
+  under x64 emulation) builds with LLVM's dlltool, which the shim copies to `~/.cargo/dlltool`
+  (`win_dlltool` in `setup-lib.sh`, only for a `-windows-gnu` host: a machine that already has the
+  MSVC toolchain needs none). It runs a copy of `dots.exe`, because Windows locks a running `.exe`.
 
 ## Profiles
 
@@ -172,12 +157,11 @@ What users see: [`docs/platforms.md`](docs/platforms.md#linux). No Homebrew on L
   added to the Cursor global rule and written into `~/.config/opencode/AGENTS.md` (0600).
   Without it, `dots` warns.
 - **Claude settings**, every profile: `dots` builds `~/.claude/settings.json` (a real file) from
-  `claude/settings.json` plus the private layer `~/.config/dotfiles/claude-settings.json`; live
-  changes move into the layer first (`scripts/agent-config claude-settings build`).
-  `claude-settings promote <key>` moves a key to the repo base. Owner-only keys stay in the layer.
-- **Presets** (`claude/presets/`) are enabled by the `PRESETS` setting. A preset that is off costs
-  no tokens, and the guard runs a check only while its preset is on. An empty `PRESETS`: `owner`
-  gets every preset, `shared` every one but `ship-to-main`.
+  `claude/settings.json` plus a private layer; the build and `claude-settings promote <key>` are in
+  [`docs/ai-agents.md`](docs/ai-agents.md). Owner-only keys stay in the layer.
+- **Presets** (`claude/presets/`) are enabled by the `PRESETS` setting
+  ([`claude/presets/README.md`](claude/presets/README.md)). An empty `PRESETS`: `owner` gets every
+  preset, `shared` every one but `ship-to-main`.
 - Personal rules go in `owner.md` (`dots settings`), never in `~/.claude/CLAUDE.md`: that is the
   repo file, and a local edit can stop the pull.
 

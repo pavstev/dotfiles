@@ -162,8 +162,10 @@ OK_WARN='^$'
 # ---- 3. run 1 and run 2 ------------------------------------------------------
 note "run 1 (fresh): ./dotfiles on $IMAGE ($RT, logs in $LOGS)"
 t0=$SECONDS
+# Merge the two streams inside the container: the runtime relays stdout and stderr on two pipes, so
+# their order can flip in the log, and the done line must stay last.
 printf 'Test User\ntest@example.com\n' | "$RT" exec -i -e NO_COLOR=1 -e DOTFILES_PROFILE=shared "$NAME" \
-  bash -lc 'cd ~/dotfiles && ./dotfiles' >"$LOGS/run1.log" 2>&1
+  bash -lc 'cd ~/dotfiles && ./dotfiles 2>&1' >"$LOGS/run1.log"
 rc1=$?
 note "run 1 took $((SECONDS - t0))s, exit $rc1"
 if (( rc1 == 0 )); then pass "run 1 exits 0"; else bad "run 1 exit $rc1"; fi
@@ -176,8 +178,8 @@ else bad "run 1 warnings:"; printf '%s\n' "$unexpected" | sed 's/^/        /'; f
 before="$(cx "$STATE")"
 note "run 2 (same container): ./dotfiles again"
 t0=$SECONDS
-"$RT" exec -i -e NO_COLOR=1 -e DOTFILES_PROFILE=shared "$NAME" bash -lc 'cd ~/dotfiles && ./dotfiles' \
-  </dev/null >"$LOGS/run2.log" 2>&1
+"$RT" exec -i -e NO_COLOR=1 -e DOTFILES_PROFILE=shared "$NAME" bash -lc 'cd ~/dotfiles && ./dotfiles 2>&1' \
+  </dev/null >"$LOGS/run2.log"
 rc2=$?
 t2=$((SECONDS - t0))
 note "run 2 took ${t2}s, exit $rc2"
@@ -244,8 +246,8 @@ if grep -q 'macOS only' "$LOGS/run1.log"; then bad "run 1 says 'macOS only' (the
 else pass "Mac-only steps are silent on Linux"; fi
 
 # Run 3: dots -v prints everything, still exits 0, and warns about nothing new.
-"$RT" exec -i -e NO_COLOR=1 -e DOTFILES_PROFILE=shared "$NAME" bash -lc 'cd ~/dotfiles && ./dotfiles -v' \
-  </dev/null >"$LOGS/run3v.log" 2>&1
+"$RT" exec -i -e NO_COLOR=1 -e DOTFILES_PROFILE=shared "$NAME" bash -lc 'cd ~/dotfiles && ./dotfiles -v 2>&1' \
+  </dev/null >"$LOGS/run3v.log"
 rc3=$?
 lines3="$(wc -l <"$LOGS/run3v.log" | tr -d ' ')"
 unexpected="$(grep -E '^!  ' "$LOGS/run3v.log" | grep -vE "$OK_WARN" || true)"

@@ -81,6 +81,8 @@ ffmpeg        | ffmpeg        | all     | apk:ffmpeg mise:conda:ffmpeg winget:Gy
 poppler       | pdftotext     | all     | apk:poppler-utils mise:conda:poppler scoop:poppler
 whisper-cpp   | whisper-cli,whisper-cpp | unix,!musl | mise:conda:whisper.cpp
 # ---- Design references (ps:design-ref) -------------------------------------
+# pnpm as a standalone binary: Node 25 and up ship no corepack, and the npm tools below pull in the newest Node.
+pnpm          | pnpm          | unix,!musl | mise:aqua:pnpm/pnpm
 # npm CLIs, installed once so each call skips npx. Their Chromium downloads on first use, not here.
 dembrandt     | dembrandt     | unix,!musl | mise:npm:dembrandt
 awwwards-mcp  | awwwards-mcp  | unix,!musl | mise:npm:awwwards-mcp

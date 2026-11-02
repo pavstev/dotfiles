@@ -12,7 +12,7 @@ The user cannot judge from words, so show the options. One artifact, one click t
 
 ## Build
 
-If you must ask first (what to choose, how many options, which folder), put up to 4 independent questions in one question-tool card, recommended option first. Default the rest and say so in one line.
+If you must ask first (what to choose, how many options, which folder), ask as the workflow preset says for ask skills (batched, recommended option first), and default the rest.
 
 1. Load the `artifact-design` skill first. It holds the page contract.
 2. Copy [template.html](template.html) to the scratchpad and fill its `VARIANTS` array. Keep the rest of the file as is.

@@ -23,7 +23,11 @@ pub struct Counter<K: Clone + Eq + Hash> {
 
 impl<K: Clone + Eq + Hash> Default for Counter<K> {
     fn default() -> Self {
-        Self { keys: vec![], idx: HashMap::new(), vals: vec![] }
+        Self {
+            keys: vec![],
+            idx: HashMap::new(),
+            vals: vec![],
+        }
     }
 }
 
@@ -88,7 +92,7 @@ impl<K: Clone + Eq + Hash> Counter<K> {
             None => it,
             Some(n) if n <= 0 => vec![],
             Some(n) => {
-                it.truncate(n as usize);
+                it.truncate(usize::try_from(n).unwrap_or(usize::MAX));
                 it
             }
         }
@@ -148,10 +152,11 @@ pub fn dump(v: &Value, out: &mut String) {
     }
 }
 
-static NON_ALNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^A-Za-z0-9]").expect("a fixed pattern"));
+static NON_ALNUM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[^A-Za-z0-9]").expect("a fixed pattern"));
 
 /// Where `find_session` looks when no session is named and `CLAUDE_CODE_SESSION_ID` finds nothing.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Search {
     /// The newest transcript of the current folder's project.
     ThisProject,
@@ -177,7 +182,11 @@ fn session_hits(prefix: &str, exact: bool) -> Vec<PathBuf> {
     for dir in list_dir(&projects_dir()) {
         for f in list_dir(&dir) {
             let name = fname(&f);
-            let ok = if exact { name == exact_name } else { name.starts_with(prefix) && is_jsonl(&f) };
+            let ok = if exact {
+                name == exact_name
+            } else {
+                name.starts_with(prefix) && is_jsonl(&f)
+            };
             if ok {
                 hits.push(f);
             }
@@ -214,9 +223,14 @@ pub fn find_session(arg: Option<&str>, search: Search) -> Option<PathBuf> {
         return Some(hit);
     }
     if search != Search::All {
-        let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let project = projects_dir().join(NON_ALNUM.replace_all(&cwd, "-").as_ref());
-        let mine: Vec<PathBuf> = list_dir(&project).into_iter().filter(|p| is_jsonl(p)).collect();
+        let mine: Vec<PathBuf> = list_dir(&project)
+            .into_iter()
+            .filter(|p| is_jsonl(p))
+            .collect();
         if !mine.is_empty() || search == Search::ThisProject {
             return newest(mine);
         }

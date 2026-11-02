@@ -2,8 +2,8 @@
 //!
 //! A run prints one short line per step. A step header waits until the step prints
 //! something. A step that only finds things up to date ends as one line:
-//! "• Title: 5 up to date". DOTFILES_VERBOSE=1 (or `dots -v`) prints everything.
-//! Warnings always print, and each one adds a line to DOTFILES_WARN_FILE so the last
+//! "• Title: 5 up to date". `DOTFILES_VERBOSE=1` (or `dots -v`) prints everything.
+//! Warnings always print, and each one adds a line to `DOTFILES_WARN_FILE` so the last
 //! line of a run can count the warnings of every step (bash steps are child processes).
 //! Outside a step, skips count toward `summary`, the one line agent-config prints.
 
@@ -24,7 +24,7 @@ fn plain_theme() -> bool {
     *PLAIN.get_or_init(|| crate::setting(&crate::paths::home(), "THEME") == "plain")
 }
 
-/// Colors print when NO_COLOR is unset, the theme is not plain and stdout is a terminal.
+/// Colors print when `NO_COLOR` is unset, the theme is not plain and stdout is a terminal.
 fn colors_on(no_color: bool, plain: bool, tty: bool) -> bool {
     !no_color && !plain && tty
 }
@@ -57,7 +57,13 @@ static VERBOSE: Switch = Switch::new();
 
 /// True when this process prints color codes. Read once per process.
 pub fn color_enabled() -> bool {
-    COLOR.get(|| colors_on(env::var_os("NO_COLOR").is_some(), plain_theme(), io::stdout().is_terminal()))
+    COLOR.get(|| {
+        colors_on(
+            env::var_os("NO_COLOR").is_some(),
+            plain_theme(),
+            io::stdout().is_terminal(),
+        )
+    })
 }
 
 /// Turns color on or off for this process (a test does not depend on its terminal).
@@ -106,13 +112,21 @@ pub fn set_verbose(on: bool) {
 /// The file every warning is also appended to (`DOTFILES_WARN_FILE`), read once.
 fn warn_file() -> &'static Mutex<Option<PathBuf>> {
     static FILE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
-    FILE.get_or_init(|| Mutex::new(env::var_os("DOTFILES_WARN_FILE").filter(|v| !v.is_empty()).map(PathBuf::from)))
+    FILE.get_or_init(|| {
+        Mutex::new(
+            env::var_os("DOTFILES_WARN_FILE")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+        )
+    })
 }
 
 /// Sends every later warning to this file too (or to none). `dots` sets the same variable for its
 /// child processes; this is the copy its own warnings use.
 pub fn set_warn_file(path: Option<PathBuf>) {
-    *warn_file().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = path;
+    *warn_file()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = path;
 }
 
 /// Reads verbose, color and the warn file now. Call it before starting a thread that prints.
@@ -125,7 +139,11 @@ struct Step {
     shown: u8,
     skips: usize,
 }
-static STEP: Mutex<Step> = Mutex::new(Step { title: String::new(), shown: 0, skips: 0 });
+static STEP: Mutex<Step> = Mutex::new(Step {
+    title: String::new(),
+    shown: 0,
+    skips: 0,
+});
 static SKIPPED: AtomicUsize = AtomicUsize::new(0);
 static WRITTEN: AtomicUsize = AtomicUsize::new(0);
 static WARNS: AtomicUsize = AtomicUsize::new(0);
@@ -135,7 +153,8 @@ thread_local! {
 }
 
 fn step_state() -> std::sync::MutexGuard<'static, Step> {
-    STEP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    STEP.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Print one line, on stderr when `err`. Captured lines are kept, in order.
@@ -163,7 +182,9 @@ fn emit(line: &str, err: bool) {
 pub fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<(String, bool)>) {
     let outer = CAPTURED.with(|c| c.borrow_mut().replace(Vec::new()));
     let r = f();
-    let lines = CAPTURED.with(|c| std::mem::replace(&mut *c.borrow_mut(), outer)).unwrap_or_default();
+    let lines = CAPTURED
+        .with(|c| std::mem::replace(&mut *c.borrow_mut(), outer))
+        .unwrap_or_default();
     (r, lines)
 }
 
@@ -248,7 +269,10 @@ pub fn warn(msg: &str) {
     head();
     emit(&format!("{}!{}  {}", y(), z(), msg), true);
     WARNS.fetch_add(1, Ordering::Relaxed);
-    let file = warn_file().lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let file = warn_file()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     if let Some(f) = file
         && let Ok(mut fh) = OpenOptions::new().append(true).create(true).open(f)
     {
@@ -265,7 +289,17 @@ pub fn warn_count() -> usize {
 pub fn skip(msg: &str) {
     if verbose() {
         head();
-        emit(&format!("{}•{} {} {}(already set up, skipping){}", d(), z(), msg, d(), z()), false);
+        emit(
+            &format!(
+                "{}•{} {} {}(already set up, skipping){}",
+                d(),
+                z(),
+                msg,
+                d(),
+                z()
+            ),
+            false,
+        );
         return;
     }
     let mut s = step_state();
@@ -326,8 +360,15 @@ pub fn summary(label: &str) {
     let skipped = SKIPPED.swap(0, Ordering::Relaxed);
     let written = WRITTEN.swap(0, Ordering::Relaxed);
     if !verbose() && skipped > 0 {
-        let more = if written > 0 { format!(", {written} written") } else { String::new() };
-        emit(&format!("{}•{} {}: {} up to date{}", d(), z(), label, skipped, more), false);
+        let more = if written > 0 {
+            format!(", {written} written")
+        } else {
+            String::new()
+        };
+        emit(
+            &format!("{}•{} {}: {} up to date{}", d(), z(), label, skipped, more),
+            false,
+        );
     }
 }
 

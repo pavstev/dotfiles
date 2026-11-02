@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 
 /// The files under home/ that `dots` links, as `(repo file, link)`.
 fn home_links(repo: &Path, home: &Path) -> Vec<(PathBuf, PathBuf)> {
-    let mut v: Vec<(PathBuf, PathBuf)> = links().iter().map(|i| (repo.join("home").join(i), home.join(i))).collect();
+    let mut v: Vec<(PathBuf, PathBuf)> = links()
+        .iter()
+        .map(|i| (repo.join("home").join(i), home.join(i)))
+        .collect();
     let starship = ".config/starship.toml";
     v.push((repo.join("home").join(starship), home.join(starship)));
     v.extend(editor_links(repo, home));
@@ -30,9 +33,15 @@ pub fn undo(repo: &Path, home: &Path) {
     }
     crate::presets::link_all(repo, home, &[]);
     for name in skills::list(&src.join("skills")) {
-        link::unlink_item(&src.join("skills").join(&name), &dst.join("skills").join(&name));
+        link::unlink_item(
+            &src.join("skills").join(&name),
+            &dst.join("skills").join(&name),
+        );
     }
-    link::unlink_item(&home.join(".config/dotfiles/owner.md"), &dst.join("rules").join("owner.md"));
+    link::unlink_item(
+        &home.join(".config/dotfiles/owner.md"),
+        &dst.join("rules").join("owner.md"),
+    );
     step("Cursor");
     crate::undo::cursor_undo(home);
     step("Opencode");
@@ -44,11 +53,18 @@ pub fn undo(repo: &Path, home: &Path) {
 pub fn run(repo: &Path, yes: bool) -> i32 {
     if !yes {
         if !os::at_terminal() {
-            eprintln!("dots uninstall asks first and there is no terminal. Run it with -y to skip the question.");
+            eprintln!(
+                "dots uninstall asks first and there is no terminal. Run it with -y to skip the question."
+            );
             return 2;
         }
-        let labels = ["No, keep everything".to_string(), "Yes, remove the links and generated files".to_string()];
-        if ask::one("Remove what dots put in your home folder?", &labels).as_deref() != Some(labels[1].as_str()) {
+        let labels = [
+            "No, keep everything".to_string(),
+            "Yes, remove the links and generated files".to_string(),
+        ];
+        if ask::one("Remove what dots put in your home folder?", &labels).as_deref()
+            != Some(labels[1].as_str())
+        {
             info("nothing changed");
             return 0;
         }

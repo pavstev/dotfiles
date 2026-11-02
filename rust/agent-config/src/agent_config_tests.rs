@@ -45,8 +45,10 @@ fn rj(p: &Path) -> Value {
 }
 /// Names in a folder, sorted.
 fn names(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> =
-        fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    let mut v: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
     v.sort();
     v
 }
@@ -54,7 +56,13 @@ fn names(dir: &Path) -> Vec<String> {
 fn baks(dir: &Path, file: &str) -> usize {
     match fs::read_dir(dir) {
         Ok(rd) => rd
-            .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with(&format!("{file}.bak-")))
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{file}.bak-"))
+            })
             .count(),
         Err(_) => 0,
     }
@@ -70,18 +78,24 @@ fn link(target: &Path, at: &Path) {
     std::os::unix::fs::symlink(target, at).unwrap();
 }
 fn m(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 /// Run `f`, return (result, stdout, stderr) of what the module printed.
 fn call<T>(f: impl FnOnce() -> T) -> (T, String, String) {
     let (r, lines) = out::capture(f);
     let join = |err: bool| {
-        lines.iter().filter(|(_, e)| *e == err).fold(String::new(), |mut s, (l, _)| {
-            s.push_str(l);
-            s.push('\n');
-            s
-        })
+        lines
+            .iter()
+            .filter(|(_, e)| *e == err)
+            .fold(String::new(), |mut s, (l, _)| {
+                s.push_str(l);
+                s.push('\n');
+                s
+            })
     };
     (r, join(false), join(true))
 }
@@ -99,8 +113,13 @@ struct Fx {
 
 impl Fx {
     fn new() -> Self {
-        let guard = LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = tempfile::Builder::new().prefix("agent-config-test-").tempdir().unwrap();
+        let guard = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::Builder::new()
+            .prefix("agent-config-test-")
+            .tempdir()
+            .unwrap();
         let tmp = dir.path().to_path_buf();
         let home = tmp.join("home");
         let repo = tmp.join("repo");
@@ -109,7 +128,12 @@ impl Fx {
         set_env("DOTFILES_REPO", &repo);
         out::set_verbose(true); // the tests read each line; the Quiet tests are in tests/agent_config.rs
         out::set_color(false);
-        for k in ["DOTFILES_PROFILE", "DOTFILES_MCP", "DOTFILES_PROJECTS", "DOTFILES_WARN_FILE"] {
+        for k in [
+            "DOTFILES_PROFILE",
+            "DOTFILES_MCP",
+            "DOTFILES_PROJECTS",
+            "DOTFILES_WARN_FILE",
+        ] {
             unset_env(k);
         }
         set_dry(false);
@@ -119,7 +143,16 @@ impl Fx {
         wr(&claude.join("CLAUDE.md"), CLAUDE_MD_TEXT);
         wr(&g, "# fake guard\n");
         assert_eq!(paths::home(), home); // never the real HOME
-        Self { _guard: guard, _dir: dir, tmp, home, repo, claude, cursor_src, guard: g }
+        Self {
+            _guard: guard,
+            _dir: dir,
+            tmp,
+            home,
+            repo,
+            claude,
+            cursor_src,
+            guard: g,
+        }
     }
 
     fn cdir(&self) -> PathBuf {
@@ -166,7 +199,11 @@ fn translate_permission_cases() {
         ("Bash(a* b:*)", "allow", None), // star inside the command part
         // Bash exact forms
         ("Bash(git status)", "allow", Some("Shell(git:status)")),
-        ("Bash(git push origin main)", "deny", Some("Shell(git:push origin main)")),
+        (
+            "Bash(git push origin main)",
+            "deny",
+            Some("Shell(git:push origin main)"),
+        ),
         ("Bash(ls)", "allow", None),
         ("Bash(git * foo)", "allow", None),
         // an allow keeps a relative path; Edit and Write both become Write
@@ -183,13 +220,29 @@ fn translate_permission_cases() {
         ("Read(~/.ssh/**)", "deny", Some("Read(~/.ssh/**)")),
         ("Read(**/.env)", "deny", Some("Read(**/.env)")),
         // WebFetch takes a domain only
-        ("WebFetch(domain:example.com)", "allow", Some("WebFetch(example.com)")),
+        (
+            "WebFetch(domain:example.com)",
+            "allow",
+            Some("WebFetch(example.com)"),
+        ),
         ("WebFetch(https://example.com)", "allow", None),
     ];
     for (rule, kind, want) in cases {
-        assert_eq!(translate_permission(rule, kind).as_deref(), *want, "{rule} ({kind})");
+        assert_eq!(
+            translate_permission(rule, kind).as_deref(),
+            *want,
+            "{rule} ({kind})"
+        );
     }
-    for rule in ["WebSearch(x)", "Task(foo)", "mcp__srv__tool", "Read", "", "Bash", "Bash(unclosed"] {
+    for rule in [
+        "WebSearch(x)",
+        "Task(foo)",
+        "mcp__srv__tool",
+        "Read",
+        "",
+        "Bash",
+        "Bash(unclosed",
+    ] {
         assert_eq!(translate_permission(rule, "allow"), None, "{rule}");
     }
 }
@@ -198,14 +251,18 @@ fn translate_permission_cases() {
 
 #[test]
 fn test_basic() {
-    let (meta, body) = split_frontmatter("---\nname: foo\ndescription: does things\n---\nbody here\n");
+    let (meta, body) =
+        split_frontmatter("---\nname: foo\ndescription: does things\n---\nbody here\n");
     assert_eq!(meta, m(&[("name", "foo"), ("description", "does things")]));
     assert_eq!(body, "body here\n");
 }
 
 #[test]
 fn test_no_frontmatter() {
-    assert_eq!(split_frontmatter("just text\n"), (BTreeMap::new(), "just text\n".to_string()));
+    assert_eq!(
+        split_frontmatter("just text\n"),
+        (BTreeMap::new(), "just text\n".to_string())
+    );
 }
 
 #[test]
@@ -229,8 +286,12 @@ fn test_quoted_values() {
 
 #[test]
 fn test_folded_and_literal_block_scalars() {
-    let (meta, _) = split_frontmatter("---\nd: >\n  one\n  two\nl: |-\n  first\n  second\nn: z\n---\nb");
-    assert_eq!(meta, m(&[("d", "one two"), ("l", "first\nsecond"), ("n", "z")]));
+    let (meta, _) =
+        split_frontmatter("---\nd: >\n  one\n  two\nl: |-\n  first\n  second\nn: z\n---\nb");
+    assert_eq!(
+        meta,
+        m(&[("d", "one two"), ("l", "first\nsecond"), ("n", "z")])
+    );
 }
 
 #[test]
@@ -248,7 +309,10 @@ fn test_crlf_frontmatter() {
 
 #[test]
 fn test_closing_fence_without_trailing_newline() {
-    assert_eq!(split_frontmatter("---\na: b\n---"), (m(&[("a", "b")]), String::new()));
+    assert_eq!(
+        split_frontmatter("---\na: b\n---"),
+        (m(&[("a", "b")]), String::new())
+    );
 }
 
 #[test]
@@ -272,7 +336,10 @@ fn test_tilde() {
     assert_eq!(tilde(&fx.home.join(".cursor").join("x")), "~/.cursor/x");
     assert_eq!(tilde(&fx.home), "~");
     assert_eq!(tilde(Path::new("/elsewhere/x")), "/elsewhere/x");
-    assert_eq!(tilde(Path::new(&format!("{h}-other/x"))), format!("{h}-other/x"));
+    assert_eq!(
+        tilde(Path::new(&format!("{h}-other/x"))),
+        format!("{h}-other/x")
+    );
 }
 
 #[cfg(unix)]
@@ -314,7 +381,9 @@ fn test_load_json() {
 fn test_setting_reads_like_setup_lib() {
     let fx = Fx::new();
     assert_eq!(setting(&fx.home, "PROFILE"), ""); // no file
-    fx.setting_file("# PROFILE=\"note\"\nPROFILE=\"owner\"\nX=1\nPROFILE=shared  \nPROFILEX=\"no\"\n");
+    fx.setting_file(
+        "# PROFILE=\"note\"\nPROFILE=\"owner\"\nX=1\nPROFILE=shared  \nPROFILEX=\"no\"\n",
+    );
     assert_eq!(setting(&fx.home, "PROFILE"), "shared"); // the last line wins
     assert_eq!(setting(&fx.home, "X"), "1");
     assert_eq!(setting(&fx.home, "MISSING"), "");
@@ -361,7 +430,11 @@ fn test_owner_gets_source_then_overlay() {
     fx.overlay(OWNER_TEXT);
     assert_eq!(
         rules_text(&fx.home, Profile::Owner),
-        format!("{}\n\n{}", CLAUDE_MD_TEXT.trim_end_matches('\n'), OWNER_TEXT)
+        format!(
+            "{}\n\n{}",
+            CLAUDE_MD_TEXT.trim_end_matches('\n'),
+            OWNER_TEXT
+        )
     );
 }
 
@@ -400,7 +473,10 @@ fn test_user_rules_text_appends_output_style_after_the_overlay() {
     let fx = Fx::new();
     fx.overlay(OWNER_TEXT);
     fx.settings(json!({"outputStyle": "Terse"}));
-    wr(&fx.claude.join("output-styles").join("terse.md"), "---\nname: Terse\n---\n\nBe brief.\n");
+    wr(
+        &fx.claude.join("output-styles").join("terse.md"),
+        "---\nname: Terse\n---\n\nBe brief.\n",
+    );
     let text = user_rules_text(&fx.home, Profile::Shared);
     assert!(text.contains("# Reply style: Terse\n\nBe brief.\n"));
     assert!(!text.contains("Off-limits"));
@@ -490,7 +566,10 @@ fn test_removes_marked_file() {
     fs::write(&f, format!("x {MARK} y")).unwrap();
     let ((), out, _) = call(|| remove_generated(&f, "gone"));
     assert!(!f.exists());
-    assert!(out.contains("removed ~/.cursor/agents/a.md (gone)"), "{out}");
+    assert!(
+        out.contains("removed ~/.cursor/agents/a.md (gone)"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -548,7 +627,10 @@ fn test_dry_run_keeps_file() {
 
 fn style(fx: &Fx) {
     fx.settings(json!({"outputStyle": "Terse"}));
-    wr(&fx.claude.join("output-styles").join("terse.md"), "---\nname: Terse\n---\n\nBe brief.\n");
+    wr(
+        &fx.claude.join("output-styles").join("terse.md"),
+        "---\nname: Terse\n---\n\nBe brief.\n",
+    );
 }
 
 fn mark(fx: &Fx, content: &str) {
@@ -609,16 +691,27 @@ fn test_unknown_style_name_means_no_style_file() {
     let fx = Fx::new();
     fx.settings(json!({"outputStyle": "Missing"}));
     call(|| cursor_rules(&fx.home, Profile::Shared));
-    assert!(!fx.cdir().join("rules").join("claude-output-style.mdc").exists());
+    assert!(
+        !fx.cdir()
+            .join("rules")
+            .join("claude-output-style.mdc")
+            .exists()
+    );
 }
 
 #[test]
 fn test_style_matched_by_file_stem() {
     let fx = Fx::new();
     fx.settings(json!({"outputStyle": "terse"}));
-    wr(&fx.claude.join("output-styles").join("terse.md"), "no frontmatter body\n");
+    wr(
+        &fx.claude.join("output-styles").join("terse.md"),
+        "no frontmatter body\n",
+    );
     call(|| cursor_rules(&fx.home, Profile::Shared));
-    assert!(rd(&fx.cdir().join("rules").join("claude-output-style.mdc")).contains("no frontmatter body"));
+    assert!(
+        rd(&fx.cdir().join("rules").join("claude-output-style.mdc"))
+            .contains("no frontmatter body")
+    );
 }
 
 #[test]
@@ -628,7 +721,10 @@ fn test_mark_present_removes_our_files_and_skips_when_hash_matches() {
     call(|| cursor_rules(&fx.home, Profile::Shared)); // file copies exist
     let rules = fx.cdir().join("rules");
     assert!(rules.join("claude-global.mdc").exists());
-    mark(&fx, &format!("{}\n", sha(&user_rules_text(&fx.home, Profile::Shared))));
+    mark(
+        &fx,
+        &format!("{}\n", sha(&user_rules_text(&fx.home, Profile::Shared))),
+    );
     let ((), out, err) = call(|| cursor_rules(&fx.home, Profile::Shared));
     assert!(!rules.join("claude-global.mdc").exists());
     assert!(!rules.join("claude-output-style.mdc").exists());
@@ -678,9 +774,16 @@ fn test_removing_the_mark_brings_the_file_copy_back() {
 
 #[test]
 fn test_yaml_str() {
-    assert_eq!(yaml_str("Reviews a diff, then reports."), "Reviews a diff, then reports."); // plain when safe
+    assert_eq!(
+        yaml_str("Reviews a diff, then reports."),
+        "Reviews a diff, then reports."
+    ); // plain when safe
     for v in ["a: b", "x #y", "- dash", "'q", "multi\nline", " pad"] {
-        assert_eq!(serde_json::from_str::<String>(&yaml_str(v)).unwrap(), v, "{v}");
+        assert_eq!(
+            serde_json::from_str::<String>(&yaml_str(v)).unwrap(),
+            v,
+            "{v}"
+        );
     }
 }
 
@@ -689,7 +792,10 @@ fn test_yaml_str() {
 #[test]
 fn test_description_with_colon_is_quoted_and_round_trips() {
     let fx = Fx::new();
-    fx.agent("r.md", "---\nname: r\ndescription: >\n  Use it: after edits\ntools:\n  - Read\n---\nB\n");
+    fx.agent(
+        "r.md",
+        "---\nname: r\ndescription: >\n  Use it: after edits\ntools:\n  - Read\n---\nB\n",
+    );
     call(|| cursor_agents(&fx.home));
     let (meta, _) = split_frontmatter(&rd(&fx.cdir().join("agents").join("r.md")));
     assert_eq!(meta["description"], "Use it: after edits");
@@ -703,7 +809,9 @@ fn test_cursor_agents_converts_frontmatter() {
     call(|| cursor_agents(&fx.home));
     let out = rd(&fx.cdir().join("agents").join("reviewer.md"));
     assert!(
-        out.starts_with("---\nname: reviewer\ndescription: reviews\nmodel: inherit\nreadonly: true\n---\n"),
+        out.starts_with(
+            "---\nname: reviewer\ndescription: reviews\nmodel: inherit\nreadonly: true\n---\n"
+        ),
         "{out}"
     );
     assert!(out.contains(MARK));
@@ -786,7 +894,14 @@ fn test_backup_is_a_byte_exact_copy() {
     // Real shape: tab indent, no final newline, non-ASCII text, key order kept.
     let before = "{\n\t\"model\": \"opus\",\n\t\"statusLine\": {\"command\": \"café\"}\n}";
     wr(&p, before);
-    call(|| save_json(&p, &json!({"model": "opus"}), &json!({"model": "sonnet"}), false));
+    call(|| {
+        save_json(
+            &p,
+            &json!({"model": "opus"}),
+            &json!({"model": "sonnet"}),
+            false,
+        );
+    });
     let bak: Vec<_> = fs::read_dir(fx.cdir())
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -804,11 +919,20 @@ fn test_two_saves_in_one_second_keep_both_backups() {
     assert_eq!(first.file_name().unwrap(), "opencode.json.bak-1793000000");
     wr(&first, "oldest");
     let second = backup_path(&p, 1_793_000_000);
-    assert_eq!(second.file_name().unwrap(), "opencode.json.bak-1793000000-1");
+    assert_eq!(
+        second.file_name().unwrap(),
+        "opencode.json.bak-1793000000-1"
+    );
     wr(&second, "older");
-    assert_eq!(backup_path(&p, 1_793_000_000).file_name().unwrap(), "opencode.json.bak-1793000000-2");
+    assert_eq!(
+        backup_path(&p, 1_793_000_000).file_name().unwrap(),
+        "opencode.json.bak-1793000000-2"
+    );
     // A new second starts clean.
-    assert_eq!(backup_path(&p, 1_793_000_001).file_name().unwrap(), "opencode.json.bak-1793000001");
+    assert_eq!(
+        backup_path(&p, 1_793_000_001).file_name().unwrap(),
+        "opencode.json.bak-1793000001"
+    );
 }
 
 #[test]
@@ -886,7 +1010,12 @@ fn test_creates_file_with_all_events() {
     call(|| cursor_hooks(&fx.home));
     let data = rj(&hooks_path(&fx));
     assert_eq!(data["version"], 1);
-    let got: BTreeSet<&str> = data["hooks"].as_object().unwrap().keys().map(String::as_str).collect();
+    let got: BTreeSet<&str> = data["hooks"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     let want: BTreeSet<&str> = HOOK_EVENTS.iter().map(|e| e.0).collect();
     assert_eq!(got, want);
     for (event, mode, matcher) in HOOK_EVENTS {
@@ -894,12 +1023,23 @@ fn test_creates_file_with_all_events() {
         let want = HOOK_EVENTS.iter().filter(|e| e.0 == event).count();
         assert_eq!(entries.len(), want, "{event}");
         // our entries sit in the order of HOOK_EVENTS
-        let nth = HOOK_EVENTS.iter().filter(|e| e.0 == event).position(|e| e.1 == mode && e.2 == matcher).unwrap();
+        let nth = HOOK_EVENTS
+            .iter()
+            .filter(|e| e.0 == event)
+            .position(|e| e.1 == mode && e.2 == matcher)
+            .unwrap();
         let entry = &entries[nth];
         let cmd = entry["command"].as_str().unwrap();
         assert!(cmd.starts_with("test -r "), "{cmd}");
         assert!(cmd.contains("|| exit 0;"), "{cmd}"); // a missing script must not deny
-        assert!(cmd.ends_with(&format!("sh {} --hook guard_cursor {}", fx.guard.display(), mode)), "{cmd}");
+        assert!(
+            cmd.ends_with(&format!(
+                "sh {} --hook guard_cursor {}",
+                fx.guard.display(),
+                mode
+            )),
+            "{cmd}"
+        );
         assert!(!cmd.contains("python"), "{cmd}");
         assert_eq!(entry["timeout"], 10);
         match matcher {
@@ -913,7 +1053,10 @@ fn test_creates_file_with_all_events() {
 fn test_user_entries_and_keys_are_kept() {
     let fx = Fx::new();
     let mine = json!({"command": "echo mine", "timeout": 3});
-    wj(&hooks_path(&fx), json!({"version": 2, "hooks": {"preToolUse": [mine], "stop": [mine]}, "extra": true}));
+    wj(
+        &hooks_path(&fx),
+        json!({"version": 2, "hooks": {"preToolUse": [mine], "stop": [mine]}, "extra": true}),
+    );
     call(|| cursor_hooks(&fx.home));
     let data = rj(&hooks_path(&fx));
     assert_eq!(data["version"], 2); // user's version wins
@@ -966,7 +1109,10 @@ fn test_old_python_entries_are_replaced_by_the_rust_launcher() {
         fx.repo.display()
     );
     let old = json!({"command": old_cmd, "timeout": 10});
-    wj(&hooks_path(&fx), json!({"version": 1, "hooks": {"beforeSubmitPrompt": [mine, moved, old]}}));
+    wj(
+        &hooks_path(&fx),
+        json!({"version": 1, "hooks": {"beforeSubmitPrompt": [mine, moved, old]}}),
+    );
     call(|| cursor_hooks(&fx.home));
     let cmds: Vec<String> = rj(&hooks_path(&fx))["hooks"]["beforeSubmitPrompt"]
         .as_array()
@@ -976,8 +1122,19 @@ fn test_old_python_entries_are_replaced_by_the_rust_launcher() {
         .collect();
     assert_eq!(cmds.len(), 2, "{cmds:?}");
     assert_eq!(cmds[0], "echo mine");
-    assert!(cmds[1].ends_with(&format!("sh {} --hook guard_cursor prompt", fx.guard.display())), "{cmds:?}");
-    assert!(!cmds.iter().any(|c| c.contains("guard_cursor.py") || c.contains("python")), "{cmds:?}");
+    assert!(
+        cmds[1].ends_with(&format!(
+            "sh {} --hook guard_cursor prompt",
+            fx.guard.display()
+        )),
+        "{cmds:?}"
+    );
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| c.contains("guard_cursor.py") || c.contains("python")),
+        "{cmds:?}"
+    );
     assert_eq!(baks(&fx.cdir(), "hooks.json"), 1);
 }
 
@@ -987,7 +1144,10 @@ fn test_missing_guard_removes_our_entries_and_empty_events() {
     call(|| cursor_hooks(&fx.home));
     let mine = json!({"command": "echo mine"});
     let mut data = rj(&hooks_path(&fx));
-    data["hooks"]["preCompact"].as_array_mut().unwrap().push(mine.clone());
+    data["hooks"]["preCompact"]
+        .as_array_mut()
+        .unwrap()
+        .push(mine.clone());
     wj(&hooks_path(&fx), data);
     fs::remove_file(&fx.guard).unwrap();
     call(|| cursor_hooks(&fx.home));
@@ -1028,11 +1188,30 @@ fn test_path_with_spaces_is_quoted() {
     wr(&spaced.join("claude").join("hooks").join("rust-bin"), "#");
     set_env("DOTFILES_REPO", &spaced);
     call(|| cursor_hooks(&fx.home));
-    let cmd = rj(&hooks_path(&fx))["hooks"]["preCompact"][0]["command"].as_str().unwrap().to_string();
-    assert!(cmd.contains(&format!("'{}'", spaced.join("claude").join("hooks").join("rust-bin").display())), "{cmd}");
+    let cmd = rj(&hooks_path(&fx))["hooks"]["preCompact"][0]["command"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        cmd.contains(&format!(
+            "'{}'",
+            spaced
+                .join("claude")
+                .join("hooks")
+                .join("rust-bin")
+                .display()
+        )),
+        "{cmd}"
+    );
     // a second run still recognises its own quoted entries
     call(|| cursor_hooks(&fx.home));
-    assert_eq!(rj(&hooks_path(&fx))["hooks"]["preCompact"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        rj(&hooks_path(&fx))["hooks"]["preCompact"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -1054,7 +1233,10 @@ fn mcp_path(fx: &Fx) -> PathBuf {
     fx.cdir().join("mcp.json")
 }
 fn ours(fx: &Fx, servers: impl Into<Value>) {
-    wj(&fx.cursor_src.join("mcp.json"), json!({"mcpServers": servers.into()}));
+    wj(
+        &fx.cursor_src.join("mcp.json"),
+        json!({"mcpServers": servers.into()}),
+    );
 }
 
 #[test]
@@ -1062,14 +1244,23 @@ fn test_adds_ours_to_new_file() {
     let fx = mcp_fx();
     ours(&fx, json!({"docs": {"url": "https://example.invalid/mcp"}}));
     call(|| cursor_mcp(&fx.home));
-    assert_eq!(rj(&mcp_path(&fx)), json!({"mcpServers": {"docs": {"url": "https://example.invalid/mcp"}}}));
+    assert_eq!(
+        rj(&mcp_path(&fx)),
+        json!({"mcpServers": {"docs": {"url": "https://example.invalid/mcp"}}})
+    );
 }
 
 #[test]
 fn test_user_entry_of_same_name_wins_and_others_kept() {
     let fx = mcp_fx();
-    ours(&fx, json!({"docs": {"url": "ours"}, "extra": {"command": "x"}}));
-    wj(&mcp_path(&fx), json!({"mcpServers": {"docs": {"url": "users"}, "mine": {"command": "m"}}, "other": 1}));
+    ours(
+        &fx,
+        json!({"docs": {"url": "ours"}, "extra": {"command": "x"}}),
+    );
+    wj(
+        &mcp_path(&fx),
+        json!({"mcpServers": {"docs": {"url": "users"}, "mine": {"command": "m"}}, "other": 1}),
+    );
     call(|| cursor_mcp(&fx.home));
     let data = rj(&mcp_path(&fx));
     assert_eq!(data["mcpServers"]["docs"], json!({"url": "users"}));
@@ -1162,7 +1353,10 @@ fn test_defaults_on_empty_home() {
     assert_eq!(data["version"], 1);
     assert_eq!(data["editor"], json!({"vimMode": false}));
     assert_eq!(data["permissions"], json!({"allow": [], "deny": []}));
-    assert_eq!(data["attribution"], json!({"attributeCommitsToAgent": false, "attributePRsToAgent": false}));
+    assert_eq!(
+        data["attribution"],
+        json!({"attributeCommitsToAgent": false, "attributePRsToAgent": false})
+    );
     assert_eq!(mode_of(&cfg_path(&fx)), 0o600);
 }
 
@@ -1189,11 +1383,20 @@ fn test_user_values_win_but_attribution_is_forced_off() {
 #[test]
 fn test_translated_rules_added_and_user_rules_kept() {
     let fx = Fx::new();
-    fx.perms(&["Bash(git status:*)", "Read(./src/**)", "Glob(x)"], &["Read(./.env)"]);
-    wj(&cfg_path(&fx), json!({"permissions": {"allow": ["Shell(mine)"], "deny": ["Read(secret)"], "other": 1}}));
+    fx.perms(
+        &["Bash(git status:*)", "Read(./src/**)", "Glob(x)"],
+        &["Read(./.env)"],
+    );
+    wj(
+        &cfg_path(&fx),
+        json!({"permissions": {"allow": ["Shell(mine)"], "deny": ["Read(secret)"], "other": 1}}),
+    );
     run_cfg(&fx);
     let p = rj(&cfg_path(&fx))["permissions"].clone();
-    assert_eq!(p["allow"], json!(["Shell(mine)", "Shell(git status)", "Read(src/**)"]));
+    assert_eq!(
+        p["allow"],
+        json!(["Shell(mine)", "Shell(git status)", "Read(src/**)"])
+    );
     assert_eq!(p["deny"], json!(["Read(secret)", "Read(**/.env)"]));
     assert_eq!(p["other"], 1);
 }
@@ -1203,14 +1406,20 @@ fn test_sidecar_records_what_we_added() {
     let fx = Fx::new();
     fx.perms(&["Bash(git status:*)", "Nope(x)"], &["Read(./.env)"]);
     run_cfg(&fx);
-    assert_eq!(rj(&side_path(&fx)), json!({"allow": ["Shell(git status)"], "deny": ["Read(**/.env)"]}));
+    assert_eq!(
+        rj(&side_path(&fx)),
+        json!({"allow": ["Shell(git status)"], "deny": ["Read(**/.env)"]})
+    );
 }
 
 #[test]
 fn test_cli_config_rerun_is_idempotent() {
     let fx = Fx::new();
     fx.perms(&["Bash(git status:*)"], &["Read(./.env)"]);
-    wj(&cfg_path(&fx), json!({"permissions": {"allow": ["Shell(mine)"]}}));
+    wj(
+        &cfg_path(&fx),
+        json!({"permissions": {"allow": ["Shell(mine)"]}}),
+    );
     run_cfg(&fx);
     let (cfg, sidecar) = (rd(&cfg_path(&fx)), rd(&side_path(&fx)));
     let n = baks(&fx.cdir(), "cli-config.json");
@@ -1226,9 +1435,15 @@ fn test_cli_config_rerun_is_idempotent() {
 fn test_no_duplicates_when_user_already_has_the_rule() {
     let fx = Fx::new();
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&cfg_path(&fx), json!({"permissions": {"allow": ["Shell(git status)"]}}));
+    wj(
+        &cfg_path(&fx),
+        json!({"permissions": {"allow": ["Shell(git status)"]}}),
+    );
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["permissions"]["allow"], json!(["Shell(git status)"]));
+    assert_eq!(
+        rj(&cfg_path(&fx))["permissions"]["allow"],
+        json!(["Shell(git status)"])
+    );
 }
 
 #[test]
@@ -1237,11 +1452,17 @@ fn test_stale_rule_we_owned_is_removed_user_rules_survive() {
     fx.perms(&["Bash(git status:*)", "Bash(npm test:*)"], &[]);
     run_cfg(&fx);
     let mut data = rj(&cfg_path(&fx));
-    data["permissions"]["allow"].as_array_mut().unwrap().push(json!("Shell(mine)"));
+    data["permissions"]["allow"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("Shell(mine)"));
     wj(&cfg_path(&fx), data);
     fx.perms(&["Bash(git status:*)"], &[]); // npm test dropped from the source
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["permissions"]["allow"], json!(["Shell(git status)", "Shell(mine)"]));
+    assert_eq!(
+        rj(&cfg_path(&fx))["permissions"]["allow"],
+        json!(["Shell(git status)", "Shell(mine)"])
+    );
     assert_eq!(rj(&side_path(&fx))["allow"], json!(["Shell(git status)"]));
 }
 
@@ -1249,12 +1470,18 @@ fn test_stale_rule_we_owned_is_removed_user_rules_survive() {
 fn test_rule_never_owned_is_never_removed() {
     let fx = Fx::new();
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&cfg_path(&fx), json!({"permissions": {"allow": ["Shell(npm test)"]}}));
+    wj(
+        &cfg_path(&fx),
+        json!({"permissions": {"allow": ["Shell(npm test)"]}}),
+    );
     run_cfg(&fx);
     fx.perms(&[], &[]);
     run_cfg(&fx);
     // ours (git status) went, theirs stayed
-    assert_eq!(rj(&cfg_path(&fx))["permissions"]["allow"], json!(["Shell(npm test)"]));
+    assert_eq!(
+        rj(&cfg_path(&fx))["permissions"]["allow"],
+        json!(["Shell(npm test)"])
+    );
 }
 
 #[test]
@@ -1264,7 +1491,10 @@ fn test_deny_rules_are_tracked_separately_from_allow() {
     run_cfg(&fx);
     fx.perms(&[], &[]);
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["permissions"], json!({"allow": [], "deny": []}));
+    assert_eq!(
+        rj(&cfg_path(&fx))["permissions"],
+        json!({"allow": [], "deny": []})
+    );
     assert_eq!(rj(&side_path(&fx)), json!({"allow": [], "deny": []}));
 }
 
@@ -1277,7 +1507,10 @@ fn test_user_deleting_our_rule_gets_it_back() {
     data["permissions"]["allow"] = json!([]);
     wj(&cfg_path(&fx), data);
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["permissions"]["allow"], json!(["Shell(git status)"]));
+    assert_eq!(
+        rj(&cfg_path(&fx))["permissions"]["allow"],
+        json!(["Shell(git status)"])
+    );
 }
 
 #[test]
@@ -1285,10 +1518,16 @@ fn test_corrupt_sidecar_is_survivable() {
     let fx = Fx::new();
     fx.perms(&["Bash(git status:*)"], &[]);
     wr(&side_path(&fx), "{not json");
-    wj(&cfg_path(&fx), json!({"permissions": {"allow": ["Shell(mine)"]}}));
+    wj(
+        &cfg_path(&fx),
+        json!({"permissions": {"allow": ["Shell(mine)"]}}),
+    );
     let ((), _, err) = run_cfg(&fx);
     assert_eq!(err, "");
-    assert_eq!(rj(&cfg_path(&fx))["permissions"]["allow"], json!(["Shell(mine)", "Shell(git status)"]));
+    assert_eq!(
+        rj(&cfg_path(&fx))["permissions"]["allow"],
+        json!(["Shell(mine)", "Shell(git status)"])
+    );
     assert_eq!(rj(&side_path(&fx))["allow"], json!(["Shell(git status)"]));
 }
 
@@ -1331,7 +1570,10 @@ fn test_statusline_added_only_when_launcher_exists() {
     let fx = Fx::new();
     run_cfg(&fx);
     assert!(rj(&cfg_path(&fx)).get("statusLine").is_none());
-    wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
+    wr(
+        &fx.home.join(".claude").join("hooks").join("rust-bin"),
+        "#!/bin/sh\n",
+    );
     run_cfg(&fx);
     assert_eq!(
         rj(&cfg_path(&fx))["statusLine"],
@@ -1342,8 +1584,14 @@ fn test_statusline_added_only_when_launcher_exists() {
 #[test]
 fn test_user_statusline_wins() {
     let fx = Fx::new();
-    wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
-    wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": "mine"}}));
+    wr(
+        &fx.home.join(".claude").join("hooks").join("rust-bin"),
+        "#!/bin/sh\n",
+    );
+    wj(
+        &cfg_path(&fx),
+        json!({"statusLine": {"type": "command", "command": "mine"}}),
+    );
     run_cfg(&fx);
     assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "mine");
 }
@@ -1351,18 +1599,33 @@ fn test_user_statusline_wins() {
 #[test]
 fn test_old_statusline_commands_are_replaced() {
     let fx = Fx::new();
-    wr(&fx.home.join(".claude").join("hooks").join("rust-bin"), "#!/bin/sh\n");
+    wr(
+        &fx.home.join(".claude").join("hooks").join("rust-bin"),
+        "#!/bin/sh\n",
+    );
     let old_sh = fx.home.join(".claude").join("statusline.sh");
-    for old in [old_sh.to_str().unwrap(), "bash ~/.claude/hooks/rust-bin statusline"] {
-        wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": old, "padding": 0}}));
+    for old in [
+        old_sh.to_str().unwrap(),
+        "bash ~/.claude/hooks/rust-bin statusline",
+    ] {
+        wj(
+            &cfg_path(&fx),
+            json!({"statusLine": {"type": "command", "command": old, "padding": 0}}),
+        );
         run_cfg(&fx);
         let want = json!({"type": "command", "command": "sh ~/.claude/hooks/rust-bin statusline", "padding": 0});
         assert_eq!(rj(&cfg_path(&fx))["statusLine"], want, "{old}");
     }
     // a second run keeps the new command, and another user command still wins
     run_cfg(&fx);
-    assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "sh ~/.claude/hooks/rust-bin statusline");
-    wj(&cfg_path(&fx), json!({"statusLine": {"type": "command", "command": "~/bin/my-line"}}));
+    assert_eq!(
+        rj(&cfg_path(&fx))["statusLine"]["command"],
+        "sh ~/.claude/hooks/rust-bin statusline"
+    );
+    wj(
+        &cfg_path(&fx),
+        json!({"statusLine": {"type": "command", "command": "~/bin/my-line"}}),
+    );
     run_cfg(&fx);
     assert_eq!(rj(&cfg_path(&fx))["statusLine"]["command"], "~/bin/my-line");
 }
@@ -1376,9 +1639,14 @@ fn test_linux_clipboard_tool_is_found_on_the_path() {
     let bin = fx.tmp.join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::write(bin.join("xclip"), "#!/bin/sh\n").unwrap();
-    let want = ["xclip", "-selection", "clipboard"].map(String::from).to_vec();
+    let want = ["xclip", "-selection", "clipboard"]
+        .map(String::from)
+        .to_vec();
     assert_eq!(linux_clipboard_in(bin.to_str()), Some(want));
-    assert_eq!(linux_clipboard_in(fx.tmp.join("nothing-here").to_str()), None);
+    assert_eq!(
+        linux_clipboard_in(fx.tmp.join("nothing-here").to_str()),
+        None
+    );
 }
 
 // --- merge --------------------------------------------------------------------
@@ -1389,8 +1657,14 @@ fn test_merge_rules() {
         &json!({"a": 1, "s": 1, "p": {"x": 1}, "permissions": {"allow": ["A"]}, "l": [1]}),
         &json!({"a": null, "s": 3, "p": {"y": 2}, "permissions": {"allow": ["B", "A"]}, "l": [2], "n": 3}),
     );
-    assert_eq!(got, json!({"s": 3, "p": {"x": 1, "y": 2}, "permissions": {"allow": ["A", "B"]}, "l": [2], "n": 3}));
+    assert_eq!(
+        got,
+        json!({"s": 3, "p": {"x": 1, "y": 2}, "permissions": {"allow": ["A", "B"]}, "l": [2], "n": 3})
+    );
     // a nested null removes the key even when the base has no such object (Claude Code rejects a null plugin)
-    let got = merge(&json!({}), &json!({"enabledPlugins": {"a@m": null, "b@m": true}}));
+    let got = merge(
+        &json!({}),
+        &json!({"enabledPlugins": {"a@m": null, "b@m": true}}),
+    );
     assert_eq!(got, json!({"enabledPlugins": {"b@m": true}}));
 }

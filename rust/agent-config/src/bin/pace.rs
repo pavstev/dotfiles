@@ -2,14 +2,15 @@
 use agent_config::pace_core as pace;
 
 use std::process::ExitCode;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let cmd = args.get(1).map_or("", String::as_str);
     match (cmd, args.len()) {
         ("status", 2) => {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let now = agent_config::paths::unix_now();
             if pace::needs_refresh(now) {
                 pace::refresh(5.0, Some(now));
             }
@@ -32,7 +33,9 @@ fn main() -> ExitCode {
         },
         _ => {
             eprintln!("usage: pace status | refresh | seed <percent>");
-            eprintln!("the plan and the work days come from PLAN and WORK_DAYS in ~/.config/dotfiles/settings");
+            eprintln!(
+                "the plan and the work days come from PLAN and WORK_DAYS in ~/.config/dotfiles/settings"
+            );
             ExitCode::from(2)
         }
     }

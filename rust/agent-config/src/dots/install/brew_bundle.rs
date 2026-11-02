@@ -17,7 +17,7 @@ fn keep_line(l: &str) -> bool {
 }
 
 /// `brew bundle` for one file. True when brew exits 0. Installs and warnings print as they come;
-/// DOTFILES_VERBOSE=1 prints everything.
+/// `DOTFILES_VERBOSE=1` prints everything.
 fn bundle_quiet(file: &Path) -> bool {
     let f = file.to_string_lossy();
     if verbose() {
@@ -61,14 +61,19 @@ fn bundle_run(repo: &Path, file: &Path, label: &str) -> bool {
     // Do not abort the whole run on partial failures (a pre-installed app that brew wants to
     // "adopt" needs sudo). Warn and continue; the rest of the setup should still run.
     if !bundle_quiet(file) {
-        warn(&format!("Some {label} entries failed (often a pre-installed app needing sudo to"));
+        warn(&format!(
+            "Some {label} entries failed (often a pre-installed app needing sudo to"
+        ));
         warn("adopt, or a Homebrew permissions issue). Fix perms and re-run:");
-        warn(&format!("  {}/scripts/fix-brew-permissions.sh  &&  ./dotfiles", repo.display()));
+        warn(&format!(
+            "  {}/scripts/fix-brew-permissions.sh  &&  ./dotfiles",
+            repo.display()
+        ));
     }
     true
 }
 
-pub fn step(repo: &Path) {
+pub(super) fn step(repo: &Path) {
     if !only_macos("Homebrew apps") {
         return;
     }
@@ -96,7 +101,9 @@ mod tests {
     #[test]
     fn brew_noise_is_dropped() {
         assert!(!keep_line("Using git"));
-        assert!(!keep_line("`brew bundle` complete! 5 Brewfile dependencies now installed."));
+        assert!(!keep_line(
+            "`brew bundle` complete! 5 Brewfile dependencies now installed."
+        ));
         assert!(keep_line("Installing ghostty"));
         assert!(keep_line("Error: something broke"));
     }

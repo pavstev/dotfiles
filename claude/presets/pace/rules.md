@@ -5,8 +5,8 @@ guard: [G8, PACE]
 ---
 # Pace
 
-- **The weekly budget must last all the work days** (`WORK_DAYS` in `dots settings`, default mon-fri). Fewer, smaller helpers; run helpers in parallel only for independent pieces.
-- **Helper cap:** at most 3 helpers at once, 1 when the week runs ahead of pace, none when it is critical. The guard enforces it.
-- When the status line says the week runs ahead, drop optional work: no extra review rounds, no sweeps, a lighter plan.
+- **The weekly budget must last all the work days** (`WORK_DAYS` in `dots settings`, default mon-fri). Speed still comes first: run independent pieces in parallel.
+- **Helper cap:** at most 3 helpers at once (superlite: 10), none when the week is critical. The guard enforces it.
+- An ahead week is a note only: say it once and keep going. A critical week: finish the current step, commit it and spawn nothing new.
 
-**Remember:** the budget must last all work days; at most 3 helpers at once.
+**Remember:** at most 3 helpers at once; an ahead week changes nothing; a critical week spawns nothing.

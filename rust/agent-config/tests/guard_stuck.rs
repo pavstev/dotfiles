@@ -2,61 +2,34 @@
 //! workflow): an unattended run that edited a project is held back once until a check passed. Runs
 //! the `guard` bin on a temp git repo that has a `check:fast` script.
 
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
+
 mod common;
 
+use common::GuardRepo as W;
 use common::{run_bin, temp_home};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 const GUARD: &str = env!("CARGO_BIN_EXE_guard");
-static SID: AtomicUsize = AtomicUsize::new(0);
-
-struct W {
-    repo: PathBuf,
-    tmp: PathBuf,
-    sid: String,
-}
-
-fn git(repo: &Path, args: &[&str]) {
-    let st = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .unwrap();
-    assert!(st.status.success(), "{args:?}: {}", String::from_utf8_lossy(&st.stderr));
-}
 
 impl W {
     /// A repo whose project states a fast check, unless `fast` is false.
     fn with(fast: bool) -> Self {
-        let base = temp_home("stuck");
-        let repo = base.join("repo");
-        fs::create_dir_all(repo.join("src")).unwrap();
-        let scripts = if fast { r#"{"scripts": {"check:fast": "true"}}"# } else { "{}" };
-        fs::write(repo.join("package.json"), scripts).unwrap();
-        fs::write(repo.join("src/a.txt"), "one\n").unwrap();
-        git(&repo, &["init", "-q"]);
-        git(&repo, &["add", "."]);
-        git(&repo, &["commit", "-qm", "init"]);
-        let n = SID.fetch_add(1, Ordering::SeqCst);
-        Self { repo, tmp: base.join("tmp"), sid: format!("stuck-{}-{n}", std::process::id()) }
+        let scripts = if fast {
+            r#"{"scripts": {"check:fast": "true"}}"#
+        } else {
+            "{}"
+        };
+        Self::init(
+            "stuck",
+            &[("package.json", scripts), ("src/a.txt", "one\n")],
+        )
     }
 
     fn new() -> Self {
         Self::with(true)
-    }
-
-    fn run(&self, mode: &str, event: &Value, env: &[(&str, &str)]) -> (i32, String, String) {
-        let tmp = self.tmp.to_string_lossy().into_owned();
-        let home = self.tmp.join("home").to_string_lossy().into_owned();
-        let mut e = vec![("TMPDIR", tmp.as_str()), ("HOME", home.as_str())];
-        e.extend_from_slice(env);
-        fs::create_dir_all(self.tmp.join("home")).unwrap();
-        run_bin(GUARD, &[mode], &event.to_string(), &e, Some(&self.repo))
     }
 
     fn base(&self) -> Value {
@@ -109,21 +82,30 @@ impl W {
     fn denied(&self, ev: &Value) -> bool {
         let (code, err) = self.pre(ev);
         if code == 2 {
-            assert!(err.contains("stop and report: 2 failed tries on this step"), "{err}");
+            assert!(
+                err.contains("stop and report: 2 failed tries on this step"),
+                "{err}"
+            );
         }
         code == 2
     }
 
     /// A transcript that shows the autopilot skill was started, or a plain chat.
     fn transcript(&self, autopilot: bool) -> PathBuf {
-        let path = self.tmp.join(if autopilot { "auto.jsonl" } else { "chat.jsonl" });
+        let path = self.tmp.join(if autopilot {
+            "auto.jsonl"
+        } else {
+            "chat.jsonl"
+        });
         let mut lines = vec![json!({"type": "user", "message": {"role": "user", "content": "go"}})];
         if autopilot {
             lines.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [
                 {"type": "tool_use", "id": "t1", "name": "Skill", "input": {"skill": "ps:autopilot"}}]}}));
         }
-        lines.push(json!({"type": "assistant", "message": {"role": "assistant", "content": [
-            {"type": "text", "text": "All tasks are done."}]}}));
+        lines.push(
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "All tasks are done."}]}}),
+        );
         let body: Vec<String> = lines.iter().map(Value::to_string).collect();
         fs::create_dir_all(&self.tmp).unwrap();
         fs::write(&path, body.join("\n") + "\n").unwrap();
@@ -165,7 +147,10 @@ fn the_same_command_fails_twice_then_the_third_try_is_denied() {
     assert_eq!(w.failed(&ev), "", "one failure is quiet");
     assert!(!w.denied(&ev), "one failure allows the second try");
     let note = w.failed(&ev);
-    assert!(note.contains("G18") && note.contains("stop and report"), "the second failure warns: {note}");
+    assert!(
+        note.contains("G18") && note.contains("stop and report"),
+        "the second failure warns: {note}"
+    );
     assert!(w.denied(&ev), "the third try is denied");
     assert!(w.denied(&ev), "and it stays denied");
     assert!(!w.denied(&w.bash("git status")), "another command is fine");
@@ -177,9 +162,16 @@ fn an_edit_in_between_makes_it_a_new_try() {
     let ev = w.bash("npm test");
     w.failed(&ev);
     fs::write(w.src(), "two\n").unwrap();
-    assert_eq!(w.failed(&ev), "", "the tree changed, so this is the first failure again");
+    assert_eq!(
+        w.failed(&ev),
+        "",
+        "the tree changed, so this is the first failure again"
+    );
     assert!(!w.denied(&ev));
-    assert!(!w.failed(&ev).is_empty(), "no change since: the second failure of this try");
+    assert!(
+        !w.failed(&ev).is_empty(),
+        "no change since: the second failure of this try"
+    );
     assert!(w.denied(&ev));
     fs::write(w.src(), "three\n").unwrap();
     assert!(!w.denied(&ev), "an edit after the stop lets it run again");
@@ -231,8 +223,14 @@ fn the_same_edit_target_counts_and_another_does_not() {
     w.failed(&ev);
     w.failed(&ev);
     assert!(w.denied(&ev), "same file, same old text");
-    assert!(!w.denied(&w.edit(&w.src(), "other text")), "same file, another target");
-    assert!(!w.denied(&w.edit(&w.repo.join("src/b.txt"), "one")), "another file");
+    assert!(
+        !w.denied(&w.edit(&w.src(), "other text")),
+        "same file, another target"
+    );
+    assert!(
+        !w.denied(&w.edit(&w.repo.join("src/b.txt"), "one")),
+        "another file"
+    );
 }
 
 #[test]
@@ -242,10 +240,16 @@ fn a_helper_has_its_own_tries() {
     w.failed(&ev);
     w.failed(&ev);
     assert!(w.denied(&ev));
-    assert!(!w.denied(&W::as_helper(ev.clone(), "h1")), "a helper starts fresh");
+    assert!(
+        !w.denied(&W::as_helper(ev.clone(), "h1")),
+        "a helper starts fresh"
+    );
     let other = W::as_helper(ev, "h2");
     w.failed(&other);
-    assert!(!w.denied(&other), "one failure of another helper is not two");
+    assert!(
+        !w.denied(&other),
+        "one failure of another helper is not two"
+    );
 }
 
 #[test]
@@ -265,14 +269,30 @@ fn g18_follows_its_preset() {
     w.failed(&ev);
     w.failed(&ev);
     fs::create_dir_all(w.tmp.join("home/.config/dotfiles")).unwrap();
-    fs::write(w.tmp.join("home/.config/dotfiles/settings"), "PRESETS=\"models\"\n").unwrap();
+    fs::write(
+        w.tmp.join("home/.config/dotfiles/settings"),
+        "PRESETS=\"models\"\n",
+    )
+    .unwrap();
     assert_eq!(w.pre(&ev).0, 0, "the workflow preset is off");
 }
 
 #[test]
 fn garbage_input_fails_open() {
-    for mode in ["posttoolfailure", "pretool", "posttool", "subagentstop", "stop"] {
-        let (code, out, _) = run_bin(GUARD, &[mode], "{\"tool_name\": \"Edit\", \"tool_input\": 5}", &[], None);
+    for mode in [
+        "posttoolfailure",
+        "pretool",
+        "posttool",
+        "subagentstop",
+        "stop",
+    ] {
+        let (code, out, _) = run_bin(
+            GUARD,
+            &[mode],
+            "{\"tool_name\": \"Edit\", \"tool_input\": 5}",
+            &[],
+            None,
+        );
         assert_eq!((code, out.as_str()), (0, ""), "{mode}");
     }
 }
@@ -285,9 +305,20 @@ fn a_helper_that_edited_and_never_checked_is_held_back_once() {
     w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
     let (code, err) = w.helper_stop("h1", false, &[]);
     assert_eq!(code, 2, "{err}");
-    assert!(err.contains("run the fast check before you stop") && err.contains("npm run check:fast"), "{err}");
-    assert_eq!(w.helper_stop("h1", true, &[]).0, 0, "the second stop goes through");
-    assert_eq!(w.helper_stop("h1", false, &[]).0, 0, "even without the stop hook flag");
+    assert!(
+        err.contains("run the fast check before you stop") && err.contains("npm run check:fast"),
+        "{err}"
+    );
+    assert_eq!(
+        w.helper_stop("h1", true, &[]).0,
+        0,
+        "the second stop goes through"
+    );
+    assert_eq!(
+        w.helper_stop("h1", false, &[]).0,
+        0,
+        "even without the stop hook flag"
+    );
 }
 
 #[test]
@@ -297,7 +328,11 @@ fn a_passing_check_after_the_edit_lets_the_helper_stop() {
     w.passed(&W::as_helper(w.bash("npm test"), "h1"));
     assert_eq!(w.helper_stop("h1", false, &[]).0, 0);
     w.passed(&W::as_helper(w.edit(&w.src(), "two"), "h1"));
-    assert_eq!(w.helper_stop("h1", false, &[]).0, 2, "a later edit needs a new pass");
+    assert_eq!(
+        w.helper_stop("h1", false, &[]).0,
+        2,
+        "a later edit needs a new pass"
+    );
     assert_eq!(w.helper_stop("h1", true, &[]).0, 0);
 }
 
@@ -316,7 +351,11 @@ fn a_helper_that_edited_nothing_in_a_project_is_not_held_back() {
     assert_eq!(w.helper_stop("h1", false, &[]).0, 0, "no edits at all");
     let outside = temp_home("stuck-outside").join("notes.md");
     w.passed(&W::as_helper(w.edit(&outside, "a"), "h1"));
-    assert_eq!(w.helper_stop("h1", false, &[]).0, 0, "a file outside any project");
+    assert_eq!(
+        w.helper_stop("h1", false, &[]).0,
+        0,
+        "a file outside any project"
+    );
     // the edit of one helper does not hold back another
     w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h2"));
     assert_eq!(w.helper_stop("h1", false, &[]).0, 0);
@@ -335,7 +374,11 @@ fn g19_guard_off_turns_it_off() {
     let w = W::new();
     w.passed(&W::as_helper(w.edit(&w.src(), "one"), "h1"));
     assert_eq!(w.helper_stop("h1", false, &[("GUARD_OFF", "G19")]).0, 0);
-    assert_eq!(w.helper_stop("h1", false, &[]).0, 2, "the stop was not marked while it was off");
+    assert_eq!(
+        w.helper_stop("h1", false, &[]).0,
+        2,
+        "the stop was not marked while it was off"
+    );
 }
 
 #[test]
@@ -390,7 +433,15 @@ fn the_helper_hold_back_does_not_free_the_slot_but_the_second_stop_does() {
         let p = w.tmp.join("claude-guard").join(format!("{}.json", w.sid));
         serde_json::from_str(&fs::read_to_string(p).unwrap()).unwrap()
     };
-    assert_eq!(state(&w)["spawns"].as_array().map(Vec::len), Some(1), "the slot is still taken");
+    assert_eq!(
+        state(&w)["spawns"].as_array().map(Vec::len),
+        Some(1),
+        "the slot is still taken"
+    );
     assert_eq!(w.helper_stop("h1", true, &[]).0, 0);
-    assert_eq!(state(&w)["spawns"].as_array().map(Vec::len), Some(0), "the slot is free");
+    assert_eq!(
+        state(&w)["spawns"].as_array().map(Vec::len),
+        Some(0),
+        "the slot is free"
+    );
 }

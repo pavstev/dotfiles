@@ -1,5 +1,7 @@
-//! Port of the CLI class of claude/hooks/test_pace.py: the `pace` binary (`CARGO_BIN_EXE_pace`).
+//! Port of the CLI class of `claude/hooks/test_pace.py`: the `pace` binary (`CARGO_BIN_EXE_pace`).
 //! The other 60 tests of that file need an injected clock and live in `src/pace_core.rs` (`mod tests`).
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 mod common;
 
 use common::{iso_utc, run_bin, temp_home};
@@ -35,7 +37,13 @@ impl Case {
     fn run_cli(&self, args: &[&str]) -> (i32, String, String) {
         let home = self.home.to_string_lossy().into_owned();
         let cache = self.home.join("cache").to_string_lossy().into_owned();
-        run_bin(PACE, args, "", &[("HOME", &home), ("XDG_CACHE_HOME", &cache), ("TZ", "UTC")], None)
+        run_bin(
+            PACE,
+            args,
+            "",
+            &[("HOME", &home), ("XDG_CACHE_HOME", &cache), ("TZ", "UTC")],
+            None,
+        )
     }
 
     fn write_record(&self, name: &str, epoch: i64, mid: &str) {
@@ -43,11 +51,18 @@ impl Case {
             "id": mid, "model": "claude-sonnet-5-5", "role": "assistant",
             "usage": {"input_tokens": 1000, "output_tokens": 500, "cache_creation_input_tokens": 2000,
                 "cache_read_input_tokens": 10000}}});
-        fs::write(self.home.join(".claude/projects/proj").join(name), format!("{rec}\n")).unwrap();
+        fs::write(
+            self.home.join(".claude/projects/proj").join(name),
+            format!("{rec}\n"),
+        )
+        .unwrap();
     }
 
     fn calib(&self) -> Value {
-        serde_json::from_str(&fs::read_to_string(self.home.join("cache/claude-pace-calib.json")).unwrap()).unwrap()
+        serde_json::from_str(
+            &fs::read_to_string(self.home.join("cache/claude-pace-calib.json")).unwrap(),
+        )
+        .unwrap()
     }
 }
 
@@ -58,7 +73,11 @@ impl Drop for Case {
 }
 
 fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    i64::try_from(secs).unwrap()
 }
 
 #[test]
@@ -86,13 +105,21 @@ fn test_status_cli_estimates_from_transcripts() {
 fn plan_unset_is_unknown_without_cache() {
     let c = Case::new();
     c.write_record("a.jsonl", now() - 60, "m1");
-    for text in ["", "PLAN=\"api\"\n", "PLAN=\"unknown\"\n", "PLAN=\"nonsense\"\n"] {
+    for text in [
+        "",
+        "PLAN=\"api\"\n",
+        "PLAN=\"unknown\"\n",
+        "PLAN=\"nonsense\"\n",
+    ] {
         c.settings(text);
         let (rc, out, err) = c.run_cli(&["status"]);
         assert_eq!(rc, 0, "{err}");
         let d: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(d["state"], "unknown", "{text:?}: {d}");
-        assert!(d["used"].is_null() && d["source"].is_null(), "{text:?}: {d}");
+        assert!(
+            d["used"].is_null() && d["source"].is_null(),
+            "{text:?}: {d}"
+        );
     }
     c.settings("PLAN=\"max5\"\n");
     let (_, out, _) = c.run_cli(&["status"]);
@@ -106,17 +133,28 @@ fn work_days_from_the_setting_change_the_budget() {
     let budget = |text: &str| -> f64 {
         c.settings(text);
         let (_, out, _) = c.run_cli(&["status"]);
-        serde_json::from_str::<Value>(&out).unwrap()["budget"].as_f64().unwrap()
+        serde_json::from_str::<Value>(&out).unwrap()["budget"]
+            .as_f64()
+            .unwrap()
     };
     // today is day idx of the week: the budget is (idx+1).min(days)/days
     let mon_sat = budget("PLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\n");
     let mon_fri = budget("PLAN=\"pro\"\nWORK_DAYS=\"mon-fri\"\n");
     let unset = budget("PLAN=\"pro\"\n");
     assert_eq!(mon_fri, unset, "mon-fri is the default");
-    assert!([20.0, 40.0, 60.0, 80.0, 100.0].contains(&mon_fri), "{mon_fri}");
-    assert!([16.7, 33.3, 50.0, 66.7, 83.3, 100.0].contains(&mon_sat), "{mon_sat}");
+    assert!(
+        [20.0, 40.0, 60.0, 80.0, 100.0].contains(&mon_fri),
+        "{mon_fri}"
+    );
+    assert!(
+        [16.7, 33.3, 50.0, 66.7, 83.3, 100.0].contains(&mon_sat),
+        "{mon_sat}"
+    );
     // Monday to Friday the two settings differ; on the weekend both are 100
-    assert!(mon_fri > mon_sat || (mon_fri, mon_sat) == (100.0, 100.0), "{mon_fri} vs {mon_sat}");
+    assert!(
+        mon_fri > mon_sat || (mon_fri, mon_sat) == (100.0, 100.0),
+        "{mon_fri} vs {mon_sat}"
+    );
 }
 
 #[test]

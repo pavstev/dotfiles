@@ -3,6 +3,9 @@
 Fill every section. Delete none. Write for a reader with no memory of this session.
 
 ```markdown
+Worktree root: <absolute path of the lane's worktree; lane or helper briefs only, as the first line>
+Run lint and checks from that root.
+
 # Task
 <one line: what the next session must produce>
 
@@ -13,7 +16,7 @@ Branch: <name> at <short sha>, <pushed / not pushed>
 Done: <what is finished, with the last commit>
 Next: <the one action to take first>
 Owner: <what only the user can do, or "none">
-Budget: <time and helper cap, for example "2 h, 3 helpers at once, 1 when pace is ahead">
+Budget: <time and helper cap, for example "2 h, 3 helpers at once, none when pace is critical">
 Blockers: <each with the default to take, or "none">
 
 The next session updates these lines after each phase, or the ledger it names.
@@ -38,6 +41,7 @@ Trust these. Do not re-check them.
 <the approach in a few lines: the design chosen, the tools and commands to use>
 
 ## Rules (hard)
+- Every output path lies inside the worktree root or the scratchpad, never the shared checkout.
 - <scope limits, files not to touch, no commit / no push unless stated>
 - <style and tools this repo uses>
 

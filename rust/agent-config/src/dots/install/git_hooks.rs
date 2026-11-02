@@ -9,7 +9,7 @@ use std::path::Path;
 
 const HOOKS_DIR: &str = "scripts/git-hooks";
 
-pub fn step(repo: &Path) {
+pub(super) fn step(repo: &Path) {
     out::step("Dotfiles repo git hooks");
     if !repo.join(HOOKS_DIR).is_dir() {
         warn("scripts/git-hooks/ not found — skipping hook wiring");
@@ -22,7 +22,9 @@ pub fn step(repo: &Path) {
         return;
     }
     if run("git", &["-C", &r, "config", "core.hooksPath", HOOKS_DIR]) {
-        ok(&format!("core.hooksPath = {HOOKS_DIR} (the git hooks are now active)"));
+        ok(&format!(
+            "core.hooksPath = {HOOKS_DIR} (the git hooks are now active)"
+        ));
     } else {
         warn("Failed to set core.hooksPath — run manually:");
         warn("  git -C ~/dotfiles config core.hooksPath scripts/git-hooks");
@@ -35,7 +37,12 @@ mod tests {
     use std::process::Command;
 
     fn lines(f: impl FnOnce()) -> String {
-        out::capture(f).1.into_iter().map(|(l, _)| l).collect::<Vec<_>>().join("\n")
+        out::capture(f)
+            .1
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -43,10 +50,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();
         let init = Command::new("git").arg("init").arg("-q").arg(r).status();
-        assert!(init.is_ok_and(|s| s.success()), "git is needed for this test");
+        assert!(
+            init.is_ok_and(|s| s.success()),
+            "git is needed for this test"
+        );
         std::fs::create_dir_all(r.join(HOOKS_DIR)).unwrap();
         lines(|| step(r));
-        assert_eq!(git::out(&["-C", &r.to_string_lossy(), "config", "core.hooksPath"]).as_deref(), Some(HOOKS_DIR));
+        assert_eq!(
+            git::out(&["-C", &r.to_string_lossy(), "config", "core.hooksPath"]).as_deref(),
+            Some(HOOKS_DIR)
+        );
         let second = lines(|| step(r));
         assert!(!second.contains("now active"), "{}", second);
     }
@@ -55,6 +68,10 @@ mod tests {
     fn warns_when_the_hooks_folder_is_missing() {
         let d = tempfile::tempdir().unwrap();
         let ((), got) = out::capture(|| step(d.path()));
-        assert!(got.iter().any(|(l, err)| *err && l.contains("scripts/git-hooks/ not found")), "{got:?}");
+        assert!(
+            got.iter()
+                .any(|(l, err)| *err && l.contains("scripts/git-hooks/ not found")),
+            "{got:?}"
+        );
     }
 }

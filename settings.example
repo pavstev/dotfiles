@@ -47,6 +47,11 @@ LOOKS=""
 GUARD_OFF=""
 GUARD_SHADOW=""
 
+# GitHub owners (users or orgs) whose repos the ship-to-main preset may push to main,
+# split by spaces or commas. The owner comes from the repo's origin URL. Any other repo,
+# or an empty list: work goes to a branch and a PR. A rule in a project's CLAUDE.md wins.
+SHIP_OWNERS=""
+
 # Cloudflare docs search (an MCP server) in Cursor: on or off. Empty: off.
 # MCP servers are opt-in on every profile.
 CURSOR_MCP=""

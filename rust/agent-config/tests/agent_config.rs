@@ -1,9 +1,13 @@
 //! Command-level tests of `agent-config`: `cursor`, `opencode`, `user-rules` and `claude-settings`
 //! run as a process in a temp HOME with a fake repo (`claude/`, `cursor/`). The helpers and the
 //! single parts, called as functions, are unit tests in `src/agent_config_tests.rs`.
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 mod common;
 
-use common::{run_bin, temp_home};
+use common::{git, names, rd, rj, run_bin, temp_home, wj, wr};
+#[cfg(unix)]
+use common::{link, mode_of};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +15,8 @@ use std::path::{Path, PathBuf};
 type R = (i32, String, String);
 
 const AC: &str = env!("CARGO_BIN_EXE_agent-config");
-const CLAUDE_MD: &str = "# Global\n\nintro line\n\n## Environment\n\n- one\n- two\n\n## Working rules\n\n1. a\n2. b\n";
+const CLAUDE_MD: &str =
+    "# Global\n\nintro line\n\n## Environment\n\n- one\n- two\n\n## Working rules\n\n1. a\n2. b\n";
 const OWNER_MD: &str = "## Off-limits\n\n- never do the secret thing\n";
 const OWNER_REL: &str = ".config/dotfiles/owner.md";
 const SETTINGS_REL: &str = ".config/dotfiles/settings";
@@ -19,42 +24,14 @@ const MARK: &str = "generated-by: dotfiles";
 const MANAGED: &str = ".dotfiles-managed.json";
 const USER_RULES_MARK: &str = ".config/dotfiles/cursor-user-rules.sha256";
 
-fn wr(p: &Path, text: &str) {
-    fs::create_dir_all(p.parent().unwrap()).unwrap();
-    fs::write(p, text).unwrap();
-}
-fn wj(p: &Path, v: &Value) {
-    wr(p, &v.to_string());
-}
-fn rd(p: &Path) -> String {
-    fs::read_to_string(p).unwrap()
-}
-fn rj(p: &Path) -> Value {
-    serde_json::from_str(&rd(p)).unwrap()
-}
-fn names(dir: &Path) -> Vec<String> {
-    let mut v: Vec<String> =
-        fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    v.sort();
-    v
-}
-#[cfg(unix)]
-fn mode_of(p: &Path) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    fs::metadata(p).unwrap().permissions().mode() & 0o777
-}
 #[cfg(unix)]
 fn set_mode(p: &Path, m: u32) {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
 }
-#[cfg(unix)]
-fn link(target: &Path, at: &Path) {
-    fs::create_dir_all(at.parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(target, at).unwrap();
-}
 fn is_link(p: &Path) -> bool {
-    p.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
+    p.symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// A temp HOME and a fake repo with `claude/CLAUDE.md` and a fake Cursor guard.
@@ -72,9 +49,18 @@ impl Fx {
         let home = tmp.join("home");
         let repo = tmp.join("repo");
         fs::create_dir_all(&home).unwrap();
-        let fx = Self { claude: repo.join("claude"), cursor_src: repo.join("cursor"), tmp, home, repo };
+        let fx = Self {
+            claude: repo.join("claude"),
+            cursor_src: repo.join("cursor"),
+            tmp,
+            home,
+            repo,
+        };
         wr(&fx.claude.join("CLAUDE.md"), CLAUDE_MD);
-        wr(&fx.claude.join("hooks").join("rust-bin"), "# fake launcher\n");
+        wr(
+            &fx.claude.join("hooks").join("rust-bin"),
+            "# fake launcher\n",
+        );
         fx
     }
     fn cdir(&self) -> PathBuf {
@@ -99,7 +85,10 @@ impl Fx {
         wr(&self.claude.join("agents").join(fname), text);
     }
     fn mcp_source(&self, servers: &Value) {
-        wj(&self.cursor_src.join("mcp.json"), &json!({"mcpServers": servers}));
+        wj(
+            &self.cursor_src.join("mcp.json"),
+            &json!({"mcpServers": servers}),
+        );
     }
     /// Run `agent-config <args>`; the output is verbose, as the Python tests ran it.
     fn ac(&self, args: &[&str]) -> R {
@@ -108,7 +97,11 @@ impl Fx {
     fn ac_env(&self, args: &[&str], extra: &[(&str, &str)]) -> R {
         let home = self.home.to_str().unwrap();
         let repo = self.repo.to_str().unwrap();
-        let mut env = vec![("HOME", home), ("DOTFILES_REPO", repo), ("DOTFILES_VERBOSE", "1")];
+        let mut env = vec![
+            ("HOME", home),
+            ("DOTFILES_REPO", repo),
+            ("DOTFILES_VERBOSE", "1"),
+        ];
         env.extend_from_slice(extra);
         run_bin(AC, args, "", &env, None)
     }
@@ -135,7 +128,13 @@ fn test_full_run_creates_everything_and_never_writes_claude_dir() {
     let (rc, _out, err) = fx.ac(&["cursor", "--profile", "shared"]);
     assert_eq!(rc, 0);
     assert_eq!(err, "");
-    for rel in ["rules/claude-global.mdc", "agents/a.md", "hooks.json", "cli-config.json", MANAGED] {
+    for rel in [
+        "rules/claude-global.mdc",
+        "agents/a.md",
+        "hooks.json",
+        "cli-config.json",
+        MANAGED,
+    ] {
         assert!(fx.cdir().join(rel).exists(), "{rel}");
     }
     assert!(!fx.cdir().join("mcp.json").exists()); // MCP is opt-in on every profile
@@ -209,7 +208,12 @@ fn test_opencode_agents_converts_frontmatter() {
     let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0);
     let out = rd(&fx.odir().join("agents").join("reviewer.md"));
-    assert!(out.starts_with("---\ndescription: reviews\nmode: subagent\npermission:\n  skill: allow\n---"), "{out}");
+    assert!(
+        out.starts_with(
+            "---\ndescription: reviews\nmode: subagent\npermission:\n  skill: allow\n---"
+        ),
+        "{out}"
+    );
     assert!(out.contains(MARK));
     assert!(!out.split("---").nth(1).unwrap().contains("model"));
     assert!(!out.contains("effort"));
@@ -224,7 +228,8 @@ fn test_readonly_agent_gets_edit_deny() {
     let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0);
     assert!(
-        rd(&fx.odir().join("agents").join("code-reviewer.md")).contains("permission:\n  edit: deny\n  skill: allow")
+        rd(&fx.odir().join("agents").join("code-reviewer.md"))
+            .contains("permission:\n  edit: deny\n  skill: allow")
     );
 }
 
@@ -276,12 +281,21 @@ fn opencode_plugin_names_rust_bin() {
     assert_eq!(rc, 0, "{err}");
     let text = rd(&plugin_path(&fx));
     assert!(text.contains(MARK), "{text}");
-    assert!(!regex::Regex::new("__[A-Z_]+__").unwrap().is_match(&text), "a placeholder is left: {text}");
+    assert!(
+        !regex::Regex::new("__[A-Z_]+__").unwrap().is_match(&text),
+        "a placeholder is left: {text}"
+    );
     let launcher = fx.claude.join("hooks").join("rust-bin");
     let literal = serde_json::to_string(launcher.to_str().unwrap()).unwrap();
-    assert!(text.contains(&format!("const RUST_BIN: string = {literal}")), "{text}");
+    assert!(
+        text.contains(&format!("const RUST_BIN: string = {literal}")),
+        "{text}"
+    );
     // the sh falls back to `sh` by name when it is empty (always, off Windows)
-    let sh = text.lines().find(|l| l.starts_with("const SH: string =")).unwrap_or_else(|| panic!("no SH line: {text}"));
+    let sh = text
+        .lines()
+        .find(|l| l.starts_with("const SH: string ="))
+        .unwrap_or_else(|| panic!("no SH line: {text}"));
     assert!(!sh.to_lowercase().contains("system32"), "{sh}");
     if !cfg!(windows) {
         assert_eq!(sh, "const SH: string = \"\"");
@@ -295,18 +309,30 @@ fn opencode_plugin_cache_key_holds_the_call_input() {
     let fx = Fx::new("ac-oc-plugin-key");
     fx.ac(&["opencode", "--profile", "shared"]);
     let text = rd(&plugin_path(&fx));
-    let key = text.lines().find(|l| l.contains("const key =")).unwrap_or_else(|| panic!("no key line: {text}"));
-    assert!(key.contains("JSON.stringify(input.input"), "the cache key must hold the call input: {key}");
+    let key = text
+        .lines()
+        .find(|l| l.contains("const key ="))
+        .unwrap_or_else(|| panic!("no key line: {text}"));
+    assert!(
+        key.contains("JSON.stringify(input.input"),
+        "the cache key must hold the call input: {key}"
+    );
     assert!(key.contains("input.tool"), "{key}");
 }
 
 #[test]
 fn opencode_plugin_left_alone_without_marker() {
     let fx = Fx::new("ac-oc-plugin-user");
-    wr(&plugin_path(&fx), "// my own plugin\nexport default { id: \"mine\", setup() {} }\n");
+    wr(
+        &plugin_path(&fx),
+        "// my own plugin\nexport default { id: \"mine\", setup() {} }\n",
+    );
     let (rc, _, err) = fx.ac(&["opencode", "--profile", "shared"]);
     assert_eq!(rc, 0, "{err}");
-    assert_eq!(rd(&plugin_path(&fx)), "// my own plugin\nexport default { id: \"mine\", setup() {} }\n");
+    assert_eq!(
+        rd(&plugin_path(&fx)),
+        "// my own plugin\nexport default { id: \"mine\", setup() {} }\n"
+    );
     assert!(err.contains("not ours"), "{err}");
 }
 
@@ -339,7 +365,10 @@ fn test_translated_permissions_added() {
     run_oc(&fx);
     let p = rj(&oc_cfg(&fx))["permission"].clone();
     // A Claude deny rule stays a deny in Opencode, for Bash too.
-    assert_eq!(p["bash"], json!({"git status *": "allow", "git push *": "deny", "rm -rf /tmp/x": "deny"}));
+    assert_eq!(
+        p["bash"],
+        json!({"git status *": "allow", "git push *": "deny", "rm -rf /tmp/x": "deny"})
+    );
     assert_eq!(p["read"], json!({"src/**": "allow", "**/.env": "deny"}));
     assert_eq!(p["edit"], json!({"notes.md": "allow"}));
 }
@@ -358,7 +387,10 @@ fn test_skill_and_ask_allowed() {
 fn test_user_keys_win_ours_added() {
     let fx = Fx::new("ac-oc-cfg-user-keys");
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&oc_cfg(&fx), &json!({"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}}));
+    wj(
+        &oc_cfg(&fx),
+        &json!({"permission": {"bash": {"npm *": "ask"}, "read": {"keep.me": "allow"}}}),
+    );
     run_oc(&fx);
     let p = rj(&oc_cfg(&fx))["permission"].clone();
     assert_eq!(p["bash"], json!({"npm *": "ask", "git status *": "allow"}));
@@ -382,7 +414,10 @@ fn test_mcp_added_when_opt_in() {
 fn test_mcp_user_entry_wins() {
     let fx = Fx::new("ac-oc-cfg-mcp-user");
     fx.mcp_source(&json!({"cloudflare-docs": {"url": "ours"}}));
-    wj(&oc_cfg(&fx), &json!({"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": false}}}));
+    wj(
+        &oc_cfg(&fx),
+        &json!({"mcp": {"cloudflare-docs": {"type": "remote", "url": "users", "enabled": false}}}),
+    );
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     assert_eq!(rj(&oc_cfg(&fx))["mcp"]["cloudflare-docs"]["url"], "users");
@@ -402,9 +437,15 @@ fn test_mcp_env_wins_over_setting() {
     let fx = Fx::new("ac-oc-cfg-mcp-env");
     fx.mcp_source(&json!({"cloudflare-docs": {"url": "u"}}));
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
-    fx.ac_env(&["opencode", "--profile", "shared"], &[("DOTFILES_MCP", "off")]);
+    fx.ac_env(
+        &["opencode", "--profile", "shared"],
+        &[("DOTFILES_MCP", "off")],
+    );
     assert!(rj(&oc_cfg(&fx)).get("mcp").is_none());
-    fx.ac_env(&["opencode", "--profile", "shared"], &[("DOTFILES_MCP", "1")]);
+    fx.ac_env(
+        &["opencode", "--profile", "shared"],
+        &[("DOTFILES_MCP", "1")],
+    );
     assert!(rj(&oc_cfg(&fx))["mcp"].get("cloudflare-docs").is_some());
 }
 
@@ -412,7 +453,10 @@ fn test_mcp_env_wins_over_setting() {
 fn test_mcp_merges_into_existing_mcp_block() {
     let fx = Fx::new("ac-oc-cfg-mcp-merge");
     fx.mcp_source(&json!({"cloudflare-docs": {"url": "ours"}}));
-    wj(&oc_cfg(&fx), &json!({"mcp": {"existing": {"type": "remote", "url": "x"}}}));
+    wj(
+        &oc_cfg(&fx),
+        &json!({"mcp": {"existing": {"type": "remote", "url": "x"}}}),
+    );
     fx.setting_file("OPENCODE_MCP=\"on\"\n");
     run_oc(&fx);
     let m = rj(&oc_cfg(&fx))["mcp"].clone();
@@ -444,7 +488,10 @@ const SL_SPEC: &str = "superlite@git+https://github.com/iha2/superlite.git";
 
 /// The built Claude settings with superlite on or off (the switch lives in the private layer).
 fn sl_switch(fx: &Fx, on: bool) {
-    wj(&fx.home.join(".claude/settings.json"), &json!({"enabledPlugins": {"superlite@superlite-dev": on}}));
+    wj(
+        &fx.home.join(".claude/settings.json"),
+        &json!({"enabledPlugins": {"superlite@superlite-dev": on}}),
+    );
 }
 
 #[test]
@@ -476,11 +523,6 @@ fn test_opencode_superlite_follows_the_claude_switch() {
     assert!(rj(&oc_cfg(&fx)).get("plugins").is_none());
 }
 
-fn git(dir: &Path, args: &[&str]) {
-    let ok = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success();
-    assert!(ok, "git {args:?}");
-}
-
 #[test]
 fn test_cursor_superlite_clones_updates_and_removes() {
     let fx = Fx::new("ac-cursor-superlite");
@@ -488,21 +530,30 @@ fn test_cursor_superlite_clones_updates_and_removes() {
     let src = fx.tmp.join("superlite-src");
     fs::create_dir_all(&src).unwrap();
     git(&src, &["init", "-q", "-b", "main"]);
-    wr(&src.join(".cursor-plugin/plugin.json"), r#"{"name": "superlite"}"#);
+    wr(
+        &src.join(".cursor-plugin/plugin.json"),
+        r#"{"name": "superlite"}"#,
+    );
     git(&src, &["add", "."]);
-    git(&src, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]);
+    git(&src, &["commit", "-q", "-m", "one"]);
     let url = src.to_str().unwrap();
     let env = [("DOTS_SUPERLITE_REPO", url)];
     let dir = fx.cdir().join("plugins/local/superlite");
     sl_switch(&fx, true);
     let (rc, out, err) = fx.ac_env(&["cursor", "--profile", "shared"], &env);
     assert_eq!(rc, 0, "{err}");
-    assert!(dir.join(".cursor-plugin/plugin.json").is_file(), "{out}{err}");
-    assert!(!is_link(&dir), "Cursor skips a link to a folder outside plugins/local");
+    assert!(
+        dir.join(".cursor-plugin/plugin.json").is_file(),
+        "{out}{err}"
+    );
+    assert!(
+        !is_link(&dir),
+        "Cursor skips a link to a folder outside plugins/local"
+    );
     // a new upstream commit is pulled on the next run
     wr(&src.join("README.md"), "two\n");
     git(&src, &["add", "."]);
-    git(&src, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "two"]);
+    git(&src, &["commit", "-q", "-m", "two"]);
     let (_, out, _) = fx.ac_env(&["cursor", "--profile", "shared"], &env);
     assert!(dir.join("README.md").is_file(), "{out}");
     assert!(out.contains("updated superlite"), "{out}");
@@ -515,7 +566,10 @@ fn test_cursor_superlite_clones_updates_and_removes() {
     sl_switch(&fx, true);
     let (_, out, err) = fx.ac_env(&["cursor", "--profile", "shared"], &env);
     assert!(dir.join("mine.txt").is_file());
-    assert!(format!("{out}{err}").contains("not a superlite clone"), "{out}{err}");
+    assert!(
+        format!("{out}{err}").contains("not a superlite clone"),
+        "{out}{err}"
+    );
 }
 
 // --- opencode managed permissions (the sidecar) -------------------------------
@@ -533,7 +587,12 @@ fn test_sidecar_holds_the_rules_we_added() {
 }
 
 fn bash_keys(fx: &Fx) -> Vec<String> {
-    let mut k: Vec<String> = rj(&oc_cfg(fx))["permission"]["bash"].as_object().unwrap().keys().cloned().collect();
+    let mut k: Vec<String> = rj(&oc_cfg(fx))["permission"]["bash"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
     k.sort();
     k
 }
@@ -556,7 +615,10 @@ fn test_rule_that_turns_into_a_deny_is_updated_next_run() {
     run_oc(&fx);
     fx.perms(&[], &["Bash(git push:*)"]); // the allow became a deny in claude/settings.json
     run_oc(&fx);
-    assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"git push *": "deny"}));
+    assert_eq!(
+        rj(&oc_cfg(&fx))["permission"]["bash"],
+        json!({"git push *": "deny"})
+    );
 }
 
 #[test]
@@ -569,19 +631,31 @@ fn test_a_rule_the_user_edited_is_not_taken_away() {
     wj(&oc_cfg(&fx), &data);
     fx.perms(&[], &[]); // and the repo dropped it
     run_oc(&fx);
-    assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"ls *": "ask"}));
+    assert_eq!(
+        rj(&oc_cfg(&fx))["permission"]["bash"],
+        json!({"ls *": "ask"})
+    );
 }
 
 #[test]
 fn test_a_rule_the_user_added_is_never_touched() {
     let fx = Fx::new("ac-oc-side-user-added");
     fx.perms(&["Bash(git status:*)"], &[]);
-    wj(&oc_cfg(&fx), &json!({"permission": {"bash": {"npm *": "ask"}}}));
+    wj(
+        &oc_cfg(&fx),
+        &json!({"permission": {"bash": {"npm *": "ask"}}}),
+    );
     run_oc(&fx);
-    assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"npm *": "ask", "git status *": "allow"}));
+    assert_eq!(
+        rj(&oc_cfg(&fx))["permission"]["bash"],
+        json!({"npm *": "ask", "git status *": "allow"})
+    );
     fx.perms(&[], &[]);
     run_oc(&fx);
-    assert_eq!(rj(&oc_cfg(&fx))["permission"]["bash"], json!({"npm *": "ask"}));
+    assert_eq!(
+        rj(&oc_cfg(&fx))["permission"]["bash"],
+        json!({"npm *": "ask"})
+    );
 }
 
 #[test]
@@ -677,8 +751,15 @@ fn test_theme_has_every_key_the_opencode_loader_reads() {
     run_oc(&fx);
     let theme = rj(&theme_path(&fx))["theme"].clone();
     let keys = theme.as_object().unwrap();
-    let extra: Vec<&String> = keys.keys().filter(|k| !SHIPPED_KEYS.contains(&k.as_str())).collect();
-    let missing: Vec<&str> = SHIPPED_KEYS.iter().copied().filter(|k| !keys.contains_key(*k)).collect();
+    let extra: Vec<&String> = keys
+        .keys()
+        .filter(|k| !SHIPPED_KEYS.contains(&k.as_str()))
+        .collect();
+    let missing: Vec<&str> = SHIPPED_KEYS
+        .iter()
+        .copied()
+        .filter(|k| !keys.contains_key(*k))
+        .collect();
     assert!(extra.is_empty(), "{extra:?}");
     assert!(missing.is_empty(), "{missing:?}");
 }
@@ -703,7 +784,12 @@ fn test_tui_names_the_theme_because_the_schema_takes_a_string() {
     assert_eq!(data["theme"], "copper");
     assert_eq!(data["$schema"], "https://opencode.ai/tui.json");
     // tui.json has additionalProperties: false, so no marker key can live there
-    let mut keys: Vec<&str> = data.as_object().unwrap().keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = data
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort_unstable();
     assert_eq!(keys, ["$schema", "theme"]);
 }
@@ -787,7 +873,10 @@ fn test_owner_profile_without_the_file_warns() {
 #[test]
 fn test_output_style_is_appended() {
     let fx = Fx::new("ac-oc-rules-style");
-    wr(&fx.claude.join("output-styles").join("warm.md"), "---\nname: warm\n---\nShort lines.\n");
+    wr(
+        &fx.claude.join("output-styles").join("warm.md"),
+        "---\nname: warm\n---\nShort lines.\n",
+    );
     fx.settings(&json!({"outputStyle": "warm"}));
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);
@@ -822,7 +911,10 @@ fn test_symlink_is_left_alone() {
 // --- opencode projects --------------------------------------------------------
 
 fn seed_global_agent(fx: &Fx) {
-    wr(&fx.odir().join("agents").join("a.md"), "---\nname: a\n---\nb\n");
+    wr(
+        &fx.odir().join("agents").join("a.md"),
+        "---\nname: a\n---\nb\n",
+    );
 }
 
 #[cfg(unix)]
@@ -840,10 +932,16 @@ fn test_creates_project_opencode_and_agent_links() {
     assert_eq!(rc, 0, "{err}");
     let cfg1 = p1.join(".opencode").join("opencode.jsonc");
     assert!(is_link(&cfg1));
-    assert_eq!(fs::canonicalize(&cfg1).unwrap(), fs::canonicalize(oc_cfg(&fx)).unwrap());
+    assert_eq!(
+        fs::canonicalize(&cfg1).unwrap(),
+        fs::canonicalize(oc_cfg(&fx)).unwrap()
+    );
     let ag = p1.join(".opencode").join("agents").join("a.md");
     assert!(is_link(&ag));
-    assert_eq!(fs::canonicalize(&ag).unwrap(), fs::canonicalize(fx.odir().join("agents").join("a.md")).unwrap());
+    assert_eq!(
+        fs::canonicalize(&ag).unwrap(),
+        fs::canonicalize(fx.odir().join("agents").join("a.md")).unwrap()
+    );
     assert!(is_link(&p2.join(".opencode").join("opencode.jsonc")));
     assert!(is_link(&p2.join(".opencode").join("agents").join("a.md")));
     let _ = fs::remove_dir_all(p1.parent().unwrap());
@@ -855,13 +953,25 @@ fn test_does_not_clobber_existing_project_config_or_agent() {
     let fx = Fx::new("ac-oc-proj-clobber");
     let p = temp_home("ac-oc-proj-c").join("proj");
     wr(&p.join(".opencode").join("opencode.jsonc"), "mine\n");
-    wr(&p.join(".opencode").join("agents").join("a.md"), "project agent\n");
+    wr(
+        &p.join(".opencode").join("agents").join("a.md"),
+        "project agent\n",
+    );
     fx.agent("a.md", "---\nname: a\n---\nb\n");
     seed_global_agent(&fx);
-    let (rc, _, _) = fx.ac(&["opencode", "--profile", "shared", "--projects", p.to_str().unwrap()]);
+    let (rc, _, _) = fx.ac(&[
+        "opencode",
+        "--profile",
+        "shared",
+        "--projects",
+        p.to_str().unwrap(),
+    ]);
     assert_eq!(rc, 0);
     assert_eq!(rd(&p.join(".opencode").join("opencode.jsonc")), "mine\n");
-    assert_eq!(rd(&p.join(".opencode").join("agents").join("a.md")), "project agent\n");
+    assert_eq!(
+        rd(&p.join(".opencode").join("agents").join("a.md")),
+        "project agent\n"
+    );
     let _ = fs::remove_dir_all(p.parent().unwrap());
 }
 
@@ -885,7 +995,10 @@ fn test_full_run_creates_agents_and_config_and_never_writes_claude_dir() {
     assert_eq!(err, "");
     assert!(fx.odir().join("agents").join("a.md").exists());
     assert!(oc_cfg(&fx).exists());
-    assert_eq!(rj(&oc_cfg(&fx))["mcp"]["docs"], json!({"type": "remote", "url": "u", "enabled": true}));
+    assert_eq!(
+        rj(&oc_cfg(&fx))["mcp"]["docs"],
+        json!({"type": "remote", "url": "u", "enabled": true})
+    );
     assert!(!fx.home.join(".claude").exists());
 }
 
@@ -934,12 +1047,18 @@ fn test_copy_sends_text_to_clipboard_writes_mark_and_drops_file_copy() {
     let mine = fx.cdir().join("rules").join("claude-output-style.mdc");
     wr(&mine, "user's own\n");
     let (path, clip) = fake_clipboard(&fx);
-    let (rc, out, _) = fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", &path)]);
+    let (rc, out, _) = fx.ac_env(
+        &["user-rules", "--profile", "shared", "--copy"],
+        &[("PATH", &path)],
+    );
     assert_eq!(rc, 0);
     let (_, printed, _) = fx.ac(&["user-rules", "--profile", "shared"]);
     let text = rd(&clip);
     assert_eq!(text, printed); // what went to the clipboard is what print mode shows
-    assert_eq!(rd(&fx.home.join(USER_RULES_MARK)), format!("{}\n", sha256_hex(&text)));
+    assert_eq!(
+        rd(&fx.home.join(USER_RULES_MARK)),
+        format!("{}\n", sha256_hex(&text))
+    );
     assert!(!gf.exists());
     assert_eq!(rd(&mine), "user's own\n"); // not ours, kept
     assert!(out.contains("copied the rules"), "{out}");
@@ -951,8 +1070,10 @@ fn test_copy_without_a_clipboard_tool_prints_the_rules_and_fails() {
     let fx = Fx::new("ac-ur-no-clip");
     let empty = fx.tmp.join("empty-bin");
     fs::create_dir_all(&empty).unwrap();
-    let (rc, out, _) =
-        fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", empty.to_str().unwrap())]);
+    let (rc, out, _) = fx.ac_env(
+        &["user-rules", "--profile", "shared", "--copy"],
+        &[("PATH", empty.to_str().unwrap())],
+    );
     assert_eq!(rc, 1);
     assert!(out.contains("## "), "{out}");
     assert!(!fx.home.join(USER_RULES_MARK).exists());
@@ -963,11 +1084,17 @@ fn test_copy_without_a_clipboard_tool_prints_the_rules_and_fails() {
 fn test_after_copy_cursor_rules_skips_then_warns_on_change() {
     let fx = Fx::new("ac-ur-after-copy");
     let (path, _) = fake_clipboard(&fx);
-    fx.ac_env(&["user-rules", "--profile", "shared", "--copy"], &[("PATH", &path)]);
+    fx.ac_env(
+        &["user-rules", "--profile", "shared", "--copy"],
+        &[("PATH", &path)],
+    );
     let (_, out, err) = fx.ac(&["cursor"]);
     assert!(out.contains("already set up"), "{out}");
     assert_eq!(err, "");
-    wr(&fx.claude.join("CLAUDE.md"), &format!("{CLAUDE_MD}\n## New\n\nmore\n"));
+    wr(
+        &fx.claude.join("CLAUDE.md"),
+        &format!("{CLAUDE_MD}\n## New\n\nmore\n"),
+    );
     let (_, _, err) = fx.ac(&["cursor"]);
     assert!(err.contains("Run cursor-rules"), "{err}");
     assert!(!fx.cdir().join("rules").join("claude-global.mdc").exists());
@@ -995,7 +1122,12 @@ impl Cs {
             fx.home.join(".config/dotfiles/claude-settings.json"),
             fx.home.join(".config/dotfiles/claude-settings.last.json"),
         );
-        Self { fx, live, layer, last }
+        Self {
+            fx,
+            live,
+            layer,
+            last,
+        }
     }
     fn build(&self) -> R {
         self.fx.ac(&["claude-settings", "build"])
@@ -1017,11 +1149,17 @@ fn test_first_build_writes_a_real_file() {
 #[test]
 fn test_layer_goes_on_top() {
     let cs = Cs::new("ac-cs-layer");
-    wj(&cs.layer, &json!({"model": "sonnet", "permissions": {"allow": ["Bash(ls:*)"]}, "theme": null}));
+    wj(
+        &cs.layer,
+        &json!({"model": "sonnet", "permissions": {"allow": ["Bash(ls:*)"]}, "theme": null}),
+    );
     cs.build();
     let got = rj(&cs.live);
     assert_eq!(got["model"], "sonnet");
-    assert_eq!(got["permissions"]["allow"], json!(["Bash(git status:*)", "Bash(ls:*)"]));
+    assert_eq!(
+        got["permissions"]["allow"],
+        json!(["Bash(git status:*)", "Bash(ls:*)"])
+    );
     assert!(got.get("theme").is_none());
 }
 
@@ -1043,7 +1181,10 @@ fn test_claude_change_is_kept_in_the_layer() {
     cs.build();
     let mut live = rj(&cs.live);
     live["skipDangerousModePermissionPrompt"] = json!(true);
-    live["permissions"]["allow"].as_array_mut().unwrap().push(json!("WebFetch"));
+    live["permissions"]["allow"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("WebFetch"));
     live["model"] = json!("fable");
     live.as_object_mut().unwrap().remove("theme");
     fs::write(&cs.live, serde_json::to_string_pretty(&live).unwrap()).unwrap(); // Claude's own layout
@@ -1054,7 +1195,10 @@ fn test_claude_change_is_kept_in_the_layer() {
         json!({"skipDangerousModePermissionPrompt": true, "model": "fable", "permissions": {"allow": ["WebFetch"]}, "theme": null})
     );
     assert_eq!(mode_of(&cs.layer), 0o600);
-    assert!(out.contains("kept in your private layer: permissions.allow (+1 item(s))"), "{out}");
+    assert!(
+        out.contains("kept in your private layer: permissions.allow (+1 item(s))"),
+        "{out}"
+    );
     assert!(!out.contains("WebFetch"), "{out}"); // values never printed
     let got = rj(&cs.live);
     assert_eq!(got["skipDangerousModePermissionPrompt"], true);
@@ -1068,11 +1212,19 @@ fn test_layout_only_rewrite_is_no_drift() {
     let cs = Cs::new("ac-cs-layout");
     cs.build();
     // Claude's layout: 4-space indent, keys sorted
-    let sorted: std::collections::BTreeMap<String, Value> =
-        rj(&cs.live).as_object().unwrap().clone().into_iter().collect();
+    let sorted: std::collections::BTreeMap<String, Value> = rj(&cs.live)
+        .as_object()
+        .unwrap()
+        .clone()
+        .into_iter()
+        .collect();
     let mut buf = Vec::new();
     let fmt = serde_json::ser::PrettyFormatter::with_indent(b"    ");
-    serde::Serialize::serialize(&sorted, &mut serde_json::Serializer::with_formatter(&mut buf, fmt)).unwrap();
+    serde::Serialize::serialize(
+        &sorted,
+        &mut serde_json::Serializer::with_formatter(&mut buf, fmt),
+    )
+    .unwrap();
     fs::write(&cs.live, buf).unwrap();
     let (_, out, _) = cs.build();
     assert!(!out.contains("kept"), "{out}");
@@ -1126,16 +1278,27 @@ fn test_removed_union_item_warns() {
     live["permissions"]["allow"] = json!([]);
     fs::write(&cs.live, live.to_string()).unwrap();
     let (_, _, err) = cs.build();
-    assert!(err.contains("Claude removed 1 item(s) from permissions.allow"), "{err}");
-    assert_eq!(rj(&cs.live)["permissions"]["allow"], json!(["Bash(git status:*)"]));
+    assert!(
+        err.contains("Claude removed 1 item(s) from permissions.allow"),
+        "{err}"
+    );
+    assert_eq!(
+        rj(&cs.live)["permissions"]["allow"],
+        json!(["Bash(git status:*)"])
+    );
 }
 
 #[test]
 fn test_promote_moves_a_key_to_the_repo() {
     let cs = Cs::new("ac-cs-promote");
-    wj(&cs.layer, &json!({"permissions": {"allow": ["WebFetch"]}, "statusLine": {"type": "command"}}));
+    wj(
+        &cs.layer,
+        &json!({"permissions": {"allow": ["WebFetch"]}, "statusLine": {"type": "command"}}),
+    );
     cs.build();
-    let (code, out, _) = cs.fx.ac(&["claude-settings", "promote", "permissions.allow"]);
+    let (code, out, _) = cs
+        .fx
+        .ac(&["claude-settings", "promote", "permissions.allow"]);
     assert_eq!(code, 0);
     assert_eq!(
         rj(&cs.fx.claude.join("settings.json"))["permissions"]["allow"],
@@ -1143,7 +1306,10 @@ fn test_promote_moves_a_key_to_the_repo() {
     );
     assert_eq!(rj(&cs.layer), json!({"statusLine": {"type": "command"}}));
     assert!(out.contains("Commit it to share it"), "{out}");
-    assert_eq!(rj(&cs.live)["permissions"]["allow"], json!(["Bash(git status:*)", "WebFetch"]));
+    assert_eq!(
+        rj(&cs.live)["permissions"]["allow"],
+        json!(["Bash(git status:*)", "WebFetch"])
+    );
     let (code, _, _) = cs.fx.ac(&["claude-settings", "promote", "nope.key"]);
     assert_eq!(code, 1);
 }
@@ -1166,7 +1332,17 @@ fn test_a_second_opencode_run_is_one_line() {
     fs::create_dir_all(fx.claude.join("agents")).unwrap();
     let quiet = |args: &[&str]| {
         let (home, repo) = (fx.home.to_str().unwrap(), fx.repo.to_str().unwrap());
-        run_bin(AC, args, "", &[("HOME", home), ("DOTFILES_REPO", repo), ("DOTFILES_PROFILE", "shared")], None)
+        run_bin(
+            AC,
+            args,
+            "",
+            &[
+                ("HOME", home),
+                ("DOTFILES_REPO", repo),
+                ("DOTFILES_PROFILE", "shared"),
+            ],
+            None,
+        )
     };
     quiet(&["opencode"]);
     let (_, out, _) = quiet(&["opencode"]);
@@ -1180,7 +1356,10 @@ fn test_a_second_opencode_run_is_one_line() {
 #[test]
 fn test_one_failing_part_does_not_stop_the_others() {
     let fx = Fx::new("ac-cursor-failing-part");
-    wj(&fx.cdir().join("cli-config.json"), &json!({"permissions": {"allow": "not a list"}}));
+    wj(
+        &fx.cdir().join("cli-config.json"),
+        &json!({"permissions": {"allow": "not a list"}}),
+    );
     let (rc, _, err) = fx.ac(&["cursor"]);
     assert_eq!(rc, 1, "{err}");
     assert!(err.contains("skipped a part"), "{err}");
@@ -1206,9 +1385,11 @@ fn test_a_cli_config_part_of_another_shape_is_a_skipped_part() {
 fn test_cursor_files_keep_their_other_keys_in_place() {
     let fx = Fx::new("ac-cursor-key-order");
     fs::create_dir_all(fx.cdir()).unwrap();
-    let hooks = r#"{"zeta": 1, "version": 3, "hooks": {"stop": [{"command": "mine"}]}, "alpha": [2]}"#;
+    let hooks =
+        r#"{"zeta": 1, "version": 3, "hooks": {"stop": [{"command": "mine"}]}, "alpha": [2]}"#;
     fs::write(fx.cdir().join("hooks.json"), hooks).unwrap();
-    let cli = r#"{"zeta": 1, "permissions": {"allow": ["Shell(ls)"]}, "model": {"a": 1}, "alpha": 2}"#;
+    let cli =
+        r#"{"zeta": 1, "permissions": {"allow": ["Shell(ls)"]}, "model": {"a": 1}, "alpha": 2}"#;
     fs::write(fx.cdir().join("cli-config.json"), cli).unwrap();
     let (rc, _, err) = fx.ac(&["cursor"]);
     assert_eq!(rc, 0, "{err}");
@@ -1219,7 +1400,10 @@ fn test_cursor_files_keep_their_other_keys_in_place() {
     };
     // known keys stay where they were, new ones come last
     assert_eq!(keys("hooks.json"), ["zeta", "version", "hooks", "alpha"]);
-    assert_eq!(&keys("cli-config.json")[..4], ["zeta", "permissions", "model", "alpha"]);
+    assert_eq!(
+        &keys("cli-config.json")[..4],
+        ["zeta", "permissions", "model", "alpha"]
+    );
     assert_eq!(rj(&fx.cdir().join("hooks.json"))["version"], json!(3));
 }
 
@@ -1233,7 +1417,10 @@ fn test_an_older_generated_tui_is_replaced() {
     );
     let (rc, _, _) = run_oc(&fx);
     assert_eq!(rc, 0);
-    assert_eq!(rj(&tui_path(&fx)), json!({"$schema": "https://opencode.ai/tui.json", "theme": "copper"}));
+    assert_eq!(
+        rj(&tui_path(&fx)),
+        json!({"$schema": "https://opencode.ai/tui.json", "theme": "copper"})
+    );
 }
 
 #[test]
@@ -1244,7 +1431,12 @@ fn test_a_broken_inline_theme_without_our_marker_is_the_users() {
     assert_eq!(rc, 0);
     assert!(out.contains("your Opencode theme"), "{out}");
     assert!(out.contains("background"), "{out}");
-    assert!(rj(&tui_path(&fx))["theme"].as_object().unwrap().contains_key("background"));
+    assert!(
+        rj(&tui_path(&fx))["theme"]
+            .as_object()
+            .unwrap()
+            .contains_key("background")
+    );
 }
 
 #[test]
@@ -1252,7 +1444,13 @@ fn test_a_leading_tilde_means_the_home_folder() {
     let fx = Fx::new("ac-oc-proj-tilde");
     let p = fx.home.join("code").join("app");
     fs::create_dir_all(&p).unwrap();
-    let (rc, _, err) = fx.ac(&["opencode", "--profile", "shared", "--projects", "~/code/app"]);
+    let (rc, _, err) = fx.ac(&[
+        "opencode",
+        "--profile",
+        "shared",
+        "--projects",
+        "~/code/app",
+    ]);
     assert_eq!(rc, 0, "{err}");
     assert!(p.join(".opencode").is_dir());
     assert!(!err.contains("non-absolute"), "{err}");

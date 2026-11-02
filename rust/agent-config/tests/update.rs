@@ -1,6 +1,8 @@
 //! `dots update`: the check and update phases, run against fake package managers. A temp HOME, a
 //! fake bin dir and `DOTS_UPDATE_PATH` hold it all: no real manager can run, and nothing reads the
 //! real home of the machine.
+
+#![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 #![cfg(target_os = "macos")]
 mod common;
 
@@ -15,7 +17,11 @@ const DOTS: &str = env!("CARGO_BIN_EXE_dots");
 /// A fake manager: a `sh` script that appends its name and arguments to the calls file, then runs `body`.
 fn fake(bin: &Path, name: &str, body: &str) {
     let p = bin.join(name);
-    fs::write(&p, format!("#!/bin/sh\necho \"{name} $*\" >> \"$DOTS_TEST_CALLS\"\n{body}\n")).unwrap();
+    fs::write(
+        &p,
+        format!("#!/bin/sh\necho \"{name} $*\" >> \"$DOTS_TEST_CALLS\"\n{body}\n"),
+    )
+    .unwrap();
     fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -108,7 +114,12 @@ fn update(s: &Setup, args: &[&str], extra: &[(&str, &str)]) -> (i32, String) {
 }
 
 /// Like `update`, started in the folder `cwd`.
-fn update_in(s: &Setup, args: &[&str], extra: &[(&str, &str)], cwd: Option<&Path>) -> (i32, String) {
+fn update_in(
+    s: &Setup,
+    args: &[&str],
+    extra: &[(&str, &str)],
+    cwd: Option<&Path>,
+) -> (i32, String) {
     let nozsh = s.home.join("no-oh-my-zsh");
     let mut env: Vec<(&str, &str)> = vec![
         ("HOME", s.home.to_str().unwrap()),
@@ -124,16 +135,27 @@ fn update_in(s: &Setup, args: &[&str], extra: &[(&str, &str)], cwd: Option<&Path
 }
 
 fn calls(s: &Setup) -> Vec<String> {
-    fs::read_to_string(&s.calls).unwrap().lines().map(str::to_string).collect()
+    fs::read_to_string(&s.calls)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 fn logs(s: &Setup) -> Vec<PathBuf> {
     let dir = s.home.join("Library/Logs/dots");
-    fs::read_dir(dir).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default()
+    fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
 }
 
-const UPDATES: [&str; 5] =
-    ["brew upgrade", "mise upgrade", "rustup update", "npm update -g", "pnpm update -g --latest"];
+const UPDATES: [&str; 5] = [
+    "brew upgrade",
+    "mise upgrade",
+    "rustup update",
+    "npm update -g",
+    "pnpm update -g --latest",
+];
 
 #[test]
 fn check_lists_outdated_and_runs_no_update() {
@@ -141,13 +163,28 @@ fn check_lists_outdated_and_runs_no_update() {
     let (code, out) = update(&s, &["--check"], &[]);
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("Homebrew: 2 to update (git, wget)"), "{out}");
-    assert!(out.contains("Rust (rustup): 1 to update (stable-aarch64-apple-darwin)"), "{out}");
-    assert!(out.contains("npm globals: 1 to update (typescript)"), "{out}");
+    assert!(
+        out.contains("Rust (rustup): 1 to update (stable-aarch64-apple-darwin)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("npm globals: 1 to update (typescript)"),
+        "{out}"
+    );
     assert!(out.contains("pnpm globals: 1 to update (eslint)"), "{out}");
     assert!(out.contains("mise: up to date"), "{out}");
-    assert!(out.contains("macOS: 1 update (install it in System Settings > General > Software Update)"), "{out}");
-    assert!(out.contains("to update: Homebrew, Rust (rustup), npm globals, pnpm globals"), "{out}");
-    assert!(!out.contains("cargo crates"), "missing managers stay silent: {out}");
+    assert!(
+        out.contains("macOS: 1 update (install it in System Settings > General > Software Update)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("to update: Homebrew, Rust (rustup), npm globals, pnpm globals"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("cargo crates"),
+        "missing managers stay silent: {out}"
+    );
     let c = calls(&s);
     assert!(c.contains(&"brew update --quiet".to_string()), "{c:?}");
     assert!(c.contains(&"brew outdated --json=v2".to_string()), "{c:?}");
@@ -163,19 +200,38 @@ fn full_run_updates_only_outdated_managers() {
     let (code, out) = update(&s, &[], &[]);
     assert_eq!(code, 0, "{out}");
     let c = calls(&s);
-    for u in ["brew upgrade", "rustup update", "npm update -g", "pnpm update -g --latest"] {
+    for u in [
+        "brew upgrade",
+        "rustup update",
+        "npm update -g",
+        "pnpm update -g --latest",
+    ] {
         assert!(c.contains(&u.to_string()), "{u} did not run: {c:?}");
     }
-    assert!(!c.contains(&"mise upgrade".to_string()), "mise is up to date: {c:?}");
-    assert!(!c.iter().any(|l| l.starts_with("mise self-update")), "{c:?}");
+    assert!(
+        !c.contains(&"mise upgrade".to_string()),
+        "mise is up to date: {c:?}"
+    );
+    assert!(
+        !c.iter().any(|l| l.starts_with("mise self-update")),
+        "{c:?}"
+    );
     // the order of the table
     let pos = |w: &str| c.iter().position(|l| l == w).unwrap();
-    assert!(pos("brew upgrade") < pos("rustup update") && pos("rustup update") < pos("npm update -g"));
+    assert!(
+        pos("brew upgrade") < pos("rustup update") && pos("rustup update") < pos("npm update -g")
+    );
     assert!(out.contains("Homebrew: updated 2"), "{out}");
-    assert!(out.contains("updated: Homebrew, Rust (rustup), npm globals\n"), "{out}");
+    assert!(
+        out.contains("updated: Homebrew, Rust (rustup), npm globals\n"),
+        "{out}"
+    );
     // pnpm exits 0, but the check after it still lists eslint
     assert!(out.contains("pnpm globals: updated 0 of 1"), "{out}");
-    assert!(out.contains("pnpm globals: still outdated: eslint (a version pin may hold it back)"), "{out}");
+    assert!(
+        out.contains("pnpm globals: still outdated: eslint (a version pin may hold it back)"),
+        "{out}"
+    );
     assert!(out.contains("still outdated: pnpm globals"), "{out}");
     assert!(out.contains("check only: macOS"), "{out}");
     assert!(out.contains("up to date: mise"), "{out}");
@@ -195,11 +251,20 @@ fn a_failed_update_does_not_stop_the_next_one() {
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("npm globals failed (exit 1)"), "{out}");
     assert!(out.contains("npm exploded"), "{out}");
-    assert!(out.contains("npm line 12"), "the last lines are shown: {out}");
-    assert!(!out.contains("npm line 1\n"), "only the last 10 lines are shown: {out}");
+    assert!(
+        out.contains("npm line 12"),
+        "the last lines are shown: {out}"
+    );
+    assert!(
+        !out.contains("npm line 1\n"),
+        "only the last 10 lines are shown: {out}"
+    );
     assert!(out.contains("Full log: "), "{out}");
     assert!(out.contains("failed: npm globals"), "{out}");
-    assert!(calls(&s).contains(&"pnpm update -g --latest".to_string()), "the manager after the failure still runs");
+    assert!(
+        calls(&s).contains(&"pnpm update -g --latest".to_string()),
+        "the manager after the failure still runs"
+    );
     let log = fs::read_to_string(&logs(&s)[0]).unwrap();
     assert!(log.contains("== exit 1 in "), "{log}");
 }
@@ -208,12 +273,25 @@ fn a_failed_update_does_not_stop_the_next_one() {
 fn a_hanging_check_times_out() {
     let s = setup("update-hang");
     let started = Instant::now();
-    let (code, out) =
-        update(&s, &["--check", "--only", "npm,brew"], &[("HANG_NPM", "1"), ("DOTS_UPDATE_TIMEOUT", "2")]);
+    let (code, out) = update(
+        &s,
+        &["--check", "--only", "npm,brew"],
+        &[("HANG_NPM", "1"), ("DOTS_UPDATE_TIMEOUT", "2")],
+    );
     assert_eq!(code, 1, "{out}");
-    assert!(out.contains("npm globals: check failed: timed out after 2s"), "{out}");
-    assert!(out.contains("Homebrew: 2 to update"), "the other checks still report: {out}");
-    assert!(started.elapsed().as_secs() < 15, "took {:?}", started.elapsed());
+    assert!(
+        out.contains("npm globals: check failed: timed out after 2s"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Homebrew: 2 to update"),
+        "the other checks still report: {out}"
+    );
+    assert!(
+        started.elapsed().as_secs() < 15,
+        "took {:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
@@ -222,7 +300,11 @@ fn only_and_skip_filter_and_unknown_ids_exit_2() {
     let (code, out) = update(&s, &["--check", "--only", "brew,mise"], &[]);
     assert_eq!(code, 0, "{out}");
     let c = calls(&s);
-    assert!(c.iter().all(|l| l.starts_with("brew ") || l.starts_with("mise ")), "{c:?}");
+    assert!(
+        c.iter()
+            .all(|l| l.starts_with("brew ") || l.starts_with("mise ")),
+        "{c:?}"
+    );
     assert!(!out.contains("npm globals"), "{out}");
 
     let s = setup("update-skip");
@@ -234,7 +316,10 @@ fn only_and_skip_filter_and_unknown_ids_exit_2() {
     let s = setup("update-unknown");
     let (code, out) = update(&s, &["--only", "brew,nope"], &[]);
     assert_eq!(code, 2, "{out}");
-    assert!(out.contains("nope") && out.contains("brew, mise, rustup, cargo"), "valid ids are listed: {out}");
+    assert!(
+        out.contains("nope") && out.contains("brew, mise, rustup, cargo"),
+        "valid ids are listed: {out}"
+    );
     assert!(calls(&s).is_empty(), "nothing runs on bad arguments");
 }
 
@@ -261,7 +346,10 @@ esac"#,
     );
     let (code, out) = update(&s, &["--only", "mas"], &[]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("App Store apps: 2 updates (run: sudo mas upgrade)"), "{out}");
+    assert!(
+        out.contains("App Store apps: 2 updates (run: sudo mas upgrade)"),
+        "{out}"
+    );
     assert!(out.contains("check only: App Store apps"), "{out}");
     assert_eq!(calls(&s), ["mas outdated"]);
 }
@@ -271,7 +359,10 @@ fn offline_npm_is_a_failed_check_not_an_outdated_package() {
     let s = setup("update-npm-offline");
     let (code, out) = update(&s, &["--only", "npm"], &[("NPM_OFFLINE", "1")]);
     assert_eq!(code, 1, "{out}");
-    assert!(out.contains("npm globals: check failed: request to https://registry.npmjs.org/npm failed"), "{out}");
+    assert!(
+        out.contains("npm globals: check failed: request to https://registry.npmjs.org/npm failed"),
+        "{out}"
+    );
     assert!(!out.contains("to update (error)"), "{out}");
     assert_eq!(calls(&s), ["npm outdated -g --json"], "no update ran");
 }
@@ -284,7 +375,10 @@ fn children_start_in_home_not_in_the_project() {
     let (code, out) = update_in(&s, &["--check", "--only", "mise"], &[], Some(&project));
     assert_eq!(code, 0, "{out}");
     let pwd = fs::read_to_string(format!("{}.pwd", s.calls.display())).unwrap();
-    assert_eq!(fs::canonicalize(pwd.trim()).unwrap(), fs::canonicalize(&s.home).unwrap());
+    assert_eq!(
+        fs::canonicalize(pwd.trim()).unwrap(),
+        fs::canonicalize(&s.home).unwrap()
+    );
 }
 
 #[test]
@@ -292,14 +386,21 @@ fn pinned_brew_formulae_do_not_count() {
     let s = setup("update-pinned");
     let (code, out) = update(&s, &["--check", "--only", "brew"], &[]);
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("Homebrew: 2 to update (git, wget)"), "node@20 is pinned: {out}");
+    assert!(
+        out.contains("Homebrew: 2 to update (git, wget)"),
+        "node@20 is pinned: {out}"
+    );
 }
 
 #[test]
 fn oh_my_zsh_skips_a_repo_that_cannot_fetch_and_git_never_prompts() {
     let s = setup("update-omz");
     let omz = s.home.join("omz");
-    for d in [".git", "custom/plugins/good/.git", "custom/plugins/bad/.git"] {
+    for d in [
+        ".git",
+        "custom/plugins/good/.git",
+        "custom/plugins/bad/.git",
+    ] {
         fs::create_dir_all(omz.join(d)).unwrap();
     }
     fake(
@@ -314,15 +415,41 @@ esac"#,
     fake(&s.bin, "zsh", "exit 0");
     let o = omz.to_str().unwrap();
     let (code, out) = update(&s, &["--only", "omz"], &[("ZSH", o)]);
-    assert_eq!(code, 0, "one dead remote is a warning, not a failure: {out}");
-    assert!(out.contains("skipped: plugins/bad (fatal: repository not found"), "{out}");
-    assert!(out.contains("Oh My Zsh: 2 to update (oh-my-zsh, plugins/good)"), "{out}");
+    assert_eq!(
+        code, 0,
+        "one dead remote is a warning, not a failure: {out}"
+    );
+    assert!(
+        out.contains("skipped: plugins/bad (fatal: repository not found"),
+        "{out}"
+    );
+    assert!(
+        out.contains("Oh My Zsh: 2 to update (oh-my-zsh, plugins/good)"),
+        "{out}"
+    );
     let c = calls(&s);
-    assert!(c.contains(&format!("zsh -f {o}/tools/upgrade.sh -v silent")), "{c:?}");
-    assert!(c.contains(&format!("git -C {o}/custom/plugins/good pull --ff-only --quiet")), "{c:?}");
-    assert!(!c.iter().any(|l| l.contains("plugins/bad") && l.contains("pull")), "{c:?}");
+    assert!(
+        c.contains(&format!("zsh -f {o}/tools/upgrade.sh -v silent")),
+        "{c:?}"
+    );
+    assert!(
+        c.contains(&format!(
+            "git -C {o}/custom/plugins/good pull --ff-only --quiet"
+        )),
+        "{c:?}"
+    );
+    assert!(
+        !c.iter()
+            .any(|l| l.contains("plugins/bad") && l.contains("pull")),
+        "{c:?}"
+    );
     let git_env = fs::read_to_string(format!("{}.git", s.calls.display())).unwrap();
-    assert!(git_env.lines().all(|l| l.contains("GTP=0") && l.contains("-o BatchMode=yes")), "{git_env}");
+    assert!(
+        git_env
+            .lines()
+            .all(|l| l.contains("GTP=0") && l.contains("-o BatchMode=yes")),
+        "{git_env}"
+    );
 }
 
 #[test]
@@ -339,10 +466,18 @@ exit 4"#,
     let (code, out) = update(&s, &["--check", "--only", "gh"], &[("GH_DATA_DIR", d)]);
     assert_eq!(code, 0, "no extensions, so nothing to check: {out}");
     assert!(!out.contains("check failed"), "{out}");
-    assert!(!fs::read_to_string(&s.calls).unwrap_or_default().contains("gh "), "gh never ran");
+    assert!(
+        !fs::read_to_string(&s.calls)
+            .unwrap_or_default()
+            .contains("gh "),
+        "gh never ran"
+    );
     // With an extension, a signed-out gh is a real failure.
     fs::create_dir_all(data.join("extensions/gh-dash")).unwrap();
     let (code, out) = update(&s, &["--check", "--only", "gh"], &[("GH_DATA_DIR", d)]);
     assert_eq!(code, 1, "{out}");
-    assert!(out.contains("gh extensions: check failed: To get started with GitHub CLI"), "{out}");
+    assert!(
+        out.contains("gh extensions: check failed: To get started with GitHub CLI"),
+        "{out}"
+    );
 }

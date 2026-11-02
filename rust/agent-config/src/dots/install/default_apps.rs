@@ -29,7 +29,8 @@ fn is_name(s: &str) -> bool {
     let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric());
     edge(s.chars().next())
         && edge(s.chars().last())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 /// Reads default-apps.list. A line `@bundle.id` picks the app; each type line after it opens
@@ -72,10 +73,16 @@ fn parse_list(text: &str) -> Parsed {
         match pairs.iter_mut().find(|p| p.uti.eq_ignore_ascii_case(line)) {
             Some(p) if p.bundle.eq_ignore_ascii_case(b) => {}
             Some(p) => {
-                problems.push(format!("line {n}: {line} is set twice ({} then {b})", p.bundle));
+                problems.push(format!(
+                    "line {n}: {line} is set twice ({} then {b})",
+                    p.bundle
+                ));
                 p.bundle.clone_from(b);
             }
-            None => pairs.push(Pair { bundle: b.clone(), uti: line.to_string() }),
+            None => pairs.push(Pair {
+                bundle: b.clone(),
+                uti: line.to_string(),
+            }),
         }
     }
     Parsed { pairs, problems }
@@ -104,7 +111,11 @@ enum Outcome {
 }
 
 fn parse_outcome(stdout: &str) -> Outcome {
-    let last = stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let last = stdout
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
     let mut words = last.split_whitespace();
     match (words.next(), words.next().and_then(|n| n.parse().ok())) {
         (Some("ok"), Some(_)) => Outcome::Same,
@@ -113,7 +124,7 @@ fn parse_outcome(stdout: &str) -> Outcome {
     }
 }
 
-pub fn step(repo: &Path) {
+pub(super) fn step(repo: &Path) {
     if !only_macos("default apps") {
         return;
     }
@@ -138,8 +149,12 @@ pub fn step(repo: &Path) {
     if verbose() {
         info("Setting the default app per file type (default-apps.list)…");
     }
-    let Ok(mut child) =
-        Command::new("swift").arg(&script).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+    let Ok(mut child) = Command::new("swift")
+        .arg(&script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
     else {
         warn("default apps: swift not found (run: xcode-select --install)");
         return;
@@ -178,7 +193,10 @@ mod tests {
     use super::*;
 
     fn pair(bundle: &str, uti: &str) -> Pair {
-        Pair { bundle: bundle.into(), uti: uti.into() }
+        Pair {
+            bundle: bundle.into(),
+            uti: uti.into(),
+        }
     }
 
     #[test]
@@ -187,35 +205,61 @@ mod tests {
         let p = parse_list(text);
         assert_eq!(p.problems, Vec::<String>::new());
         assert!(p.pairs.contains(&pair("org.videolan.vlc", "public.mpeg-4")));
-        assert!(p.pairs.contains(&pair("com.microsoft.VSCode", "net.daringfireball.markdown")));
+        assert!(
+            p.pairs
+                .contains(&pair("com.microsoft.VSCode", "net.daringfireball.markdown"))
+        );
         // The .ts line belongs to VS Code, not VLC.
-        assert!(p.pairs.contains(&pair("com.microsoft.VSCode", "public.mpeg-2-transport-stream")));
+        assert!(p.pairs.contains(&pair(
+            "com.microsoft.VSCode",
+            "public.mpeg-2-transport-stream"
+        )));
         let mut utis: Vec<_> = p.pairs.iter().map(|p| p.uti.to_lowercase()).collect();
         utis.sort();
         utis.dedup();
-        assert_eq!(utis.len(), p.pairs.len(), "the real list has a duplicate type");
+        assert_eq!(
+            utis.len(),
+            p.pairs.len(),
+            "the real list has a duplicate type"
+        );
     }
 
     #[test]
     fn groups_types_under_the_last_app() {
         let p = parse_list("@org.videolan.vlc\npublic.mp3\n\n@com.microsoft.VSCode\npublic.json\n");
-        assert_eq!(p.pairs, vec![pair("org.videolan.vlc", "public.mp3"), pair("com.microsoft.VSCode", "public.json")]);
+        assert_eq!(
+            p.pairs,
+            vec![
+                pair("org.videolan.vlc", "public.mp3"),
+                pair("com.microsoft.VSCode", "public.json")
+            ]
+        );
         assert_eq!(p.problems, Vec::<String>::new());
     }
 
     #[test]
     fn empty_and_comment_only_lists_give_nothing() {
         for text in ["", "\n\n", "# only a comment\n   # another\n", "   \t \n"] {
-            assert_eq!(parse_list(text), Parsed { pairs: vec![], problems: vec![] });
+            assert_eq!(
+                parse_list(text),
+                Parsed {
+                    pairs: vec![],
+                    problems: vec![]
+                }
+            );
         }
     }
 
     #[test]
     fn trailing_spaces_crlf_and_inline_comments_are_ignored() {
-        let p = parse_list("@com.microsoft.VSCode  \r\npublic.json \t\r\npublic.yaml # YAML files\r\n");
+        let p =
+            parse_list("@com.microsoft.VSCode  \r\npublic.json \t\r\npublic.yaml # YAML files\r\n");
         assert_eq!(
             p.pairs,
-            vec![pair("com.microsoft.VSCode", "public.json"), pair("com.microsoft.VSCode", "public.yaml")]
+            vec![
+                pair("com.microsoft.VSCode", "public.json"),
+                pair("com.microsoft.VSCode", "public.yaml")
+            ]
         );
         assert_eq!(p.problems, Vec::<String>::new());
     }
@@ -237,7 +281,9 @@ mod tests {
     #[test]
     fn bad_app_id_skips_its_types_with_one_report() {
         // An app name with spaces is not a bundle id.
-        let p = parse_list("@Visual Studio Code\npublic.json\npublic.css\n@org.videolan.vlc\npublic.mp3\n");
+        let p = parse_list(
+            "@Visual Studio Code\npublic.json\npublic.css\n@org.videolan.vlc\npublic.mp3\n",
+        );
         assert_eq!(p.pairs, vec![pair("org.videolan.vlc", "public.mp3")]);
         assert_eq!(p.problems.len(), 1);
         assert!(p.problems[0].contains("Visual Studio Code"));
@@ -246,7 +292,9 @@ mod tests {
 
     #[test]
     fn bad_type_is_reported_and_the_rest_still_applies() {
-        let p = parse_list("@com.microsoft.VSCode\n.json\npublic.json extra\npublic/json\npublic.yaml\n");
+        let p = parse_list(
+            "@com.microsoft.VSCode\n.json\npublic.json extra\npublic/json\npublic.yaml\n",
+        );
         assert_eq!(p.pairs, vec![pair("com.microsoft.VSCode", "public.yaml")]);
         assert_eq!(p.problems.len(), 3);
     }
@@ -268,8 +316,14 @@ mod tests {
 
     #[test]
     fn plan_is_one_tab_line_per_pair() {
-        let pairs = vec![pair("org.videolan.vlc", "public.mp3"), pair("com.microsoft.VSCode", "public.json")];
-        assert_eq!(plan(&pairs), "org.videolan.vlc\tpublic.mp3\ncom.microsoft.VSCode\tpublic.json\n");
+        let pairs = vec![
+            pair("org.videolan.vlc", "public.mp3"),
+            pair("com.microsoft.VSCode", "public.json"),
+        ];
+        assert_eq!(
+            plan(&pairs),
+            "org.videolan.vlc\tpublic.mp3\ncom.microsoft.VSCode\tpublic.json\n"
+        );
         assert_eq!(plan(&[]), "");
     }
 
@@ -277,7 +331,10 @@ mod tests {
     fn outcome_reads_the_last_result_line() {
         assert_eq!(parse_outcome("ok 27\n"), Outcome::Same);
         assert_eq!(parse_outcome("changed 3\n"), Outcome::Changed(3));
-        assert_eq!(parse_outcome("warning: noise\nchanged 12\n\n"), Outcome::Changed(12));
+        assert_eq!(
+            parse_outcome("warning: noise\nchanged 12\n\n"),
+            Outcome::Changed(12)
+        );
         assert_eq!(parse_outcome(""), Outcome::Nothing);
         assert_eq!(parse_outcome("changed x"), Outcome::Nothing);
         assert_eq!(parse_outcome("not applied: public.json"), Outcome::Nothing);

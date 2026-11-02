@@ -1,4 +1,4 @@
-//! Find the Java homes on this machine, for the JAVA_HOME setting of the settings menu.
+//! Find the Java homes on this machine, for the `JAVA_HOME` setting of the settings menu.
 
 use super::os;
 use std::fs;
@@ -10,9 +10,13 @@ use std::process::{Command, Stdio};
 /// java is the macOS stub.
 pub fn home_of(dir: &Path) -> Option<PathBuf> {
     let java = if os::is_windows() { "java.exe" } else { "java" };
-    [dir.join("libexec/openjdk.jdk/Contents/Home"), dir.join("Contents/Home"), dir.to_path_buf()]
-        .into_iter()
-        .find(|d| d != Path::new("/usr") && os::is_executable(&d.join("bin").join(java)))
+    [
+        dir.join("libexec/openjdk.jdk/Contents/Home"),
+        dir.join("Contents/Home"),
+        dir.to_path_buf(),
+    ]
+    .into_iter()
+    .find(|d| d != Path::new("/usr") && os::is_executable(&d.join("bin").join(java)))
 }
 
 /// The real folder behind a home, links followed. Two homes with the same real folder are
@@ -42,7 +46,9 @@ fn glob(dir: &Path, prefix: &str) -> Vec<PathBuf> {
 }
 
 fn env_or(name: &str, fallback: PathBuf) -> PathBuf {
-    std::env::var_os(name).filter(|v| !v.is_empty()).map_or(fallback, PathBuf::from)
+    std::env::var_os(name)
+        .filter(|v| !v.is_empty())
+        .map_or(fallback, PathBuf::from)
 }
 
 /// The folders where a Java may live, in the order they are tried.
@@ -67,12 +73,27 @@ fn candidates() -> Vec<PathBuf> {
     }
     v.extend(glob(Path::new("/Library/Java/JavaVirtualMachines"), ""));
     v.extend(glob(&h.join("Library/Java/JavaVirtualMachines"), ""));
-    v.extend(glob(&env_or("HOMEBREW_PREFIX", PathBuf::from("/opt/homebrew")).join("opt"), "openjdk"));
+    v.extend(glob(
+        &env_or("HOMEBREW_PREFIX", PathBuf::from("/opt/homebrew")).join("opt"),
+        "openjdk",
+    ));
     v.extend(glob(Path::new("/usr/local/opt"), "openjdk"));
-    v.extend(glob(&env_or("MISE_DATA_DIR", h.join(".local/share/mise")).join("installs/java"), ""));
-    v.extend(glob(&env_or("SDKMAN_DIR", h.join(".sdkman")).join("candidates/java"), ""));
-    v.extend(glob(&env_or("ASDF_DATA_DIR", h.join(".asdf")).join("installs/java"), ""));
-    v.extend(glob(&env_or("JENV_ROOT", h.join(".jenv")).join("versions"), ""));
+    v.extend(glob(
+        &env_or("MISE_DATA_DIR", h.join(".local/share/mise")).join("installs/java"),
+        "",
+    ));
+    v.extend(glob(
+        &env_or("SDKMAN_DIR", h.join(".sdkman")).join("candidates/java"),
+        "",
+    ));
+    v.extend(glob(
+        &env_or("ASDF_DATA_DIR", h.join(".asdf")).join("installs/java"),
+        "",
+    ));
+    v.extend(glob(
+        &env_or("JENV_ROOT", h.join(".jenv")).join("versions"),
+        "",
+    ));
     let gradle = glob(&h.join(".gradle/jdks"), "");
     v.extend(gradle.iter().cloned());
     for g in &gradle {
@@ -81,7 +102,9 @@ fn candidates() -> Vec<PathBuf> {
     v.extend(glob(&h.join(".jbang/cache/jdks"), ""));
     v.extend(glob(Path::new("/usr/lib/jvm"), ""));
     v.push(h.join(".local/share/JetBrains/Toolbox/apps/android-studio/jbr"));
-    v.push(PathBuf::from("/Applications/Android Studio.app/Contents/jbr"));
+    v.push(PathBuf::from(
+        "/Applications/Android Studio.app/Contents/jbr",
+    ));
     if let Some(j) = std::env::var_os("JAVA_HOME").filter(|j| !j.is_empty()) {
         v.push(PathBuf::from(j));
     }
@@ -109,12 +132,18 @@ pub fn homes() -> Vec<PathBuf> {
 pub fn info(home: &Path) -> (u32, String, String) {
     let rel = fs::read_to_string(home.join("release")).unwrap_or_default();
     let field = |k: &str| {
-        rel.lines().find_map(|l| l.strip_prefix(&format!("{k}=\"")).and_then(|r| r.strip_suffix('"')).map(String::from))
+        rel.lines().find_map(|l| {
+            l.strip_prefix(&format!("{k}=\""))
+                .and_then(|r| r.strip_suffix('"'))
+                .map(String::from)
+        })
     };
     let mut v = field("JAVA_VERSION").unwrap_or_default();
     let vendor = field("IMPLEMENTOR").unwrap_or_default();
     if v.is_empty()
-        && let Ok(o) = Command::new(home.join("bin").join("java")).arg("-version").output()
+        && let Ok(o) = Command::new(home.join("bin").join("java"))
+            .arg("-version")
+            .output()
     {
         let text = String::from_utf8_lossy(&o.stderr).into_owned();
         if let Some(first) = text.lines().next()
@@ -124,15 +153,27 @@ pub fn info(home: &Path) -> (u32, String, String) {
             v = rest.split('"').next().unwrap_or("").to_string();
         }
     }
-    (major_of(&v), if v.is_empty() { "unknown".into() } else { v }, vendor)
+    (
+        major_of(&v),
+        if v.is_empty() { "unknown".into() } else { v },
+        vendor,
+    )
 }
 
 const SEPS: [char; 4] = ['.', '_', '+', '-'];
 
-/// The major version: "21.0.5" is 21, "1.8.0_432" is 8. Not a number: 0.
+/// The major version: "21.0.5" is 21, "`1.8.0_432`" is 8. Not a number: 0.
 pub fn major_of(v: &str) -> u32 {
     let first = v.split(SEPS).next().unwrap_or("");
-    let m = if first == "1" { v.strip_prefix("1.").unwrap_or("").split(SEPS).next().unwrap_or("") } else { first };
+    let m = if first == "1" {
+        v.strip_prefix("1.")
+            .unwrap_or("")
+            .split(SEPS)
+            .next()
+            .unwrap_or("")
+    } else {
+        first
+    };
     m.parse().unwrap_or(0)
 }
 
@@ -170,7 +211,11 @@ pub fn where_from(home: &Path) -> String {
 pub fn label(home: &Path) -> String {
     let (_, v, vendor) = info(home);
     let w = where_from(home);
-    if vendor.is_empty() || vendor == w { format!("{v} · {w}") } else { format!("{v} · {vendor} · {w}") }
+    if vendor.is_empty() || vendor == w {
+        format!("{v} · {w}")
+    } else {
+        format!("{v} · {vendor} · {w}")
+    }
 }
 
 /// Long-term-support versions: 8, 11, 17, 21, 25, ...
@@ -183,8 +228,16 @@ pub fn rank_key(v: &str) -> (bool, u64) {
     let major = major_of(v);
     let rest = v.strip_prefix("1.").unwrap_or(v);
     let parts: Vec<&str> = rest.split(SEPS).collect();
-    let num = |i: usize| parts.get(i).and_then(|p| p.parse::<u64>().ok()).unwrap_or(0);
-    (is_lts(major), u64::from(major) * 1_000_000 + num(1) * 1000 + num(2))
+    let num = |i: usize| {
+        parts
+            .get(i)
+            .and_then(|p| p.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    (
+        is_lts(major),
+        u64::from(major) * 1_000_000 + num(1) * 1000 + num(2),
+    )
 }
 
 /// The Java homes, best first. Equal keys keep their order.
@@ -204,7 +257,9 @@ pub fn ranked() -> Vec<PathBuf> {
 /// folder, no / or /bin/java or /bin at the end.
 pub fn clean_path(p: &str) -> String {
     let mut p = p.trim().to_string();
-    if p.len() >= 2 && ((p.starts_with('"') && p.ends_with('"')) || (p.starts_with('\'') && p.ends_with('\''))) {
+    if p.len() >= 2
+        && ((p.starts_with('"') && p.ends_with('"')) || (p.starts_with('\'') && p.ends_with('\'')))
+    {
         p = p[1..p.len() - 1].to_string();
     }
     p = p.replace("\\ ", " ");
@@ -236,7 +291,15 @@ mod tests {
     }
     #[test]
     fn ranking() {
-        assert!(is_lts(8) && is_lts(11) && is_lts(17) && is_lts(21) && is_lts(25) && !is_lts(22) && !is_lts(9));
+        assert!(
+            is_lts(8)
+                && is_lts(11)
+                && is_lts(17)
+                && is_lts(21)
+                && is_lts(25)
+                && !is_lts(22)
+                && !is_lts(9)
+        );
         assert!(rank_key("21.0.5") > rank_key("17.0.9"));
         assert!(rank_key("17.0.9") > rank_key("23.0.1")); // LTS first
         assert!(rank_key("11.0.2") > rank_key("1.8.0_432")); // the old 1.8 form is Java 8
@@ -258,7 +321,11 @@ mod tests {
         fs::create_dir_all(jdk.join("bin")).unwrap();
         fs::write(jdk.join("bin/java"), "#!/bin/sh\n").unwrap();
         fs::set_permissions(jdk.join("bin/java"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(jdk.join("release"), "JAVA_VERSION=\"21.0.5\"\nIMPLEMENTOR=\"Eclipse Adoptium\"\n").unwrap();
+        fs::write(
+            jdk.join("release"),
+            "JAVA_VERSION=\"21.0.5\"\nIMPLEMENTOR=\"Eclipse Adoptium\"\n",
+        )
+        .unwrap();
         assert_eq!(home_of(&t.path().join("jdk-21.jdk")).unwrap(), jdk);
         assert_eq!(info(&jdk), (21, "21.0.5".into(), "Eclipse Adoptium".into()));
         assert!(home_of(t.path()).is_none());

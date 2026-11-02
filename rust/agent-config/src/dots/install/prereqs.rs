@@ -10,14 +10,21 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// The package manager of this Linux: the first of apt-get, dnf, pacman, apk on PATH, or "".
-pub fn pick_manager(have: impl Fn(&str) -> bool) -> &'static str {
-    ["apt-get", "dnf", "pacman", "apk"].into_iter().find(|m| have(m)).unwrap_or("")
+pub(super) fn pick_manager(have: impl Fn(&str) -> bool) -> &'static str {
+    ["apt-get", "dnf", "pacman", "apk"]
+        .into_iter()
+        .find(|m| have(m))
+        .unwrap_or("")
 }
 
 /// The packages for `manager` from the text of linux-prereqs.txt (`<manager>: <packages>`).
 /// An unknown or empty manager reads the `other` line (commands, not packages).
-pub fn parse_prereqs(text: &str, manager: &str) -> Vec<String> {
-    let want = if ["apt-get", "dnf", "pacman", "apk"].contains(&manager) { manager } else { "other" };
+pub(super) fn parse_prereqs(text: &str, manager: &str) -> Vec<String> {
+    let want = if ["apt-get", "dnf", "pacman", "apk"].contains(&manager) {
+        manager
+    } else {
+        "other"
+    };
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('#') {
@@ -40,14 +47,17 @@ fn short_name(manager: &str) -> &str {
 /// The packages to check and install, for the manager this Linux has.
 fn wanted(repo: &Path) -> (&'static str, Vec<String>) {
     let manager = pick_manager(os::have);
-    let text = std::fs::read_to_string(repo.join("scripts").join("linux-prereqs.txt")).unwrap_or_default();
+    let text =
+        std::fs::read_to_string(repo.join("scripts").join("linux-prereqs.txt")).unwrap_or_default();
     (manager, parse_prereqs(&text, manager))
 }
 
 /// Is this package installed? One query per manager; `other` asks PATH for the command.
 fn installed(manager: &str, pkg: &str) -> bool {
     match manager {
-        "apt-get" => stdout_of("dpkg-query", &["-W", "-f=${Status}", pkg]).contains("install ok installed"),
+        "apt-get" => {
+            stdout_of("dpkg-query", &["-W", "-f=${Status}", pkg]).contains("install ok installed")
+        }
         "dnf" => quiet("rpm", &["-q", pkg]),
         "pacman" => quiet("pacman", &["-Q", pkg]),
         "apk" => quiet("apk", &["info", "-e", pkg]),
@@ -58,11 +68,13 @@ fn installed(manager: &str, pkg: &str) -> bool {
 /// setup-lib.sh `linux_prereqs_missing`: the packages that are not installed.
 pub fn linux_prereqs_missing(repo: &Path) -> Vec<String> {
     let (manager, pkgs) = wanted(repo);
-    pkgs.into_iter().filter(|p| !installed(manager, p)).collect()
+    pkgs.into_iter()
+        .filter(|p| !installed(manager, p))
+        .collect()
 }
 
 /// The install commands for the manager, run in order until one fails.
-pub fn install_commands(manager: &str, missing: &[String]) -> Vec<Vec<String>> {
+pub(super) fn install_commands(manager: &str, missing: &[String]) -> Vec<Vec<String>> {
     let plain = |v: &[&str]| -> Vec<String> { v.iter().map(ToString::to_string).collect() };
     let s = |v: &[&str]| -> Vec<String> {
         let mut a = plain(v);
@@ -71,8 +83,22 @@ pub fn install_commands(manager: &str, missing: &[String]) -> Vec<Vec<String>> {
     };
     match manager {
         "apt-get" => vec![
-            plain(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "update", "-qq"]),
-            s(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "-qq", "--no-install-recommends"]),
+            plain(&[
+                "env",
+                "DEBIAN_FRONTEND=noninteractive",
+                "apt-get",
+                "update",
+                "-qq",
+            ]),
+            s(&[
+                "env",
+                "DEBIAN_FRONTEND=noninteractive",
+                "apt-get",
+                "install",
+                "-y",
+                "-qq",
+                "--no-install-recommends",
+            ]),
         ],
         "dnf" => vec![s(&["dnf", "install", "-y", "-q"])],
         "pacman" => vec![s(&["pacman", "-S", "--needed", "--noconfirm"])],
@@ -101,13 +127,17 @@ pub fn linux_prereqs(repo: &Path) -> bool {
     }
     let list = missing.join(" ");
     if manager.is_empty() {
-        warn(&format!("no apt, dnf, pacman or apk here. Install these commands yourself, then run dots again: {list}"));
+        warn(&format!(
+            "no apt, dnf, pacman or apk here. Install these commands yourself, then run dots again: {list}"
+        ));
         return false;
     }
     let mut use_sudo = false;
     if stdout_of("id", &["-u"]).trim() != "0" {
         if !os::have("sudo") {
-            warn(&format!("sudo is missing. As root, install with {name}: {list}"));
+            warn(&format!(
+                "sudo is missing. As root, install with {name}: {list}"
+            ));
             return false;
         }
         use_sudo = true;
@@ -125,13 +155,20 @@ pub fn linux_prereqs(repo: &Path) -> bool {
         let (prog, args): (&str, Vec<&str>) = if use_sudo {
             ("sudo", argv.iter().map(String::as_str).collect())
         } else {
-            (argv[0].as_str(), argv[1..].iter().map(String::as_str).collect())
+            (
+                argv[0].as_str(),
+                argv[1..].iter().map(String::as_str).collect(),
+            )
         };
         let (Ok(o), Ok(e)) = (log.try_clone(), log.try_clone()) else {
             good = false;
             break;
         };
-        let done = Command::new(prog).args(&args).stdout(Stdio::from(o)).stderr(Stdio::from(e)).status();
+        let done = Command::new(prog)
+            .args(&args)
+            .stdout(Stdio::from(o))
+            .stderr(Stdio::from(e))
+            .status();
         if !done.is_ok_and(|s| s.success()) {
             good = false;
             break;
@@ -152,18 +189,24 @@ pub fn linux_prereqs(repo: &Path) -> bool {
     false
 }
 
-pub fn step(repo: &Path) {
+pub(super) fn step(repo: &Path) {
     if !os::is_linux() {
         return;
     }
     crate::out::step("Linux prerequisites");
     let (manager, pkgs) = wanted(repo);
     if linux_prereqs_missing(repo).is_empty() {
-        skip(&format!("{} packages ({})", short_name(manager), pkgs.join(" ")));
+        skip(&format!(
+            "{} packages ({})",
+            short_name(manager),
+            pkgs.join(" ")
+        ));
         return;
     }
     if !linux_prereqs(repo) {
-        warn("prerequisites missing, so later steps may fail. Fix the error above, then run dots again.");
+        warn(
+            "prerequisites missing, so later steps may fail. Fix the error above, then run dots again.",
+        );
     }
 }
 
@@ -175,7 +218,10 @@ mod tests {
 
     #[test]
     fn reads_each_manager_line() {
-        assert_eq!(parse_prereqs(FILE, "apt-get"), ["build-essential", "curl", "zsh"]);
+        assert_eq!(
+            parse_prereqs(FILE, "apt-get"),
+            ["build-essential", "curl", "zsh"]
+        );
         assert_eq!(parse_prereqs(FILE, "dnf"), ["gcc", "make"]);
         assert_eq!(parse_prereqs(FILE, "apk"), ["bash", "zsh"]);
         assert_eq!(parse_prereqs(FILE, ""), ["cc", "make", "curl"]);
@@ -203,14 +249,26 @@ mod tests {
     fn install_commands_per_manager() {
         let m = vec!["git".to_string(), "zsh".to_string()];
         let apt = install_commands("apt-get", &m);
-        assert_eq!(apt[0].join(" "), "env DEBIAN_FRONTEND=noninteractive apt-get update -qq");
+        assert_eq!(
+            apt[0].join(" "),
+            "env DEBIAN_FRONTEND=noninteractive apt-get update -qq"
+        );
         assert_eq!(
             apt[1].join(" "),
             "env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git zsh"
         );
-        assert_eq!(install_commands("dnf", &m)[0].join(" "), "dnf install -y -q git zsh");
-        assert_eq!(install_commands("pacman", &m)[0].join(" "), "pacman -S --needed --noconfirm git zsh");
-        assert_eq!(install_commands("apk", &m)[0].join(" "), "apk add -q --no-cache git zsh");
+        assert_eq!(
+            install_commands("dnf", &m)[0].join(" "),
+            "dnf install -y -q git zsh"
+        );
+        assert_eq!(
+            install_commands("pacman", &m)[0].join(" "),
+            "pacman -S --needed --noconfirm git zsh"
+        );
+        assert_eq!(
+            install_commands("apk", &m)[0].join(" "),
+            "apk add -q --no-cache git zsh"
+        );
         assert_eq!(install_commands("", &m), [] as [Vec<String>; 0]);
     }
 
