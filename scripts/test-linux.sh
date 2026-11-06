@@ -223,8 +223,7 @@ check() { # <label> <command in the container>
 
 check "links point into the repo" '
   R="$HOME/dotfiles"
-  for pair in .zshrc:home/.zshrc .gitconfig:home/.gitconfig .config/zsh:home/.config/zsh \
-      .claude/CLAUDE.md:claude/CLAUDE.md .claude/hooks:claude/hooks; do
+  for pair in .zshrc:home/.zshrc .gitconfig:home/.gitconfig .config/zsh:home/.config/zsh; do
     p="${pair%%:*}"; want="$R/${pair#*:}"
     [ "$(readlink "$HOME/$p")" = "$want" ] && [ -e "$HOME/$p" ] || { echo "bad link: $p -> $(readlink "$HOME/$p") (want $want)"; exit 1; }
   done
@@ -272,53 +271,21 @@ check "scripts/tools is quiet on a second run" "$TOOLS_PATH"'
 # The Rust tools: dots builds them once the toolchain is there (rustup comes from tools.list).
 check "the Rust tools are built and run" '
   B=~/dotfiles/rust/agent-config/target/release
-  for b in agent-config guard yt_transcribe tools; do [ -x "$B/$b" ] || { echo "missing: $B/$b"; exit 1; }; done
-  [ "$(bash ~/dotfiles/claude/hooks/rust-bin yt_transcribe --print-id https://youtu.be/dQw4w9WgXcQ)" = dQw4w9WgXcQ ]'
+  for b in agent-config dots tools port; do [ -x "$B/$b" ] || { echo "missing: $B/$b"; exit 1; }; done
+  "$B/agent-config" --help >/dev/null'
 
 check "zsh -ic exit prints nothing" '
   out="$(zsh -ic exit 2>&1 </dev/null)"; [ -z "$out" ] || { printf "%s\n" "$out" | head -10; exit 1; }'
 
 check "bash -n on every shell script" '
   cd ~/dotfiles && rc=0
-  for f in dotfiles bootstrap.sh claude/hooks/*.sh claude/hooks/rust-bin scripts/*.sh \
-           scripts/git-hooks/* claude/skills/*/scripts/*.sh; do
+  for f in dotfiles bootstrap.sh scripts/*.sh scripts/git-hooks/*; do
     [ -f "$f" ] || continue
     head -1 "$f" | grep -q "^#!.*sh" && { bash -n "$f" || rc=1; }
   done; exit $rc'
 
-check "Cursor step in a temp HOME" '
-  cd ~/dotfiles; H="$(mktemp -d)"; mkdir -p "$H/.cursor" "$H/.local/bin"
-  printf "#!/bin/sh\n" >"$H/.local/bin/agent"; chmod +x "$H/.local/bin/agent"
-  HOME="$H" DOTFILES_STEPS=60-cursor DOTFILES_PROFILE=shared NO_COLOR=1 ./dotfiles >"$H/out.log" 2>&1 </dev/null
-  ls "$H/.cursor/rules" >/dev/null 2>&1 || { tail -15 "$H/out.log"; exit 1; }'
-
-check "Opencode config in a temp HOME" '
-  cd ~/dotfiles; H="$(mktemp -d)"
-  HOME="$H" DOTFILES_STEPS=57-claude-code DOTFILES_PROFILE=shared NO_COLOR=1 ./dotfiles >"$H/out.log" 2>&1 </dev/null
-  for f in AGENTS.md agents themes/copper.json tui.json; do
-    [ -e "$H/.config/opencode/$f" ] || { echo "missing .config/opencode/$f"; tail -15 "$H/out.log"; exit 1; }
-  done
-  grep -q "\"theme\": \"copper\"" "$H/.config/opencode/tui.json" || exit 1
-  grep -q "generated-by: dotfiles" "$H/.config/opencode/AGENTS.md" || exit 1'
-
-# The Rust tests (guard, pace, agent-config, skills) run with `cargo test` on the host, not here.
-check "skill check"             'cd ~/dotfiles && bash claude/hooks/rust-bin skill_check -q'
-check "skill scripts run" '
-  set -e -o pipefail
-  export PATH="/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:$PATH"
-  cd ~/dotfiles
-  rb="bash claude/hooks/rust-bin"
-  out="$($rb mic_check --no-fetch || true)"   # exit 1 = NOT CLEAN, fine
-  printf "%s" "$out" | grep -q "VERDICT:"
-  bash "claude/skills/ps_handoff/scripts/handoff-path.sh" test-topic | grep -q test-topic
-  $rb whatsleft_scan --eta | grep -q VERDICT
-  # hurry_scan exits 1 with this message when the machine has no Claude session yet
-  rc=0; out="$($rb hurry_scan --brief 2>&1)" || rc=$?
-  [ "$rc" -eq 0 ] || printf "%s" "$out" | grep -q "No session transcript"
-  j="$(mktemp)"
-  $rb harness_stats collect --out "$j" >/dev/null && $rb harness_stats inventory --in "$j" >/dev/null
-  $rb bag_check --eta 5m | grep -q "NOT APPLICABLE"
-  echo "{}" | $rb statusline >/dev/null'
+# The AI harness (rules, skills, guard, Cursor and Opencode config) is the ps plugin
+# (pavstev/agent-kit), with its own tests.
 
 # ---- 5. result ---------------------------------------------------------------
 if (( fails == 0 )); then

@@ -5,14 +5,14 @@
 # dotfiles
 
 **AI-ready dotfiles for macOS, Linux and Windows.**<br>
-One command sets up Claude Code, Cursor and Opencode with shared skills, agents, rules and guard hooks, plus a fast terminal.
+One command sets up a fast terminal and installs the [ps plugin](https://github.com/pavstev/agent-kit) for Claude Code, Cursor and Opencode: shared skills, agents, rules and guard hooks.
 
 [![macOS](https://img.shields.io/badge/macOS-07080F?style=flat-square&logo=apple&logoColor=E8EAF2)](docs/install.md#set-up-macos)
 [![Linux](https://img.shields.io/badge/Linux-5_distros-07080F?style=flat-square&logo=linux&logoColor=FFC46B&labelColor=07080F)](docs/install.md#set-up-linux)
 [![Windows](https://img.shields.io/badge/Windows-Git_Bash-07080F?style=flat-square&logo=gitforwindows&logoColor=5E8BFF&labelColor=07080F)](docs/install.md#set-up-windows)
-[![Claude Code](https://img.shields.io/badge/Claude_Code-A97CFF?style=flat-square&logo=claude&logoColor=white)](docs/ai-agents.md#claude-code)
-[![Cursor](https://img.shields.io/badge/Cursor-5E8BFF?style=flat-square&logo=cursor&logoColor=white)](docs/ai-agents.md#cursor)
-[![Opencode](https://img.shields.io/badge/Opencode-4FE0C8?style=flat-square&logoColor=07080F)](docs/ai-agents.md#opencode)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-A97CFF?style=flat-square&logo=claude&logoColor=white)](https://github.com/pavstev/agent-kit)
+[![Cursor](https://img.shields.io/badge/Cursor-5E8BFF?style=flat-square&logo=cursor&logoColor=white)](https://github.com/pavstev/agent-kit)
+[![Opencode](https://img.shields.io/badge/Opencode-4FE0C8?style=flat-square&logoColor=07080F)](https://github.com/pavstev/agent-kit)
 [![AGENTS.md](https://img.shields.io/badge/AGENTS.md-ready-FF6FB5?style=flat-square&labelColor=07080F)](AGENTS.md)
 [![MIT](https://img.shields.io/badge/license-MIT-FFC46B?style=flat-square&labelColor=07080F)](LICENSE)
 
@@ -45,9 +45,9 @@ needs: [docs/install.md](docs/install.md). Stuck? [Troubleshooting](docs/trouble
 
 | | |
 |---|---|
-| 🤖 **One config, three agents** | Claude Code, Cursor and Opencode read the same rules, 19 `/ps:` skills and 8 agents from [`claude/`](claude). |
+| 🤖 **One plugin, three agents** | Claude Code, Cursor and Opencode get the same rules, 20 `/ps:` skills and 8 agents from the [ps plugin](https://github.com/pavstev/agent-kit), which `dots` installs. |
 | 🛡️ **Guard hooks** | A Rust guard checks each tool call: risky git, secrets in files, private words, runaway helpers. |
-| 🧩 **Presets** | Opt-in working habits: workflow, pace, models, clock, plain writing and more. |
+| 🧩 **Presets** | Opt-in working habits: workflow, models, clock, plain writing and more. |
 | 🦀 **One command** | `dots` pulls, links and installs. It is idempotent, short, and `dots doctor` checks the result. |
 | 🧰 **40+ CLI tools** | `rg`, `fd`, `eza`, `bat`, `zoxide`, `fzf`, `atuin`, `delta`, `lazygit` and more, from one [`tools.list`](tools.list) via mise. |
 | 🎨 **Optional looks** | Starship prompt, VS Code and Cursor settings, Nerd Font. Off until you pick them. |
@@ -65,7 +65,7 @@ needs: [docs/install.md](docs/install.md). Stuck? [Troubleshooting](docs/trouble
 More (`dots update`, `dots -v`, `dots uninstall`): [Features](docs/features.md#daily-workflow).
 
 In Claude Code, Opencode or Cursor, type `/ps:` to see the skills.
-Edit files in `~/dotfiles/home/` and `~/dotfiles/claude/`: they are linked, so a change is live at once.
+Edit files in `~/dotfiles/home/`: they are linked, so a change is live at once.
 
 ## 📚 Docs
 

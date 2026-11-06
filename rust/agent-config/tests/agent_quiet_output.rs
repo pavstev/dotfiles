@@ -1,12 +1,12 @@
 //! Quiet output of `agent-config`: the default output is a count line per
-//! command, not one line per file that is up to date. `skip`, `ok`, `header` and `summary` are
+//! command, not one line per file that is up to date. `skip`, `ok` and `summary` are
 //! called directly and their output is taken with `out::capture`.
 //!
 //! The skip and written counters and the verbose switch are process-wide. They live in a test file of
 //! their own, with a lock, so no other test spends the counts.
 
 #![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
-use agent_config::out::{self, capture, header, ok, set_verbose, skip, wrote};
+use agent_config::out::{self, capture, ok, set_verbose, skip, wrote};
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
@@ -65,16 +65,6 @@ fn test_written_files_keep_their_line_and_join_the_count() {
         call(|| out::summary("Cursor config")),
         "• Cursor config: 1 up to date, 1 written\n"
     );
-}
-
-#[test]
-fn test_header_is_verbose_only() {
-    let _g = quiet();
-    assert_eq!(call(|| header("Cursor config from x")), "");
-    set_verbose(true);
-    let o = call(|| header("Cursor config from x"));
-    set_verbose(false);
-    assert!(o.contains("Cursor config from x"), "{o}");
 }
 
 #[test]

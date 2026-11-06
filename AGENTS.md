@@ -7,8 +7,8 @@ Cursor and Opencode read `AGENTS.md` themselves; Claude Code reads it through th
 
 ## The one rule
 
-**Edit the source, never `$HOME` by surprise.** Most of `$HOME` is symlinked from `home/` and
-`claude/`, so an edit on either side is the same file and is live at once. New files, packages
+**Edit the source, never `$HOME` by surprise.** Most of `$HOME` is symlinked from `home/`, so an
+edit on either side is the same file and is live at once. New files, packages
 and machine setup take effect only after `./dotfiles` (alias `dots`: pull, link, provision).
 No background sync. This machine pushes; others run `dots` to catch up. Commit and push yourself.
 
@@ -20,23 +20,22 @@ Each file's header says what it does. The rows below hold a gotcha.
   use, installs Rust with rustup when missing, and says why if it cannot. `DOTS_BIN=<path>` runs a
   given `dots` (tests). The install steps are in `rust/agent-config/src/dots/install/`, in the order
   of `STEPS` in `install/mod.rs` (`NN-name`).
-- `claude/`: Claude config, symlinked per item into `~/.claude`. Rules for skills:
-  `claude/skills/README.md`. Core rules: `claude/CLAUDE.md`. Opt-in habits: `claude/presets/`
-  (how to add one: `claude/presets/README.md`).
-- `claude/hooks/rust-bin`: the launcher for hooks and skills. It runs the Rust bin when it exists,
-  with no freshness check, and never builds. With no binary, `--hook` fails open (exit 0, silent)
-  and a skill call says "Run: dots" and exits 127.
+- `claude/settings.json`: the base of `~/.claude/settings.json` (built, not linked: the base, the
+  `claude/preset-settings/<preset>.json` of the presets that are on, then the private layer).
+- The AI harness is not here. Rules, presets, skills, agents, output styles, the guard hooks, the
+  status line and the Cursor and Opencode config are the `ps` plugin in
+  [pavstev/agent-kit](https://github.com/pavstev/agent-kit). `dots` installs it with the `claude`
+  CLI, removes the old links into `claude/`, and runs the plugin's `agent-config` for Cursor and
+  Opencode (`rust/agent-config/src/dots/agent_kit.rs`). The plugin keeps `~/.claude/hooks` as a
+  link to its binaries, so `~/.claude/hooks/rust-bin` still works.
 - `scripts/agent-config`: a shim over the Rust build. With no binary and no `cargo` it says
-  "Run: dots" and exits 127. Run `claude/hooks/rust-bin ctx|sessions|proj` for the code reader, the
-  session search and the project detector.
+  "Run: dots" and exits 127.
 - `tools.list`: THE list of command-line tools. Add a tool = add a line. Nothing else lists tools.
 - `scripts/setup-lib.sh`: the shell helpers for the few scripts that are still bash.
 
 ## Tests
 
-- `cargo test` in `rust/agent-config`: every unit and process test. For a staged skill change the
-  pre-commit hook also runs `cargo test --test skill_bins` (and `skill_check`, see
-  `claude/skills/README.md`).
+- `cargo test` in `rust/agent-config`: every unit and process test.
 - `bash scripts/test-dotfiles.sh`: `./dotfiles` in a temp HOME with a temp repo and origin. About
   20 seconds, nothing installs.
 - `scripts/os-check.sh` (or `/os-check` in Claude Code): the manual check on all three OSes, run
@@ -50,59 +49,35 @@ Each file's header says what it does. The rows below hold a gotcha.
   `--reuse` reruns your edits. It also fails on a shell error that skips `warn`, a Rust panic, a
   last line that is not the done line, and a second run over 90 seconds or one that rebuilds.
 - One step in a temp HOME: `HOME=$(mktemp -d) DOTFILES_STEPS=60-cursor ./dotfiles`.
-  `DOTFILES_STEPS` filters the install steps. The pull, git identity prompt, links, skill sync and
-  the Opencode config still run: that one is in `dots` itself, not a step.
-- `dots uninstall` (`rust/agent-config/src/dots/uninstall.rs`, the Cursor and Opencode part in
-  `src/undo.rs`, test `cargo test --test uninstall`): for each new thing `dots` writes or merges,
-  add its undo to `undo.rs` and a line to the test.
+  `DOTFILES_STEPS` filters the install steps. The pull, git identity prompt, links, the plugin
+  hand-over and the Opencode config still run: those are in `dots` itself, not steps.
+  `DOTS_NO_PLUGIN=1` skips the plugin install (tests).
+- `dots uninstall` (`rust/agent-config/src/dots/uninstall.rs`, test `cargo test --test uninstall`):
+  for each new thing `dots` writes, add its undo and a line to the test. The plugin and the Cursor
+  and Opencode config it wrote stay.
 - `dots doctor` (`rust/agent-config/src/dots/doctor.rs`): `bins-fresh` is the one place a stale
-  binary shows, because `rust-bin` never checks. New check: add it to `checks()` and give it a pass
-  test and a fail test in `tests/doctor.rs`.
-- Guard checks have an off switch: `GUARD_OFF="G10,G13"` in the env turns those checks off
-  (the doc comment in `rust/agent-config/src/bin/guard.rs` lists every check).
-- `claude/hooks/` is live in every session. Merge helper branches that touch it in a worktree
-  and bring main forward only when the tests pass: a conflict marker breaks every session's
-  hooks, and a broken SubagentStop leaves helper slots taken until they time out (90 min).
+  binary shows. `plugin` says the ps plugin has its binaries. New check: add it to `checks()` and
+  give it a pass test and a fail test in `tests/doctor.rs`.
 - `agent-config claude-settings promote` writes into the repo (`claude/settings.json`). It finds
   the repo from `DOTFILES_REPO`, else from the binary's folder. To test it, point `DOTFILES_REPO`
-  at a temp copy of `claude/`, `cursor/` and `scripts/`, never at the real checkout.
+  at a temp copy of `claude/` and `scripts/`, never at the real checkout.
 
 ## Known gaps
 
 Accepted for now:
 
 - `cargo test` runs on the Mac. On Linux and Windows, `scripts/os-check.sh` runs `./dotfiles`,
-  not the tests, so the guard is untested on Windows. `GUARD_PLATFORM` (`darwin|linux|win32`)
-  stands in for the platform in the macOS-only guard checks (a test hook), and G14 and G15
-  assume `/` in paths.
-- Local time (the `pace` budget day, the scans) is UTC on Windows unless `TZ` is set: jiff's
-  system time zone links windows-link, which crashes next to tantivy's winapi there.
+  not the tests.
 
-## Skills
+## Cursor and Opencode
 
-On a name clash in `~/.claude/skills` the local skill wins, and nothing goes into `~/.cursor/skills`.
-The rules and the new-skill steps: `claude/skills/README.md`.
+Their rules, agents, hooks and skill links come from the ps plugin
+([pavstev/agent-kit](https://github.com/pavstev/agent-kit), its `docs/cursor-port.md` and
+`docs/opencode-port.md`). Step `60-cursor` installs the Cursor CLI and the editor extensions and
+then runs the plugin's `agent-config cursor`; `dots` runs its `agent-config opencode`. Before the
+plugin's first Claude Code session it has no binaries, and both only say so.
 
-## Cursor
-
-`claude/` is the source for Cursor too. Step `60-cursor` runs only when Cursor is present. What
-Cursor gets, the marker rule and the `cursor-rules` paste: `docs/ai-agents.md` "Cursor" and
-`docs/cursor-port.md`.
-
-- Never edit the generated files under `~/.cursor`; the next `dots` overwrites them.
 - Never symlink `~/.cursor/cli-config.json` or `~/.cursor/mcp.json`. Cursor rewrites them.
-- superlite follows the Claude Code switch. `DOTS_SUPERLITE_REPO` points its clone at another repo (tests).
-
-## Opencode
-
-Opencode uses the same `claude/` source. `agent-config opencode` runs in `./dotfiles` itself, not
-as a step, so `dots settings` runs it too. Skills need no step.
-
-- Edit the guard plugin template `rust/agent-config/src/opencode_plugin.ts.tmpl`, never the
-  generated `plugins/dots-guard.ts`.
-- What each piece holds, the marker rule and which guard checks run there:
-  [`docs/ai-agents.md`](docs/ai-agents.md) "Opencode". Mapping, the dropped `model:` pin and gaps:
-  [`docs/opencode-port.md`](docs/opencode-port.md).
 
 ## Platforms
 
@@ -139,7 +114,7 @@ identity file): [`docs/platforms.md`](docs/platforms.md#windows). The gotchas:
   `~/.gitconfig` is not linked because it sets `delta` and `code`.
 - **Clone-safe paths:** a tracked path with `: < > " | ? *` or `\`, a trailing dot or space, or a device
   name (`con`, `nul`, ...) makes `git clone` fail on Windows ("invalid path") and leaves a clone with no
-  checkout. So a skill folder is `ps_foo` while its `name:` stays `ps:foo`. The pre-commit hook and
+  checkout. The pre-commit hook and
   `scripts/test-dotfiles.sh` reject such paths. `.gitattributes` forces LF, and `bootstrap.sh` clones with
   `core.autocrlf=false` and repairs a clone that has no `./dotfiles` (a re-run of the one-liner fixes it).
 - **Rust:** the `-windows-gnu` host the shim installs (`docs/platforms.md`; Windows on Arm runs it
@@ -157,13 +132,13 @@ identity file): [`docs/platforms.md`](docs/platforms.md#windows). The gotchas:
   added to the Cursor global rule and written into `~/.config/opencode/AGENTS.md` (0600).
   Without it, `dots` warns.
 - **Claude settings**, every profile: `dots` builds `~/.claude/settings.json` (a real file) from
-  `claude/settings.json` plus a private layer; the build and `claude-settings promote <key>` are in
-  [`docs/ai-agents.md`](docs/ai-agents.md). Owner-only keys stay in the layer.
-- **Presets** (`claude/presets/`) are enabled by the `PRESETS` setting
-  ([`claude/presets/README.md`](claude/presets/README.md)). An empty `PRESETS`: `owner` gets every
-  preset, `shared` every one but `ship-to-main`.
-- Personal rules go in `owner.md` (`dots settings`), never in `~/.claude/CLAUDE.md`: that is the
-  repo file, and a local edit can stop the pull.
+  `claude/settings.json`, the fragments of the presets that are on, and a private layer;
+  `claude-settings promote <key>` is in [`docs/customize.md`](docs/customize.md). Owner-only keys
+  stay in the layer.
+- **Presets** are the ps plugin's; the `PRESETS` setting turns them on. A preset that needs a
+  settings key has a fragment here: `claude/preset-settings/<name>.json`. An empty `PRESETS`:
+  `owner` gets every preset, `shared` every one but `ship-to-main`.
+- Personal rules go in `owner.md` (`dots settings`), never in the repo.
 
 ## Settings
 
@@ -174,7 +149,7 @@ config.
 
 - The last line of a name wins. Env vars win for one run: `DOTFILES_PROFILE`, `DOTFILES_MCP`,
   `DOTFILES_STEPS`, `DOTFILES_PROJECTS`.
-- Cursor and Opencode MCP servers (`cursor/mcp.json`) are opt-in: `CURSOR_MCP` and `OPENCODE_MCP`.
+- Cursor and Opencode MCP servers (from the ps plugin) are opt-in: `CURSOR_MCP` and `OPENCODE_MCP`.
 - Secrets never go in the settings; they stay in the ignored `~/.config/zsh/local.zsh`.
 
 ## Conventions
@@ -185,16 +160,14 @@ config.
   default clone URL (`DOTFILES_REPO` in `bootstrap.sh`, the README one-liner). Session notes,
   hand-offs and ledgers stay in the ignored `.agents/`.
 - **Private words:** the git hooks, the pre-push hook (it checks every pushed commit and stops a
-  push that brings a second history), `dots doctor`
-  and guard G16 block the words in `PRIVATE_PROJECTS` and `PRIVATE_WORDS`, the git name and email,
+  push that brings a second history), `dots doctor` (`dots/leak.rs`) and the ps plugin's guard
+  block the words in `PRIVATE_PROJECTS` and `PRIVATE_WORDS`, the git name and email,
   and home paths. Whole hosts in `PUBLIC_HOSTS` are exempt; paths never are.
 - **Story page:** https://stevanpavlovic.com/work/dotfiles tells this repo's story and is the GitHub
-  homepage of the repo. It reads the repo
-  from GitHub at build: the paths `claude/skills/ps_*/SKILL.md`,
-  `claude/agents/*.md`, `claude/presets/*/rules.md`, `claude/output-styles/*.md`, `home/**`,
-  `claude/settings.json`, `rust/agent-config/Cargo.toml` and the quoted check ids in
-  `rust/agent-config/src/guard_checks.rs`. Moving one of them breaks the page build on purpose.
-  A new or renamed skill needs an entry in the page's skill catalog (in the site repo), or it shows as new.
+  homepage of the repo. It reads the repo from GitHub at build: `home/**`, `claude/settings.json`
+  and `rust/agent-config/Cargo.toml`. Moving one of them breaks the page build on purpose. The
+  skills, agents, presets, output styles and guard check ids it showed moved to the ps plugin, so
+  the page's reader of those paths needs the same move (in the site repo).
 - **Theme:** warm Claude copper-on-stone. Refine it; never swap palettes.
 - **Idempotent and safe:** steps detect and skip what is installed, back up config before
   overriding, and warn and continue on failure.

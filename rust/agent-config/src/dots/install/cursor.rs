@@ -1,8 +1,8 @@
-//! 60-cursor: Cursor (app + CLI) from the same claude/ source. Runs only when Cursor is
-//! present. See docs/cursor-port.md.
+//! 60-cursor: Cursor (app + CLI). Runs only when Cursor is present. The rules, agents, hooks and
+//! skill links come from the ps plugin (pavstev/agent-kit, its docs/cursor-port.md).
 //!   1. the `agent` / `cursor-agent` CLI, via Cursor's official installer, if missing
 //!   2. the Brewfile `vscode` extensions, into Cursor (brew bundle only feeds VS Code)
-//!   3. generated rules and agents, merged hooks / MCP / CLI config (agent-config)
+//!   3. generated rules and agents, merged hooks / MCP / CLI config (the plugin's agent-config)
 
 use super::super::{os, settings};
 use super::{brew_extensions, curl_pipe_bash};
@@ -57,7 +57,8 @@ pub(super) fn step(repo: &Path) {
 
     // 3. Rules, agents, hooks, MCP, CLI config. agent-config prints its own count line.
     out::step_end();
-    if crate::run_args(&["cursor", "--profile", settings::profile().as_str()]) != 0 {
-        warn("agent-config cursor reported an issue, see above");
+    let args = ["cursor", "--profile", settings::profile().as_str()];
+    if !super::super::agent_kit::agent_config(&home, &args) {
+        warn("agent-config cursor (ps plugin) reported an issue, see above");
     }
 }

@@ -1,9 +1,9 @@
 //! `dots uninstall`: take back what `dots` put in the home folder. It removes the links into the
-//! repo (and puts back the files they replaced), the generated Cursor and Opencode files and the
-//! entries merged into the user's own config. The repo, the tools, your settings and
-//! `~/.claude/settings.json` stay.
+//! repo (and puts back the files they replaced) and the owner rules link. The repo, the tools,
+//! your settings, `~/.claude/settings.json` and the ps plugin (with the Cursor and Opencode config
+//! it wrote) stay.
 
-use super::{ask, editor_links, link, links, os, skills};
+use super::{agent_kit, ask, editor_links, link, links, os};
 use crate::out::{info, ok, step, step_end};
 use std::path::{Path, PathBuf};
 
@@ -27,25 +27,12 @@ pub fn undo(repo: &Path, home: &Path) {
         link::unlink_item(&src, &dst);
     }
     step("Claude");
-    let (src, dst) = (repo.join("claude"), home.join(".claude"));
-    for d in ["agents", "hooks", "output-styles", "CLAUDE.md"] {
-        link::unlink_item(&src.join(d), &dst.join(d));
-    }
-    crate::presets::link_all(repo, home, &[]);
-    for name in skills::list(&src.join("skills")) {
-        link::unlink_item(
-            &src.join("skills").join(&name),
-            &dst.join("skills").join(&name),
-        );
-    }
+    let dst = home.join(".claude");
+    agent_kit::drop_old_links(repo, home);
     link::unlink_item(
         &home.join(".config/dotfiles/owner.md"),
         &dst.join("rules").join("owner.md"),
     );
-    step("Cursor");
-    crate::undo::cursor_undo(home);
-    step("Opencode");
-    crate::undo::opencode_undo(home);
     step_end();
 }
 
@@ -72,7 +59,7 @@ pub fn run(repo: &Path, yes: bool) -> i32 {
     undo(repo, &os::home());
     ok("uninstalled");
     info(
-        "Left on purpose: this repo, your tools (mise, Homebrew apps, Oh My Zsh, toolchains), your settings in ~/.config/dotfiles and ~/.claude/settings.json.",
+        "Left on purpose: this repo, your tools (mise, Homebrew apps, Oh My Zsh, toolchains), your settings in ~/.config/dotfiles and ~/.claude/settings.json, and the ps plugin (remove it with: claude plugin uninstall ps@agent-kit).",
     );
     info("To finish: delete the repo folder and ~/.config/dotfiles if you want them gone too.");
     0

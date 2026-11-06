@@ -139,12 +139,6 @@ fn removes_ours_and_keeps_the_users() {
         ".claude/agents",
         ".claude/skills/ps_x",
         ".claude/rules/preset-clock.md",
-        ".cursor/rules/claude-global.mdc",
-        ".cursor/agents/a.md",
-        ".cursor/.dotfiles-managed.json",
-        ".config/opencode/AGENTS.md",
-        ".config/opencode/agents/a.md",
-        ".config/opencode/.dotfiles-managed.json",
     ] {
         assert!(
             !home.join(gone).exists() && home.join(gone).symlink_metadata().is_err(),
@@ -159,36 +153,9 @@ fn removes_ours_and_keeps_the_users() {
     ] {
         assert!(home.join(kept).is_file(), "{kept} should stay");
     }
-    // merged entries: ours out, the user's in
-    let hooks = json_at(&home.join(".cursor/hooks.json"));
-    assert_eq!(hooks["hooks"]["preToolUse"], json!([{"command": "mine"}]));
-    assert!(hooks["hooks"].get("beforeSubmitPrompt").is_none());
-    assert_eq!(
-        json_at(&home.join(".cursor/mcp.json"))["mcpServers"],
-        json!({"mine": {"url": "https://mine.test"}})
-    );
-    assert_eq!(
-        json_at(&home.join(".cursor/cli-config.json"))["permissions"]["allow"],
-        json!(["Shell(mine)"])
-    );
-    assert_eq!(
-        json_at(&home.join(".config/opencode/opencode.jsonc"))["permission"],
-        json!({"bash": {"mine *": "allow"}})
-    );
-    assert!(
-        json_at(&home.join(".config/opencode/opencode.jsonc"))
-            .get("mcp")
-            .is_none()
-    );
-    assert_eq!(
-        json_at(&home.join(".config/opencode/opencode.jsonc"))["plugins"],
-        json!(["mine"])
-    );
-    assert!(!home.join(".cursor/plugins/local/superlite").exists());
-    assert_eq!(
-        json_at(&home.join(".config/opencode/tui.json")),
-        json!({"other": 1})
-    );
+    // the Cursor and Opencode config belongs to the ps plugin now, so it stays
+    assert!(home.join(".cursor/rules/claude-global.mdc").is_file());
+    assert!(home.join(".config/opencode/AGENTS.md").is_file());
     // the repo itself stays, and a second run changes nothing and still succeeds
     assert!(repo.join("claude/agents/a.md").is_file());
     let (code, _, err) = dots(&home, &repo, &["uninstall", "-y"]);

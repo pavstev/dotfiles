@@ -7,17 +7,18 @@
 //! result and changes nothing. `dots update` (macOS) checks every package manager and installs
 //! the updates in one run.
 
+pub mod agent_kit;
 pub mod ask;
 pub mod doctor;
 pub mod git;
 pub mod install;
 pub mod java;
+pub mod leak;
 pub mod link;
 pub mod looks;
 pub mod menu;
 pub mod os;
 pub mod settings;
-pub mod skills;
 pub mod steps;
 pub mod uninstall;
 pub mod update;
@@ -38,7 +39,7 @@ pub fn repo() -> PathBuf {
     {
         return PathBuf::from(v);
     }
-    // `rust-bin` starts the exe as `~/.claude/hooks/../../rust/...`: resolve it, or the root is `~/.claude/hooks/../..`
+    // Resolve a link to the exe, or the root is the link's folder.
     env::current_exe()
         .ok()
         .map(|e| {
@@ -186,11 +187,6 @@ pub fn main() -> i32 {
             if !changed.is_empty() {
                 info(&format!("changed here: {changed}"));
             }
-            if format!(" {changed} ").contains(" claude/CLAUDE.md ") {
-                info(
-                    "keep your own rules in your private rules (dots settings), not in claude/CLAUDE.md",
-                );
-            }
         }
     }
 
@@ -301,43 +297,18 @@ pub fn main() -> i32 {
     link_files(&repo);
     claude_config(&repo, profile);
 
-    step("Skills");
-    let (good, lines) = skills::sync(&repo);
-    if !good {
-        warn("the skill sync reported an issue — skills may be unlinked");
-    }
-    if lines.is_empty() {
-        uptodate("skills linked");
-    } else {
-        out::replay(&lines);
-    }
-
     if verbose() {
         step("Opencode config -> ~/.config/opencode");
     } else {
         step_end();
     }
-    // Opencode reads ~/.claude/skills natively. What remains: the global rules file, the
-    // agents mirrored from claude/agents, the copper theme, and permissions and opt-in MCP
-    // servers merged into opencode.jsonc. Generated or merged, never linked.
-    let oc = ["opencode", "--profile", profile.as_str()];
-    if os::is_windows() {
-        // One line instead of eleven; the whole output only when something fails.
-        let (good, lines) = out::capture(|| agent_config(&oc));
-        let n = lines
-            .iter()
-            .filter(|(l, _)| l.starts_with('✓') || l.contains("✓\x1b[0m"))
-            .count();
-        if good && n > 0 && !verbose() {
-            ok(&format!("Opencode config written ({n} files)"));
-        } else {
-            out::replay(&lines);
+    // The ps plugin's agent-config writes the Opencode rules, agents, guard plugin and skill
+    // links. Before its first session it has no binaries, and this only says so.
+    if os::have("opencode") || os::home().join(".config").join("opencode").is_dir() {
+        let oc = ["opencode", "--profile", profile.as_str()];
+        if !agent_kit::agent_config(&os::home(), &oc) {
+            warn("agent-config opencode (ps plugin) reported an issue, see above");
         }
-        if !good {
-            warn("agent-config opencode reported an issue, see above");
-        }
-    } else if !agent_config(&oc) {
-        warn("agent-config opencode reported an issue, see above");
     }
 
     steps::run_all(&repo, own_steps);
@@ -551,30 +522,15 @@ fn claude_config(repo: &Path, profile: Profile) {
     if fs::create_dir_all(&dst).is_err() {
         warn(&format!("couldn't create {}", dst.display()));
     }
-    // Per item, never the whole folder: Claude Code writes session state in ~/.claude.
-    for d in ["agents", "hooks", "output-styles", "CLAUDE.md"] {
-        link::link_item(&src.join(d), &dst.join(d), true);
-    }
-    // The old status line script is gone (`rust-bin statusline` replaced it): drop our link to it.
-    let old_sl = dst.join("statusline.sh");
-    if os::is_symlink(&old_sl)
-        && os::readlink(&old_sl).is_some_and(|t| t.starts_with(&src))
-        && fs::remove_file(&old_sl).is_ok()
-    {
-        ok("removed the old statusline.sh link");
-    }
-    // The enabled presets load as user rules; the ones that went off lose their link.
-    let on = crate::presets::enabled(&os::home(), profile);
-    crate::presets::link_all(repo, &os::home(), &on);
+    // The rules, presets, skills, agents, output styles, hooks and status line come from the ps
+    // plugin. Install it, and drop the old links into claude/ so nothing loads twice.
+    agent_kit::ensure_plugin();
+    agent_kit::drop_old_links(repo, &os::home());
     if verbose() {
         info(&format!(
-            "presets: {}",
+            "presets: {} (the ps plugin reads PRESETS)",
             crate::presets::summary(&os::home(), profile)
         ));
-    }
-    let n = link::take_count();
-    if n > 0 {
-        ok(&format!("linked {n} Claude files"));
     }
     step_end(); // the agent-config lines below print their own count
     // settings.json is built, not linked: the repo base plus the private layer. Claude writes

@@ -17,8 +17,8 @@ this repo. There is no templating engine and no apply step for content changes.
   before its link goes in.
 - **Portable:** macOS, Linux and Windows (Git Bash). Machine-specific parts live in git-ignored
   local files ([Platforms](platforms.md)).
-- **AI-ready:** Claude Code skills, agents, hooks and settings live here. Cursor and Opencode read
-  the same source ([AI agents](ai-agents.md)).
+- **AI-ready:** the Claude Code settings live here. `dots` installs the [ps plugin](https://github.com/pavstev/agent-kit) with the
+  skills, agents, rules and guard hooks, and sets up Cursor and Opencode from it.
 - **One palette:** warm copper on stone, in Ghostty, Starship, fzf, delta and atuin.
 
 ## What's inside
@@ -77,11 +77,9 @@ usually `Run: dots`. The checks:
 | Check | What it looks at |
 |-------|------------------|
 | `links` | every linked file points into the repo |
-| `settings-built` | `~/.claude/settings.json` exists and every hook runs `rust-bin` |
+| `settings-built` | `~/.claude/settings.json` exists, turns the ps plugin on and holds no old guard hook |
 | `bins-fresh` | each Rust program is built and not older than its source |
-| `guard-selftest` | the guard denies a bare BSD `sed -i` (macOS rules) and a read of `local.zsh`, asks before a send that holds a private word, and lets `ls` through |
-| `presets` | the preset links equal the `PRESETS` setting |
-| `generated` | the generated Cursor rule and Opencode files carry the `generated-by: dotfiles` marker |
+| `plugin` | the ps plugin has fetched its binaries (its first Claude Code session does) |
 | `timezone` | `TIMEZONE` is empty or a real zone name (macOS and Linux) |
 | `no-leak` | no private word in a tracked file |
 

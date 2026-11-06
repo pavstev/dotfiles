@@ -32,8 +32,6 @@ goes on.
   when `en_US.UTF-8` is not built. Without VS Code it sets `GIT_EDITOR` to `$EDITOR` in
   interactive zsh. Git from bash or a hook still uses `code --wait` from `~/.gitconfig`.
 - **Login shell:** not changed. `78-linux-extras` prints the `chsh` line when it is not zsh.
-- **Skills:** `ps:bag-mode` is for a Mac laptop; on Linux and Windows it says so and stops. The
-  other skill scripts run on all three.
 
 ### Test it
 
@@ -74,12 +72,12 @@ Each check then works on a clone of the golden VM and deletes the clone.
   because zsh does not run on Windows. mise and its shims go on PATH for the run; open a new Git
   Bash afterwards.
 - **Links:** real symlinks, so Developer Mode must be on (the script stops and says how). These
-  link: `.config/gh/config.yml`, the Claude config under `~/.claude`, and the VS Code and Cursor
+  link: `.config/gh/config.yml` and the VS Code and Cursor
   settings (`%APPDATA%\{Code,Cursor}\User\`, only with the `editor` look). `~/.gitconfig` is not
   linked: the git identity goes to `~/.gitconfig.local`, which your own `~/.gitconfig` includes.
 - **Skipped:** the same macOS-only steps and apps as on Linux.
 - **Shell:** Git Bash provides `git`, `ln -s` and `clip`. There is no zsh, so the zsh config is
-  not linked. `scripts/agent-config user-rules --copy` (the Cursor User Rules text) uses `clip`.
+  not linked.
 - **Cursor and Opencode config:** the same output as on macOS and Linux.
 - **Rust:** with no Rust, `dots` installs it first (the `x86_64-pc-windows-gnu` host, no Visual
   Studio). Python is not needed.

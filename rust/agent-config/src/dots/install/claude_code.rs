@@ -1,7 +1,7 @@
 //! 57-claude-code: Claude Code (the `claude` CLI). Mac and Linux: Anthropic's installer, which
 //! keeps it up to date. Windows: `WinGet` (Anthropic.ClaudeCode), else Anthropic's PowerShell
-//! installer. Skips when `claude` is already there. Its config comes from claude/ through the
-//! ~/.claude links in `dots`.
+//! installer. Skips when `claude` is already there. Its settings come from claude/settings.json;
+//! the rest is the ps plugin, which `dots` installs.
 
 use super::super::os;
 use super::{curl_pipe_bash, quiet};

@@ -2,31 +2,25 @@
 name = "agent-config"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89" # File::lock (the guard's state file)
+rust-version = "1.89" # let chains need 1.88; scripts/setup-lib.sh checks this number
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
 serde_json ={ version = "1", features = ["preserve_order", "float_roundtrip"] }
 dirs = "6"
 sha2 = "0.10"
 tempfile = "3"
 walkdir = "2"
-regex = "1"
-tantivy = { version = "0.27", default-features = false, features = ["mmap", "lz4-compression", "stopwords", "stemmer"] }
 thiserror = "2"
-# jiff's system time zone (`tz-system`) links windows-link (raw-dylib). Next to tantivy's winapi
-# import libraries that makes every exe crash before main on windows-gnu, so it is on for macOS and
-# Linux only (below). Windows reads the TZ variable, else UTC.
-jiff = { version = "0.2", default-features = false, features = ["std", "tz-fat", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated", "perf-inline"] }
-memchr = "2"
 
 # The prompt backend. crossterm pulls winapi 0.3, whose GNU import libraries clash with the
 # raw-dylib ones of windows-sys: on windows-gnu the linked exe crashes before main. So Windows
 # uses the console backend.
+[dev-dependencies]
+serde = "1" # tests/agent_config.rs serializes with a custom formatter
+
 [target.'cfg(not(windows))'.dependencies]
 inquire = { version = "0.9.4", default-features = false, features = ["crossterm", "editor"] }
-jiff = { version = "0.2", features = ["tz-system"] } # see the jiff line above
 
 [target.'cfg(windows)'.dependencies]
 inquire = { version = "0.9.4", default-features = false, features = ["console", "editor"] }
@@ -50,14 +44,14 @@ unwrap_used = "warn"
 # Pedantic lints that do not fit a crate of small command-line tools:
 must_use_candidate = "allow" # most fns run for their effect or feed a print at once
 too_many_lines = "allow" # each check and install step reads top to bottom
-cast_precision_loss = "allow" # f64 holds token counts and percents, far below 2^52
+cast_precision_loss = "allow" # f64 holds sizes and percents, far below 2^52
 similar_names = "allow" # paired short names read well in the parsers and tests
 many_single_char_names = "allow" # short names in the parsers and the test fixtures
 struct_excessive_bools = "allow" # flag structs of the command lines
 
 # Strip only: a fifth smaller at no build cost. Fat LTO was a third smaller but made each rebuild
 # after a pull about 4 times slower, with the same start-up time. Keep the default
-# panic = "unwind": guard and guard_cursor fail open through catch_unwind.
+# panic = "unwind": `run_args` turns a panic of an in-process agent-config run into a failure.
 [profile.release]
 strip = "symbols"
 
@@ -66,76 +60,12 @@ name = "agent-config"
 path = "src/main.rs"
 
 [[bin]]
-name = "guard_cursor"
-path = "src/bin/guard_cursor.rs"
-
-[[bin]]
-name = "guard"
-path = "src/bin/guard.rs"
-
-[[bin]]
-name = "route"
-path = "src/bin/route.rs"
-
-[[bin]]
-name = "harness_stats"
-path = "src/bin/harness_stats.rs"
-
-[[bin]]
-name = "whatsleft_scan"
-path = "src/bin/whatsleft_scan.rs"
-
-[[bin]]
-name = "hurry_scan"
-path = "src/bin/hurry_scan.rs"
-
-[[bin]]
-name = "yt_transcribe"
-path = "src/bin/yt_transcribe.rs"
-
-[[bin]]
 name = "dots"
 path = "src/bin/dots.rs"
 
 [[bin]]
-name = "pace"
-path = "src/bin/pace.rs"
-
-[[bin]]
 name = "tools"
 path = "src/bin/tools.rs"
-
-[[bin]]
-name = "statusline"
-path = "src/bin/statusline.rs"
-
-[[bin]]
-name = "skill_check"
-path = "src/bin/skill_check.rs"
-
-[[bin]]
-name = "mic_check"
-path = "src/bin/mic_check.rs"
-
-[[bin]]
-name = "bag_check"
-path = "src/bin/bag_check.rs"
-
-[[bin]]
-name = "leftovers"
-path = "src/bin/leftovers.rs"
-
-[[bin]]
-name = "ctx"
-path = "src/bin/ctx.rs"
-
-[[bin]]
-name = "sessions"
-path = "src/bin/sessions.rs"
-
-[[bin]]
-name = "proj"
-path = "src/bin/proj.rs"
 
 [[bin]]
 name = "port"

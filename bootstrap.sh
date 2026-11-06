@@ -109,7 +109,7 @@ git -C "$REPO_DIR" config core.autocrlf false
 
 # 3. Run the one command. First run prompts for git identity, then links every
 #    config file and runs the install steps (brew bundle, OMZ, toolchains,
-#    Claude links…).
+#    the Claude settings and the ps plugin).
 if [[ -n "$IS_WIN" ]]; then info "Setting up (about 5 minutes)…"; else info "./dotfiles (this installs everything; grab a coffee)…"; fi
 bash "$REPO_DIR/dotfiles" || exit $?
 

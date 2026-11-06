@@ -57,7 +57,7 @@ OUT="$REPO/.os-check"
 mkdir -p "$OUT"
 
 # ---- which OS a changed file is for ----------------------------------------
-RE_ALL='^(dotfiles|bootstrap\.sh|tools\.list|scripts/(setup-lib|settings|os-check)\.sh|scripts/(agent-config|tools)|rust/|claude/(settings\.json|hooks/))'
+RE_ALL='^(dotfiles|bootstrap\.sh|tools\.list|scripts/(setup-lib|os-check)\.sh|scripts/(agent-config|tools)|rust/|claude/(settings\.json|preset-settings/))'
 RE_WIN='\.psm?1$|(^|/)(windows|winget|scoop)|^home/\.config/(gh|opencode)/|^home/Library/Application Support/|^\.gitattributes$'
 RE_LINUX='^(home/|scripts/test-linux\.sh)'
 RE_MAC='^(Brewfile|home/|scripts/(test-dotfiles|fix-brew-permissions)\.sh)'
@@ -320,7 +320,7 @@ git -c user.name=test -c user.email=test@example.com commit -qam 'pull test' && 
 echo "RUN3_EXIT=$?"
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] && echo PULL_OK || echo PULL_BAD
 grep -q 'pulled the latest version' ~/run3.log && echo RESTART_OK || echo RESTART_BAD
-for p in .claude/CLAUDE.md .claude/hooks .config/gh/config.yml; do
+for p in .config/gh/config.yml; do
   if [ -L ~/"$p" ] && [ -e ~/"$p" ]; then echo "LINK_OK $p"; else echo "LINK_BAD $p"; fi
 done
 if [ ! -L ~/.gitconfig ] && git config --global --get-all include.path | grep -q gitconfig.local; then echo GITCONFIG_OK; else echo GITCONFIG_BAD; fi
@@ -329,7 +329,7 @@ pwsh_out="$(pwsh -Command exit 2>&1)"; echo "PWSH_EXIT=$?"
 # dots uninstall: the links go, the repo stays, and a second run still works.
 ./dotfiles uninstall -y </dev/null >~/uninstall.log 2>&1
 echo "UNINSTALL_EXIT=$?"
-for p in .claude/CLAUDE.md .claude/hooks .config/gh/config.yml; do
+for p in .config/gh/config.yml; do
   if [ ! -e ~/"$p" ] && [ ! -L ~/"$p" ]; then echo "UNLINK_OK $p"; else echo "UNLINK_BAD $p"; fi
 done
 [ -f ~/dotfiles/dotfiles ] && echo REPO_KEPT || echo REPO_GONE

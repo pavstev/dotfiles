@@ -151,23 +151,6 @@ fn edit_presets() {
     }
 }
 
-fn edit_plan() {
-    let now = or(settings::get("PLAN"), "unknown");
-    pick_value(
-        "📊 Claude plan (sets the weekly pace budget)",
-        "PLAN",
-        &now,
-        &[
-            ("pro", "pro", "plan: pro"),
-            ("max5: Max, 5x", "max5", "plan: max5"),
-            ("max20: Max, 20x", "max20", "plan: max20"),
-            ("team", "team", "plan: team"),
-            ("api: pay per use", "api", "plan: api"),
-            ("unknown: no pace budget", "unknown", "plan: unknown"),
-        ],
-    );
-}
-
 /// An IANA zone name such as Europe/Berlin: letters, digits and `_ + - /`, no `..`.
 pub fn valid_zone(v: &str) -> bool {
     !v.contains("..")
@@ -193,41 +176,6 @@ fn edit_zone() {
             "time zone: {}",
             or(v.trim().to_string(), "the system zone")
         ));
-    }
-}
-
-const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-
-/// Work days: names or ranges split by spaces or commas, e.g. `mon-fri`, `mon-sat`, `sun-thu`.
-pub fn valid_work_days(v: &str) -> bool {
-    let w = words(&v.to_lowercase());
-    !w.is_empty()
-        && w.split(' ').all(|part| {
-            let mut it = part.split('-');
-            let (a, b, rest) = (it.next(), it.next(), it.next());
-            rest.is_none()
-                && a.is_some_and(|x| DAYS.contains(&x))
-                && b.is_none_or(|x| DAYS.contains(&x))
-        })
-}
-
-fn edit_work_days() {
-    let Some(v) = ask::value(
-        "📅 Work days, e.g. mon-fri or mon-sat (empty: mon-fri)",
-        &settings::get("WORK_DAYS"),
-        "mon-fri",
-    ) else {
-        return;
-    };
-    let v = v.trim().to_lowercase();
-    if !v.is_empty() && !valid_work_days(&v) {
-        warn(
-            "those are not work days (use mon, tue, ... or a range like mon-fri), so it is not changed",
-        );
-        return;
-    }
-    if settings::set("WORK_DAYS", &v) {
-        ok(&format!("work days: {}", or(v, "mon-fri")));
     }
 }
 
@@ -590,7 +538,7 @@ struct MenuRow {
 }
 
 /// The menu lines, in the order they show.
-const ROWS: [MenuRow; 19] = [
+const ROWS: [MenuRow; 17] = [
     MenuRow {
         emoji: "👤 ",
         name: "Git name",
@@ -616,22 +564,10 @@ const ROWS: [MenuRow; 19] = [
         edit: |_| edit_presets(),
     },
     MenuRow {
-        emoji: "📊 ",
-        name: "Plan",
-        value: || or(settings::get("PLAN"), "unknown"),
-        edit: |_| edit_plan(),
-    },
-    MenuRow {
         emoji: "🕒 ",
         name: "Time zone",
         value: || or(settings::get("TIMEZONE"), "system"),
         edit: |_| edit_zone(),
-    },
-    MenuRow {
-        emoji: "📅 ",
-        name: "Work days",
-        value: || or(settings::get("WORK_DAYS"), "mon-fri"),
-        edit: |_| edit_work_days(),
     },
     MenuRow {
         emoji: "🎨 ",
@@ -782,17 +718,9 @@ pub fn run(repo: &Path) {
 mod tests {
     use super::*;
     #[test]
-    fn zones_and_days() {
+    fn zones() {
         assert!(valid_zone("Europe/Berlin") && valid_zone("") && valid_zone("Etc/GMT+1"));
         assert!(!valid_zone("../etc") && !valid_zone("a b") && !valid_zone("/x"));
-        assert!(
-            valid_work_days("mon-fri")
-                && valid_work_days("Mon, tue wed")
-                && valid_work_days("sun-thu")
-        );
-        assert!(
-            !valid_work_days("") && !valid_work_days("monday") && !valid_work_days("mon-fri-sat")
-        );
     }
     #[test]
     fn word_lists() {

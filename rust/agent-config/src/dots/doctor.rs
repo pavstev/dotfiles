@@ -1,19 +1,15 @@
 //! `dots doctor`: one line per check, `PASS <name>` or `FAIL <name>: <why>`. Exit 1 on any FAIL.
 //!
-//! It only reads. The guard check runs the guard functions in this process with canned input, so
-//! it needs no setting of the machine and never opens a private file. A FAIL line names the fix.
+//! It only reads. A FAIL line names the fix. The AI harness (rules, skills, hooks) is the ps
+//! plugin (pavstev/agent-kit): the `plugin` check only says it is installed and has its binaries.
 
+use super::leak as gc;
 use super::os;
-use crate::guard_checks::{self as gc, Verdict};
-use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
-
-/// The marker that `dots` writes into every file it generates.
-const MARK: &str = "generated-by: dotfiles";
 
 /// One finished check: its name and `Ok`, or the reason it failed.
 #[derive(Debug)]
@@ -29,11 +25,9 @@ pub fn checks(repo: &Path, home: &Path) -> Vec<Check> {
     let c = |name, result| Check { name, result };
     vec![
         c("links", links(repo, home)),
-        c("settings-built", settings_built(repo, home)),
+        c("settings-built", settings_built(home)),
         c("bins-fresh", bins_fresh(repo)),
-        c("guard-selftest", guard_selftest(repo)),
-        c("presets", presets(repo, home)),
-        c("generated", generated(repo, home)),
+        c("plugin", plugin(home)),
         c("timezone", timezone(home)),
         c("no-leak", no_leak(repo, home)),
     ]
@@ -93,13 +87,10 @@ fn links(repo: &Path, home: &Path) -> Result<(), String> {
             bad.push(format!("~/{item}"));
         }
     }
-    let claude_src = repo.join("claude");
-    for item in ["agents", "hooks", "output-styles", "CLAUDE.md"] {
-        if claude_src.join(item).exists()
-            && !points_into(&home.join(".claude").join(item), &claude_src)
-        {
-            bad.push(format!("~/.claude/{item}"));
-        }
+    // The AI files come from the ps plugin now: an old link into claude/ would load them twice.
+    for p in super::agent_kit::old_links(repo, home) {
+        let rel = p.strip_prefix(home).unwrap_or(&p);
+        bad.push(format!("~/{} (an old link)", rel.display()));
     }
     if bad.is_empty() {
         Ok(())
@@ -113,61 +104,46 @@ fn links(repo: &Path, home: &Path) -> Result<(), String> {
 
 // --- settings-built --------------------------------------------------------------
 
-/// The `command` strings of every hook in a settings file.
-fn hook_commands(v: &Value, out: &mut Vec<String>) {
-    match v {
-        Value::Object(m) => {
-            for (k, x) in m {
-                if k == "command"
-                    && let Some(s) = x.as_str()
-                {
-                    out.push(s.to_string());
-                } else {
-                    hook_commands(x, out);
-                }
-            }
-        }
-        Value::Array(a) => a.iter().for_each(|x| hook_commands(x, out)),
-        _ => {}
-    }
-}
-
-/// `~/.claude/settings.json` exists and holds each guard hook of the repo's `claude/settings.json`,
-/// and each of them runs `rust-bin`. Other hooks (the user's own) are not
-/// checked: `dots` cannot change them.
-fn settings_built(repo: &Path, home: &Path) -> Result<(), String> {
+/// `~/.claude/settings.json` exists, turns the ps plugin on and holds no old guard hook (the
+/// plugin runs the guard; a second copy in the settings would run it twice).
+fn settings_built(home: &Path) -> Result<(), String> {
     let p = home.join(".claude").join("settings.json");
     let text = fs::read_to_string(&p)
         .map_err(|_| "~/.claude/settings.json is missing. Run: dots".to_string())?;
     let v: Value = serde_json::from_str(&text)
         .map_err(|_| "~/.claude/settings.json is not valid JSON. Run: dots".to_string())?;
-    let base = fs::read_to_string(repo.join("claude").join("settings.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .ok_or_else(|| {
-            "claude/settings.json of the repo is missing or not valid JSON".to_string()
-        })?;
-    let (mut want, mut have) = (Vec::new(), Vec::new());
-    if let Some(h) = base.get("hooks") {
-        hook_commands(h, &mut want);
+    let on = v
+        .get("enabledPlugins")
+        .and_then(|p| p.get(super::agent_kit::PLUGIN));
+    if on != Some(&Value::Bool(true)) {
+        return Err(format!(
+            "the ps plugin ({}) is not on in ~/.claude/settings.json. Run: dots",
+            super::agent_kit::PLUGIN
+        ));
     }
-    if let Some(h) = v.get("hooks") {
-        hook_commands(h, &mut have);
+    let hooks = v.get("hooks").map(ToString::to_string).unwrap_or_default();
+    if hooks.contains("--hook guard") {
+        return Err("~/.claude/settings.json still runs the old guard hooks. Run: dots".into());
     }
-    if want.is_empty() {
-        return Err("claude/settings.json of the repo has no hooks".into());
-    }
-    let bad: Vec<String> = want
-        .iter()
-        .filter(|w| !w.contains("rust-bin") || !have.contains(w))
-        .map(|c| c.chars().take(40).collect())
-        .collect();
-    if bad.is_empty() {
+    Ok(())
+}
+
+// --- plugin ----------------------------------------------------------------------
+
+/// The ps plugin fetched its binaries into its data folder (its first session does).
+fn plugin(home: &Path) -> Result<(), String> {
+    let bin = super::agent_kit::data_dir(home).join("bin");
+    let exe = if os::is_windows() {
+        "agent-config.exe"
+    } else {
+        "agent-config"
+    };
+    if bin.join("rust-bin").is_file() && bin.join(exe).is_file() {
         Ok(())
     } else {
         Err(format!(
-            "a guard hook is missing or does not run rust-bin ({}). Run: dots",
-            join(&bad)
+            "the ps plugin has no binaries in {} yet. Start Claude Code once, then run: dots",
+            crate::tilde(&bin)
         ))
     }
 }
@@ -220,8 +196,8 @@ fn newest_source(crate_dir: &Path) -> Option<SystemTime> {
     newest
 }
 
-/// Each `[[bin]]` of the crate is built and not older than its sources. `claude/hooks/rust-bin`
-/// never checks this, so this is the one place a stale binary shows.
+/// Each `[[bin]]` of the crate is built and not older than its sources. This is the one place a
+/// stale binary shows.
 fn bins_fresh(repo: &Path) -> Result<(), String> {
     let crate_dir = repo.join("rust").join("agent-config");
     let toml = fs::read_to_string(crate_dir.join("Cargo.toml"))
@@ -263,169 +239,6 @@ fn bins_fresh(repo: &Path) -> Result<(), String> {
     }
 }
 
-// --- guard-selftest --------------------------------------------------------------
-
-/// `got` must be the kind `want` names; otherwise the failure text says what the guard did.
-fn expect(what: &str, got: Option<&str>, want: &str) -> Option<String> {
-    let kind = got.unwrap_or("crash");
-    if kind == want {
-        None
-    } else {
-        Some(format!("{what} gave {kind}, wanted {want}"))
-    }
-}
-
-/// The kind of a verdict, as the self-test names it.
-fn kind_of(v: &Verdict) -> &'static str {
-    match v {
-        Verdict::Allow => "allow",
-        Verdict::Ask(_) => "ask",
-        Verdict::Deny(_) => "deny",
-    }
-}
-
-/// Canned calls through the guard checks. The private word is made up, so the check needs no setting.
-fn guard_selftest(repo: &Path) -> Result<(), String> {
-    const WORD: &str = "doctorprivateword";
-    let run = |f: &dyn Fn() -> Verdict| {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
-            .ok()
-            .as_ref()
-            .map(kind_of)
-    };
-    let words = vec![WORD.to_string()];
-    let send = json!({"command": format!("gh pr comment 1 --body \"{WORD}\"")});
-    let ls = json!({"command": "ls"});
-    let local = json!({"file_path": "~/.config/zsh/local.zsh"});
-    let cwd: PathBuf = repo.to_path_buf();
-    let problems: Vec<String> = [
-        // BSD sed -i (macOS rules) is denied
-        expect(
-            "sed -i on macOS",
-            run(&|| gc::g14_sed("sed -i 's/a/b/' file.txt", true)),
-            "deny",
-        ),
-        expect(
-            "a read of local.zsh",
-            run(&|| gc::g15_secrets("Read", &local)),
-            "deny",
-        ),
-        expect(
-            "a send with a private word",
-            run(&|| gc::g16_outbound("Bash", &send, &cwd, &words)),
-            "ask",
-        ),
-        expect("ls (sed check)", run(&|| gc::g14_sed("ls", true)), "allow"),
-        expect(
-            "ls (secrets check)",
-            run(&|| gc::g15_secrets("Bash", &ls)),
-            "allow",
-        ),
-        expect(
-            "ls (outbound check)",
-            run(&|| gc::g16_outbound("Bash", &ls, &cwd, &words)),
-            "allow",
-        ),
-        expect(
-            "ls (attribution check)",
-            run(&|| gc::g17_attribution("ls", &cwd)),
-            "allow",
-        ),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{}. Run: dots, then scripts/agent-config --bins",
-            problems.join("; ")
-        ))
-    }
-}
-
-// --- presets ---------------------------------------------------------------------
-
-/// The `~/.claude/rules/preset-*.md` links equal the presets that are on.
-fn presets(repo: &Path, home: &Path) -> Result<(), String> {
-    let on = crate::presets::enabled_quiet(home, crate::presets::current_profile(home));
-    let src = repo.join("claude").join("presets");
-    // `repo` can be spelled another way than the links (a `..` in the exe path, a symlinked folder)
-    let src_real = fs::canonicalize(&src).unwrap_or_else(|_| src.clone());
-    let want: BTreeSet<String> = on
-        .into_iter()
-        .filter(|n| src.join(n).join("rules.md").is_file())
-        .collect();
-    let mut have = BTreeSet::new();
-    if let Ok(entries) = fs::read_dir(home.join(".claude").join("rules")) {
-        for e in entries.filter_map(Result::ok) {
-            let file = e.file_name().to_string_lossy().into_owned();
-            let Some(name) = file
-                .strip_prefix("preset-")
-                .and_then(|r| r.strip_suffix(".md"))
-            else {
-                continue;
-            };
-            if os::is_symlink(&e.path())
-                && fs::read_link(e.path()).is_ok_and(|t| {
-                    t.starts_with(&src)
-                        || fs::canonicalize(&t).is_ok_and(|r| r.starts_with(&src_real))
-                })
-            {
-                have.insert(name.to_string());
-            }
-        }
-    }
-    let missing: Vec<String> = want.difference(&have).cloned().collect();
-    let extra: Vec<String> = have.difference(&want).cloned().collect();
-    let mut parts = Vec::new();
-    if !missing.is_empty() {
-        parts.push(format!("no link for: {}", join(&missing)));
-    }
-    if !extra.is_empty() {
-        parts.push(format!("links of presets that are off: {}", join(&extra)));
-    }
-    if parts.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("{}. Run: dots", parts.join("; ")))
-    }
-}
-
-// --- generated -------------------------------------------------------------------
-
-/// The generated files carry the marker: the Cursor rule when it exists, and the Opencode rules
-/// and guard plugin when the Opencode config folder exists.
-fn generated(repo: &Path, home: &Path) -> Result<(), String> {
-    let marked = |p: &Path| fs::read_to_string(p).is_ok_and(|t| t.contains(MARK));
-    let mut bad: Vec<String> = Vec::new();
-    let cursor = home.join(".cursor").join("rules").join("claude-global.mdc");
-    if cursor.exists() && !marked(&cursor) {
-        bad.push("~/.cursor/rules/claude-global.mdc has no marker".into());
-    }
-    let oc = home.join(".config").join("opencode");
-    if oc.is_dir() {
-        if !marked(&oc.join("AGENTS.md")) {
-            bad.push("~/.config/opencode/AGENTS.md is missing or has no marker".into());
-        }
-        // the plugin is written only while the launcher exists
-        if repo.join("claude").join("hooks").join("rust-bin").is_file()
-            && !marked(&oc.join("plugins").join("dots-guard.ts"))
-        {
-            bad.push("~/.config/opencode/plugins/dots-guard.ts is missing or has no marker".into());
-        }
-    }
-    if bad.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{}. If the file is yours, move it away. Then run: dots",
-            bad.join("; ")
-        ))
-    }
-}
-
 // --- timezone --------------------------------------------------------------------
 
 /// `TIMEZONE` is empty or names a zone file (macOS and Linux).
@@ -447,7 +260,7 @@ fn timezone(home: &Path) -> Result<(), String> {
 // --- no-leak ---------------------------------------------------------------------
 
 /// `path` with every span that holds a private word (case-insensitive, whole words only for a
-/// short one: the rule of the git hook and G16) replaced by `***`, so a printed path never shows
+/// short one: the rule of the git hooks) replaced by `***`, so a printed path never shows
 /// the word.
 fn mask(path: &str, words: &[String]) -> String {
     let chars: Vec<char> = path.chars().collect();
@@ -493,7 +306,8 @@ fn no_leak(repo: &Path, home: &Path) -> Result<(), String> {
         Ok(o) if o.status.success() => o,
         _ => return Err("cannot list the tracked files (is the repo a git checkout?)".into()),
     };
-    let words = gc::private_words(home);
+    // git runs in the repo: its own identity and origin URL count, wherever doctor runs from
+    let words = gc::private_words_at(home, Some(repo));
     if words.is_empty() {
         return Ok(());
     }

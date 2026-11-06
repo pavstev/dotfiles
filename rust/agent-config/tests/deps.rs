@@ -1,5 +1,4 @@
-//! Gate for the agent tools: no crate in the build may compile C code, on any target we ship.
-//! Also checks that the `ctx` and `sessions` bins exist.
+//! Gate for the bins: no crate in the build may compile C code, on any target we ship.
 
 #![allow(clippy::unwrap_used, reason = "a test fails by panicking")]
 

@@ -80,25 +80,20 @@ minutes on a Mac and 5 to 10 on Windows.
 
 ## 4. Presets and settings
 
-Presets are opt-in working habits. What each one does: [Presets](../claude/presets/README.md).
+Presets are opt-in working habits from the ps plugin. What each one does: [Presets](https://github.com/pavstev/agent-kit/tree/main/docs/presets).
 `ship-to-main` is off by default: a push to a work repo's main can hurt.
 
 `[ASK]` Ask these together:
 
 1. Which presets? Options: all but `ship-to-main` (recommended), all, none, pick by name.
-2. Which Claude plan? Options: `pro`, `max5`, `max20`, `team`, `api`, `unknown` (recommended when
-   the user does not know). It sets the weekly pace budget.
-3. Which days do they work? Examples: `mon-fri` (default), `mon-sat`, `sun-thu`.
-4. Which time zone? An IANA name such as `UTC` or `Area/City`, or empty for the system zone.
-5. Colors? Options: `copper` (default) or `plain`.
+2. Which time zone? An IANA name such as `UTC` or `Area/City`, or empty for the system zone.
+3. Colors? Options: `copper` (default) or `plain`.
 
 `[CONFIRM]` Show the lines you will write to `~/.config/dotfiles/settings`, one `NAME="value"` per
 line, for example:
 
 ```
-PRESETS="workflow pace models clock plain-writing no-ai-attribution"
-PLAN="pro"
-WORK_DAYS="mon-fri"
+PRESETS="workflow models clock plain-writing no-ai-attribution"
 TIMEZONE=""
 THEME="copper"
 ```
@@ -142,9 +137,8 @@ bash ~/dotfiles/dotfiles doctor
 It prints `PASS <name>` or `FAIL <name>: <why>` per check and changes nothing. What each check
 looks at: [Features](features.md#daily-workflow). The usual fix on FAIL:
 
-- `links`, `settings-built`, `bins-fresh`, `presets`: `bash ~/dotfiles/dotfiles`
-- `guard-selftest`: `bash ~/dotfiles/dotfiles`, then run doctor again
-- `generated`: move away the user's own file with that name, then `bash ~/dotfiles/dotfiles`
+- `links`, `settings-built`, `bins-fresh`: `bash ~/dotfiles/dotfiles`
+- `plugin`: start Claude Code once (the plugin fetches its binaries), then `bash ~/dotfiles/dotfiles`
 - `timezone`: fix the value in the settings (macOS and Linux)
 - `no-leak`: remove the private word from that file
 
@@ -162,9 +156,7 @@ last three rows are yes or no.
 | `links` | |
 | `settings-built` | |
 | `bins-fresh` | |
-| `guard-selftest` | |
-| `presets` | |
-| `generated` | |
+| `plugin` | |
 | `timezone` | |
 | `no-leak` | |
 | Signed in to GitHub | |

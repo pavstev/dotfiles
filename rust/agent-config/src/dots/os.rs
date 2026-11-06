@@ -79,8 +79,18 @@ pub fn have(cmd: &str) -> bool {
     which(cmd).is_some()
 }
 
-/// True if the path is a file this user can run.
-pub use crate::pycompat::is_executable;
+/// True if the path is a regular file this user can run. On non-unix any regular file counts.
+#[cfg(unix)]
+pub fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// True if the path is a regular file this user can run. On non-unix any regular file counts.
+#[cfg(not(unix))]
+pub fn is_executable(p: &Path) -> bool {
+    p.is_file()
+}
 
 /// Put a folder first on PATH, once.
 pub fn path_prepend(dir: &Path) {
@@ -280,8 +290,23 @@ fn local_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
 pub fn utc_parts(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400);
-    let (yy, mm, dd) = crate::pycompat::civil_from_days(days);
+    let (yy, mm, dd) = civil_from_days(days);
     (yy, mm, dd, rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// The civil date (year, month, day) of a day count since 1970-01-01 (Howard Hinnant's
+/// algorithm, proleptic Gregorian).
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// The time now as YYYYmmdd-HHMMSS, for backup names.
@@ -303,6 +328,26 @@ mod tests {
     fn utc_date_math() {
         assert_eq!(utc_parts(1_792_413_296), (2026, 10, 19, 12, 34, 56));
         assert_eq!(utc_parts(0), (1970, 1, 1, 0, 0, 0));
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        assert_eq!(civil_from_days(20745), (2026, 10, 19));
+    }
+    #[test]
+    fn executable_files() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("tool");
+        fs::write(&f, "#!/bin/sh\n").unwrap();
+        assert!(!is_executable(&d.path().join("missing")));
+        assert!(!is_executable(d.path()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(!is_executable(&f));
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(is_executable(&f));
+        }
+        #[cfg(not(unix))]
+        assert!(is_executable(&f));
     }
     #[test]
     fn which_finds_sh() {

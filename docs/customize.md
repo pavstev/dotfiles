@@ -17,15 +17,14 @@ How to change things, set the looks, and uninstall.
 | A command-line tool | `tools.list`: add one line. It names the tool, its commands, its OSes and its sources in order (mise first, then `apk`, `winget`, `scoop`, `cargo`, `brew`) | `dots` (step `12-tools` installs it; `scripts/tools --check` lists what is missing) |
 | VS Code/Cursor UI edits | edit in the app; it's a symlink, so the repo file changes too | `git status` in `~/dotfiles` to see it, then commit |
 | bat / lazygit / bottom / yazi / tealdeer / fastfetch | `home/.config/<tool>/…` | live immediately |
-| Claude | anything under `claude/` | live immediately (or `dots` for a new skill/file) |
 | Claude settings (`claude/settings.json`) | the repo base for everyone; your own keys go in `~/.config/dotfiles/claude-settings.json` | `dots` (it builds `~/.claude/settings.json`) |
 | Share a key Claude saved for you | `scripts/agent-config claude-settings promote <key>` (e.g. `permissions.allow`) | commit `claude/settings.json` |
 | Block a tool Claude never uses | add its bare name, or `mcp__<server>__*`, to `permissions.deny` in `claude/settings.json`. A connector has two names: its ID in the app, `claude_ai_<Name>` in the terminal. In the desktop app a denied tool still shows in the tool list (a call is only blocked), so turn an unused connector off in the app to save its tokens | `dots`, then the next session (a deny beats every allow) |
-| Cursor rules, agents, hooks, MCP | `claude/` (shared source) or `cursor/` | `dots` (regenerates `~/.cursor`) |
-| Opencode rules, agents, permissions, theme | `claude/` (shared source); the palette lives in `rust/agent-config/themes/copper.json` | `dots` (regenerates `~/.config/opencode`) |
+| Claude, Cursor and Opencode rules, skills, agents, hooks, MCP | the [ps plugin](https://github.com/pavstev/agent-kit) | a new Claude Code session; `dots` for Cursor and Opencode |
+| Opencode rules, agents, permissions, theme | the [ps plugin](https://github.com/pavstev/agent-kit) | `dots` (runs the plugin's `agent-config opencode`) |
 | Machine-local | `~/.config/zsh/local.zsh`, `~/.gitconfig.local`, `Brewfile.local` | new shell |
-| Which habits are on (presets), time zone, plan, work days, theme, looks | `dots settings` (`PRESETS`, `TIMEZONE`, `PLAN`, `WORK_DAYS`, `THEME`, `LOOKS`) | `dots` refreshes the links and files; `dots doctor` checks them |
-| A new preset | `claude/presets/<name>/rules.md` (steps in its README) | `cargo test --test presets` in `rust/agent-config`, then `dots` |
+| Which habits are on (presets), time zone, theme, looks | `dots settings` (`PRESETS`, `TIMEZONE`, `THEME`, `LOOKS`) | `dots` refreshes the links and files; `dots doctor` checks them |
+| A new preset | the [ps plugin](https://github.com/pavstev/agent-kit) (`plugins/ps/presets/<name>/rules.md`); a settings part goes in `claude/preset-settings/<name>.json` here | a new Claude Code session, then `dots` |
 | Settings: git name, profile, Cursor MCP, Opencode MCP, Opencode projects, Java, steps to skip, private words and rules | `dots settings` (kept in `~/.config/dotfiles`, never in git; all names in `settings.example`) | at once (Java: new shell) |
 
 ## Looks: Starship, editor settings and the Nerd Font
@@ -49,8 +48,7 @@ To turn a look off, change the **Looks** row in `dots settings`. To drop Starshi
 ## Where things are
 
 The folder map is in [AGENTS.md](../AGENTS.md#layout). The short version: `home/` mirrors
-`$HOME`, `claude/` is the Claude config (Cursor and Opencode read it too), `tools.list` lists the
-tools, and `rust/agent-config/` holds the Rust programs behind `dots`.
+`$HOME`, `claude/` holds the base of the Claude settings, `tools.list` lists the tools, and `rust/agent-config/` holds the Rust programs behind `dots`.
 
 ## Uninstall
 
@@ -62,11 +60,9 @@ It asks once (`-y` skips the question). Then it:
 
 - removes every link into the repo and puts back the file each one replaced
   (`*.bak-<timestamp>`);
-- deletes the generated Cursor and Opencode files (the ones with a `generated-by: dotfiles`
-  marker);
-- takes out the hooks, MCP servers, permissions and theme that `dots` merged into your own
-  `~/.cursor` and `~/.config/opencode` files. Your own entries stay.
+- removes the old links into the repo's `claude/` folder and the owner rules link.
 
 It leaves these, on purpose: the repo, the tools (mise, Homebrew apps, Oh My Zsh, toolchains),
-your settings in `~/.config/dotfiles`, and `~/.claude/settings.json` (a real file that holds your
-own keys). Delete them by hand if you want them gone. Running it twice is safe.
+your settings in `~/.config/dotfiles`, `~/.claude/settings.json` (a real file that holds your
+own keys), and the ps plugin with the Cursor and Opencode config it wrote (remove it with
+`claude plugin uninstall ps@agent-kit`). Delete them by hand if you want them gone. Running it twice is safe.

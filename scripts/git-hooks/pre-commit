@@ -1,30 +1,11 @@
 #!/usr/bin/env bash
-# Pre-commit checks for the dotfiles repo: skill lint, private words, symlinks,
+# Pre-commit checks for the dotfiles repo: private words, symlinks,
 # and a scan for added lines that look like a credential.
 # Wired via: git config core.hooksPath scripts/git-hooks  (done by step 77-dotfiles-git-hooks)
 #
 # False positive? Add a `grep -Fv 'your-literal-string'` exclusion before exit 1,
 # or annotate the line with  # scan-allowlist  to skip it.
 set -uo pipefail
-
-# --- Skill lint: any staged change under claude/skills/ must pass the skill_check bin ----
-if git diff --cached --name-only 2>/dev/null | grep -q '^claude/skills/'; then
-  bash claude/hooks/rust-bin skill_check -q
-  rc=$?
-  if [[ "$rc" -eq 127 ]]; then
-    printf '\033[33m! pre-commit: no skill_check binary, so the skill lint is skipped. Run: dots\033[0m\n'
-  elif [[ "$rc" -ne 0 ]]; then
-    printf '\n\033[1;31m✖ pre-commit: skill_check failed — fix the skill or run `bash claude/hooks/rust-bin skill_check` for details.\033[0m\n\n'
-    exit 1
-  fi
-  # The skill-script tests (they run the real skill bins).
-  if command -v cargo >/dev/null 2>&1; then
-    if ! cargo test --quiet --test skill_bins --manifest-path rust/agent-config/Cargo.toml >/dev/null 2>&1; then
-      printf '\n\033[1;31m✖ pre-commit: the skill-script tests failed — run `cargo test --test skill_bins` in rust/agent-config for details.\033[0m\n\n'
-      exit 1
-    fi
-  fi
-fi
 
 # --- Windows-safe paths: a name Windows cannot hold breaks `git clone` there
 # (windows-paths.sh says which).
@@ -33,7 +14,7 @@ winbad=$(git diff --cached --name-only --diff-filter=AR 2>/dev/null | windows_ba
 if [[ -n "$winbad" ]]; then
   printf '\n\033[1;31m✖ pre-commit: a staged path has a character or name Windows cannot hold:\033[0m\n\n'
   printf '%s\n' "$winbad" | head -20
-  printf '\nRename it (a skill folder uses _ for : — ps:foo lives in ps_foo).\n\n'
+  printf '\nRename it (use _ where a name would need :).\n\n'
   exit 1
 fi
 

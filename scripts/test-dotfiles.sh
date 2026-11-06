@@ -75,7 +75,7 @@ OC="$H/.config/opencode"
 # run <log> [env...]: ./dotfiles in the temp HOME, no terminal, no steps.
 run() {
   local log="$1"; shift
-  env HOME="$H" NO_COLOR=1 DOTFILES_STEPS=none DOTS_BIN="$DOTS_TEST_BIN" "$@" \
+  env HOME="$H" NO_COLOR=1 DOTFILES_STEPS=none DOTS_NO_PLUGIN=1 DOTS_BIN="$DOTS_TEST_BIN" "$@" \
     bash "$R/dotfiles" >"$T/$log" 2>&1 <"$T/stdin"
 }
 # fingerprint: every link under the temp HOME and the saved settings.
@@ -90,7 +90,7 @@ fingerprint() {
 printf 'Test User\ntest@example.com\n' >"$T/stdin"
 if run run1.log; then pass "first run exits 0"; else bad "first run exit $? (log: run1.log)"; fi
 grep -q '^GIT_NAME="Test User"' "$SETTINGS" 2>/dev/null && pass "git name saved" || bad "git name not saved"
-[[ "$(readlink "$H/.claude/CLAUDE.md")" == "$R/claude/CLAUDE.md" ]] && pass "CLAUDE.md linked" || bad "CLAUDE.md not linked"
+[[ ! -L "$H/.claude/CLAUDE.md" ]] && pass "no CLAUDE.md link (the ps plugin gives the rules)" || bad "CLAUDE.md is still linked"
 [[ "$(readlink "$H/.zshrc")" == "$R/home/.zshrc" ]] && pass ".zshrc linked" || bad ".zshrc not linked"
 grep -q '^PROFILE="[a-z]' "$SETTINGS" 2>/dev/null && bad "PROFILE saved without private rules" || pass "no private rules: PROFILE stays empty"
 [[ ! -e "$RULE" && ! -L "$RULE" ]] && pass "no owner rules link" || bad "owner rules linked on the shared profile"
@@ -98,19 +98,11 @@ grep -q 'profile: shared' "$T/run1.log" && pass "profile is shared" || bad "prof
 # Claude settings: a built file, the repo base only while there is no private layer.
 [[ -f "$LIVE" && ! -L "$LIVE" ]] && pass "settings.json is a built file" || bad "settings.json is a link or missing"
 [[ ! -e "$LAYER" ]] && pass "no private layer yet" || bad "a private layer appeared on its own"
-# Presets: the shared profile links all but ship-to-main and merges their fragments over the base.
+# Presets: their settings fragments merge over the base (the rules come from the ps plugin).
 PRE="$H/.claude/rules"
-[[ ! -e "$PRE/preset-ship-to-main.md" ]] && pass "ship-to-main stays off on shared" || bad "ship-to-main linked on shared"
-[[ "$(readlink "$PRE/preset-workflow.md")" == "$R/claude/presets/workflow/rules.md" ]] && pass "a preset links into the repo" || bad "preset-workflow.md not linked into the repo"
+[[ -z "$(find "$PRE" -name 'preset-*.md' -type l 2>/dev/null)" ]] && pass "no preset links (the ps plugin copies the rules)" || bad "a preset is still linked"
 grep -q '"outputStyle"' "$LIVE" && pass "preset fragment merged into settings.json" || bad "preset fragment missing from settings.json"
 ! grep -q '"outputStyle"' "$R/claude/settings.json" && pass "the repo base holds no preset keys" || bad "the repo base holds a preset key"
-wf_line="$(grep -m1 '^- ' "$R/claude/presets/workflow/rules.md")"
-grep -qF -- "$wf_line" "$OC/AGENTS.md" 2>/dev/null && pass "presets reach Opencode AGENTS.md" || bad "presets missing from Opencode AGENTS.md"
-# Opencode: the rules, the agents and the copper theme are generated on every run.
-grep -q 'generated-by: dotfiles' "$OC/AGENTS.md" 2>/dev/null && pass "Opencode AGENTS.md generated" || bad "Opencode AGENTS.md missing"
-[ -d "$OC/agents" ] && pass "Opencode agents dir" || bad "Opencode agents dir missing"
-[ -f "$OC/themes/copper.json" ] && pass "Opencode copper theme" || bad "Opencode copper theme missing"
-grep -q '"theme": "copper"' "$OC/tui.json" 2>/dev/null && pass "tui.json names the copper theme" || bad "tui.json does not name the copper theme"
 
 # 3. Private rules appear: the owner profile is saved and the rules link.
 : >"$T/stdin"
@@ -118,8 +110,6 @@ printf '# Owner rules\n' >"$OWNER"
 if run run2.log; then pass "owner run exits 0"; else bad "owner run exit $?"; fi
 grep -q '^PROFILE="owner"' "$SETTINGS" && pass "owner profile saved" || bad "owner profile not saved"
 [[ "$(readlink "$RULE")" == "$OWNER" ]] && pass "owner rules linked" || bad "owner rules not linked"
-grep -q 'Owner rules' "$OC/AGENTS.md" 2>/dev/null && pass "owner rules reach Opencode" || bad "owner rules missing from Opencode AGENTS.md"
-[[ "$(readlink "$PRE/preset-ship-to-main.md")" == "$R/claude/presets/ship-to-main/rules.md" ]] && pass "ship-to-main linked on owner" || bad "ship-to-main not linked on owner"
 
 # 4. Same again: nothing changes.
 before="$(fingerprint)"
@@ -150,15 +140,12 @@ run run4.log
 [[ ! -e "$RULE" && ! -L "$RULE" ]] && pass "owner rules unlinked" || bad "owner rules link still there"
 grep -q 'removed the owner rules link' "$T/run4.log" && pass "unlink reported" || bad "unlink not reported"
 [[ -f "$OWNER" ]] && pass "private rules file kept" || bad "private rules file gone"
-[[ ! -e "$PRE/preset-ship-to-main.md" && ! -L "$PRE/preset-ship-to-main.md" ]] && pass "ship-to-main link removed on shared" || bad "ship-to-main link still there on shared"
-# A preset set off loses its link; a regular file named like a preset link is never touched.
-printf 'PRESETS="workflow"\n' >>"$SETTINGS"
+# An old preset link into the repo goes; a regular file named like one is never touched.
+mkdir -p "$PRE"; ln -sf "$R/claude/presets/workflow/rules.md" "$PRE/preset-workflow.md"
 printf 'mine\n' >"$PRE/preset-extra.md"
 run run4b.log
-[[ "$(find "$PRE" -name 'preset-*.md' -type l | wc -l | tr -d ' ')" == 1 ]] && pass "PRESETS list keeps one link" || bad "PRESETS list did not leave one link"
+[[ ! -L "$PRE/preset-workflow.md" ]] && pass "an old preset link is removed" || bad "an old preset link stayed"
 [[ "$(cat "$PRE/preset-extra.md")" == mine ]] && pass "a regular preset-*.md file is untouched" || bad "a regular preset-*.md file was changed"
-printf 'PRESETS=""\n' >>"$SETTINGS"
-run run4c.log
 
 # 5b. Looks: off until picked. On links Starship; off removes the link and brings back the
 #     file it replaced.
@@ -265,7 +252,7 @@ d="$T/linux-none"; fake_linux "$d" none; out="$(lx "$d")"
 which_want='dotfiles: macos linux windows
 scripts/setup-lib.sh: macos linux windows
 rust/agent-config/src/lib.rs: macos linux windows
-claude/hooks/rust-bin: macos linux windows
+claude/preset-settings/models.json: macos linux windows
 tools.list: macos linux windows
 scripts/tools: macos linux windows
 Brewfile: macos
@@ -275,7 +262,7 @@ home/.config/gh/config.yml: macos linux windows
 scripts/test-linux.sh: linux
 scripts/test-dotfiles.sh: macos
 README.md: none
-claude/skills/ps_handoff/SKILL.md: none'
+docs/install.md: none'
 which_got="$(bash "$REPO/scripts/os-check.sh" --which $(printf '%s\n' "$which_want" | cut -d: -f1))"
 [[ "$which_got" == "$which_want" ]] && pass "os-check maps each file to the right OS" \
   || bad "os-check map differs: $(diff <(printf '%s\n' "$which_want") <(printf '%s\n' "$which_got") | grep '^[<>]' | head -3 | tr '\n' ' ')"
@@ -448,14 +435,13 @@ fi
 ln -s "$R/claude/statusline.sh" "$H/.claude/statusline.sh"
 run run15b.log
 [[ ! -e "$H/.claude/statusline.sh" && ! -L "$H/.claude/statusline.sh" ]] && pass "the old statusline.sh link into the repo is removed" || bad "old statusline.sh link still there"
-grep -q 'removed the old statusline.sh link' "$T/run15b.log" && pass "its removal is reported" || bad "removal not reported"
+grep -q 'old links into claude/' "$T/run15b.log" && pass "its removal is reported" || bad "removal not reported"
 ln -s "$T/my-statusline.sh" "$H/.claude/statusline.sh"
 run run15c.log
 [[ "$(readlink "$H/.claude/statusline.sh")" == "$T/my-statusline.sh" ]] && pass "a statusline.sh link elsewhere is left alone" || bad "a foreign statusline.sh link was touched"
 rm -f "$H/.claude/statusline.sh"
 
-# 16. No Rust binary: ./dotfiles runs on a small PATH (no python3), and with no Rust binary a
-#     hook exits 0 silent while a skill call says "Run: dots" and exits 127.
+# 16. No Rust binary: ./dotfiles runs on a small PATH (no python3).
 FP="$T/nopy"; mkdir -p "$FP"
 for t in bash env sh cat grep egrep tr id sed uname dirname basename mktemp rm mkdir rmdir chmod date tail head awk ln cp mv ls find xargs \
     tar cksum readlink wc sort cut tee touch git stat realpath expr test which diff cmp curl; do
@@ -465,11 +451,6 @@ rm -f "$FP/python3" "$FP/python"
 printf 'Test User\ntest@example.com\n' >"$T/stdin"
 if run run16.log PATH="$FP"; then pass "./dotfiles runs with no python3 on PATH"; else bad "./dotfiles without python3 (log: run16.log): $(tail -n 3 "$T/run16.log" | tr '\n' '|')"; fi
 [[ ! -e "$R/rust/agent-config/target" ]] && pass "the temp repo has no Rust binary" || bad "the temp repo already has a Rust build"
-pre='{"tool_name":"Bash","tool_input":{"command":"ls"},"session_id":"t","cwd":"/tmp"}'
-out="$(printf '%s' "$pre" | env HOME="$H" PATH="$FP" bash "$R/claude/hooks/rust-bin" --hook guard pretool 2>"$T/hook.err")"; rc=$?
-[[ "$rc" -eq 0 && -z "$out" ]] && pass "a hook with no binary exits 0 and prints nothing" || bad "hook with no binary: rc=$rc out='$out'"
-out="$(env HOME="$H" PATH="$FP" bash "$R/claude/hooks/rust-bin" route 2>&1 </dev/null)"; rc=$?
-[[ "$rc" -eq 127 && "$out" == *"Run: dots"* ]] && pass "a skill call with no binary says Run: dots and exits 127" || bad "skill call with no binary: rc=$rc out='$out'"
 
 # 17. Private words (scripts/git-hooks/private-words.sh), through real commits in a throwaway repo:
 #     the current user's home paths, whole-word matching for short words, a warning for an empty list.

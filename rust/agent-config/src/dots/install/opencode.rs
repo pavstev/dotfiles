@@ -1,6 +1,6 @@
 //! 58-opencode: Opencode (the `opencode` CLI), which step 12-tools installs from tools.list. Skips
 //! when `opencode` is present; warns when that step could not install it. Its config comes from
-//! claude/ via `agent-config opencode` (wired into `dots`).
+//! the ps plugin's `agent-config opencode` (wired into `dots`).
 
 use super::super::os;
 use crate::out::{self, skip, warn};

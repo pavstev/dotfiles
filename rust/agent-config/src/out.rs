@@ -188,13 +188,6 @@ pub fn capture<T>(f: impl FnOnce() -> T) -> (T, Vec<(String, bool)>) {
     (r, lines)
 }
 
-/// Print lines kept by `capture`, each on the stream it was meant for.
-pub fn replay(lines: &[(String, bool)]) {
-    for (l, err) in lines {
-        emit(l, *err);
-    }
-}
-
 /// Print the waiting step header, once.
 fn head() {
     let mut s = step_state();
@@ -346,13 +339,6 @@ pub fn note(msg: &str) {
     }
     emit(&format!("{}•{} {}: {}", d(), z(), title, msg), false);
     step_state().shown = 2;
-}
-
-/// The line that says what a command reads. Verbose runs only.
-pub fn header(msg: &str) {
-    if verbose() {
-        info(msg);
-    }
 }
 
 /// The count line for the files that were up to date, e.g. "Opencode config: 12 up to date, 1 written".

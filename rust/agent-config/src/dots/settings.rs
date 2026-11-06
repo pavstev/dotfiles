@@ -156,18 +156,18 @@ mod tests {
     }
     #[test]
     fn replaced_keeps_a_real_settings_file() {
-        let old = "# machine settings\nPLAN=\"pro\"\nWORK_DAYS=\"mon-fri\"\nTIMEZONE=\"\"\n\nPRESETS=\"clock pace\"";
-        let new = replaced(old, "WORK_DAYS", "mon-sat");
+        let old = "# machine settings\nTHEME=\"copper\"\nLOOKS=\"a\"\nTIMEZONE=\"\"\n\nPRESETS=\"clock models\"";
+        let new = replaced(old, "LOOKS", "b");
         assert_eq!(
             new,
-            "# machine settings\nPLAN=\"pro\"\nWORK_DAYS=\"mon-sat\"\nTIMEZONE=\"\"\n\nPRESETS=\"clock pace\"\n"
+            "# machine settings\nTHEME=\"copper\"\nLOOKS=\"b\"\nTIMEZONE=\"\"\n\nPRESETS=\"clock models\"\n"
         );
         // Running it again changes nothing.
-        assert_eq!(replaced(&new, "WORK_DAYS", "mon-sat"), new);
+        assert_eq!(replaced(&new, "LOOKS", "b"), new);
         // A comment that mentions the name is not a setting.
         assert_eq!(
-            replaced("# WORK_DAYS=\"x\"\n", "WORK_DAYS", "mon-sat"),
-            "# WORK_DAYS=\"x\"\nWORK_DAYS=\"mon-sat\"\n"
+            replaced("# LOOKS=\"x\"\n", "LOOKS", "b"),
+            "# LOOKS=\"x\"\nLOOKS=\"b\"\n"
         );
     }
     #[test]

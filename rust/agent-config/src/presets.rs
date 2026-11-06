@@ -1,24 +1,20 @@
-//! The opt-in presets under `claude/presets/<name>/`: which are on, their rules text, their
-//! settings fragments and the links in `~/.claude/rules/`.
-//!
-//! Everything here reads only, except `link_all`, which makes and removes links it owns.
-//! `profile` never writes the settings file, so the guard can call it on every hook run.
+//! The opt-in presets: their names, which are on (the `PRESETS` setting) and the profile. The
+//! `dots settings` menu uses it. The ps plugin (pavstev/agent-kit) holds the preset rules and
+//! reads the same `PRESETS` setting. Everything here reads only.
 
-use crate::out::{ok, warn};
+use crate::out::warn;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Every preset folder, sorted. Fragments merge in this order.
-pub const ALL: [&str; 7] = [
+/// Every preset of the ps plugin, sorted. Fragments merge in this order.
+pub const ALL: [&str; 6] = [
     "clock",
     "models",
     "no-ai-attribution",
-    "pace",
     "plain-writing",
     "ship-to-main",
     "workflow",
@@ -109,11 +105,6 @@ pub fn current_profile(home: &Path) -> Profile {
     }
 }
 
-/// The name of `current_profile`, for callers that keep the text form.
-pub fn profile(home: &Path) -> String {
-    current_profile(home).to_string()
-}
-
 /// The presets that are on, in `ALL` order, and the names in the setting that no preset has.
 fn parse(home: &Path, profile: Profile) -> (Vec<String>, Vec<String>) {
     let raw = crate::setting(home, "PRESETS");
@@ -147,54 +138,35 @@ fn parse(home: &Path, profile: Profile) -> (Vec<String>, Vec<String>) {
     (on, unknown)
 }
 
-/// The presets that are on: the `PRESETS` setting (`all`, or a list of names), else the profile
-/// default (owner: every preset; shared: every preset but `ship-to-main`). A name that is no preset
-/// is dropped, with one warning per run. `none` alone turns every preset off.
-pub fn enabled(home: &Path, profile: impl Into<Profile>) -> Vec<String> {
-    static WARNED: AtomicBool = AtomicBool::new(false);
-    let (on, unknown) = parse(home, profile.into());
-    if !unknown.is_empty() && !WARNED.swap(true, Ordering::Relaxed) {
-        warn(&format!(
-            "PRESETS names no preset called {}, so it is left out. Presets: {}",
-            unknown.join(", "),
-            ALL.join(" ")
-        ));
-    }
-    on
-}
-
-/// Like `enabled`, with no warning: for the guard, which must stay quiet.
+/// The presets that are on: the `PRESETS` setting (`all`, `none`, or a list of names), else the
+/// profile default (owner: every preset; shared: every preset but `ship-to-main`). A name that is
+/// no preset is dropped.
 pub fn enabled_quiet(home: &Path, profile: impl Into<Profile>) -> Vec<String> {
     parse(home, profile.into()).0
 }
 
-fn dir(repo: &Path, name: &str) -> PathBuf {
-    repo.join("claude").join("presets").join(name)
-}
-
-/// The rules of the named presets without their front matter, one blank line apart. A preset with
-/// no `rules.md` adds nothing.
-pub fn rules_text(repo: &Path, names: &[String]) -> String {
-    let mut parts: Vec<String> = Vec::new();
-    for n in names {
-        let Ok(text) = fs::read_to_string(dir(repo, n).join("rules.md")) else {
-            continue;
-        };
-        let (_, body) = crate::split_frontmatter(&text);
-        let body = body.trim();
-        if !body.is_empty() {
-            parts.push(body.to_string());
-        }
+/// One line for a menu or a note: the presets that are on.
+pub fn summary(home: &Path, profile: impl Into<Profile>) -> String {
+    let on = enabled_quiet(home, profile);
+    if on.len() == ALL.len() {
+        "all".into()
+    } else if on.is_empty() {
+        "none".into()
+    } else {
+        on.join(" ")
     }
-    parts.join("\n\n")
 }
 
-/// The settings fragments of the named presets, in the order given. A missing or broken file is
-/// skipped (a broken one with a warning).
+/// The settings fragments of the named presets, in the order given: `claude/preset-settings/
+/// <name>.json` of the repo (the plugin cannot set these keys, so they stay here). A missing file
+/// adds nothing; a broken one is skipped with a warning.
 pub fn fragments(repo: &Path, names: &[String]) -> Vec<Value> {
     let mut out = Vec::new();
     for n in names {
-        let p = dir(repo, n).join("settings.json");
+        let p = repo
+            .join("claude")
+            .join("preset-settings")
+            .join(format!("{n}.json"));
         let Ok(text) = fs::read_to_string(&p) else {
             continue;
         };
@@ -208,63 +180,4 @@ pub fn fragments(repo: &Path, names: &[String]) -> Vec<Value> {
         }
     }
     out
-}
-
-/// A link of ours: `preset-<name>.md` that points into the repo's presets.
-fn ours(link: &Path, presets: &Path) -> bool {
-    crate::is_symlink(link) && fs::read_link(link).is_ok_and(|t| t.starts_with(presets))
-}
-
-/// Link `~/.claude/rules/preset-<name>.md` to each enabled preset and remove the links of the
-/// others. Only links into the repo's presets are ever removed or replaced; a regular file, or a
-/// link that points elsewhere, stays as it is (with a warning when it blocks an enabled preset).
-pub fn link_all(repo: &Path, home: &Path, names: &[String]) {
-    let rules = home.join(".claude").join("rules");
-    let presets = repo.join("claude").join("presets");
-    for n in names {
-        let src = dir(repo, n).join("rules.md");
-        let dst = rules.join(format!("preset-{n}.md"));
-        if !src.is_file() {
-            continue;
-        }
-        if crate::dots::os::exists_or_link(&dst) && !ours(&dst, &presets) {
-            warn(&format!(
-                "{} is not a link of ours, so the {} preset is not linked. Move it away to use the preset.",
-                crate::tilde(&dst),
-                n
-            ));
-            continue;
-        }
-        crate::dots::link::link_item(&src, &dst, true);
-    }
-    let Ok(entries) = fs::read_dir(&rules) else {
-        return;
-    };
-    for e in entries.filter_map(Result::ok) {
-        let file = e.file_name().to_string_lossy().into_owned();
-        let Some(name) = file
-            .strip_prefix("preset-")
-            .and_then(|r| r.strip_suffix(".md"))
-        else {
-            continue;
-        };
-        if names.iter().any(|n| n == name) || !ours(&e.path(), &presets) {
-            continue;
-        }
-        if fs::remove_file(e.path()).is_ok() {
-            ok(&format!("removed the {name} preset link"));
-        }
-    }
-}
-
-/// One line for a menu or a note: the presets that are on.
-pub fn summary(home: &Path, profile: impl Into<Profile>) -> String {
-    let on = enabled_quiet(home, profile);
-    if on.len() == ALL.len() {
-        "all".into()
-    } else if on.is_empty() {
-        "none".into()
-    } else {
-        on.join(" ")
-    }
 }
